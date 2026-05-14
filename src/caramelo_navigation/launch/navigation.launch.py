@@ -11,12 +11,19 @@ from launch_ros.actions import Node
 def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    map_name = LaunchConfiguration("map_name")
     lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator", "behavior_server"]
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
 
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false"
+    )
+    
+    map_name_arg = DeclareLaunchArgument(
+        "map_name",
+        default_value="small_house",
+        description="Map folder name inside caramelo_mapping/maps/"
     )
 
     localization = IncludeLaunchDescription(
@@ -25,7 +32,10 @@ def generate_launch_description():
             "launch",
             "global_localization.launch.py"
         ),
-        launch_arguments={'use_sim_time': use_sim_time}.items()
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'map_name': map_name
+        }.items()
     )
 
     nav2_controller_server = Node(
@@ -111,6 +121,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time_arg,
+        map_name_arg,
         localization,
         nav2_controller_server,
         nav2_planner_server,
