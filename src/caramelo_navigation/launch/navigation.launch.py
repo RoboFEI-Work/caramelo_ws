@@ -3,7 +3,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -12,6 +13,10 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     map_name = LaunchConfiguration("map_name")
+    navigation_start_delay = LaunchConfiguration("navigation_start_delay")
+    use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
+    cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
     lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator", "behavior_server"]
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
 
@@ -24,6 +29,30 @@ def generate_launch_description():
         "map_name",
         default_value="small_house",
         description="Map folder name inside caramelo_mapping/maps/"
+    )
+
+    navigation_start_delay_arg = DeclareLaunchArgument(
+        "navigation_start_delay",
+        default_value="5.0",
+        description="Seconds to wait before starting Nav2 after localization starts"
+    )
+
+    use_cmd_vel_relay_arg = DeclareLaunchArgument(
+        "use_cmd_vel_relay",
+        default_value="true",
+        description="Convert Nav2 cmd_vel Twist into mecanum_controller TwistStamped reference"
+    )
+
+    cmd_vel_topic_arg = DeclareLaunchArgument(
+        "cmd_vel_topic",
+        default_value="/cmd_vel",
+        description="Nav2 velocity command topic"
+    )
+
+    mecanum_reference_topic_arg = DeclareLaunchArgument(
+        "mecanum_reference_topic",
+        default_value="/mecanum_controller/reference",
+        description="Mecanum controller TwistStamped command topic"
     )
 
     localization = IncludeLaunchDescription(
@@ -119,14 +148,40 @@ def generate_launch_description():
         ],
     )
 
+    cmd_vel_relay = Node(
+        package="caramelo_utils",
+        executable="twist_relay.py",
+        name="nav2_twist_relay",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"input_twist_topic": cmd_vel_topic},
+            {"output_twist_stamped_topic": mecanum_reference_topic},
+            {"frame_id": "base_footprint"},
+        ],
+        condition=IfCondition(use_cmd_vel_relay),
+    )
+
+    delayed_navigation = TimerAction(
+        period=navigation_start_delay,
+        actions=[
+            cmd_vel_relay,
+            nav2_controller_server,
+            nav2_planner_server,
+            nav2_smoother_server,
+            nav2_behaviors,
+            nav2_bt_navigator,
+            nav2_lifecycle_manager,
+        ],
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         map_name_arg,
+        navigation_start_delay_arg,
+        use_cmd_vel_relay_arg,
+        cmd_vel_topic_arg,
+        mecanum_reference_topic_arg,
         localization,
-        nav2_controller_server,
-        nav2_planner_server,
-        nav2_smoother_server,
-        nav2_behaviors,
-        nav2_bt_navigator,
-        nav2_lifecycle_manager,
+        delayed_navigation,
     ])
