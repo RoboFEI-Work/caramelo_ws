@@ -3,9 +3,9 @@ costmap:
     update_frequency: 1.0
     publish_frequency: 1.0
     global_frame: map
-    robot_base_frame: base_link
-    use_sim_time: true
-    robot_radius: 0.1
+    robot_base_frame: base_footprint
+    use_sim_time: false
+    footprint: "[[0.355, 0.235], [0.355, -0.235], [-0.355, -0.235], [-0.355, 0.235]]"
     resolution: 0.02
     track_unknown_space: true
     plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -32,7 +32,8 @@ costmap:
     
     inflation_layer:
       plugin: "nav2_costmap_2d::InflationLayer"
-      cost_scaling_factor: 3.0
-      inflation_radius: 0.20
+      # 0.235 m inscribed footprint radius + about 0.20 m caution zone.
+      cost_scaling_factor: 12.0
+      inflation_radius: 0.44
       
     always_send_full_costmap: True
