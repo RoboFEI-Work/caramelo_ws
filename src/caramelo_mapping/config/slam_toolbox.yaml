@@ -27,7 +27,7 @@ slam_toolbox:
     throttle_scans: 1
     transform_publish_period: 0.02 #if 0 never publishes odometry
     map_update_interval: 2.0
-    resolution: 0.20
+    resolution: 0.02
     max_laser_range: 15.0 #reduced for better performance
     minimum_time_interval: 0.1
     transform_timeout: 2.0
