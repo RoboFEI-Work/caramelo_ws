@@ -142,7 +142,10 @@ def generate_launch_description():
             {"node_names": lifecycle_nodes},
             {"use_sim_time": use_sim_time},
             {"autostart": True},
-            {"bond_timeout": 60.0}
+            # slam_toolbox remains operational, but its bond heartbeat is
+            # unreliable with the incoming hardware scan pipeline. Disabling
+            # bond monitoring prevents lifecycle cleanup from erasing the map.
+            {"bond_timeout": 0.0}
         ],
     )
 
