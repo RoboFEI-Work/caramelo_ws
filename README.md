@@ -1,18 +1,30 @@
 # Caramelo WS
 
-Workspace ROS 2 do robo Caramelo para mapeamento, localizacao e navegacao.
+Workspace ROS 2 Jazzy do robo Caramelo para mapeamento, localizacao e navegacao.
 
-Este README foca no uso pratico do workspace:
+Este workspace roda no computador de operacao. Ele nao inicia o driver do LiDAR, IMU ou controladores da Raspberry; ele consome os topicos que ja chegam do workspace embarcado.
 
-- como mapear um ambiente novo;
-- como navegar com o robo usando um mapa salvo.
+## Topicos Esperados
 
-Os comandos abaixo assumem ROS 2 Jazzy e que o robo ja esta publicando os topicos principais:
+Antes de mapear ou navegar, confira se a Raspberry esta publicando pelo menos:
 
-- `/scan` para o LiDAR;
-- `/odom` para odometria;
-- TF entre `map`, `odom`, `base_footprint`/`base_link` e o frame do laser;
-- `/cmd_vel` ou o pipeline de controle configurado no robo.
+- `/scan`: LaserScan do LiDAR.
+- `/odom`: odometria usada pelo Nav2/SLAM.
+- `/tf` e `/tf_static`: arvore TF do robo.
+- `/robot_description`: modelo do robo para o RViz.
+- `/joint_states`: estados das juntas.
+- `/mecanum_controller/reference`: comando `TwistStamped` usado pelo controlador mecanum.
+
+Comandos rapidos de diagnostico:
+
+```bash
+ros2 topic list
+ros2 topic echo /scan --once
+ros2 topic echo /odom --once
+ros2 run tf2_ros tf2_echo odom base_footprint
+```
+
+Se `/scan`, `/odom` ou o TF `odom -> base_footprint` nao existirem, resolva isso no workspace da Raspberry antes de iniciar SLAM/Nav2.
 
 ## Preparar o Workspace
 
@@ -33,23 +45,36 @@ colcon build
 source install/setup.bash
 ```
 
-## Fluxo 1: Mapear um Ambiente
-
-Use este fluxo quando voce quer criar um mapa novo de uma sala, corredor ou laboratorio.
-
-### 1. Ligue o robo e confira os topicos
-
-Com o robo ligado, confira se chegam dados basicos:
+Para buildar somente os pacotes mais usados:
 
 ```bash
-ros2 topic list
-ros2 topic echo /scan --once
-ros2 topic echo /odom --once
+colcon build --packages-select caramelo_mapping caramelo_localization caramelo_navigation caramelo_utils
+source install/setup.bash
 ```
 
-Se `/scan` ou `/odom` nao aparecerem, resolva isso antes de abrir o SLAM.
+## Mapas Disponiveis
 
-### 2. Abra o SLAM
+Os mapas ficam em:
+
+```text
+src/caramelo_mapping/maps/<nome_do_mapa>/map.yaml
+```
+
+Mapas presentes no workspace:
+
+- `arena_fei`
+- `cbr_vitoria`
+- `robocup_salvador`
+- `sala_520`
+- `small_house`
+
+## Fluxo 1: Mapear com SLAM Toolbox
+
+Use este fluxo como padrao do projeto. Ele abre o `slam_toolbox`, o `map_saver_server`, o RViz e um adaptador `/scan -> /scan_fixed`.
+
+O adaptador existe porque alguns drivers de LiDAR publicam `/scan` com quantidade variavel de leituras. O `slam_toolbox` espera uma geometria fixa, entao o workspace republica uma grade angular fixa em `/scan_fixed` sem mexer no pacote da Raspberry.
+
+### 1. Iniciar SLAM Toolbox
 
 Terminal 1:
 
@@ -57,33 +82,46 @@ Terminal 1:
 ros2 launch caramelo_mapping slam.launch.py
 ```
 
-Parametros uteis:
+Parametros principais:
 
-- `use_sim_time` default: `false`
-- `slam_config` default: `caramelo_mapping/config/slam_toolbox.yaml`
+- `use_sim_time`: default `false`.
+- `map_resolution`: default `0.02`, ou seja, 2 cm por celula.
+- `use_rviz`: default `true`.
+- `scan_topic`: default `/scan`, topico bruto vindo da Raspberry.
+- `slam_scan_topic`: default `/scan_fixed`, topico usado pelo SLAM Toolbox.
+- `use_scan_normalizer`: default `true`.
+- `fixed_scan_count`: default `0`, aprende a quantidade de raios pelo primeiro scan.
+- `scan_range_max`: default `30.0`, alcance maximo do LiDAR em metros.
 
-Exemplo usando tempo de simulacao:
-
-```bash
-ros2 launch caramelo_mapping slam.launch.py use_sim_time:=true
-```
-
-### 3. Abra o RViz do SLAM
-
-Se o RViz nao abrir automaticamente no seu fluxo, rode:
+Exemplo fixando manualmente a quantidade de raios, caso o primeiro scan venha ruim:
 
 ```bash
-rviz2 -d $(ros2 pkg prefix caramelo_mapping)/share/caramelo_mapping/rviz/slam.rviz
+ros2 launch caramelo_mapping slam.launch.py fixed_scan_count:=3217
 ```
 
-No RViz, confira:
+Exemplo sem RViz:
 
-- mapa aparecendo em `/map`;
-- laser em `/scan`;
-- TF sem erro;
-- o mapa crescendo enquanto o robo se move.
+```bash
+ros2 launch caramelo_mapping slam.launch.py use_rviz:=false
+```
 
-### 4. Movimente o robo devagar
+### 2. Conferir no RViz
+
+No RViz do SLAM, confira:
+
+- `Fixed Frame`: `map`.
+- Mapa em `/map`.
+- Laser em `/scan_fixed`.
+- Grafo do SLAM em `/slam_toolbox/graph_visualization`.
+- TF sem erro entre `map`, `odom`, `base_footprint` e frame do laser.
+
+Se o mapa so cria o primeiro frame e para, veja se o `/scan_fixed` existe:
+
+```bash
+ros2 topic echo /scan_fixed --once
+```
+
+### 3. Movimentar o Robo
 
 Terminal 2:
 
@@ -91,46 +129,114 @@ Terminal 2:
 ros2 launch caramelo_utils teleop.launch.py
 ```
 
-Use movimentos lentos e suaves. Para mapas melhores:
+Dicas para mapa melhor:
 
-- passe pelas bordas do ambiente;
-- evite girar rapido;
+- ande devagar;
+- evite girar muito rapido;
+- passe pelas paredes e corredores;
 - volte por regioes ja mapeadas para fechar loop;
-- nao empurre o robo manualmente enquanto ele mapeia.
+- evite pessoas passando perto do LiDAR durante o mapeamento;
+- nao empurre o robo manualmente.
 
-### 5. Salve o mapa
+### 4. Salvar o Mapa
 
-Escolha um nome para o mapa. Exemplo: `sala_520`.
+Escolha o nome do mapa. Exemplo: `minha_sala`.
 
 Terminal 3:
 
 ```bash
-mkdir -p src/caramelo_mapping/maps/sala_520
-ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/sala_520/map
+mkdir -p src/caramelo_mapping/maps/minha_sala
+ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/minha_sala/map
 ```
 
-Isso deve criar:
+Isso cria:
 
-- `src/caramelo_mapping/maps/sala_520/map.yaml`
-- `src/caramelo_mapping/maps/sala_520/map.pgm`
+```text
+src/caramelo_mapping/maps/minha_sala/map.yaml
+src/caramelo_mapping/maps/minha_sala/map.pgm
+```
 
-Depois instale o mapa no workspace:
+Depois instale o mapa:
 
 ```bash
 colcon build --packages-select caramelo_mapping
 source install/setup.bash
 ```
 
-## Fluxo 2: Navegar com o Robo
+## Fluxo 2: Mapear com Cartographer
 
-Use este fluxo quando voce ja tem um mapa salvo em `src/caramelo_mapping/maps/<nome_do_mapa>/map.yaml`.
+Use este fluxo quando quiser comparar com o SLAM Toolbox ou quando o ambiente tiver mais objetos dinamicos. O Cartographer usa `/scan` e `/odom` diretamente e publica o mapa via `cartographer_occupancy_grid_node`.
 
-Mapas existentes neste workspace:
+### 1. Iniciar Cartographer
 
-- `small_house`
-- `sala_520`
+Terminal 1:
 
-### 1. Inicie a navegacao completa
+```bash
+ros2 launch caramelo_cartographer cartographer.launch.py
+```
+
+Parametros principais:
+
+- `use_sim_time`: default `false`.
+- `use_rviz`: default `true`.
+- `scan_topic`: default `/scan`.
+- `odom_topic`: default `/odom`.
+- `resolution`: default `0.05`.
+- `publish_period_sec`: default `1.0`.
+- `configuration_basename`: default `turtlebot3_lds_2d.lua`.
+
+Exemplo com mapa publicado a 2 cm por celula:
+
+```bash
+ros2 launch caramelo_cartographer cartographer.launch.py resolution:=0.02
+```
+
+Exemplo usando outro topico de scan:
+
+```bash
+ros2 launch caramelo_cartographer cartographer.launch.py scan_topic:=/scan odom_topic:=/odom
+```
+
+### 2. Movimentar e Salvar
+
+Use o mesmo teleop:
+
+```bash
+ros2 launch caramelo_utils teleop.launch.py
+```
+
+Para salvar o mapa, use o mesmo comando do Nav2:
+
+```bash
+mkdir -p src/caramelo_mapping/maps/minha_sala_cartographer
+ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/minha_sala_cartographer/map
+colcon build --packages-select caramelo_mapping
+source install/setup.bash
+```
+
+## Qual Mapeamento Usar?
+
+Use SLAM Toolbox quando:
+
+- voce quer o fluxo padrao do workspace;
+- quer ver o grafo do SLAM no RViz;
+- quer usar resolucao de 2 cm por padrao;
+- o `/scan_fixed` esta funcionando bem.
+
+Use Cartographer quando:
+
+- voce quer comparar qualidade de mapa;
+- o ambiente tem pessoas ou objetos dinamicos;
+- voce quer testar uma alternativa que atualiza submaps de forma diferente;
+- o SLAM Toolbox estiver sensivel demais ao LiDAR.
+
+Depois de salvar o mapa, a navegacao com Nav2 e a mesma para mapas criados por qualquer uma das duas ferramentas.
+
+## Fluxo 3: Navegar com Nav2
+
+Use este fluxo quando ja existe um mapa salvo em `src/caramelo_mapping/maps/<map_name>/map.yaml`.
+
+### 1. Iniciar Bringup de Navegacao
 
 Terminal 1:
 
@@ -138,78 +244,72 @@ Terminal 1:
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
 ```
 
-Esse launch abre:
+Esse launch sobe:
 
-- localizacao global com AMCL;
+- AMCL;
 - `map_server`;
-- Nav2 (`controller_server`, `planner_server`, `smoother_server`, `bt_navigator`, `behavior_server`);
+- Nav2: `controller_server`, `planner_server`, `smoother_server`, `bt_navigator`, `behavior_server`;
+- relay de `/cmd_vel` para `/mecanum_controller/reference`;
 - RViz.
 
-Parametros uteis:
+Parametros principais:
 
-- `map_name` default: `small_house`
-- `use_sim_time` default: `false`
-- `use_rviz` default: `true`
-- `rviz_config` default: `caramelo_localization/rviz/global_localization.rviz`
+- `map_name`: default `small_house`.
+- `use_sim_time`: default `false`.
+- `use_rviz`: default `true`.
+- `navigation_start_delay`: default `5.0`.
+- `costmap_resolution`: default `map`, usa a resolucao do `map.yaml`.
+- `use_cmd_vel_relay`: default `true`.
+- `cmd_vel_topic`: default `/cmd_vel`.
+- `mecanum_reference_topic`: default `/mecanum_controller/reference`.
 
-Exemplo sem RViz:
+Exemplos:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=small_house
+ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_fei
+```
+
+Sem RViz:
 
 ```bash
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 use_rviz:=false
 ```
 
-### 2. Defina a pose inicial no RViz
+Forcando resolucao do costmap:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=0.05
+```
+
+### 2. Definir Pose Inicial
 
 No RViz:
 
 1. Clique em `2D Pose Estimate`.
-2. Clique no mapa onde o robo esta fisicamente.
-3. Arraste para apontar a orientacao correta do robo.
-4. Confira se a nuvem de particulas fica perto da posicao real.
+2. Clique na posicao real do robo no mapa.
+3. Arraste para apontar a orientacao correta.
+4. Espere as particulas do AMCL ficarem perto do robo.
 
-Se a pose inicial estiver errada, a navegacao vai planejar errado mesmo com o mapa certo.
+Se a pose inicial estiver errada, o Nav2 pode planejar corretamente no mapa, mas o robo vai tentar navegar a partir do lugar errado.
 
-### 3. Envie um objetivo de navegacao
+### 3. Enviar Objetivo
 
-No RViz:
+No RViz voce pode usar:
 
-1. Clique em `2D Goal Pose`.
-2. Clique no destino desejado no mapa.
-3. Arraste para definir a orientacao final.
+- `Nav2 Goal`, recomendado para acionar o `NavigateToPose` do Nav2.
+- `2D Goal Pose`, tambem funciona quando o plugin esta conectado ao Nav2.
 
-O Nav2 deve publicar o plano e comandar o robo ate o destino.
-
-### 4. Acompanhe os topicos principais
-
-Em outro terminal, se quiser diagnosticar:
+Depois de enviar o objetivo, confira:
 
 ```bash
 ros2 topic echo /plan --once
 ros2 topic echo /cmd_vel
-ros2 lifecycle nodes
+ros2 topic echo /mecanum_controller/reference
 ```
-
-Topicos importantes:
-
-- `/map`: mapa carregado;
-- `/particle_cloud`: particulas do AMCL;
-- `/plan`: caminho planejado;
-- `/cmd_vel`: comando de velocidade;
-- `/scan`: leitura do LiDAR.
 
 ## Launches Separados
-
-Somente localizacao com AMCL:
-
-```bash
-ros2 launch caramelo_localization global_localization.launch.py map_name:=sala_520
-```
-
-Somente stack Nav2 sem RViz:
-
-```bash
-ros2 launch caramelo_navigation navigation.launch.py map_name:=sala_520
-```
 
 Somente SLAM Toolbox:
 
@@ -217,10 +317,22 @@ Somente SLAM Toolbox:
 ros2 launch caramelo_mapping slam.launch.py
 ```
 
-Cartographer 2D:
+Somente Cartographer:
 
 ```bash
 ros2 launch caramelo_cartographer cartographer.launch.py
+```
+
+Somente localizacao com AMCL:
+
+```bash
+ros2 launch caramelo_localization global_localization.launch.py map_name:=sala_520
+```
+
+Somente stack Nav2 e localizacao, sem RViz do bringup:
+
+```bash
+ros2 launch caramelo_navigation navigation.launch.py map_name:=sala_520
 ```
 
 Teleop:
@@ -229,50 +341,61 @@ Teleop:
 ros2 launch caramelo_utils teleop.launch.py
 ```
 
-## Dicas de Problemas Comuns
+## Problemas Comuns
 
-Se o mapa nao aparece:
+### O mapa nao aparece no RViz
 
 ```bash
 ros2 topic echo /map --once
 ```
 
-Se o robo nao localiza:
+Se nao chegar nada, veja se o SLAM, Cartographer ou `map_server` esta ativo.
+
+### O SLAM Toolbox mapeia so o primeiro frame
+
+Confira se o normalizador esta publicando:
 
 ```bash
-ros2 topic echo /particle_cloud --once
-ros2 run tf2_tools view_frames
+ros2 topic echo /scan_fixed --once
 ```
 
-Se o robo planeja mas nao anda:
+Se `/scan_fixed` nao existir, rode o SLAM com:
+
+```bash
+ros2 launch caramelo_mapping slam.launch.py use_scan_normalizer:=true
+```
+
+Se ainda falhar, fixe a quantidade de raios observada no log:
+
+```bash
+ros2 launch caramelo_mapping slam.launch.py fixed_scan_count:=3217
+```
+
+### O robo planeja mas nao anda
 
 ```bash
 ros2 topic echo /cmd_vel
+ros2 topic echo /mecanum_controller/reference
 ros2 topic echo /odom --once
 ```
 
-Se o mapa salvo nao carrega:
+Se `/cmd_vel` existe mas `/mecanum_controller/reference` nao muda, confira `use_cmd_vel_relay:=true` no bringup.
 
-- confira se existe `src/caramelo_mapping/maps/<map_name>/map.yaml`;
-- rode `colcon build --packages-select caramelo_mapping`;
-- rode `source install/setup.bash`;
-- chame o launch com `map_name:=<map_name>`.
+### O robo acha que chegou sem se mover
 
-## Exemplo Completo
-
-Mapear uma sala chamada `lab_novo`:
+Normalmente e problema de tempo ou TF. Confira:
 
 ```bash
-ros2 launch caramelo_mapping slam.launch.py
-ros2 launch caramelo_utils teleop.launch.py
-mkdir -p src/caramelo_mapping/maps/lab_novo
-ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/lab_novo/map
-colcon build --packages-select caramelo_mapping
-source install/setup.bash
+ros2 run tf2_ros tf2_echo map odom
+ros2 run tf2_ros tf2_echo odom base_footprint
+ros2 topic echo /odom --once
 ```
 
-Navegar usando esse mapa:
+### O mapa salvo nao carrega
 
-```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=lab_novo
-```
+Confira:
+
+- existe `src/caramelo_mapping/maps/<map_name>/map.yaml`;
+- o pacote foi rebuildado depois de criar o mapa;
+- voce rodou `source install/setup.bash`;
+- o launch foi chamado com `map_name:=<map_name>`.

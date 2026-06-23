@@ -16,6 +16,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   ${PROJECT_NAME}/mapping_with_known_poses.py
+  ${PROJECT_NAME}/scan_normalizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
