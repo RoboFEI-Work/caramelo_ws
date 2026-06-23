@@ -10,6 +10,7 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     slam_config = LaunchConfiguration("slam_config")
+    map_resolution = LaunchConfiguration("map_resolution")
 
     ros_distro = os.environ["ROS_DISTRO"]
     lifecycle_nodes = ["map_saver_server", "slam_toolbox"]
@@ -18,6 +19,12 @@ def generate_launch_description():
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false"
+    )
+
+    map_resolution_arg = DeclareLaunchArgument(
+        "map_resolution",
+        default_value="0.20",
+        description="Default SLAM map resolution in meters/cell"
     )
 
     slam_config_arg = DeclareLaunchArgument(
@@ -50,6 +57,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             slam_config,
+            {"resolution": map_resolution},
             {"use_sim_time": use_sim_time},
         ],
     )
@@ -68,6 +76,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time_arg,
+        map_resolution_arg,
         slam_config_arg,
         nav2_map_saver,
         slam_toolbox,

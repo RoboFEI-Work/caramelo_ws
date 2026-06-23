@@ -92,7 +92,7 @@ class MappingWithKnownPoses(Node):
         super().__init__(name)
         self.declare_parameter("width", 50.0)
         self.declare_parameter("height", 50.0)
-        self.declare_parameter("resolution", 0.1)
+        self.declare_parameter("resolution", 0.2)
 
         width = self.get_parameter("width").value
         height = self.get_parameter("height").value

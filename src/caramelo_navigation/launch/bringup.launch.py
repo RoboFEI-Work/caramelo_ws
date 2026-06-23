@@ -15,6 +15,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
+    costmap_resolution = LaunchConfiguration("costmap_resolution")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
@@ -53,6 +54,11 @@ def generate_launch_description():
             description="Seconds to wait before starting Nav2 after localization starts",
         ),
         DeclareLaunchArgument(
+            "costmap_resolution",
+            default_value="map",
+            description="Use map.yaml resolution for costmaps, or pass a numeric resolution",
+        ),
+        DeclareLaunchArgument(
             "use_cmd_vel_relay",
             default_value="true",
             description="Convert Nav2 cmd_vel Twist into mecanum_controller TwistStamped reference",
@@ -78,6 +84,7 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
                 "map_name": map_name,
                 "navigation_start_delay": navigation_start_delay,
+                "costmap_resolution": costmap_resolution,
                 "use_cmd_vel_relay": use_cmd_vel_relay,
                 "cmd_vel_topic": cmd_vel_topic,
                 "mecanum_reference_topic": mecanum_reference_topic,

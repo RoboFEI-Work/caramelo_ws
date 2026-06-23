@@ -17,6 +17,7 @@ controller_server:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
       movement_time_allowance: 10.0
+      
     # Goal checker parameters
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -68,7 +69,7 @@ controller_server:
       interpolate_curvature_after_goal: false
       cost_scaling_dist: 0.3
       cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 4.0
+      inflation_cost_scaling_factor: 8.0
 
 local_costmap:
   local_costmap:
@@ -81,12 +82,12 @@ local_costmap:
       rolling_window: true
       width: 3
       height: 3
-      resolution: 0.05
+      resolution: 0.20
       footprint: "[[0.355, 0.235], [0.355, -0.235], [-0.355, -0.235], [-0.355, 0.235]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
+        cost_scaling_factor: 8.0
         inflation_radius: 0.45
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
