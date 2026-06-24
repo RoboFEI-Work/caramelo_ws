@@ -258,7 +258,7 @@ Parametros principais:
 - `use_sim_time`: default `false`.
 - `use_rviz`: default `true`.
 - `navigation_start_delay`: default `5.0`.
-- `costmap_resolution`: default `map`, usa a resolucao do `map.yaml`.
+- `costmap_resolution`: default `0.02`, usa 2 cm por celula. Passe `map` para usar a resolucao do `map.yaml`.
 - `use_cmd_vel_relay`: default `true`.
 - `cmd_vel_topic`: default `/cmd_vel`.
 - `mecanum_reference_topic`: default `/mecanum_controller/reference`.
@@ -277,10 +277,10 @@ Sem RViz:
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 use_rviz:=false
 ```
 
-Forcando resolucao do costmap:
+Usando a resolucao armazenada no mapa:
 
 ```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=0.05
+ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=map
 ```
 
 ### 2. Definir Pose Inicial

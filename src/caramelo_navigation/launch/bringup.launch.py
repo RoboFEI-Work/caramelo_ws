@@ -55,8 +55,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "costmap_resolution",
-            default_value="map",
-            description="Use map.yaml resolution for costmaps, or pass a numeric resolution",
+            default_value="0.02",
+            description="Costmap resolution in meters/cell. Pass 'map' to use map.yaml resolution",
         ),
         DeclareLaunchArgument(
             "use_cmd_vel_relay",
