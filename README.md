@@ -283,6 +283,51 @@ Usando a resolucao armazenada no mapa:
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=map
 ```
 
+### Nota Tecnica: Inflacao Curta
+
+O Caramelo usa propositalmente uma inflacao curta para manter a zona critica
+visual grudada nos obstaculos:
+
+```yaml
+inflation_radius: 0.245
+cost_scaling_factor: 30.0
+```
+
+Com o footprint atual, o raio circunscrito e aproximadamente `0.426 m`.
+Por isso, Smac e MPPI exibem um warning informando que a inflacao e menor que
+o recomendado para otimizar a verificacao de colisao. O warning e esperado
+nesta configuracao: a verificacao continua usando o footprint real, mas pode
+consumir mais CPU durante planejamento e controle.
+
+Esta escolha foi feita para evitar uma faixa azul ampla no RViz e permitir
+passagens mais justas. Considere reverter se aparecerem timeouts de planejamento,
+quedas frequentes na taxa do controller, alto uso de CPU ou navegacao lenta em
+corredores estreitos.
+
+Para voltar ao perfil mais conservador, ajuste `controller_server.yaml`,
+`planner_server.yaml` e `costmap.yaml` para:
+
+```yaml
+inflation_radius: 0.44
+cost_scaling_factor: 12.0
+```
+
+No bloco `FollowPath` de `controller_server.yaml`, mantenha os parametros
+coerentes com a inflacao revertida:
+
+```yaml
+cost_scaling_dist: 0.44
+inflation_cost_scaling_factor: 12.0
+```
+
+Depois de qualquer mudanca, recompile e reinicie o bringup:
+
+```bash
+colcon build --packages-select caramelo_navigation
+source install/setup.bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
+```
+
 ### 2. Definir Pose Inicial
 
 No RViz:

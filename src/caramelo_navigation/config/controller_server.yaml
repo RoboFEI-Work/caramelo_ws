@@ -2,74 +2,172 @@ controller_server:
   ros__parameters:
     use_sim_time: false
     enable_stamped_cmd_vel: false
-    controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.5
-    min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    controller_frequency: 20.0 # Frequencia de controle em Hz.
+    min_x_velocity_threshold: 0.001 # Ignora ruido muito pequeno em vx.
+    min_y_velocity_threshold: 0.001 # Permite comando lateral do mecanum.
+    min_theta_velocity_threshold: 0.001 # Ignora ruido muito pequeno em wz.
+    failure_tolerance: 0.3 # Tempo maximo de falha antes de abortar.
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    controller_plugins: ["FollowPath", "DWBHolonomic", "MPPIHolonomic"] # IDs de controladores disponiveis.
     odom_topic: /odom
 
-    # Progress checker parameters
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
-      
-    # Goal checker parameters
-    general_goal_checker:
-      plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.05
-      stateful: True
-    
-    # PD Motion Planner parameters
-    # FollowPath:
-    #   plugin: "bumperbot_motion::PDMotionPlanner"
-    #   kp: 2.0
-    #   kd: 0.1
-    #   max_linear_velocity: 0.3
-    #   max_angular_velocity: 1.0
-    #   step_size: 0.1
+      plugin: "nav2_controller::SimpleProgressChecker" # Verifica se o robo continua avancando.
+      required_movement_radius: 0.5 # Deslocamento minimo para considerar progresso.
+      movement_time_allowance: 10.0 # Tempo maximo sem progresso.
 
-    # Pure Pursuit parameters
-    # PurePursuit:
-    #   plugin: "bumperbot_motion::PurePursuit"
-    #   look_ahead_distance: 0.5
-    #   max_linear_velocity: 0.3
-    #   max_angular_velocity: 1.0
-    
-    # RPP parameters
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
+      xy_goal_tolerance: 0.05 # Erro linear aceito no goal.
+      yaw_goal_tolerance: 0.05 # Erro angular aceito no goal.
+      stateful: true # Mantem a posicao concluida enquanto alinha yaw.
+
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.2
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.8
-      transform_tolerance: 0.2
-      use_velocity_scaled_lookahead_dist: false
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 1.0
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.05
-      use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 1.0
-      use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 3.2
-      max_robot_pose_search_dist: 10.0
-      interpolate_curvature_after_goal: false
-      cost_scaling_dist: 0.01
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 30.0
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController" # Controlador padrao atual.
+      desired_linear_vel: 0.2 # Velocidade linear maxima em m/s.
+      lookahead_dist: 0.6 # Distancia base do ponto de perseguicao.
+      min_lookahead_dist: 0.3 # Menor lookahead permitido.
+      max_lookahead_dist: 0.9 # Maior lookahead permitido.
+      lookahead_time: 1.5 # Tempo usado no lookahead por velocidade.
+      rotate_to_heading_angular_vel: 1.8 # Velocidade de giro para alinhar ao path.
+      transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
+      use_velocity_scaled_lookahead_dist: false # Mantem lookahead fixo.
+      min_approach_linear_velocity: 0.05 # Velocidade minima ao aproximar do goal.
+      approach_velocity_scaling_dist: 1.0 # Distancia onde reduz velocidade no goal.
+      use_collision_detection: true # Verifica colisao ate o ponto de perseguicao.
+      max_allowed_time_to_collision_up_to_carrot: 1.0 # Horizonte de colisao em segundos.
+      use_regulated_linear_velocity_scaling: true # Reduz velocidade em curvas.
+      use_cost_regulated_linear_velocity_scaling: true # Reduz velocidade perto de custos altos.
+      regulated_linear_scaling_min_radius: 0.9 # Raio de curva que inicia reducao.
+      regulated_linear_scaling_min_speed: 0.05 # Menor velocidade em curva.
+      use_fixed_curvature_lookahead: false # Usa o lookahead normal para curvatura.
+      curvature_lookahead_dist: 1.0 # Distancia usada se o lookahead fixo for ativado.
+      use_rotate_to_heading: true # Gira antes de seguir caminhos com angulo alto.
+      rotate_to_heading_min_angle: 0.785 # Angulo minimo para girar no lugar.
+      max_angular_accel: 3.2 # Aceleracao angular maxima.
+      max_robot_pose_search_dist: 10.0 # Trecho maximo do path procurado perto do robo.
+      interpolate_curvature_after_goal: false # Nao interpola curvatura depois do goal.
+      cost_scaling_dist: 0.01 # So reduz por custo muito perto do obstaculo.
+      cost_scaling_gain: 1.0 # Ganho da reducao por custo.
+      inflation_cost_scaling_factor: 30.0 # Deve acompanhar a inflation layer.
+
+    DWBHolonomic:
+      plugin: "dwb_core::DWBLocalPlanner" # Controlador por amostragem para mecanum.
+      debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
+      min_vel_x: -0.2 # Velocidade minima em x.
+      max_vel_x: 0.2 # Velocidade maxima em x.
+      min_vel_y: -0.2 # Velocidade minima lateral.
+      max_vel_y: 0.2 # Velocidade maxima lateral.
+      max_vel_theta: 1.0 # Velocidade angular maxima.
+      min_speed_xy: 0.0 # Menor modulo de velocidade linear.
+      max_speed_xy: 0.2 # Limite do modulo da velocidade linear.
+      min_speed_theta: 0.0 # Menor velocidade angular.
+      acc_lim_x: 0.5 # Aceleracao maxima em x.
+      decel_lim_x: -0.5 # Desaceleracao maxima em x.
+      acc_lim_y: 0.5 # Aceleracao maxima lateral.
+      decel_lim_y: -0.5 # Desaceleracao maxima lateral.
+      acc_lim_theta: 1.5 # Aceleracao angular maxima.
+      decel_lim_theta: -1.5 # Desaceleracao angular maxima.
+      vx_samples: 20 # Amostras de velocidade em x.
+      vy_samples: 20 # Amostras de velocidade lateral.
+      vtheta_samples: 20 # Amostras de velocidade angular.
+      sim_time: 1.7 # Horizonte de simulacao em segundos.
+      linear_granularity: 0.05 # Passo linear da simulacao.
+      angular_granularity: 0.025 # Passo angular da simulacao.
+      transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
+      xy_goal_tolerance: 0.05 # Erro linear aceito no goal.
+      trans_stopped_velocity: 0.05 # Velocidade considerada como parado.
+      short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
+      stateful: true # Mantem estado ao aproximar do goal.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] # Criticos usados para pontuar trajetorias.
+      BaseObstacle.scale: 0.02 # Peso para custo de obstaculos.
+      PathAlign.scale: 24.0 # Peso para alinhar ao path global.
+      PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
+      GoalAlign.scale: 18.0 # Peso para alinhar ao goal.
+      GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
+      PathDist.scale: 24.0 # Peso para manter proximo ao path.
+      GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal.
+      RotateToGoal.scale: 24.0 # Peso para alinhar orientacao final.
+      RotateToGoal.slowing_factor: 5.0 # Reducao linear antes do giro final.
+      RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
+
+    MPPIHolonomic:
+      plugin: "nav2_mppi_controller::MPPIController" # Controlador preditivo para mecanum.
+      time_steps: 56 # Pontos avaliados em cada trajetoria.
+      model_dt: 0.05 # Intervalo entre pontos em segundos.
+      batch_size: 2000 # Quantidade de trajetorias amostradas.
+      iteration_count: 1 # Iteracoes de otimizacao por ciclo.
+      vx_std: 0.1 # Ruido de amostragem em vx.
+      vy_std: 0.1 # Ruido de amostragem em vy.
+      wz_std: 0.2 # Ruido de amostragem em wz.
+      vx_max: 0.2 # Velocidade maxima em x.
+      vx_min: -0.2 # Velocidade minima em x.
+      vy_max: 0.2 # Velocidade maxima lateral.
+      wz_max: 1.0 # Velocidade angular maxima.
+      ax_max: 0.5 # Aceleracao maxima em x.
+      ax_min: -0.5 # Desaceleracao maxima em x.
+      ay_max: 0.5 # Aceleracao maxima lateral.
+      ay_min: -0.5 # Desaceleracao maxima lateral.
+      az_max: 1.5 # Aceleracao angular maxima.
+      prune_distance: 1.7 # Remove trecho distante atras do robo.
+      transform_tolerance: 0.1 # Atraso de TF aceito em segundos.
+      temperature: 0.3 # Explora trajetorias menos provaveis.
+      gamma: 0.015 # Peso do esforco de controle.
+      motion_model: "Omni" # Modelo holonomico para base mecanum.
+      visualize: true # Publica trajetorias avaliadas para o RViz.
+      regenerate_noises: false # Reutiliza ruido para reduzir custo de CPU.
+      TrajectoryVisualizer:
+        trajectory_step: 5 # Mostra uma a cada cinco trajetorias.
+        time_step: 3 # Mostra um a cada tres passos temporais.
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic"] # Criticos usados para avaliar trajetorias.
+      ConstraintCritic:
+        enabled: true # Penaliza comandos fora dos limites.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 4.0 # Peso do limite cinematico.
+      CostCritic:
+        enabled: true # Penaliza proximidade de obstaculos.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 3.81 # Peso do custo do costmap.
+        near_collision_cost: 253 # Custo que indica quase colisao.
+        critical_cost: 300.0 # Custo critico da trajetoria.
+        consider_footprint: true # Usa o footprint retangular na colisao.
+        collision_cost: 1000000.0 # Penalidade para colisao.
+        near_goal_distance: 1.0 # Distancia onde reduz esse custo perto do goal.
+        trajectory_point_step: 2 # Intervalo de pontos verificados no costmap.
+      GoalCritic:
+        enabled: true # Penaliza distancia restante ao goal.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 5.0 # Peso da distancia ate o goal.
+        threshold_to_consider: 1.4 # Ativa dentro desta distancia do goal.
+      GoalAngleCritic:
+        enabled: true # Penaliza erro de orientacao final.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 3.0 # Peso da orientacao final.
+        threshold_to_consider: 0.5 # Ativa perto do goal.
+      PathAlignCritic:
+        enabled: true # Mantem a trajetoria alinhada ao path.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 14.0 # Peso do alinhamento.
+        max_path_occupancy_ratio: 0.05 # Rejeita path quase todo ocupado.
+        trajectory_point_step: 4 # Intervalo de pontos avaliados.
+        threshold_to_consider: 0.5 # Ativa quando perto do path.
+        offset_from_furthest: 20 # Ponto do path usado como referencia.
+        use_path_orientations: false # Nao exige orientacao do path global.
+      PathFollowCritic:
+        enabled: true # Incentiva progresso pelo path.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 5.0 # Peso do progresso.
+        offset_from_furthest: 5 # Ponto futuro usado como referencia.
+        threshold_to_consider: 1.4 # Ativa longe do goal.
+      PathAngleCritic:
+        enabled: true # Penaliza angulo ruim em relacao ao path.
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 2.0 # Peso do angulo do path.
+        offset_from_furthest: 4 # Ponto futuro usado para calcular angulo.
+        threshold_to_consider: 0.5 # Ativa longe do goal.
+        max_angle_to_furthest: 1.0 # Maior angulo aceito ate o ponto futuro.
+        mode: 0 # Usa o modo padrao de angulo do path.
 
 local_costmap:
   local_costmap:
@@ -95,16 +193,16 @@ local_costmap:
         inflate_around_unknown: false
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: True
+        enabled: true
         observation_sources: scan
         scan:
           topic: /scan
           max_obstacle_height: 2.0
-          clearing: True
-          marking: True
+          clearing: true
+          marking: true
           data_type: "LaserScan"
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
-      always_send_full_costmap: True
+      always_send_full_costmap: true

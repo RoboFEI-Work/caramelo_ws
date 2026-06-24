@@ -2,37 +2,70 @@ planner_server:
   ros__parameters:
     expected_planner_frequency: 1.0
     use_sim_time: false
-    planner_plugins: ["GridBased"]
 
-    # Dijkstra Planner parameters
+    # IDs de planners disponiveis para selecao pelo BT/RViz.
+    planner_plugins: ["GridBased", "ThetaStar"]
+
+    # Exemplo desativado de planner Dijkstra.
     # GridBased:
     #   plugin: "bumperbot_planning::DijkstraPlanner"
 
-    # A* Planner parameters
+    # Exemplo desativado de planner A*.
     # GridBasedFast:
     #   plugin: "bumperbot_planning::AStarPlanner"
 
-    # D* Planner parameters
+    # Exemplo desativado de planner D*.
     # GRidBased:
     #   plugin: ""
 
-    # Smac 2D parameters
+    # ============================================================
+    # Smac State Lattice Planner - HOLONOMICO / MECANUM
+    # ============================================================
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlanner2D"  # In Iron and older versions, "/" was used instead of "::"
-      tolerance: 0.125                            # tolerance for planning if unable to reach exact pose, in meters
-      downsample_costmap: false                   # whether or not to downsample the map
-      downsampling_factor: 1                      # multiplier for the resolution of the costmap layer (e.g. 2 on a 5cm costmap would be 10cm)
-      allow_unknown: true                         # allow traveling in unknown space
-      max_iterations: 1000000                     # maximum total iterations to search for before failing (in case unreachable), set to -1 to disable
-      max_on_approach_iterations: 1000            # maximum number of iterations to attempt to reach goal once in tolerance
-      max_planning_time: 2.0                      # max time in s for planner to plan, smooth
-      cost_travel_multiplier: 2.0                 # Cost multiplier to apply to search to steer away from high cost areas. Larger values will place in the center of aisles more exactly (if non-`FREE` cost potential field exists) but take slightly longer to compute. To optimize for speed, a value of 1.0 is reasonable. A reasonable tradeoff value is 2.0. A value of 0.0 effective disables steering away from obstacles and acts like a naive binary search A*.
-      use_final_approach_orientation: false       # Whether to set the final path pose at the goal's orientation to the requested orientation (false) or in line with the approach angle so the robot doesn't rotate to heading (true)
+      plugin: "nav2_smac_planner::SmacPlannerLattice" # Plugin Lattice; em Iron ou anterior use "/".
+      allow_unknown: true                 # Permite planejar por espaco desconhecido.
+      tolerance: 0.25                     # Tolerancia de distancia se nao alcancar o goal exato.
+      max_iterations: 1000000             # Maximo de iteracoes antes de falhar.
+      max_on_approach_iterations: 1000    # Tentativas extras quando ja esta perto do goal.
+      max_planning_time: 5.0              # Tempo maximo para planejar e suavizar em segundos.
+      analytic_expansion_ratio: 3.5       # Frequencia das expansoes analiticas na aproximacao final.
+      analytic_expansion_max_length: 3.0  # Comprimento maximo permitido na expansao analitica.
+      analytic_expansion_max_cost: 200.0  # Maior custo aceito em uma expansao analitica.
+      analytic_expansion_max_cost_override: false # Permite ignorar o custo maximo perto do goal.
+      downsample_obstacle_heuristic: true # Acelera a heuristica com pequena perda de qualidade.
+      use_quadratic_cost_penalty: false   # Usa penalidade de custo linear, nao quadratica.
+      reverse_penalty: 2.0                # Penalidade para primitivas em re; deve ser >= 1.
+      change_penalty: 0.05                # Penalidade para trocar a direcao do movimento.
+      non_straight_penalty: 1.05          # Penalidade para primitivas nao retas; deve ser >= 1.
+      cost_penalty: 2.0                   # Evita custos altos e favorece o centro dos corredores.
+      rotation_penalty: 5.0               # Penaliza giro no lugar quando a primitive permite.
+      retrospective_penalty: 0.015        # Prefere manobras tardias para reduzir a busca.
+      lattice_filepath: "/opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json" # Primitivas omni compativeis com o mapa estatico de 5 cm.
+      lookup_table_size: 20.0             # Janela em metros da tabela de distancias em cache.
+      cache_obstacle_heuristic: false     # Reutiliza heuristica de obstaculos entre replans do mesmo goal.
+      allow_reverse_expansion: false      # Habilita expansao reversa espelhada das primitivas.
+      coarse_search_resolution: 1         # Numero de bins pulados na busca de orientacao final.
+      goal_heading_mode: "DEFAULT"        # DEFAULT, BIDIRECTIONAL ou ALL_DIRECTION.
+      smooth_path: true                   # Executa o smoother interno do State Lattice.
       smoother:
-        max_iterations: 1000
-        w_smooth: 0.3
-        w_data: 0.2
-        tolerance: 1.0e-10
+        max_iterations: 1000              # Maximo de iteracoes do smoother interno.
+        w_smooth: 0.3                     # Peso que deixa o caminho mais suave.
+        w_data: 0.2                       # Peso que mantem o caminho original.
+        tolerance: 1.0e-10                # Tolerancia de convergencia do smoother.
+        do_refinement: true               # Refina o caminho depois da primeira suavizacao.
+        refinement_num: 2                 # Numero de passagens extras de refinamento.
+
+    # ============================================================
+    # Theta Star Planner - holonomico em grade 2D
+    # ============================================================
+    ThetaStar:
+      plugin: "nav2_theta_star_planner::ThetaStarPlanner" # Planner 2D de segmentos em qualquer angulo.
+      how_many_corners: 8                 # Usa conectividade de oito vizinhos na grade.
+      w_euc_cost: 1.0                     # Peso aplicado ao comprimento euclidiano do caminho.
+      w_traversal_cost: 2.0               # Penalidade para atravessar celulas mais caras.
+      allow_unknown: true                 # Permite planejar por espaco desconhecido.
+      terminal_checking_interval: 5000    # Iteracoes entre checagens de cancelamento ou timeout.
+      # ThetaStar no Nav2 Jazzy nao possui o parametro w_heuristic_cost.
 
 global_costmap:
   global_costmap:
