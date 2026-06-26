@@ -13,6 +13,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     map_name = LaunchConfiguration("map_name")
     use_rviz = LaunchConfiguration("use_rviz")
+    use_docking = LaunchConfiguration("use_docking")
     rviz_config = LaunchConfiguration("rviz_config")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
     costmap_resolution = LaunchConfiguration("costmap_resolution")
@@ -49,6 +50,11 @@ def generate_launch_description():
             description="Open RViz automatically",
         ),
         DeclareLaunchArgument(
+            "use_docking",
+            default_value="false",
+            description="Start Nav2 Docking Server using this map folder",
+        ),
+        DeclareLaunchArgument(
             "navigation_start_delay",
             default_value="5.0",
             description="Seconds to wait before starting Nav2 after localization starts",
@@ -83,6 +89,7 @@ def generate_launch_description():
             launch_arguments={
                 "use_sim_time": use_sim_time,
                 "map_name": map_name,
+                "use_docking": use_docking,
                 "navigation_start_delay": navigation_start_delay,
                 "costmap_resolution": costmap_resolution,
                 "use_cmd_vel_relay": use_cmd_vel_relay,

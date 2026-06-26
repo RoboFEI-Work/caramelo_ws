@@ -7,6 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -65,12 +66,15 @@ def _make_costmap_resolution_params(resolution):
 def _create_navigation_stack(context, *args, **kwargs):
     use_sim_time = LaunchConfiguration("use_sim_time")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
+    use_docking = LaunchConfiguration("use_docking")
+    map_name = LaunchConfiguration("map_name")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
 
     lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator", "behavior_server"]
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
+    docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
     costmap_resolution = _resolve_costmap_resolution(context)
     costmap_resolution_params = _make_costmap_resolution_params(costmap_resolution)
 
@@ -156,6 +160,17 @@ def _create_navigation_stack(context, *args, **kwargs):
         condition=IfCondition(use_cmd_vel_relay),
     )
 
+    docking_server = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(docking_launch),
+        launch_arguments={
+            "map_name": map_name,
+            "use_sim_time": use_sim_time,
+            "base_frame": "base_footprint",
+            "fixed_frame": "odom",
+        }.items(),
+        condition=IfCondition(use_docking),
+    )
+
     delayed_navigation = TimerAction(
         period=navigation_start_delay,
         actions=[
@@ -166,6 +181,7 @@ def _create_navigation_stack(context, *args, **kwargs):
             nav2_behaviors,
             nav2_bt_navigator,
             nav2_lifecycle_manager,
+            docking_server,
         ],
     )
 
@@ -180,10 +196,12 @@ def generate_launch_description():
     map_name = LaunchConfiguration("map_name")
 
     localization = IncludeLaunchDescription(
-        os.path.join(
-            get_package_share_directory("caramelo_localization"),
-            "launch",
-            "global_localization.launch.py",
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("caramelo_localization"),
+                "launch",
+                "global_localization.launch.py",
+            )
         ),
         launch_arguments={
             "use_sim_time": use_sim_time,
@@ -205,6 +223,11 @@ def generate_launch_description():
             "costmap_resolution",
             default_value="0.02",
             description="Costmap resolution in meters/cell. Pass 'map' to use map.yaml resolution",
+        ),
+        DeclareLaunchArgument(
+            "use_docking",
+            default_value="false",
+            description="Start Nav2 Docking Server using this map folder",
         ),
         DeclareLaunchArgument(
             "navigation_start_delay",

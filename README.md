@@ -87,6 +87,7 @@ Parametros principais:
 - `use_sim_time`: default `false`.
 - `map_resolution`: default `0.02`, ou seja, 2 cm por celula.
 - `use_rviz`: default `true`.
+- `use_docking`: default `false`, sobe o Nav2 Docking Server usando o `docking.yaml` do mapa.
 - `scan_topic`: default `/scan`, topico bruto vindo da Raspberry.
 - `slam_scan_topic`: default `/scan_fixed`, topico usado pelo SLAM Toolbox.
 - `use_scan_normalizer`: default `true`.
@@ -353,6 +354,204 @@ ros2 topic echo /plan --once
 ros2 topic echo /cmd_vel
 ros2 topic echo /mecanum_controller/reference
 ```
+
+## Fluxo 4: Docking nas Workstations da Competicao
+
+Use este fluxo para configurar pontos de parada de frente nas Service Areas da RoboCup@Work e depois mandar o robo dockar usando apenas o ID oficial da area.
+
+O banco de docking fica dentro da pasta de cada mapa:
+
+```text
+src/caramelo_mapping/maps/<map_name>/
+  map.yaml
+  map.pgm
+  docking.yaml
+  service_areas.yaml
+```
+
+IDs aceitos pelo projeto:
+
+- `START` e `FINISH`;
+- `WS1`, `WS2`, `WS3`... para Workstations;
+- `SH1`, `SH2`... para Shelves;
+- `PP1`, `PP2`... para Precise Placement;
+- `RT1`, `RT2`... para Rotating Tables.
+
+Nao use `workstation_01` ou nomes parecidos como ID principal. Use a nomenclatura do rulebook.
+
+### 1. Inicializar o mapa para docking
+
+Rode uma vez por mapa:
+
+```bash
+ros2 run caramelo_navigation init_map_docking --map-name sala_520
+```
+
+Isso cria, se ainda nao existirem:
+
+- `src/caramelo_mapping/maps/sala_520/docking.yaml`;
+- `src/caramelo_mapping/maps/sala_520/service_areas.yaml`.
+
+Tambem existe inicializacao automatica: se voce subir o Docking Server com um mapa que ja tem `map.yaml`, mas ainda nao tem `docking.yaml`, o launch cria os dois arquivos iniciais automaticamente:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=meu_mapa use_docking:=true
+```
+
+Mesmo assim, para conferir e ajustar os nomes antes da competicao, eu recomendo rodar:
+
+```bash
+ros2 run caramelo_navigation list_docks --map-name meu_mapa
+```
+
+### 2. Subir Nav2 com Docking Server
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py \
+  map_name:=sala_520 \
+  use_docking:=true
+```
+
+Se quiser subir somente o Docking Server, sem abrir outro Nav2:
+
+```bash
+ros2 launch caramelo_navigation docking_server.launch.py map_name:=sala_520
+```
+
+### 3. Salvar a pose final de uma Workstation
+
+Coloque o robo parado de frente para a workstation, exatamente na pose final desejada. Depois rode:
+
+```bash
+ros2 run caramelo_navigation save_dock_pose \
+  --map-name sala_520 \
+  --dock-id WS1 \
+  --dock-type caramelo_front_dock \
+  --update-service-area \
+  --kind WS
+```
+
+Exemplos para outros tipos:
+
+```bash
+ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id SH1 --dock-type caramelo_shelf_front_dock --update-service-area --kind SH
+ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id PP1 --dock-type caramelo_precision_front_dock --update-service-area --kind PP --precision high
+ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id RT1 --dock-type caramelo_precision_front_dock --update-service-area --kind RT --diameter 0.60 --precision high
+```
+
+O script busca a TF `map -> base_link`. Se `base_link` falhar, tenta `base_footprint`. Antes de atualizar `docking.yaml`, ele cria `docking.yaml.bak`.
+
+### 4. Salvar pose por topico
+
+Terminal 1:
+
+```bash
+ros2 run caramelo_navigation dock_pose_recorder_node --ros-args -p map_name:=sala_520
+```
+
+Terminal 2:
+
+```bash
+ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'WS1'}"
+```
+
+Tambem pode informar o tipo no topico:
+
+```bash
+ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'SH1:caramelo_shelf_front_dock'}"
+```
+
+### 5. Conferir docks salvos
+
+```bash
+ros2 run caramelo_navigation list_docks --map-name sala_520
+```
+
+### 6. Mandar dockar por ID
+
+Com o Nav2 e o Docking Server ativos:
+
+```bash
+ros2 run caramelo_navigation dock_to --dock-id WS1
+```
+
+Com validacao no banco do mapa:
+
+```bash
+ros2 run caramelo_navigation dock_to --map-name sala_520 --dock-id WS1
+```
+
+Se o robo ja estiver perto da staging pose:
+
+```bash
+ros2 run caramelo_navigation dock_to --dock-id WS1 --no-nav-to-staging
+```
+
+O comportamento esperado e: o Nav2 navega ate a staging pose e o Docking Server faz a aproximacao final de frente, devagar.
+
+### 7. Navegar entre docks salvos
+
+Depois que voce salvou `WS1`, `WS2`, `SH1`, `PP1` etc., navegar entre elas vira uma sequencia de comandos por ID.
+
+Se o robo esta livre no meio da arena, basta mandar o proximo dock:
+
+```bash
+ros2 run caramelo_navigation dock_to --map-name sala_520 --dock-id WS1
+ros2 run caramelo_navigation dock_to --map-name sala_520 --dock-id WS2
+ros2 run caramelo_navigation dock_to --map-name sala_520 --dock-id SH1
+```
+
+Se o robo esta encostado/dockado em uma workstation, primeiro afaste ele da dock atual e depois mande a proxima:
+
+```bash
+ros2 run caramelo_navigation undock --dock-type caramelo_front_dock
+ros2 run caramelo_navigation dock_to --map-name sala_520 --dock-id WS2
+```
+
+Para shelf ou precise placement, use o tipo correspondente no `undock` quando precisar:
+
+```bash
+ros2 run caramelo_navigation undock --dock-type caramelo_shelf_front_dock
+ros2 run caramelo_navigation undock --dock-type caramelo_precision_front_dock
+```
+
+Dica pratica para competicao: salve todas as poses finais com `save_dock_pose`, confira com `list_docks`, suba o bringup com `use_docking:=true`, e durante a prova chame apenas `dock_to --dock-id <AREA>`.
+
+
+### Mapa novo: fluxo mais automatico
+
+Depois de salvar um mapa novo em `src/caramelo_mapping/maps/meu_mapa/map.yaml`, faca:
+
+```bash
+colcon build --packages-select caramelo_mapping caramelo_navigation
+source install/setup.bash
+ros2 run caramelo_navigation init_map_docking --map-name meu_mapa
+ros2 run caramelo_navigation list_docks --map-name meu_mapa
+```
+
+Ou deixe o launch criar os arquivos iniciais automaticamente:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=meu_mapa use_docking:=true
+```
+
+Depois, posicione o robo na frente de cada Service Area e salve as poses reais:
+
+```bash
+ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id WS1 --dock-type caramelo_front_dock --update-service-area --kind WS
+ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id WS2 --dock-type caramelo_front_dock --update-service-area --kind WS
+ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id FINISH --dock-type caramelo_front_dock --update-service-area --kind FINISH
+```
+
+Os arquivos ficam junto do mapa, entao cada arena tem seu proprio banco de docks.
+
+Parametros de seguranca usados no Docking Server:
+
+- `v_linear_min: 0.03`;
+- `v_linear_max: 0.10`;
+- `v_angular_max: 0.30`;
+- `slowdown_radius: 0.35`;
+- `use_collision_detection: true`.
 
 ## Launches Separados
 

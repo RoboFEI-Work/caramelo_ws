@@ -13,4 +13,45 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(FILES
+  scripts/caramelo_docking_common.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/init_map_docking.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME init_map_docking
+)
+
+install(PROGRAMS
+  scripts/save_dock_pose.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME save_dock_pose
+)
+
+install(PROGRAMS
+  scripts/dock_pose_recorder_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME dock_pose_recorder_node
+)
+
+install(PROGRAMS
+  scripts/dock_to.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME dock_to
+)
+
+install(PROGRAMS
+  scripts/list_docks.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME list_docks
+)
+
+install(PROGRAMS
+  scripts/undock.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME undock
+)
+
 ament_package()

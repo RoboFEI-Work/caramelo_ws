@@ -1,0 +1,80 @@
+service_areas:
+  START:
+    kind: START
+    dock_id: START
+    approach: front
+    notes: Area inicial da arena.
+  FINISH:
+    kind: FINISH
+    dock_id: FINISH
+    approach: front
+    notes: Area final da arena.
+  WS1:
+    kind: WS
+    dock_id: WS1
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+    notes: Workstation normal conforme rulebook.
+  WS2:
+    kind: WS
+    dock_id: WS2
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+    notes: Workstation normal conforme rulebook.
+  WS3:
+    kind: WS
+    dock_id: WS3
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+    notes: Workstation normal conforme rulebook.
+  WS4:
+    kind: WS
+    dock_id: WS4
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+    notes: Workstation normal conforme rulebook.
+  SH1:
+    kind: SH
+    dock_id: SH1
+    approach: front
+    full_name: Shelf
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+    notes: Shelf. Usar dock type mais afastado.
+  PP1:
+    kind: PP
+    dock_id: PP1
+    approach: front
+    full_name: Precise Placement
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: high
+    notes: Precise Placement. Usar dock type mais preciso.
+  RT1:
+    kind: RT
+    dock_id: RT1
+    approach: front
+    full_name: Rotating Table
+    table_height_m: 0.1
+    diameter_m: 0.6
+    precision: high
+    notes: Rotating Table. Usar dock type mais preciso.
