@@ -4,3 +4,5 @@ install/
 log/
 .vscode/
 colcon_install_layout.*
+__pycache__/
+*.py[cod]

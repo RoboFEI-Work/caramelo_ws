@@ -13,12 +13,12 @@ bt_navigator:
       - compute_path_error_code
       - follow_path_error_code
 
+    # O launch injeta behavior_tree/caramelo_theta_dwb.xml como BT padrao.
+    #
     # Plugins cadastrados para testes:
     # planner_id: GridBased, ThetaStar
     # controller_id: FollowPath, DWBHolonomic, MPPIHolonomic
     # smoother_id: simple_smoother, savitzky_golay_smoother
     #
-    # Os XMLs customizados em behavior_tree/ fixam GridBased e FollowPath.
-    # Para selecionar IDs diferentes nesses XMLs, substitua os valores fixos
-    # por portas de blackboard e adicione um no SmoothPath com smoother_id.
-    # Esta configuracao nao altera a arvore BT automaticamente.
+    # caramelo_theta_dwb.xml fixa ThetaStar + DWBHolonomic.
+    # simple_navigation*.xml ficam como exemplos/experimentos.

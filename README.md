@@ -48,7 +48,7 @@ source install/setup.bash
 Para buildar somente os pacotes mais usados:
 
 ```bash
-colcon build --packages-select caramelo_mapping caramelo_localization caramelo_navigation caramelo_utils
+colcon build --packages-select caramelo_msgs caramelo_mapping caramelo_localization caramelo_navigation caramelo_utils
 source install/setup.bash
 ```
 
@@ -62,11 +62,10 @@ src/caramelo_mapping/maps/<nome_do_mapa>/map.yaml
 
 Mapas presentes no workspace:
 
-- `arena_fei`
-- `cbr_vitoria`
-- `robocup_salvador`
 - `sala_520`
-- `small_house`
+- `mini_arena` (referencia/backup do mapa copiado para `sala_520`)
+
+`sala_520` e o mapa padrao dos launches e exemplos atuais.
 
 ## Fluxo 1: Mapear com SLAM Toolbox
 
@@ -87,7 +86,6 @@ Parametros principais:
 - `use_sim_time`: default `false`.
 - `map_resolution`: default `0.02`, ou seja, 2 cm por celula.
 - `use_rviz`: default `true`.
-- `use_docking`: default `false`, sobe o Nav2 Docking Server usando o `docking.yaml` do mapa.
 - `scan_topic`: default `/scan`, topico bruto vindo da Raspberry.
 - `slam_scan_topic`: default `/scan_fixed`, topico usado pelo SLAM Toolbox.
 - `use_scan_normalizer`: default `true`.
@@ -132,12 +130,13 @@ ros2 launch caramelo_utils teleop.launch.py
 
 Dicas para mapa melhor:
 
+- comece com o robo parado no `START`, que deve ser `0,0,0`;
+- nao empurre o robo antes do SLAM iniciar;
 - ande devagar;
 - evite girar muito rapido;
 - passe pelas paredes e corredores;
 - volte por regioes ja mapeadas para fechar loop;
-- evite pessoas passando perto do LiDAR durante o mapeamento;
-- nao empurre o robo manualmente.
+- evite pessoas passando perto do LiDAR durante o mapeamento.
 
 ### 4. Salvar o Mapa
 
@@ -250,26 +249,30 @@ Esse launch sobe:
 - AMCL;
 - `map_server`;
 - Nav2: `controller_server`, `planner_server`, `smoother_server`, `bt_navigator`, `behavior_server`;
+- `velocity_smoother`;
+- `collision_monitor`;
 - relay de `/cmd_vel` para `/mecanum_controller/reference`;
+- markers de Service Areas em `/caramelo/service_areas/markers`;
 - RViz.
 
 Parametros principais:
 
-- `map_name`: default `small_house`.
+- `map_name`: default `sala_520`.
 - `use_sim_time`: default `false`.
 - `use_rviz`: default `true`.
 - `navigation_start_delay`: default `5.0`.
 - `costmap_resolution`: default `0.02`, usa 2 cm por celula. Passe `map` para usar a resolucao do `map.yaml`.
 - `use_cmd_vel_relay`: default `true`.
-- `cmd_vel_topic`: default `/cmd_vel`.
+- `cmd_vel_topic`: default `/cmd_vel`, comando final depois do collision monitor.
 - `mecanum_reference_topic`: default `/mecanum_controller/reference`.
+- `use_service_area_manager`: default `true`.
+- `use_service_area_markers`: default `true`.
 
 Exemplos:
 
 ```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=small_house
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
-ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_fei
+ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 use_docking:=true
 ```
 
 Sem RViz:
@@ -282,6 +285,15 @@ Usando a resolucao armazenada no mapa:
 
 ```bash
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=map
+```
+
+Cadeia de velocidade:
+
+```text
+controller_server -> /cmd_vel_nav
+velocity_smoother -> /cmd_vel_smoothed
+collision_monitor -> /cmd_vel
+twist_relay.py -> /mecanum_controller/reference
 ```
 
 ### Nota Tecnica: Inflacao Curta
@@ -324,14 +336,14 @@ inflation_cost_scaling_factor: 12.0
 Depois de qualquer mudanca, recompile e reinicie o bringup:
 
 ```bash
-colcon build --packages-select caramelo_navigation
+colcon build --packages-select caramelo_msgs caramelo_navigation
 source install/setup.bash
 ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
 ```
 
-### 2. Definir Pose Inicial
+### 2. Pose Inicial
 
-No RViz:
+Na `sala_520`, o AMCL inicia automaticamente em `START = 0,0,0`, igual a convencao de mapeamento. Use o RViz apenas se o robo tiver sido reposicionado ou se as particulas nao baterem com a pose real:
 
 1. Clique em `2D Pose Estimate`.
 2. Clique na posicao real do robo no mapa.
@@ -351,6 +363,8 @@ Depois de enviar o objetivo, confira:
 
 ```bash
 ros2 topic echo /plan --once
+ros2 topic echo /cmd_vel_nav
+ros2 topic echo /cmd_vel_smoothed
 ros2 topic echo /cmd_vel
 ros2 topic echo /mecanum_controller/reference
 ```
@@ -358,6 +372,15 @@ ros2 topic echo /mecanum_controller/reference
 ## Fluxo 4: Docking nas Workstations da Competicao
 
 Use este fluxo para configurar pontos de parada de frente nas Service Areas da RoboCup@Work e depois mandar o robo dockar usando apenas o ID oficial da area.
+
+`service_areas.yaml` e o arquivo humano principal. `docking.yaml` e tecnico e deve ser sincronizado a partir dele.
+
+API ROS exposta pelo `service_area_manager_node`:
+
+- Service `/caramelo/service_areas/init`: cria/normaliza `service_areas.yaml`.
+- Service `/caramelo/service_areas/list`: lista areas para GUI/dashboard.
+- Service `/caramelo/service_areas/validate`: valida e pode sincronizar `docking.yaml`.
+- Action `/caramelo/service_areas/save_pose`: salva a pose atual via TF com feedback.
 
 O banco de docking fica dentro da pasta de cada mapa:
 
@@ -379,12 +402,12 @@ IDs aceitos pelo projeto:
 
 Nao use `workstation_01` ou nomes parecidos como ID principal. Use a nomenclatura do rulebook.
 
-### 1. Inicializar o mapa para docking
+### 1. Inicializar Service Areas
 
 Rode uma vez por mapa:
 
 ```bash
-ros2 run caramelo_navigation init_map_docking --map-name sala_520
+ros2 run caramelo_navigation init_service_areas --map-name sala_520 --sync-docking
 ```
 
 Isso cria, se ainda nao existirem:
@@ -392,16 +415,11 @@ Isso cria, se ainda nao existirem:
 - `src/caramelo_mapping/maps/sala_520/docking.yaml`;
 - `src/caramelo_mapping/maps/sala_520/service_areas.yaml`.
 
-Tambem existe inicializacao automatica: se voce subir o Docking Server com um mapa que ja tem `map.yaml`, mas ainda nao tem `docking.yaml`, o launch cria os dois arquivos iniciais automaticamente:
+Para conferir e ajustar os nomes antes da competicao:
 
 ```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=meu_mapa use_docking:=true
-```
-
-Mesmo assim, para conferir e ajustar os nomes antes da competicao, eu recomendo rodar:
-
-```bash
-ros2 run caramelo_navigation list_docks --map-name meu_mapa
+ros2 run caramelo_navigation list_service_areas --map-name sala_520
+ros2 run caramelo_navigation validate_service_areas --map-name sala_520 --sync-docking
 ```
 
 ### 2. Subir Nav2 com Docking Server
@@ -418,56 +436,35 @@ Se quiser subir somente o Docking Server, sem abrir outro Nav2:
 ros2 launch caramelo_navigation docking_server.launch.py map_name:=sala_520
 ```
 
-### 3. Salvar a pose final de uma Workstation
+### 3. Salvar a pose final de uma Service Area
 
 Coloque o robo parado de frente para a workstation, exatamente na pose final desejada. Depois rode:
 
 ```bash
-ros2 run caramelo_navigation save_dock_pose \
+ros2 run caramelo_navigation save_service_area_pose \
   --map-name sala_520 \
-  --dock-id WS1 \
-  --dock-type caramelo_front_dock \
-  --update-service-area \
-  --kind WS
+  --name WS1 \
+  --yes
 ```
 
 Exemplos para outros tipos:
 
 ```bash
-ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id SH1 --dock-type caramelo_shelf_front_dock --update-service-area --kind SH
-ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id PP1 --dock-type caramelo_precision_front_dock --update-service-area --kind PP --precision high
-ros2 run caramelo_navigation save_dock_pose --map-name sala_520 --dock-id RT1 --dock-type caramelo_precision_front_dock --update-service-area --kind RT --diameter 0.60 --precision high
+ros2 run caramelo_navigation save_service_area_pose --map-name sala_520 --name SH1 --type SH --yes
+ros2 run caramelo_navigation save_service_area_pose --map-name sala_520 --name PP1 --type PP --yes
+ros2 run caramelo_navigation save_service_area_pose --map-name sala_520 --name RT1 --type RT --yes
 ```
 
-O script busca a TF `map -> base_link`. Se `base_link` falhar, tenta `base_footprint`. Antes de atualizar `docking.yaml`, ele cria `docking.yaml.bak`.
+O script busca a TF `map -> base_link`. Se `base_link` falhar, tenta `base_footprint`. Antes de atualizar arquivos, ele cria backups e sincroniza `docking.yaml`.
 
-### 4. Salvar pose por topico
-
-Terminal 1:
+### 4. Conferir Service Areas
 
 ```bash
-ros2 run caramelo_navigation dock_pose_recorder_node --ros-args -p map_name:=sala_520
+ros2 run caramelo_navigation list_service_areas --map-name sala_520
+ros2 run caramelo_navigation validate_service_areas --map-name sala_520 --sync-docking
 ```
 
-Terminal 2:
-
-```bash
-ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'WS1'}"
-```
-
-Tambem pode informar o tipo no topico:
-
-```bash
-ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'SH1:caramelo_shelf_front_dock'}"
-```
-
-### 5. Conferir docks salvos
-
-```bash
-ros2 run caramelo_navigation list_docks --map-name sala_520
-```
-
-### 6. Mandar dockar por ID
+### 5. Mandar dockar por ID
 
 Com o Nav2 e o Docking Server ativos:
 
@@ -489,7 +486,7 @@ ros2 run caramelo_navigation dock_to --dock-id WS1 --no-nav-to-staging
 
 O comportamento esperado e: o Nav2 navega ate a staging pose e o Docking Server faz a aproximacao final de frente, devagar.
 
-### 7. Navegar entre docks salvos
+### 6. Navegar entre Service Areas salvas
 
 Depois que voce salvou `WS1`, `WS2`, `SH1`, `PP1` etc., navegar entre elas vira uma sequencia de comandos por ID.
 
@@ -515,7 +512,7 @@ ros2 run caramelo_navigation undock --dock-type caramelo_shelf_front_dock
 ros2 run caramelo_navigation undock --dock-type caramelo_precision_front_dock
 ```
 
-Dica pratica para competicao: salve todas as poses finais com `save_dock_pose`, confira com `list_docks`, suba o bringup com `use_docking:=true`, e durante a prova chame apenas `dock_to --dock-id <AREA>`.
+Dica pratica para competicao: salve todas as poses finais com `save_service_area_pose --yes`, confira com `list_service_areas`, sincronize com `validate_service_areas --sync-docking`, suba o bringup com `use_docking:=true`, e durante a prova chame apenas `dock_to --dock-id <AREA>`.
 
 
 ### Mapa novo: fluxo mais automatico
@@ -523,13 +520,13 @@ Dica pratica para competicao: salve todas as poses finais com `save_dock_pose`, 
 Depois de salvar um mapa novo em `src/caramelo_mapping/maps/meu_mapa/map.yaml`, faca:
 
 ```bash
-colcon build --packages-select caramelo_mapping caramelo_navigation
+colcon build --packages-select caramelo_msgs caramelo_mapping caramelo_navigation
 source install/setup.bash
-ros2 run caramelo_navigation init_map_docking --map-name meu_mapa
-ros2 run caramelo_navigation list_docks --map-name meu_mapa
+ros2 run caramelo_navigation init_service_areas --map-name meu_mapa --sync-docking
+ros2 run caramelo_navigation list_service_areas --map-name meu_mapa
 ```
 
-Ou deixe o launch criar os arquivos iniciais automaticamente:
+Depois suba o launch com docking:
 
 ```bash
 ros2 launch caramelo_navigation bringup.launch.py map_name:=meu_mapa use_docking:=true
@@ -538,9 +535,9 @@ ros2 launch caramelo_navigation bringup.launch.py map_name:=meu_mapa use_docking
 Depois, posicione o robo na frente de cada Service Area e salve as poses reais:
 
 ```bash
-ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id WS1 --dock-type caramelo_front_dock --update-service-area --kind WS
-ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id WS2 --dock-type caramelo_front_dock --update-service-area --kind WS
-ros2 run caramelo_navigation save_dock_pose --map-name meu_mapa --dock-id FINISH --dock-type caramelo_front_dock --update-service-area --kind FINISH
+ros2 run caramelo_navigation save_service_area_pose --map-name meu_mapa --name WS1 --yes
+ros2 run caramelo_navigation save_service_area_pose --map-name meu_mapa --name WS2 --yes
+ros2 run caramelo_navigation save_service_area_pose --map-name meu_mapa --name FINISH --yes
 ```
 
 Os arquivos ficam junto do mapa, entao cada arena tem seu proprio banco de docks.

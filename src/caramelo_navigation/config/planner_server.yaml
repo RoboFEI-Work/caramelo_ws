@@ -4,7 +4,8 @@ planner_server:
     use_sim_time: false
 
     # IDs de planners disponiveis para selecao pelo BT/RViz.
-    planner_plugins: ["GridBased", "ThetaStar"]
+    # ThetaStar e o principal; GridBased/Smac fica como experimental.
+    planner_plugins: ["ThetaStar", "GridBased"]
 
     # Exemplo desativado de planner Dijkstra.
     # GridBased:
@@ -19,7 +20,7 @@ planner_server:
     #   plugin: ""
 
     # ============================================================
-    # Smac State Lattice Planner - HOLONOMICO / MECANUM
+    # Smac State Lattice Planner - HOLONOMICO / MECANUM (experimental)
     # ============================================================
     GridBased:
       plugin: "nav2_smac_planner::SmacPlannerLattice" # Plugin Lattice; em Iron ou anterior use "/".
@@ -56,7 +57,7 @@ planner_server:
         refinement_num: 2                 # Numero de passagens extras de refinamento.
 
     # ============================================================
-    # Theta Star Planner - holonomico em grade 2D
+    # Theta Star Planner - principal para a arena sala_520
     # ============================================================
     ThetaStar:
       plugin: "nav2_theta_star_planner::ThetaStarPlanner" # Planner 2D de segmentos em qualquer angulo.

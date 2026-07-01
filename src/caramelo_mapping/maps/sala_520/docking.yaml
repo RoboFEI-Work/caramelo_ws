@@ -33,72 +33,45 @@ docks:
   START:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: START
   FINISH:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: FINISH
   WS1:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: WS1
   WS2:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: WS2
   WS3:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: WS3
   WS4:
     type: caramelo_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: WS4
   SH1:
     type: caramelo_shelf_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: SH1
   PP1:
     type: caramelo_precision_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: PP1
   RT1:
     type: caramelo_precision_front_dock
     frame: map
-    pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    pose: [0.0, 0.0, 0.0]
     id: RT1

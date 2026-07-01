@@ -9,7 +9,7 @@ controller_server:
     failure_tolerance: 0.3 # Tempo maximo de falha antes de abortar.
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath", "DWBHolonomic", "MPPIHolonomic"] # IDs de controladores disponiveis.
+    controller_plugins: ["DWBHolonomic", "FollowPath", "MPPIHolonomic"] # DWB e o principal; RPP/MPPI ficam experimentais.
     odom_topic: /odom
 
     progress_checker:
@@ -19,12 +19,12 @@ controller_server:
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
-      xy_goal_tolerance: 0.05 # Erro linear aceito no goal.
-      yaw_goal_tolerance: 0.05 # Erro angular aceito no goal.
+      xy_goal_tolerance: 0.04 # Erro linear aceito no goal.
+      yaw_goal_tolerance: 0.04 # Erro angular aceito no goal.
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController" # Controlador padrao atual.
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController" # Experimental para comparacao.
       desired_linear_vel: 0.2 # Velocidade linear maxima em m/s.
       lookahead_dist: 0.6 # Distancia base do ponto de perseguicao.
       min_lookahead_dist: 0.3 # Menor lookahead permitido.
@@ -53,22 +53,22 @@ controller_server:
       inflation_cost_scaling_factor: 30.0 # Deve acompanhar a inflation layer.
 
     DWBHolonomic:
-      plugin: "dwb_core::DWBLocalPlanner" # Controlador por amostragem para mecanum.
+      plugin: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
       debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
-      min_vel_x: -0.2 # Velocidade minima em x.
-      max_vel_x: 0.2 # Velocidade maxima em x.
-      min_vel_y: -0.2 # Velocidade minima lateral.
-      max_vel_y: 0.2 # Velocidade maxima lateral.
-      max_vel_theta: 1.0 # Velocidade angular maxima.
+      min_vel_x: -0.12 # Velocidade minima em x.
+      max_vel_x: 0.20 # Velocidade maxima em x.
+      min_vel_y: -0.16 # Velocidade minima lateral.
+      max_vel_y: 0.16 # Velocidade maxima lateral.
+      max_vel_theta: 0.70 # Velocidade angular maxima.
       min_speed_xy: 0.0 # Menor modulo de velocidade linear.
-      max_speed_xy: 0.2 # Limite do modulo da velocidade linear.
+      max_speed_xy: 0.20 # Limite do modulo da velocidade linear.
       min_speed_theta: 0.0 # Menor velocidade angular.
-      acc_lim_x: 0.5 # Aceleracao maxima em x.
-      decel_lim_x: -0.5 # Desaceleracao maxima em x.
-      acc_lim_y: 0.5 # Aceleracao maxima lateral.
-      decel_lim_y: -0.5 # Desaceleracao maxima lateral.
-      acc_lim_theta: 1.5 # Aceleracao angular maxima.
-      decel_lim_theta: -1.5 # Desaceleracao angular maxima.
+      acc_lim_x: 0.35 # Aceleracao maxima em x.
+      decel_lim_x: -0.45 # Desaceleracao maxima em x.
+      acc_lim_y: 0.35 # Aceleracao maxima lateral.
+      decel_lim_y: -0.45 # Desaceleracao maxima lateral.
+      acc_lim_theta: 1.20 # Aceleracao angular maxima.
+      decel_lim_theta: -1.40 # Desaceleracao angular maxima.
       vx_samples: 20 # Amostras de velocidade em x.
       vy_samples: 20 # Amostras de velocidade lateral.
       vtheta_samples: 20 # Amostras de velocidade angular.
@@ -76,7 +76,8 @@ controller_server:
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
-      xy_goal_tolerance: 0.05 # Erro linear aceito no goal.
+      xy_goal_tolerance: 0.04 # Erro linear aceito no goal.
+      yaw_goal_tolerance: 0.04 # Erro angular aceito no goal.
       trans_stopped_velocity: 0.05 # Velocidade considerada como parado.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
@@ -93,7 +94,7 @@ controller_server:
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
 
     MPPIHolonomic:
-      plugin: "nav2_mppi_controller::MPPIController" # Controlador preditivo para mecanum.
+      plugin: "nav2_mppi_controller::MPPIController" # Experimental para mecanum.
       time_steps: 56 # Pontos avaliados em cada trajetoria.
       model_dt: 0.05 # Intervalo entre pontos em segundos.
       batch_size: 2000 # Quantidade de trajetorias amostradas.

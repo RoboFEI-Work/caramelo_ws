@@ -1,0 +1,17 @@
+string map_name
+string map_dir
+---
+bool success
+string message
+string map_folder
+string service_areas_path
+string[] area_ids
+string[] area_types
+float64[] x
+float64[] y
+float64[] yaw
+float64[] approach_x
+float64[] approach_y
+float64[] approach_yaw
+string[] dock_types
+string[] notes

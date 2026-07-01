@@ -1,80 +1,198 @@
+# Service Areas da sala_520.
+#
+# Este e o arquivo humano principal. Edite ou salve poses aqui; o arquivo
+# docking.yaml e tecnico e deve ser sincronizado a partir deste arquivo.
+#
+# Regra operacional da arena:
+# - o robo comeca o mapeamento parado em START;
+# - nesse instante map, odom e base_footprint devem estar coerentes;
+# - START fica em x=0.0, y=0.0, yaw=0.0 para simplificar AMCL e Nav2.
+#
+# Campos:
+# - pose/final_pose: pose onde o robo termina a aproximacao da area.
+# - approach_pose: pose de pre-aproximacao usada para visualizar/validar.
+# - approach.offset: distancia atras da pose final, no eixo -X do robo.
+# - free_area: area frontal que precisa estar livre. AJUSTAR_NO_ROBO.
+map_name: sala_520
+frame_id: map
+version: 1
+defaults:
+  robot_footprint:
+    length: 0.71
+    width: 0.47
+  approach_offset: 0.70
+  free_area:
+    width: 0.85
+    depth: 0.70
+
 service_areas:
   START:
-    kind: START
-    dock_id: START
-    approach: front
-    notes: Area inicial da arena.
+    type: START
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.0, depth: 0.0, height: 0.0}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: START
+      type: caramelo_front_dock
+    notes: "Inicio logico da arena. O robo deve iniciar o SLAM aqui."
+
   FINISH:
-    kind: FINISH
-    dock_id: FINISH
-    approach: front
-    notes: Area final da arena.
+    type: FINISH
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.0, depth: 0.0, height: 0.0}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: FINISH
+      type: caramelo_front_dock
+    notes: "Pose final da prova. Salvar no robo real antes da rodada."
+
   WS1:
-    kind: WS
-    dock_id: WS1
-    approach: front
-    full_name: Workstation
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: normal
-    notes: Workstation normal conforme rulebook.
+    type: WS
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: WS1
+      type: caramelo_front_dock
+    notes: "Workstation. AJUSTAR_NO_ROBO."
+
   WS2:
-    kind: WS
-    dock_id: WS2
-    approach: front
-    full_name: Workstation
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: normal
-    notes: Workstation normal conforme rulebook.
+    type: WS
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: WS2
+      type: caramelo_front_dock
+    notes: "Workstation. AJUSTAR_NO_ROBO."
+
   WS3:
-    kind: WS
-    dock_id: WS3
-    approach: front
-    full_name: Workstation
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: normal
-    notes: Workstation normal conforme rulebook.
+    type: WS
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: WS3
+      type: caramelo_front_dock
+    notes: "Workstation. AJUSTAR_NO_ROBO."
+
   WS4:
-    kind: WS
-    dock_id: WS4
-    approach: front
-    full_name: Workstation
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: normal
-    notes: Workstation normal conforme rulebook.
+    type: WS
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.70, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.70
+      docking_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.85, depth: 0.70}
+    dock:
+      enabled: true
+      id: WS4
+      type: caramelo_front_dock
+    notes: "Workstation. AJUSTAR_NO_ROBO."
+
   SH1:
-    kind: SH
-    dock_id: SH1
-    approach: front
-    full_name: Shelf
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: normal
-    notes: Shelf. Usar dock type mais afastado.
+    type: SH
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.90, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.90
+      docking_offset: 0.0
+      linear_tolerance: 0.06
+      angular_tolerance: 0.06
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.90, depth: 0.90}
+    dock:
+      enabled: true
+      id: SH1
+      type: caramelo_shelf_front_dock
+    notes: "Shelf. Distancia maior por seguranca. AJUSTAR_NO_ROBO."
+
   PP1:
-    kind: PP
-    dock_id: PP1
-    approach: front
-    full_name: Precise Placement
-    table_height_m: 0.1
-    width_m: 0.8
-    depth_m: 0.5
-    precision: high
-    notes: Precise Placement. Usar dock type mais preciso.
+    type: PP
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.80, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.80
+      docking_offset: 0.0
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+    station: {width: 0.80, depth: 0.50, height: 0.10}
+    free_area: {width: 0.85, depth: 0.80}
+    dock:
+      enabled: true
+      id: PP1
+      type: caramelo_precision_front_dock
+    notes: "Precise Placement. Validar com baixa velocidade."
+
   RT1:
-    kind: RT
-    dock_id: RT1
-    approach: front
-    full_name: Rotating Table
-    table_height_m: 0.1
-    diameter_m: 0.6
-    precision: high
-    notes: Rotating Table. Usar dock type mais preciso.
+    type: RT
+    frame_id: map
+    pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    final_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+    approach_pose: {x: -0.80, y: 0.0, yaw: 0.0}
+    approach:
+      offset: 0.80
+      docking_offset: 0.0
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+    station: {width: 0.60, depth: 0.60, height: 0.10}
+    free_area: {width: 0.85, depth: 0.80}
+    dock:
+      enabled: true
+      id: RT1
+      type: caramelo_precision_front_dock
+    notes: "Rotating Table. AJUSTAR_NO_ROBO."

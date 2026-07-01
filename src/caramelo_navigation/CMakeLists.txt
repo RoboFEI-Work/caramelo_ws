@@ -15,6 +15,7 @@ install(
 
 install(FILES
   scripts/caramelo_docking_common.py
+  scripts/caramelo_service_area_common.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -52,6 +53,42 @@ install(PROGRAMS
   scripts/undock.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME undock
+)
+
+install(PROGRAMS
+  scripts/init_service_areas.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME init_service_areas
+)
+
+install(PROGRAMS
+  scripts/save_service_area_pose.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME save_service_area_pose
+)
+
+install(PROGRAMS
+  scripts/list_service_areas.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME list_service_areas
+)
+
+install(PROGRAMS
+  scripts/validate_service_areas.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME validate_service_areas
+)
+
+install(PROGRAMS
+  scripts/service_area_markers_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME service_area_markers_node
+)
+
+install(PROGRAMS
+  scripts/service_area_manager_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME service_area_manager_node
 )
 
 ament_package()

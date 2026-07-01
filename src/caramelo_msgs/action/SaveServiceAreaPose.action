@@ -1,0 +1,35 @@
+string map_name
+string map_dir
+string name
+string area_type
+string frame
+string base_frame
+float64 timeout
+bool yes
+bool sync_docking
+float64 approach_offset
+float64 docking_offset
+float64 linear_tolerance
+float64 angular_tolerance
+float64 station_width
+float64 station_depth
+float64 station_height
+float64 free_width
+float64 free_depth
+string dock_type
+string notes
+---
+bool success
+string message
+string service_areas_path
+string service_backup_path
+string docking_path
+string docking_backup_path
+string base_frame_used
+float64 x
+float64 y
+float64 yaw
+---
+string state
+string base_frame
+float64 elapsed_seconds

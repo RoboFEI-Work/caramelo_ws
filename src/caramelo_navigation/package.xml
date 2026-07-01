@@ -9,16 +9,22 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>caramelo_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav2_collision_monitor</exec_depend>
   <exec_depend>nav2_dwb_controller</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>nav2_smac_planner</exec_depend>
   <exec_depend>nav2_theta_star_planner</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
   <exec_depend>opennav_docking</exec_depend>
+  <exec_depend>python3-ruamel.yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>caramelo_utils</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

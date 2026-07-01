@@ -1,0 +1,13 @@
+string map_name
+string map_dir
+string[] area_ids
+bool force_template
+bool sync_docking
+---
+bool success
+string message
+string map_folder
+string service_areas_path
+string docking_path
+bool created
+uint32 area_count

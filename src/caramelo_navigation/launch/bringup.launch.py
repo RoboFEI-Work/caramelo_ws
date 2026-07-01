@@ -20,6 +20,9 @@ def generate_launch_description():
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
+    use_service_area_manager = LaunchConfiguration("use_service_area_manager")
+    use_service_area_markers = LaunchConfiguration("use_service_area_markers")
+    service_area_marker_topic = LaunchConfiguration("service_area_marker_topic")
 
     navigation_launch = os.path.join(
         get_package_share_directory("caramelo_navigation"),
@@ -41,7 +44,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "map_name",
-            default_value="small_house",
+            default_value="sala_520",
             description="Map folder name inside caramelo_mapping/maps/",
         ),
         DeclareLaunchArgument(
@@ -72,12 +75,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "cmd_vel_topic",
             default_value="/cmd_vel",
-            description="Nav2 velocity command topic",
+            description="Final velocity command topic after collision monitor",
         ),
         DeclareLaunchArgument(
             "mecanum_reference_topic",
             default_value="/mecanum_controller/reference",
             description="Mecanum controller TwistStamped command topic",
+        ),
+        DeclareLaunchArgument(
+            "use_service_area_manager",
+            default_value="true",
+            description="Start Service Area service/action API",
+        ),
+        DeclareLaunchArgument(
+            "use_service_area_markers",
+            default_value="true",
+            description="Publish service area MarkerArray for RViz",
+        ),
+        DeclareLaunchArgument(
+            "service_area_marker_topic",
+            default_value="/caramelo/service_areas/markers",
+            description="MarkerArray topic for service areas",
         ),
         DeclareLaunchArgument(
             "rviz_config",
@@ -95,6 +113,9 @@ def generate_launch_description():
                 "use_cmd_vel_relay": use_cmd_vel_relay,
                 "cmd_vel_topic": cmd_vel_topic,
                 "mecanum_reference_topic": mecanum_reference_topic,
+                "use_service_area_manager": use_service_area_manager,
+                "use_service_area_markers": use_service_area_markers,
+                "service_area_marker_topic": service_area_marker_topic,
             }.items(),
         ),
         Node(

@@ -1,0 +1,17 @@
+<root main_tree_to_execute="MainTree">
+    <BehaviorTree ID="MainTree">
+        <RecoveryNode number_of_retries="1" name="NavigateRecovery">
+            <PipelineSequence name="NavigateWithThetaStarDWB">
+                <RateController hz="1.0">
+                    <ComputePathToPose goal="{goal}" path="{path}" planner_id="ThetaStar"/>
+                </RateController>
+                <FollowPath path="{path}" controller_id="DWBHolonomic"/>
+            </PipelineSequence>
+            <Sequence name="ConservativeRecovery">
+                <Wait wait_duration="2.0"/>
+                <BackUp backup_dist="0.20" backup_speed="0.05"/>
+                <Spin spin_dist="1.57"/>
+            </Sequence>
+        </RecoveryNode>
+    </BehaviorTree>
+</root>

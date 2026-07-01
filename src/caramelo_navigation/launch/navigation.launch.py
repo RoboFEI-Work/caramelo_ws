@@ -71,10 +71,22 @@ def _create_navigation_stack(context, *args, **kwargs):
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
+    use_service_area_manager = LaunchConfiguration("use_service_area_manager")
+    use_service_area_markers = LaunchConfiguration("use_service_area_markers")
+    service_area_marker_topic = LaunchConfiguration("service_area_marker_topic")
 
-    lifecycle_nodes = ["controller_server", "planner_server", "smoother_server", "bt_navigator", "behavior_server"]
+    lifecycle_nodes = [
+        "controller_server",
+        "planner_server",
+        "smoother_server",
+        "bt_navigator",
+        "behavior_server",
+        "velocity_smoother",
+        "collision_monitor",
+    ]
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
     docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
+    bt_xml = os.path.join(caramelo_navigation_pkg, "behavior_tree", "caramelo_theta_dwb.xml")
     costmap_resolution = _resolve_costmap_resolution(context)
     costmap_resolution_params = _make_costmap_resolution_params(costmap_resolution)
 
@@ -86,6 +98,9 @@ def _create_navigation_stack(context, *args, **kwargs):
             os.path.join(caramelo_navigation_pkg, "config", "controller_server.yaml"),
             costmap_resolution_params,
             {"use_sim_time": use_sim_time},
+        ],
+        remappings=[
+            ("cmd_vel", "/cmd_vel_nav"),
         ],
     )
 
@@ -110,6 +125,9 @@ def _create_navigation_stack(context, *args, **kwargs):
             os.path.join(caramelo_navigation_pkg, "config", "behavior_server.yaml"),
             {"use_sim_time": use_sim_time},
         ],
+        remappings=[
+            ("cmd_vel", "/cmd_vel_nav"),
+        ],
     )
 
     nav2_bt_navigator = Node(
@@ -120,6 +138,7 @@ def _create_navigation_stack(context, *args, **kwargs):
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "bt_navigator.yaml"),
             {"use_sim_time": use_sim_time},
+            {"default_nav_to_pose_bt_xml": bt_xml},
         ],
     )
 
@@ -130,6 +149,32 @@ def _create_navigation_stack(context, *args, **kwargs):
         output="screen",
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "smoother_server.yaml"),
+            {"use_sim_time": use_sim_time},
+        ],
+    )
+
+    nav2_velocity_smoother = Node(
+        package="nav2_velocity_smoother",
+        executable="velocity_smoother",
+        name="velocity_smoother",
+        output="screen",
+        parameters=[
+            os.path.join(caramelo_navigation_pkg, "config", "velocity_smoother.yaml"),
+            {"use_sim_time": use_sim_time},
+        ],
+        remappings=[
+            ("cmd_vel", "/cmd_vel_nav"),
+            ("cmd_vel_smoothed", "/cmd_vel_smoothed"),
+        ],
+    )
+
+    nav2_collision_monitor = Node(
+        package="nav2_collision_monitor",
+        executable="collision_monitor",
+        name="collision_monitor",
+        output="screen",
+        parameters=[
+            os.path.join(caramelo_navigation_pkg, "config", "collision_monitor.yaml"),
             {"use_sim_time": use_sim_time},
         ],
     )
@@ -160,6 +205,31 @@ def _create_navigation_stack(context, *args, **kwargs):
         condition=IfCondition(use_cmd_vel_relay),
     )
 
+    service_area_manager = Node(
+        package="caramelo_navigation",
+        executable="service_area_manager_node",
+        name="service_area_manager_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"default_map_name": map_name},
+        ],
+        condition=IfCondition(use_service_area_manager),
+    )
+
+    service_area_markers = Node(
+        package="caramelo_navigation",
+        executable="service_area_markers_node",
+        name="service_area_markers_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"map_name": map_name},
+            {"marker_topic": service_area_marker_topic},
+        ],
+        condition=IfCondition(use_service_area_markers),
+    )
+
     docking_server = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(docking_launch),
         launch_arguments={
@@ -180,7 +250,11 @@ def _create_navigation_stack(context, *args, **kwargs):
             nav2_smoother_server,
             nav2_behaviors,
             nav2_bt_navigator,
+            nav2_velocity_smoother,
+            nav2_collision_monitor,
             nav2_lifecycle_manager,
+            service_area_manager,
+            service_area_markers,
             docking_server,
         ],
     )
@@ -216,7 +290,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "map_name",
-            default_value="small_house",
+            default_value="sala_520",
             description="Map folder name inside caramelo_mapping/maps/",
         ),
         DeclareLaunchArgument(
@@ -242,12 +316,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "cmd_vel_topic",
             default_value="/cmd_vel",
-            description="Nav2 velocity command topic",
+            description="Final velocity command topic after collision monitor",
         ),
         DeclareLaunchArgument(
             "mecanum_reference_topic",
             default_value="/mecanum_controller/reference",
             description="Mecanum controller TwistStamped command topic",
+        ),
+        DeclareLaunchArgument(
+            "use_service_area_manager",
+            default_value="true",
+            description="Start Service Area service/action API",
+        ),
+        DeclareLaunchArgument(
+            "use_service_area_markers",
+            default_value="true",
+            description="Publish service area MarkerArray for RViz",
+        ),
+        DeclareLaunchArgument(
+            "service_area_marker_topic",
+            default_value="/caramelo/service_areas/markers",
+            description="MarkerArray topic for service areas",
         ),
         localization,
         OpaqueFunction(function=_create_navigation_stack),
