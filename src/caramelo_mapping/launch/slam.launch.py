@@ -15,10 +15,7 @@ def generate_launch_description():
     map_resolution = LaunchConfiguration("map_resolution")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
-    scan_topic = LaunchConfiguration("scan_topic")
     slam_scan_topic = LaunchConfiguration("slam_scan_topic")
-    use_scan_normalizer = LaunchConfiguration("use_scan_normalizer")
-    fixed_scan_count = LaunchConfiguration("fixed_scan_count")
     scan_range_max = LaunchConfiguration("scan_range_max")
 
     ros_distro = os.environ["ROS_DISTRO"]
@@ -62,28 +59,10 @@ def generate_launch_description():
         description="Open RViz automatically"
     )
 
-    scan_topic_arg = DeclareLaunchArgument(
-        "scan_topic",
-        default_value="/scan",
-        description="Raw LaserScan topic coming from the robot"
-    )
-
     slam_scan_topic_arg = DeclareLaunchArgument(
         "slam_scan_topic",
-        default_value="/scan_fixed",
-        description="Fixed-size LaserScan topic consumed by slam_toolbox"
-    )
-
-    use_scan_normalizer_arg = DeclareLaunchArgument(
-        "use_scan_normalizer",
-        default_value="true",
-        description="Republish raw scans on a fixed angular grid for slam_toolbox"
-    )
-
-    fixed_scan_count_arg = DeclareLaunchArgument(
-        "fixed_scan_count",
-        default_value="0",
-        description="Fixed scan beam count. Use 0 to learn it from the first scan"
+        default_value="/scan",
+        description="LaserScan topic consumed by slam_toolbox"
     )
 
     scan_range_max_arg = DeclareLaunchArgument(
@@ -92,20 +71,6 @@ def generate_launch_description():
         description="Maximum laser range in meters for the fixed scan"
     )
 
-    scan_normalizer = Node(
-        package="caramelo_mapping",
-        executable="scan_normalizer.py",
-        name="scan_normalizer",
-        output="screen",
-        parameters=[
-            {"input_scan_topic": scan_topic},
-            {"output_scan_topic": slam_scan_topic},
-            {"target_count": ParameterValue(fixed_scan_count, value_type=int)},
-            {"range_max": ParameterValue(scan_range_max, value_type=float)},
-        ],
-        condition=IfCondition(use_scan_normalizer),
-    )
-    
     nav2_map_saver = Node(
         package="nav2_map_server",
         executable="map_saver_server",
@@ -166,12 +131,8 @@ def generate_launch_description():
         slam_config_arg,
         rviz_config_arg,
         use_rviz_arg,
-        scan_topic_arg,
         slam_scan_topic_arg,
-        use_scan_normalizer_arg,
-        fixed_scan_count_arg,
         scan_range_max_arg,
-        scan_normalizer,
         nav2_map_saver,
         slam_toolbox,
         nav2_lifecycle_manager,
