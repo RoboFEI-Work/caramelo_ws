@@ -8,7 +8,7 @@ from caramelo_service_area_common import load_service_areas, sync_docking_from_s
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Valida service_areas.yaml e opcionalmente sincroniza docking.yaml.")
-    parser.add_argument("--map-name", required=True, help="Nome da pasta do mapa.")
+    parser.add_argument("--map", "--map-name", dest="map_name", required=True, help="Nome da pasta do mapa.")
     parser.add_argument("--map-dir", default=None, help="Diretorio raiz dos mapas ou pasta do mapa.")
     parser.add_argument("--sync-docking", action="store_true", help="Atualiza docking.yaml a partir de service_areas.yaml.")
     args = parser.parse_args()

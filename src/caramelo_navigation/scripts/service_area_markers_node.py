@@ -65,12 +65,12 @@ class ServiceAreaMarkers(Node):
     @staticmethod
     def _color(area_type: str, alpha: float = 1.0) -> ColorRGBA:
         palette = {
-            "START": (0.1, 0.7, 0.2),
-            "FINISH": (0.9, 0.2, 0.2),
-            "WS": (0.1, 0.45, 0.95),
-            "SH": (0.95, 0.55, 0.1),
-            "PP": (0.55, 0.25, 0.9),
-            "RT": (0.0, 0.65, 0.65),
+            "start": (0.1, 0.7, 0.2),
+            "finish": (0.9, 0.2, 0.2),
+            "workstation": (0.1, 0.45, 0.95),
+            "shelf": (0.95, 0.55, 0.1),
+            "precision_placement": (0.55, 0.25, 0.9),
+            "rotating_table": (0.0, 0.65, 0.65),
         }
         r, g, b = palette.get(area_type, (0.8, 0.8, 0.8))
         return ColorRGBA(r=float(r), g=float(g), b=float(b), a=float(alpha))
@@ -122,7 +122,7 @@ class ServiceAreaMarkers(Node):
         text.pose.position.y = pose["y"]
         text.pose.position.z = 0.38
         text.scale.z = 0.18
-        text.text = area_id
+        text.text = f"{area_id} - pose final do robo"
         text.color = color
         markers.markers.append(text)
 

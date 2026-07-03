@@ -179,7 +179,7 @@ class ServiceAreaManager(Node):
         while time.monotonic() <= deadline and rclpy.ok():
             if goal_handle.is_cancel_requested:
                 raise RuntimeError("SaveServiceAreaPose cancelada.")
-            for source_frame in (base_frame, "base_footprint"):
+            for source_frame in (base_frame, "base_footprint", "base_link"):
                 if source_frame not in tried:
                     tried.append(source_frame)
                 try:
@@ -192,6 +192,8 @@ class ServiceAreaManager(Node):
                     )
                     trans = transform.transform.translation
                     rot = transform.transform.rotation
+                    if source_frame == "base_link" and "base_footprint" in tried:
+                        self.get_logger().warn("base_footprint nao apareceu; salvando pose usando base_link.")
                     return source_frame, {
                         "x": trans.x,
                         "y": trans.y,
@@ -211,7 +213,7 @@ class ServiceAreaManager(Node):
             map_folder = self._resolve_map(map_name, request.map_dir)
             area_id = normalize_dock_id(request.name)
             frame = request.frame or "map"
-            base_frame = request.base_frame or "base_link"
+            base_frame = request.base_frame or "base_footprint"
             timeout = request.timeout if request.timeout > 0.0 else self.default_tf_timeout
 
             self._publish_feedback(goal_handle, "resolving_tf", base_frame, started_at)

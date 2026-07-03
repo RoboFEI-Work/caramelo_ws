@@ -1,24 +1,18 @@
-# Service Areas da sala_520.
-#
-# Este e o arquivo humano principal do mapa.
-# final_robot_pose e sempre a pose final do robo parado em frente a mesa,
-# nao a pose do centro da mesa.
 service_areas:
   START:
     type: start
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 0.151
+      y: 0.2544
+      yaw: -3.015284
     docking:
-      approach_offset: 0.0
-      linear_tolerance: 0.05
-      angular_tolerance: 0.05
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
       use_docking: false
     manipulation_enabled: false
-    notes: "START - pose inicial do robo"
-
+    notes: START - pose inicial do robo.
   FINISH:
     type: finish
     frame_id: map
@@ -32,27 +26,25 @@ service_areas:
       angular_tolerance: 0.05
       use_docking: false
     manipulation_enabled: false
-    notes: "FINISH - pose final do robo"
-
+    notes: FINISH - pose final do robo.
   WS1:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 1.7744
+      y: -0.8495
+      yaw: 3.071961
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
-    notes: "WS1 - pose final do robo em frente a mesa"
-
+    notes: WS1 - pose final do robo em frente a mesa
   WS2:
     type: workstation
     frame_id: map
@@ -61,17 +53,16 @@ service_areas:
       y: 0.0
       yaw: 0.0
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
-    notes: "WS2 - pose final do robo em frente a mesa"
-
+    notes: WS2 - pose final do robo em frente a mesa
   WS3:
     type: workstation
     frame_id: map
@@ -80,17 +71,16 @@ service_areas:
       y: 0.0
       yaw: 0.0
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
-    notes: "WS3 - pose final do robo em frente a mesa"
-
+    notes: WS3 - pose final do robo em frente a mesa
   SH1:
     type: shelf
     frame_id: map
@@ -99,17 +89,16 @@ service_areas:
       y: 0.0
       yaw: 0.0
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
-      approach_offset: 0.50
+      approach_offset: 0.5
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
-    notes: "SH1 - pose final do robo em frente a shelf"
-
+    notes: SH1 - pose final do robo em frente a mesa
   PP1:
     type: precision_placement
     frame_id: map
@@ -118,17 +107,16 @@ service_areas:
       y: 0.0
       yaw: 0.0
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.025
       angular_tolerance: 0.035
       use_docking: true
     manipulation_enabled: true
-    notes: "PP1 - pose final do robo em frente ao precision placement"
-
+    notes: PP1 - pose final do robo em frente a mesa
   RT1:
     type: rotating_table
     frame_id: map
@@ -137,13 +125,13 @@ service_areas:
       y: 0.0
       yaw: 0.0
     table:
-      width: 0.80
-      depth: 0.50
-      height: 0.10
+      width: 0.8
+      depth: 0.5
+      height: 0.1
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
-    notes: "RT1 - pose final do robo em frente a rotating table"
+    notes: RT1 - pose final do robo em frente a mesa

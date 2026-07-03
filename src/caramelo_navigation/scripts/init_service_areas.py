@@ -3,19 +3,20 @@ import argparse
 import sys
 
 from caramelo_service_area_common import (
+    DEFAULT_SERVICE_AREA_IDS,
     default_service_areas_doc,
     service_area_path,
     sync_docking_from_service_areas,
     write_yaml,
 )
-from caramelo_docking_common import DEFAULT_DOCK_IDS, normalize_dock_id, resolve_map_folder
+from caramelo_docking_common import normalize_dock_id, resolve_map_folder
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inicializa service_areas.yaml de um mapa.")
-    parser.add_argument("--map-name", required=True, help="Nome da pasta do mapa.")
+    parser.add_argument("--map", "--map-name", dest="map_name", required=True, help="Nome da pasta do mapa.")
     parser.add_argument("--map-dir", default=None, help="Diretorio raiz dos mapas ou pasta do mapa.")
-    parser.add_argument("--areas", nargs="*", default=DEFAULT_DOCK_IDS, help="Lista de areas. Ex: START WS1 WS2 SH1 PP1 RT1.")
+    parser.add_argument("--areas", nargs="*", default=DEFAULT_SERVICE_AREA_IDS, help="Lista de areas. Ex: START WS1 WS2 SH1 PP1 RT1.")
     parser.add_argument("--force-template", action="store_true", help="Recria service_areas.yaml mesmo se ja existir.")
     parser.add_argument("--sync-docking", action="store_true", help="Sincroniza docking.yaml apos criar/validar.")
     args = parser.parse_args()

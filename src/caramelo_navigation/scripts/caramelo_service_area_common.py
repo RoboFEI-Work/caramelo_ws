@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helpers for Caramelo service area files."""
+"""Funcoes comuns para Service Areas do Caramelo."""
 
 from __future__ import annotations
 
@@ -10,16 +10,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 try:
     from ruamel.yaml import YAML
-except ImportError:  # pragma: no cover - kept for developer machines without ruamel.
+except ImportError:  # pragma: no cover - mantem compatibilidade em PCs sem ruamel.
     YAML = None  # type: ignore
     import yaml as pyyaml
 
 from caramelo_docking_common import (
-    DEFAULT_DOCK_IDS,
-    DEFAULT_DOCK_PLUGINS,
     backup_file,
-    default_dock_type,
-    infer_kind,
     normalize_dock_id,
     resolve_map_folder,
     service_areas_file,
@@ -27,7 +23,38 @@ from caramelo_docking_common import (
 
 
 POSE_KEYS = ("x", "y", "yaw")
-VALID_TYPES = {"START", "FINISH", "WS", "SH", "PP", "RT"}
+DEFAULT_SERVICE_AREA_IDS = ["START", "FINISH", "WS1", "WS2", "WS3", "SH1", "PP1", "RT1"]
+ALLOWED_TYPES = {
+    "start",
+    "finish",
+    "workstation",
+    "shelf",
+    "rotating_table",
+    "precision_placement",
+}
+TYPE_ALIASES = {
+    "START": "start",
+    "FINISH": "finish",
+    "WS": "workstation",
+    "WORKSTATION": "workstation",
+    "SH": "shelf",
+    "SHELF": "shelf",
+    "PP": "precision_placement",
+    "PRECISION_PLACEMENT": "precision_placement",
+    "PRECISIONPLACEMENT": "precision_placement",
+    "RT": "rotating_table",
+    "ROTATING_TABLE": "rotating_table",
+    "ROTATINGTABLE": "rotating_table",
+}
+TYPE_CODES = {
+    "start": "START",
+    "finish": "FINISH",
+    "workstation": "WS",
+    "shelf": "SH",
+    "precision_placement": "PP",
+    "rotating_table": "RT",
+}
+VALID_HEIGHTS = (0.00, 0.05, 0.10, 0.15)
 
 
 def yaml_engine():
@@ -80,7 +107,7 @@ def pose_dict(x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> Dict[str, flo
     return {
         "x": round(float(x), 4),
         "y": round(float(y), 4),
-        "yaw": round(float(yaw), 6),
+        "yaw": round(normalized_yaw(float(yaw)), 6),
     }
 
 
@@ -114,96 +141,173 @@ def approach_pose_from_final(final_pose: dict, offset: float) -> Dict[str, float
 
 
 def type_from_area_id(area_id: str) -> str:
-    kind = infer_kind(area_id)
-    return kind if kind in VALID_TYPES else "WS"
+    area_id = normalize_dock_id(area_id)
+    if area_id == "START":
+        return "start"
+    if area_id == "FINISH":
+        return "finish"
+    if area_id.startswith("SH"):
+        return "shelf"
+    if area_id.startswith("PP"):
+        return "precision_placement"
+    if area_id.startswith("RT"):
+        return "rotating_table"
+    return "workstation"
+
+
+def normalize_area_type(area_type: Optional[str], area_id: Optional[str] = None) -> str:
+    if area_type:
+        key = str(area_type).strip()
+        key_upper = key.upper()
+        key_lower = key.lower()
+        normalized = TYPE_ALIASES.get(key_upper, key_lower)
+        if normalized in ALLOWED_TYPES:
+            return normalized
+        raise ValueError(
+            f"type invalido '{area_type}'. Use start, finish, workstation, "
+            "shelf, rotating_table ou precision_placement."
+        )
+    if area_id:
+        return type_from_area_id(area_id)
+    return "workstation"
+
+
+def type_code(area_type: str) -> str:
+    return TYPE_CODES[normalize_area_type(area_type)]
 
 
 def default_offset(area_type: str) -> float:
-    if area_type == "SH":
-        return 0.90
-    if area_type in ("PP", "RT"):
-        return 0.80
-    return 0.70
+    area_type = normalize_area_type(area_type)
+    if area_type in ("start", "finish"):
+        return 0.0
+    if area_type == "shelf":
+        return 0.50
+    return 0.45
 
 
 def default_tolerances(area_type: str) -> Tuple[float, float]:
-    if area_type in ("PP", "RT"):
+    area_type = normalize_area_type(area_type)
+    if area_type == "precision_placement":
+        return 0.025, 0.035
+    if area_type in ("workstation", "shelf", "rotating_table"):
         return 0.03, 0.04
-    if area_type == "SH":
-        return 0.06, 0.06
     return 0.05, 0.05
 
 
-def default_station(area_type: str) -> Dict[str, float]:
-    if area_type in ("START", "FINISH"):
+def default_table(area_type: str) -> Dict[str, float]:
+    area_type = normalize_area_type(area_type)
+    if area_type in ("start", "finish"):
         return {"width": 0.0, "depth": 0.0, "height": 0.0}
-    if area_type == "RT":
-        return {"width": 0.60, "depth": 0.60, "height": 0.10}
     return {"width": 0.80, "depth": 0.50, "height": 0.10}
 
 
+def default_station(area_type: str) -> Dict[str, float]:
+    return default_table(area_type)
+
+
 def default_free_area(area_type: str) -> Dict[str, float]:
-    if area_type == "SH":
-        return {"width": 0.90, "depth": 0.90}
-    if area_type in ("PP", "RT"):
-        return {"width": 0.85, "depth": 0.80}
+    if normalize_area_type(area_type) in ("start", "finish"):
+        return {"width": 0.0, "depth": 0.0}
     return {"width": 0.85, "depth": 0.70}
 
 
+def default_use_docking(area_type: str) -> bool:
+    return normalize_area_type(area_type) not in ("start", "finish")
+
+
+def default_manipulation(area_type: str) -> bool:
+    return normalize_area_type(area_type) not in ("start", "finish")
+
+
 def default_notes(area_id: str, area_type: str) -> str:
-    if area_type == "START":
-        return "Inicio logico da arena. O robo deve iniciar o SLAM aqui."
-    if area_type == "FINISH":
-        return "Pose final da prova. Salvar no robo real antes da rodada."
-    if area_type == "SH":
-        return "Shelf. Distancia maior por seguranca. AJUSTAR_NO_ROBO."
-    if area_type == "PP":
-        return "Precise Placement. Validar com baixa velocidade."
-    if area_type == "RT":
-        return "Rotating Table. AJUSTAR_NO_ROBO."
-    return f"{area_id} Workstation. AJUSTAR_NO_ROBO."
+    area_type = normalize_area_type(area_type)
+    if area_type == "start":
+        return "START - pose inicial do robo."
+    if area_type == "finish":
+        return "FINISH - pose final do robo."
+    return f"{area_id} - pose final do robo em frente a mesa"
+
+
+def validate_height(height: float, area_type: str) -> float:
+    height = round(float(height), 2)
+    if normalize_area_type(area_type) in ("start", "finish"):
+        return height
+    if not any(abs(height - allowed) < 1.0e-9 for allowed in VALID_HEIGHTS):
+        allowed = ", ".join(f"{value:.2f}" for value in VALID_HEIGHTS)
+        raise ValueError(f"height {height:.2f} invalido. Use uma das alturas: {allowed}.")
+    return height
+
+
+def _table_from_entry(entry: dict, area_type: str) -> dict:
+    table = entry.get("table")
+    if not isinstance(table, dict):
+        table = entry.get("station") if isinstance(entry.get("station"), dict) else {}
+    defaults = default_table(area_type)
+    return {
+        "width": float(table.get("width", defaults["width"])),
+        "depth": float(table.get("depth", defaults["depth"])),
+        "height": validate_height(table.get("height", defaults["height"]), area_type),
+    }
+
+
+def _docking_from_entry(entry: dict, area_type: str) -> dict:
+    docking = entry.get("docking") if isinstance(entry.get("docking"), dict) else {}
+    old_approach = entry.get("approach") if isinstance(entry.get("approach"), dict) else {}
+    linear_tolerance, angular_tolerance = default_tolerances(area_type)
+    return {
+        "approach_offset": float(docking.get("approach_offset", old_approach.get("offset", default_offset(area_type)))),
+        "linear_tolerance": float(docking.get("linear_tolerance", old_approach.get("linear_tolerance", linear_tolerance))),
+        "angular_tolerance": float(docking.get("angular_tolerance", old_approach.get("angular_tolerance", angular_tolerance))),
+        "use_docking": bool(docking.get("use_docking", default_use_docking(area_type))),
+    }
+
+
+def dock_type_for_area(area_id: str) -> str:
+    return f"caramelo_{normalize_dock_id(area_id).lower()}_dock"
+
+
+def dock_plugin_for_area(area_id: str, area: dict) -> dict:
+    docking = area["docking"]
+    return {
+        "plugin": "opennav_docking::SimpleNonChargingDock",
+        "docking_threshold": float(docking["linear_tolerance"]),
+        "staging_x_offset": -float(docking["approach_offset"]),
+        "staging_yaw_offset": 0.0,
+        "dock_direction": "forward",
+        "rotate_to_dock": False,
+        "use_external_detection_pose": False,
+        "use_battery_status": False,
+        "use_stall_detection": False,
+    }
 
 
 def default_service_area(area_id: str, area_type: Optional[str] = None, pose: Optional[dict] = None) -> dict:
     area_id = normalize_dock_id(area_id)
-    area_type = (area_type or type_from_area_id(area_id)).upper()
-    final_pose = pose_from_value(pose or pose_dict())
-    offset = default_offset(area_type)
-    linear_tolerance, angular_tolerance = default_tolerances(area_type)
-    return {
+    area_type = normalize_area_type(area_type, area_id)
+    final_pose = pose_from_value(pose or pose_dict(), f"{area_id}.final_robot_pose")
+    table = default_table(area_type)
+    docking = {
+        "approach_offset": default_offset(area_type),
+        "linear_tolerance": default_tolerances(area_type)[0],
+        "angular_tolerance": default_tolerances(area_type)[1],
+        "use_docking": default_use_docking(area_type),
+    }
+    entry = {
         "type": area_type,
         "frame_id": "map",
-        "pose": copy.deepcopy(final_pose),
-        "final_pose": copy.deepcopy(final_pose),
-        "approach_pose": approach_pose_from_final(final_pose, offset),
-        "approach": {
-            "offset": offset,
-            "docking_offset": 0.0,
-            "linear_tolerance": linear_tolerance,
-            "angular_tolerance": angular_tolerance,
-        },
-        "station": default_station(area_type),
-        "free_area": default_free_area(area_type),
-        "dock": {
-            "enabled": True,
-            "id": area_id,
-            "type": default_dock_type(area_id),
-        },
-        "notes": default_notes(area_id, area_type),
+        "final_robot_pose": final_pose,
     }
+    if table["width"] > 0.0 and table["depth"] > 0.0:
+        entry["table"] = table
+    entry["docking"] = docking
+    entry["manipulation_enabled"] = default_manipulation(area_type)
+    entry["notes"] = default_notes(area_id, area_type)
+    return entry
 
 
-def default_service_areas_doc(map_name: str, dock_ids: Optional[Iterable[str]] = None) -> dict:
-    ids = [normalize_dock_id(area_id) for area_id in (dock_ids or DEFAULT_DOCK_IDS)]
+def default_service_areas_doc(map_name: str, area_ids: Optional[Iterable[str]] = None) -> dict:
+    ids = [normalize_dock_id(area_id) for area_id in (area_ids or DEFAULT_SERVICE_AREA_IDS)]
     return {
-        "map_name": map_name,
-        "frame_id": "map",
-        "version": 1,
-        "defaults": {
-            "robot_footprint": {"length": 0.71, "width": 0.47},
-            "approach_offset": 0.70,
-            "free_area": {"width": 0.85, "depth": 0.70},
-        },
         "service_areas": {
             area_id: default_service_area(area_id)
             for area_id in ids
@@ -220,56 +324,71 @@ def load_service_areas(map_folder: Path) -> dict:
 
 
 def area_type_from_entry(area_id: str, entry: dict) -> str:
-    raw_type = entry.get("type") or entry.get("kind") or type_from_area_id(area_id)
-    return str(raw_type).upper()
+    return normalize_area_type(entry.get("type") or entry.get("kind"), area_id)
 
 
 def normalized_service_area(area_id: str, entry: Optional[dict] = None, frame_id: str = "map") -> dict:
     area_id = normalize_dock_id(area_id)
     entry = copy.deepcopy(entry or {})
     area_type = area_type_from_entry(area_id, entry)
-    if area_type not in VALID_TYPES:
-        raise ValueError(f"{area_id}: type invalido '{area_type}'.")
-
-    final_pose = pose_from_value(entry.get("final_pose", entry.get("pose", pose_dict())), f"{area_id}.final_pose")
-    pose = pose_from_value(entry.get("pose", final_pose), f"{area_id}.pose")
-    approach = entry.get("approach") if isinstance(entry.get("approach"), dict) else {}
-    offset = float(approach.get("offset", default_offset(area_type)))
-    linear_tolerance, angular_tolerance = default_tolerances(area_type)
-    approach_pose = pose_from_value(
-        entry.get("approach_pose", approach_pose_from_final(final_pose, offset)),
-        f"{area_id}.approach_pose",
+    final_pose = pose_from_value(
+        entry.get("final_robot_pose", entry.get("final_pose", entry.get("pose", pose_dict()))),
+        f"{area_id}.final_robot_pose",
     )
-    station = entry.get("station") if isinstance(entry.get("station"), dict) else default_station(area_type)
-    free_area = entry.get("free_area") if isinstance(entry.get("free_area"), dict) else default_free_area(area_type)
-    dock = entry.get("dock") if isinstance(entry.get("dock"), dict) else {}
+    docking = _docking_from_entry(entry, area_type)
+    approach_pose = approach_pose_from_final(final_pose, docking["approach_offset"])
+    table = _table_from_entry(entry, area_type)
 
-    entry["type"] = area_type
-    entry["frame_id"] = str(entry.get("frame_id") or frame_id or "map")
-    entry["pose"] = pose
-    entry["final_pose"] = final_pose
-    entry["approach_pose"] = approach_pose
-    entry["approach"] = {
-        "offset": offset,
-        "docking_offset": float(approach.get("docking_offset", 0.0)),
-        "linear_tolerance": float(approach.get("linear_tolerance", linear_tolerance)),
-        "angular_tolerance": float(approach.get("angular_tolerance", angular_tolerance)),
+    normalized = {
+        "type": area_type,
+        "type_code": type_code(area_type),
+        "frame_id": str(entry.get("frame_id") or frame_id or "map"),
+        "final_robot_pose": final_pose,
+        "approach_pose": approach_pose,
+        "table": table,
+        "docking": docking,
+        "manipulation_enabled": bool(entry.get("manipulation_enabled", default_manipulation(area_type))),
+        "notes": str(entry.get("notes") or default_notes(area_id, area_type)),
     }
-    entry["station"] = {
-        "width": float(station.get("width", default_station(area_type)["width"])),
-        "depth": float(station.get("depth", default_station(area_type)["depth"])),
-        "height": float(station.get("height", default_station(area_type)["height"])),
+
+    # Campos de compatibilidade para os scripts ja existentes.
+    normalized["pose"] = copy.deepcopy(final_pose)
+    normalized["final_pose"] = copy.deepcopy(final_pose)
+    normalized["station"] = copy.deepcopy(table)
+    normalized["approach"] = {
+        "offset": docking["approach_offset"],
+        "docking_offset": 0.0,
+        "linear_tolerance": docking["linear_tolerance"],
+        "angular_tolerance": docking["angular_tolerance"],
     }
-    entry["free_area"] = {
-        "width": float(free_area.get("width", default_free_area(area_type)["width"])),
-        "depth": float(free_area.get("depth", default_free_area(area_type)["depth"])),
+    normalized["free_area"] = copy.deepcopy(default_free_area(area_type))
+    normalized["dock"] = {
+        "enabled": docking["use_docking"],
+        "id": area_id,
+        "type": dock_type_for_area(area_id),
     }
-    entry["dock"] = {
-        "enabled": bool(dock.get("enabled", True)),
-        "id": str(dock.get("id") or area_id),
-        "type": str(dock.get("type") or default_dock_type(area_id)),
+    return normalized
+
+
+def service_area_to_yaml_entry(area_id: str, area: dict) -> dict:
+    area_type = normalize_area_type(area["type"], area_id)
+    entry = {
+        "type": area_type,
+        "frame_id": area["frame_id"],
+        "final_robot_pose": pose_from_value(area["final_robot_pose"]),
     }
-    entry.setdefault("notes", default_notes(area_id, area_type))
+    table = _table_from_entry(area, area_type)
+    if table["width"] > 0.0 and table["depth"] > 0.0:
+        entry["table"] = table
+    entry["docking"] = {
+        "approach_offset": float(area["docking"]["approach_offset"]),
+        "linear_tolerance": float(area["docking"]["linear_tolerance"]),
+        "angular_tolerance": float(area["docking"]["angular_tolerance"]),
+        "use_docking": bool(area["docking"]["use_docking"]),
+    }
+    entry["manipulation_enabled"] = bool(area["manipulation_enabled"])
+    if area.get("notes"):
+        entry["notes"] = str(area["notes"])
     return entry
 
 
@@ -287,17 +406,16 @@ def validate_service_areas_data(data: dict) -> Tuple[List[str], List[str]]:
 
     for area_id, entry in services.items():
         try:
-            area_id = normalize_dock_id(area_id)
             if not isinstance(entry, dict):
                 raise ValueError("entrada precisa ser um dicionario.")
-            normalized = normalized_service_area(area_id, entry, data.get("frame_id", "map"))
-            if area_id == "START" and not is_zero_pose(normalized["final_pose"]):
-                warnings.append("START nao esta em 0,0,0. Isso quebra a convencao atual da arena.")
-            if area_id != "START" and is_zero_pose(normalized["final_pose"]):
-                warnings.append(f"{area_id} ainda esta em 0,0,0. Salvar no robo real com save_service_area_pose.")
-            dock_id = normalize_dock_id(normalized["dock"]["id"])
-            if dock_id != area_id:
-                warnings.append(f"{area_id}: dock.id aponta para {dock_id}.")
+            normalized = normalized_service_area(area_id, entry, entry.get("frame_id", "map"))
+            if normalize_dock_id(area_id) != area_id:
+                warnings.append(f"{area_id}: nome sera normalizado para {normalize_dock_id(area_id)}.")
+            if normalized["type"] not in ALLOWED_TYPES:
+                raise ValueError(f"type invalido '{normalized['type']}'.")
+            validate_height(normalized["table"]["height"], normalized["type"])
+            if normalized["type"] not in ("start", "finish") and is_zero_pose(normalized["final_robot_pose"]):
+                warnings.append(f"{area_id} ainda esta em 0,0,0. Salve no robo real com save_service_area_pose.")
         except Exception as exc:
             errors.append(f"{area_id}: {exc}")
     return errors, warnings
@@ -307,19 +425,21 @@ def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False)
     service_data = load_service_areas(map_folder)
     frame_id = service_data.get("frame_id", "map")
     docks = {}
+    dock_plugins = {}
     for area_id, entry in service_data["service_areas"].items():
         normalized = normalized_service_area(area_id, entry, frame_id)
-        if not normalized["dock"]["enabled"]:
+        if not normalized["docking"]["use_docking"]:
             continue
-        dock_id = normalize_dock_id(normalized["dock"]["id"])
-        docks[dock_id] = {
-            "type": normalized["dock"]["type"],
+        dock_type = dock_type_for_area(area_id)
+        dock_plugins[dock_type] = dock_plugin_for_area(area_id, normalized)
+        docks[area_id] = {
+            "type": dock_type,
             "frame": normalized["frame_id"],
-            "pose": pose_to_list(normalized["final_pose"]),
-            "id": dock_id,
+            "pose": pose_to_list(normalized["final_robot_pose"]),
+            "id": area_id,
         }
     data = {
-        "dock_plugins": copy.deepcopy(DEFAULT_DOCK_PLUGINS),
+        "dock_plugins": dock_plugins,
         "docks": docks,
     }
     path = docking_path(map_folder)
@@ -348,65 +468,50 @@ def update_service_area_pose(
     notes: Optional[str] = None,
     overwrite: bool = False,
 ) -> Tuple[Path, Optional[Path]]:
+    del docking_offset, free_width, free_depth, dock_type
     area_id = normalize_dock_id(area_id)
     service_path = service_area_path(map_folder)
     if service_path.exists():
         data = load_yaml(service_path)
     else:
         data = default_service_areas_doc(map_name)
-    data.setdefault("map_name", map_name)
-    data.setdefault("frame_id", frame_id)
-    data.setdefault("version", 1)
     data.setdefault("service_areas", {})
     services = data["service_areas"]
     if area_id in services and not overwrite:
-        raise RuntimeError(f"{area_id} ja existe em {service_path}. Use --yes para sobrescrever.")
+        existing_pose = normalized_service_area(area_id, services[area_id], frame_id)["final_robot_pose"]
+        if not is_zero_pose(existing_pose):
+            raise RuntimeError(f"{area_id} ja existe em {service_path}. Use --overwrite para sobrescrever.")
 
     existing = services.get(area_id, {})
-    inferred_type = (area_type or existing.get("type") or existing.get("kind") or type_from_area_id(area_id)).upper()
-    final_pose = pose_from_value(pose, f"{area_id}.pose")
-    entry = normalized_service_area(area_id, existing or default_service_area(area_id, inferred_type), data.get("frame_id", frame_id))
+    inferred_type = normalize_area_type(area_type or existing.get("type"), area_id)
+    final_pose = pose_from_value(pose, f"{area_id}.final_robot_pose")
+    entry = normalized_service_area(area_id, existing or default_service_area(area_id, inferred_type), frame_id)
     entry["type"] = inferred_type
     entry["frame_id"] = frame_id
-    entry["pose"] = copy.deepcopy(final_pose)
-    entry["final_pose"] = copy.deepcopy(final_pose)
+    entry["final_robot_pose"] = final_pose
 
-    approach = entry.get("approach", {})
     if approach_offset is not None:
-        approach["offset"] = float(approach_offset)
-    if docking_offset is not None:
-        approach["docking_offset"] = float(docking_offset)
+        entry["docking"]["approach_offset"] = float(approach_offset)
     if linear_tolerance is not None:
-        approach["linear_tolerance"] = float(linear_tolerance)
+        entry["docking"]["linear_tolerance"] = float(linear_tolerance)
     if angular_tolerance is not None:
-        approach["angular_tolerance"] = float(angular_tolerance)
-    entry["approach"] = approach
-    entry["approach_pose"] = approach_pose_from_final(final_pose, float(approach["offset"]))
+        entry["docking"]["angular_tolerance"] = float(angular_tolerance)
+    if inferred_type in ("start", "finish"):
+        entry["docking"]["use_docking"] = False
+        entry["table"] = default_table(inferred_type)
 
-    station = entry.get("station", default_station(inferred_type))
-    if station_width is not None:
-        station["width"] = float(station_width)
-    if station_depth is not None:
-        station["depth"] = float(station_depth)
-    if station_height is not None:
-        station["height"] = float(station_height)
-    entry["station"] = station
+    if station_width is not None and inferred_type not in ("start", "finish"):
+        entry["table"]["width"] = float(station_width)
+    if station_depth is not None and inferred_type not in ("start", "finish"):
+        entry["table"]["depth"] = float(station_depth)
+    if station_height is not None and inferred_type not in ("start", "finish"):
+        entry["table"]["height"] = validate_height(station_height, inferred_type)
+    else:
+        entry["table"]["height"] = validate_height(entry["table"]["height"], inferred_type)
 
-    free_area = entry.get("free_area", default_free_area(inferred_type))
-    if free_width is not None:
-        free_area["width"] = float(free_width)
-    if free_depth is not None:
-        free_area["depth"] = float(free_depth)
-    entry["free_area"] = free_area
-
-    dock = entry.get("dock", {})
-    dock["enabled"] = bool(dock.get("enabled", True))
-    dock["id"] = dock.get("id") or area_id
-    dock["type"] = dock_type or dock.get("type") or default_dock_type(area_id)
-    entry["dock"] = dock
     if notes is not None:
         entry["notes"] = notes
 
-    services[area_id] = entry
+    services[area_id] = service_area_to_yaml_entry(area_id, entry)
     backup = write_yaml(service_path, data, make_backup=service_path.exists())
     return service_path, backup

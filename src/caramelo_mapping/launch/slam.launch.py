@@ -17,6 +17,9 @@ def generate_launch_description():
     rviz_config = LaunchConfiguration("rviz_config")
     slam_scan_topic = LaunchConfiguration("slam_scan_topic")
     scan_range_max = LaunchConfiguration("scan_range_max")
+    map_name = LaunchConfiguration("map_name")
+    use_service_area_markers = LaunchConfiguration("use_service_area_markers")
+    service_area_marker_topic = LaunchConfiguration("service_area_marker_topic")
 
     ros_distro = os.environ["ROS_DISTRO"]
     lifecycle_nodes = ["map_saver_server", "slam_toolbox"]
@@ -69,6 +72,24 @@ def generate_launch_description():
         "scan_range_max",
         default_value="30.0",
         description="Maximum laser range in meters for the fixed scan"
+    )
+
+    map_name_arg = DeclareLaunchArgument(
+        "map_name",
+        default_value="sala_520",
+        description="Map folder used to load service_areas.yaml markers"
+    )
+
+    use_service_area_markers_arg = DeclareLaunchArgument(
+        "use_service_area_markers",
+        default_value="true",
+        description="Publish service area markers during mapping"
+    )
+
+    service_area_marker_topic_arg = DeclareLaunchArgument(
+        "service_area_marker_topic",
+        default_value="/caramelo/service_areas/markers",
+        description="MarkerArray topic for service areas"
     )
 
     nav2_map_saver = Node(
@@ -125,6 +146,19 @@ def generate_launch_description():
         condition=IfCondition(use_rviz),
     )
 
+    service_area_markers = Node(
+        package="caramelo_navigation",
+        executable="service_area_markers_node",
+        name="service_area_markers_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"map_name": map_name},
+            {"marker_topic": service_area_marker_topic},
+        ],
+        condition=IfCondition(use_service_area_markers),
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         map_resolution_arg,
@@ -133,8 +167,12 @@ def generate_launch_description():
         use_rviz_arg,
         slam_scan_topic_arg,
         scan_range_max_arg,
+        map_name_arg,
+        use_service_area_markers_arg,
+        service_area_marker_topic_arg,
         nav2_map_saver,
         slam_toolbox,
+        service_area_markers,
         nav2_lifecycle_manager,
         rviz,
     ])
