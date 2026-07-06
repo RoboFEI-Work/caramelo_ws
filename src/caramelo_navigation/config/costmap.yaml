@@ -5,11 +5,11 @@ costmap:
     global_frame: map
     robot_base_frame: base_footprint
     use_sim_time: false
-    footprint: "[[0.355, 0.235], [0.355, -0.235], [-0.355, -0.235], [-0.355, 0.235]]"
+    footprint: "[[0.395, 0.055], [0.395, -0.055], [0.285, -0.055], [0.285, -0.195], [-0.285, -0.195], [-0.285, 0.195], [0.285, 0.195], [0.285, 0.055]]"
     footprint_padding: 0.0
     resolution: 0.02
     track_unknown_space: true
-    plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+    plugins: ["static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
 
     static_layer:
       plugin: "nav2_costmap_2d::StaticLayer"
@@ -30,12 +30,19 @@ costmap:
         raytrace_min_range: 0.0
         obstacle_max_range: 2.5
         obstacle_min_range: 0.0
+
+    denoise_layer:
+      plugin: "nav2_costmap_2d::DenoiseLayer"
+      enabled: true
+      minimal_group_size: 2
+      group_connectivity_type: 8
     
     inflation_layer:
       plugin: "nav2_costmap_2d::InflationLayer"
       enabled: true
-      inflation_radius: 0.245
-      cost_scaling_factor: 30.0
+      # AJUSTAR_NO_ROBO: campo potencial amplo para favorecer caminhos no centro dos corredores.
+      inflation_radius: 0.85
+      cost_scaling_factor: 3.0
       inflate_unknown: false
       inflate_around_unknown: false
       

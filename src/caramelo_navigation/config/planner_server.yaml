@@ -4,28 +4,29 @@ planner_server:
     use_sim_time: false
 
     # IDs de planners disponiveis para selecao pelo BT/RViz.
-    # ThetaStar e o principal; GridBased/Smac fica como experimental.
-    planner_plugins: ["ThetaStar", "GridBased"]
+    # SmacLattice e o principal para o Caramelo omnidirecional nao circular.
+    # ThetaStar fica disponivel apenas como fallback experimental.
+    planner_plugins: ["SmacLattice", "ThetaStar"]
 
     # Exemplo desativado de planner Dijkstra.
-    # GridBased:
+    # SmacGrid:
     #   plugin: "bumperbot_planning::DijkstraPlanner"
 
     # Exemplo desativado de planner A*.
-    # GridBasedFast:
+    # SmacGridFast:
     #   plugin: "bumperbot_planning::AStarPlanner"
 
     # Exemplo desativado de planner D*.
-    # GRidBased:
+    # SmacDStar:
     #   plugin: ""
 
     # ============================================================
-    # Smac State Lattice Planner - HOLONOMICO / MECANUM (experimental)
+    # Smac State Lattice Planner - principal para mecanum nao circular
     # ============================================================
-    GridBased:
+    SmacLattice:
       plugin: "nav2_smac_planner::SmacPlannerLattice" # Plugin Lattice; em Iron ou anterior use "/".
       allow_unknown: true                 # Permite planejar por espaco desconhecido.
-      tolerance: 0.25                     # Tolerancia de distancia se nao alcancar o goal exato.
+      tolerance: 0.05                     # Tolerancia baixa para aceitar aproximacao do goal sem perder precisao.
       max_iterations: 1000000             # Maximo de iteracoes antes de falhar.
       max_on_approach_iterations: 1000    # Tentativas extras quando ja esta perto do goal.
       max_planning_time: 5.0              # Tempo maximo para planejar e suavizar em segundos.
@@ -33,31 +34,31 @@ planner_server:
       analytic_expansion_max_length: 3.0  # Comprimento maximo permitido na expansao analitica.
       analytic_expansion_max_cost: 200.0  # Maior custo aceito em uma expansao analitica.
       analytic_expansion_max_cost_override: false # Permite ignorar o custo maximo perto do goal.
-      downsample_obstacle_heuristic: true # Acelera a heuristica com pequena perda de qualidade.
+      downsample_obstacle_heuristic: false # Mantem heuristica em resolucao total perto de quinas e docas.
       use_quadratic_cost_penalty: false   # Usa penalidade de custo linear, nao quadratica.
       reverse_penalty: 2.0                # Penalidade para primitivas em re; deve ser >= 1.
       change_penalty: 0.05                # Penalidade para trocar a direcao do movimento.
-      non_straight_penalty: 1.05          # Penalidade para primitivas nao retas; deve ser >= 1.
-      cost_penalty: 2.0                   # Evita custos altos e favorece o centro dos corredores.
-      rotation_penalty: 5.0               # Penaliza giro no lugar quando a primitive permite.
+      non_straight_penalty: 1.02          # Penalidade baixa: mecanum translada lateral/diagonal naturalmente.
+      cost_penalty: 3.0                   # Maior aversao a custo alto para proteger o ressalto frontal em quinas.
+      rotation_penalty: 7.0               # Giro no lugar varre area grande por causa do ressalto frontal.
       retrospective_penalty: 0.015        # Prefere manobras tardias para reduzir a busca.
-      lattice_filepath: "/opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json" # Primitivas omni compativeis com o mapa estatico de 5 cm.
-      lookup_table_size: 20.0             # Janela em metros da tabela de distancias em cache.
-      cache_obstacle_heuristic: false     # Reutiliza heuristica de obstaculos entre replans do mesmo goal.
-      allow_reverse_expansion: false      # Habilita expansao reversa espelhada das primitivas.
+      lattice_filepath: "/opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json" # AJUSTAR_NO_ROBO: trocar por primitives omni custom do Caramelo em 2 cm quando geradas.
+      lookup_table_size: 10.0             # Tabela menor e suficiente para ambiente indoor com base omni.
+      cache_obstacle_heuristic: false     # Mantem o cache heuristico desligado para testes consistentes.
+      allow_reverse_expansion: false      # Desligado: para omni, re e so outra translacao coberta pelas primitives.
       coarse_search_resolution: 1         # Numero de bins pulados na busca de orientacao final.
       goal_heading_mode: "DEFAULT"        # DEFAULT, BIDIRECTIONAL ou ALL_DIRECTION.
       smooth_path: true                   # Executa o smoother interno do State Lattice.
       smoother:
         max_iterations: 1000              # Maximo de iteracoes do smoother interno.
-        w_smooth: 0.3                     # Peso que deixa o caminho mais suave.
-        w_data: 0.2                       # Peso que mantem o caminho original.
+        w_smooth: 0.2                     # Suavizacao menos agressiva para preservar folga do footprint assimetrico.
+        w_data: 0.3                       # Mantem mais fidelidade ao caminho cost-aware original.
         tolerance: 1.0e-10                # Tolerancia de convergencia do smoother.
         do_refinement: true               # Refina o caminho depois da primeira suavizacao.
         refinement_num: 2                 # Numero de passagens extras de refinamento.
 
     # ============================================================
-    # Theta Star Planner - principal para a arena sala_520
+    # Theta Star Planner - fallback experimental
     # ============================================================
     ThetaStar:
       plugin: "nav2_theta_star_planner::ThetaStarPlanner" # Planner 2D de segmentos em qualquer angulo.
@@ -76,11 +77,11 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: false
-      footprint: "[[0.355, 0.235], [0.355, -0.235], [-0.355, -0.235], [-0.355, 0.235]]"
+      footprint: "[[0.395, 0.055], [0.395, -0.055], [0.285, -0.055], [0.285, -0.195], [-0.285, -0.195], [-0.285, 0.195], [0.285, 0.195], [0.285, 0.055]]"
       footprint_padding: 0.0
       resolution: 0.02
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -99,11 +100,17 @@ global_costmap:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_topic: /map
         map_subscribe_transient_local: True
+      denoise_layer:
+        plugin: "nav2_costmap_2d::DenoiseLayer"
+        enabled: true
+        minimal_group_size: 2
+        group_connectivity_type: 8
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        inflation_radius: 0.245
-        cost_scaling_factor: 30.0
+        # AJUSTAR_NO_ROBO: campo potencial amplo para favorecer caminhos no centro dos corredores.
+        inflation_radius: 0.85
+        cost_scaling_factor: 3.0
         inflate_unknown: false
         inflate_around_unknown: false
       always_send_full_costmap: True

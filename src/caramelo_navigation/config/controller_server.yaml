@@ -19,8 +19,8 @@ controller_server:
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
-      xy_goal_tolerance: 0.04 # Erro linear aceito no goal.
-      yaw_goal_tolerance: 0.04 # Erro angular aceito no goal.
+      xy_goal_tolerance: 0.02 # Erro linear baixo para docking/manipulacao precisa.
+      yaw_goal_tolerance: 0.025 # Erro angular baixo para chegar alinhado ao alvo.
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
     FollowPath:
@@ -48,9 +48,9 @@ controller_server:
       max_angular_accel: 3.2 # Aceleracao angular maxima.
       max_robot_pose_search_dist: 10.0 # Trecho maximo do path procurado perto do robo.
       interpolate_curvature_after_goal: false # Nao interpola curvatura depois do goal.
-      cost_scaling_dist: 0.01 # So reduz por custo muito perto do obstaculo.
+      cost_scaling_dist: 0.85 # Deve acompanhar o raio da inflation layer ampla.
       cost_scaling_gain: 1.0 # Ganho da reducao por custo.
-      inflation_cost_scaling_factor: 30.0 # Deve acompanhar a inflation layer.
+      inflation_cost_scaling_factor: 3.0 # Deve acompanhar a inflation layer.
 
     DWBHolonomic:
       plugin: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
@@ -76,8 +76,8 @@ controller_server:
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
-      xy_goal_tolerance: 0.04 # Erro linear aceito no goal.
-      yaw_goal_tolerance: 0.04 # Erro angular aceito no goal.
+      xy_goal_tolerance: 0.02 # Erro linear baixo para docking/manipulacao precisa.
+      yaw_goal_tolerance: 0.025 # Erro angular baixo para chegar alinhado ao alvo.
       trans_stopped_velocity: 0.05 # Velocidade considerada como parado.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
@@ -132,7 +132,7 @@ controller_server:
         cost_weight: 3.81 # Peso do custo do costmap.
         near_collision_cost: 253 # Custo que indica quase colisao.
         critical_cost: 300.0 # Custo critico da trajetoria.
-        consider_footprint: true # Usa o footprint retangular na colisao.
+        consider_footprint: true # Usa o footprint SE2 na colisao.
         collision_cost: 1000000.0 # Penalidade para colisao.
         near_goal_distance: 1.0 # Distancia onde reduz esse custo perto do goal.
         trajectory_point_step: 2 # Intervalo de pontos verificados no costmap.
@@ -182,16 +182,9 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.02
-      footprint: "[[0.355, 0.235], [0.355, -0.235], [-0.355, -0.235], [-0.355, 0.235]]"
+      footprint: "[[0.395, 0.055], [0.395, -0.055], [0.285, -0.055], [0.285, -0.195], [-0.285, -0.195], [-0.285, 0.195], [0.285, 0.195], [0.285, 0.055]]"
       footprint_padding: 0.0
-      plugins: ["obstacle_layer", "inflation_layer"]
-      inflation_layer:
-        plugin: "nav2_costmap_2d::InflationLayer"
-        enabled: true
-        inflation_radius: 0.245
-        cost_scaling_factor: 30.0
-        inflate_unknown: false
-        inflate_around_unknown: false
+      plugins: ["obstacle_layer", "denoise_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -206,4 +199,17 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
+      denoise_layer:
+        plugin: "nav2_costmap_2d::DenoiseLayer"
+        enabled: true
+        minimal_group_size: 2
+        group_connectivity_type: 8
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        # AJUSTAR_NO_ROBO: campo potencial amplo para favorecer caminhos no centro dos corredores.
+        inflation_radius: 0.85
+        cost_scaling_factor: 3.0
+        inflate_unknown: false
+        inflate_around_unknown: false
       always_send_full_costmap: true

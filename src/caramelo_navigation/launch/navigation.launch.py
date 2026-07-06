@@ -86,7 +86,7 @@ def _create_navigation_stack(context, *args, **kwargs):
     ]
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
     docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
-    bt_xml = os.path.join(caramelo_navigation_pkg, "behavior_tree", "caramelo_theta_dwb.xml")
+    bt_xml = os.path.join(caramelo_navigation_pkg, "behavior_tree", "caramelo_lattice_dwb.xml")
     costmap_resolution = _resolve_costmap_resolution(context)
     costmap_resolution_params = _make_costmap_resolution_params(costmap_resolution)
 
