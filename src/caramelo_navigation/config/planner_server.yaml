@@ -47,7 +47,7 @@ planner_server:
       cache_obstacle_heuristic: false     # Mantem o cache heuristico desligado para testes consistentes.
       allow_reverse_expansion: false      # Desligado: para omni, re e so outra translacao coberta pelas primitives.
       coarse_search_resolution: 1         # Numero de bins pulados na busca de orientacao final.
-      goal_heading_mode: "DEFAULT"        # DEFAULT, BIDIRECTIONAL ou ALL_DIRECTION.
+      goal_heading_mode: "ALL_DIRECTION"  # Para goals de RViz por posicao; use DEFAULT quando yaw final for obrigatorio.
       smooth_path: true                   # Executa o smoother interno do State Lattice.
       smoother:
         max_iterations: 1000              # Maximo de iteracoes do smoother interno.

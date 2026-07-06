@@ -5,7 +5,7 @@
                 <RateController hz="1.0">
                     <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice"/>
                 </RateController>
-                <FollowPath path="{path}" controller_id="DWBHolonomic"/>
+                <FollowPath path="{path}" controller_id="DWBHolonomic" goal_checker_id="position_goal_checker"/>
             </PipelineSequence>
             <Sequence name="ConservativeRecovery">
                 <Wait wait_duration="2.0"/>

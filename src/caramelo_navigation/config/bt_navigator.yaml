@@ -18,6 +18,7 @@ bt_navigator:
     # Plugins cadastrados para testes:
     # planner_id: SmacLattice, ThetaStar
     # controller_id: FollowPath, DWBHolonomic, MPPIHolonomic
+    # goal_checker_id padrao no BT: position_goal_checker, para evitar caca de yaw em goals do RViz.
     # smoother_id: simple_smoother, savitzky_golay_smoother
     #
     # caramelo_lattice_dwb.xml fixa SmacLattice + DWBHolonomic.

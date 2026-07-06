@@ -8,7 +8,7 @@ controller_server:
     min_theta_velocity_threshold: 0.001 # Ignora ruido muito pequeno em wz.
     failure_tolerance: 0.3 # Tempo maximo de falha antes de abortar.
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["general_goal_checker"]
+    goal_checker_plugins: ["position_goal_checker", "general_goal_checker"]
     controller_plugins: ["DWBHolonomic", "FollowPath", "MPPIHolonomic"] # DWB e o principal; RPP/MPPI ficam experimentais.
     odom_topic: /odom
 
@@ -17,10 +17,15 @@ controller_server:
       required_movement_radius: 0.5 # Deslocamento minimo para considerar progresso.
       movement_time_allowance: 10.0 # Tempo maximo sem progresso.
 
+    position_goal_checker:
+      plugin: "nav2_controller::PositionGoalChecker" # Para goals de RViz em que importa chegar no ponto, nao no yaw.
+      xy_goal_tolerance: 0.04 # Evita caca ao goal perto do alvo.
+      stateful: true # Mantem o goal aceito depois que entra na janela.
+
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
-      xy_goal_tolerance: 0.02 # Erro linear baixo para docking/manipulacao precisa.
-      yaw_goal_tolerance: 0.025 # Erro angular baixo para chegar alinhado ao alvo.
+      xy_goal_tolerance: 0.04 # Preciso, mas menos propenso a oscilar que 2 cm.
+      yaw_goal_tolerance: 0.08 # Cerca de 4.6 graus para evitar giro infinito perto do alvo.
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
     FollowPath:
@@ -76,8 +81,8 @@ controller_server:
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
-      xy_goal_tolerance: 0.02 # Erro linear baixo para docking/manipulacao precisa.
-      yaw_goal_tolerance: 0.025 # Erro angular baixo para chegar alinhado ao alvo.
+      xy_goal_tolerance: 0.04 # Coerente com os goal checkers.
+      yaw_goal_tolerance: 0.08 # Evita caca de orientacao no final.
       trans_stopped_velocity: 0.05 # Velocidade considerada como parado.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
@@ -85,11 +90,11 @@ controller_server:
       BaseObstacle.scale: 0.02 # Peso para custo de obstaculos.
       PathAlign.scale: 24.0 # Peso para alinhar ao path global.
       PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
-      GoalAlign.scale: 18.0 # Peso para alinhar ao goal.
+      GoalAlign.scale: 12.0 # Menos agressivo para nao criar oscilacao no final.
       GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
       PathDist.scale: 24.0 # Peso para manter proximo ao path.
       GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal.
-      RotateToGoal.scale: 24.0 # Peso para alinhar orientacao final.
+      RotateToGoal.scale: 12.0 # Menos agressivo porque o yaw final nao e sempre critico.
       RotateToGoal.slowing_factor: 5.0 # Reducao linear antes do giro final.
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
 
