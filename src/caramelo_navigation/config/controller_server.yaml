@@ -24,8 +24,8 @@ controller_server:
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
-      xy_goal_tolerance: 0.04 # Preciso, mas menos propenso a oscilar que 2 cm.
-      yaw_goal_tolerance: 0.08 # Cerca de 4.6 graus para evitar giro infinito perto do alvo.
+      xy_goal_tolerance: 0.05 # Folga suficiente para parar sem caca ao goal.
+      yaw_goal_tolerance: 0.12 # Cerca de 6.9 graus para respeitar a seta sem giro infinito.
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
     FollowPath:
@@ -64,7 +64,7 @@ controller_server:
       max_vel_x: 0.20 # Velocidade maxima em x.
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
-      max_vel_theta: 0.70 # Velocidade angular maxima.
+      max_vel_theta: 0.90 # Velocidade angular maxima para favorecer giro no eixo.
       min_speed_xy: 0.0 # Menor modulo de velocidade linear.
       max_speed_xy: 0.20 # Limite do modulo da velocidade linear.
       min_speed_theta: 0.0 # Menor velocidade angular.
@@ -72,30 +72,30 @@ controller_server:
       decel_lim_x: -0.45 # Desaceleracao maxima em x.
       acc_lim_y: 0.35 # Aceleracao maxima lateral.
       decel_lim_y: -0.45 # Desaceleracao maxima lateral.
-      acc_lim_theta: 1.20 # Aceleracao angular maxima.
-      decel_lim_theta: -1.40 # Desaceleracao angular maxima.
+      acc_lim_theta: 2.0 # Aceleracao angular maxima para girar com mais decisao.
+      decel_lim_theta: -2.0 # Desaceleracao angular maxima para parar o giro com firmeza.
       vx_samples: 20 # Amostras de velocidade em x.
       vy_samples: 20 # Amostras de velocidade lateral.
-      vtheta_samples: 20 # Amostras de velocidade angular.
+      vtheta_samples: 30 # Mais amostras angulares para achar giro no eixo.
       sim_time: 1.7 # Horizonte de simulacao em segundos.
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
-      xy_goal_tolerance: 0.04 # Coerente com os goal checkers.
-      yaw_goal_tolerance: 0.08 # Evita caca de orientacao no final.
-      trans_stopped_velocity: 0.05 # Velocidade considerada como parado.
+      xy_goal_tolerance: 0.05 # Coerente com o general_goal_checker.
+      yaw_goal_tolerance: 0.12 # Coerente com o general_goal_checker.
+      trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] # Criticos usados para pontuar trajetorias.
       BaseObstacle.scale: 0.02 # Peso para custo de obstaculos.
-      PathAlign.scale: 24.0 # Peso para alinhar ao path global.
+      PathAlign.scale: 8.0 # Reduz comportamento de seguir arco longo tipo carro.
       PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
-      GoalAlign.scale: 12.0 # Menos agressivo para nao criar oscilacao no final.
+      GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal.
       GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
       PathDist.scale: 24.0 # Peso para manter proximo ao path.
       GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal.
-      RotateToGoal.scale: 12.0 # Menos agressivo porque o yaw final nao e sempre critico.
-      RotateToGoal.slowing_factor: 5.0 # Reducao linear antes do giro final.
+      RotateToGoal.scale: 32.0 # Fortalece giro no proprio eixo para alinhar yaw final.
+      RotateToGoal.slowing_factor: 4.0 # Reducao linear antes do giro final.
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
 
     MPPIHolonomic:
