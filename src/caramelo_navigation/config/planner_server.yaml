@@ -42,13 +42,13 @@ planner_server:
       cost_penalty: 3.0                   # Maior aversao a custo alto para proteger o ressalto frontal em quinas.
       rotation_penalty: 1.0               # Giro no eixo deve ser barato para evitar curvas longas tipo carro.
       retrospective_penalty: 0.015        # Prefere manobras tardias para reduzir a busca.
-      lattice_filepath: "/opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json" # AJUSTAR_NO_ROBO: primitives genericas com turning_radius 0.5; gerar omni custom do Caramelo em 2 cm.
+      lattice_filepath: "config/lattice/caramelo_omni_2cm_16bins.json" # O launch injeta o caminho instalado absoluto.
       lookup_table_size: 10.0             # Tabela menor e suficiente para ambiente indoor com base omni.
       cache_obstacle_heuristic: false     # Mantem o cache heuristico desligado para testes consistentes.
       allow_reverse_expansion: false      # Desligado: para omni, re e so outra translacao coberta pelas primitives.
       coarse_search_resolution: 1         # Numero de bins pulados na busca de orientacao final.
       goal_heading_mode: "DEFAULT"        # Respeita a orientacao da seta do 2D Goal Pose com tolerancia no controller.
-      smooth_path: true                   # Executa o smoother interno do State Lattice.
+      smooth_path: false                  # A BT usa savitzky_golay_smoother para preservar primitives omni.
       smoother:
         max_iterations: 1000              # Maximo de iteracoes do smoother interno.
         w_smooth: 0.2                     # Suavizacao menos agressiva para preservar folga do footprint assimetrico.

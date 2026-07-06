@@ -1,0 +1,12 @@
+{
+  "type": "FeatureCollection",
+  "name": "sala_520_route_graph",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "date_generated": "2026-07-06",
+  "features": []
+}

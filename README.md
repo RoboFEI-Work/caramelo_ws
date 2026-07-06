@@ -1,21 +1,35 @@
 # Caramelo WS
 
-Workspace ROS 2 Jazzy do robo Caramelo para mapeamento, localizacao e navegacao.
+Workspace ROS 2 Jazzy do robo Caramelo para mapeamento, localizacao,
+navegacao, service areas, docking, rotas e ferramentas de operacao no PC.
 
-Este workspace roda no computador de operacao. Ele nao inicia o driver do LiDAR, IMU ou controladores da Raspberry; ele consome os topicos que ja chegam do workspace embarcado.
+Este workspace e o lado do computador de operacao. Ele nao deve iniciar os
+drivers fisicos da Raspberry. O hardware embarcado fica no
+`caramelo_hardware_ws` e publica os topicos que este workspace consome.
 
-## Topicos Esperados
+## Visao Geral
 
-Antes de mapear ou navegar, confira se a Raspberry esta publicando pelo menos:
+Fluxo principal:
+
+1. Raspberry sobe LiDAR, odometria, TF, `robot_description` e controladores.
+2. PC roda `caramelo_ws`.
+3. PC mapeia com SLAM Toolbox ou Cartographer.
+4. Cada arena ganha uma pasta propria em `src/caramelo_mapping/maps/<map_name>`.
+5. As Service Areas sao salvas no mapa final.
+6. `docking.yaml` e `route_graph.geojson` sao gerados a partir das Service Areas.
+7. Nav2 usa `SmacLattice + DWB` como perfil principal.
+8. O comando final passa por smoother, collision monitor e relay para a Raspberry.
+
+Topicos esperados da Raspberry:
 
 - `/scan`: LaserScan do LiDAR.
-- `/odom`: odometria usada pelo Nav2/SLAM.
+- `/odom`: odometria usada pelo Nav2, AMCL e SLAM.
 - `/tf` e `/tf_static`: arvore TF do robo.
-- `/robot_description`: modelo do robo para o RViz.
+- `/robot_description`: URDF completo para RViz.
 - `/joint_states`: estados das juntas.
-- `/mecanum_controller/reference`: comando `TwistStamped` usado pelo controlador mecanum.
+- `/mecanum_controller/reference`: comando `TwistStamped` do controlador mecanum.
 
-Comandos rapidos de diagnostico:
+Diagnostico rapido:
 
 ```bash
 ros2 topic list
@@ -24,9 +38,10 @@ ros2 topic echo /odom --once
 ros2 run tf2_ros tf2_echo odom base_footprint
 ```
 
-Se `/scan`, `/odom` ou o TF `odom -> base_footprint` nao existirem, resolva isso no workspace da Raspberry antes de iniciar SLAM/Nav2.
+Se `/scan`, `/odom` ou `odom -> base_footprint` nao existem, corrija primeiro
+o bringup da Raspberry.
 
-## Preparar o Workspace
+## Preparar O Workspace
 
 Em todo terminal novo:
 
@@ -36,255 +51,418 @@ source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ```
 
-Quando alterar codigo, launch, config ou adicionar mapas:
+Build completo:
 
 ```bash
 cd ~/caramelo_ws
 source /opt/ros/jazzy/setup.bash
-colcon build
+colcon build --symlink-install
 source install/setup.bash
 ```
 
-Para buildar somente os pacotes mais usados:
+Build dos pacotes mais usados:
 
 ```bash
-colcon build --packages-select caramelo_msgs caramelo_mapping caramelo_localization caramelo_navigation caramelo_utils
+colcon build --symlink-install --packages-select \
+  caramelo_msgs caramelo_mapping caramelo_localization \
+  caramelo_navigation caramelo_utils
 source install/setup.bash
 ```
 
-## Mapas Disponiveis
+Quando criar ou alterar mapas, Service Areas, docking ou route graph, faca pelo
+menos:
 
-Os mapas ficam em:
-
-```text
-src/caramelo_mapping/maps/<nome_do_mapa>/map.yaml
+```bash
+colcon build --symlink-install --packages-select caramelo_mapping caramelo_navigation
+source install/setup.bash
 ```
 
-Mapas presentes no workspace:
+## Pacotes Principais
+
+- `caramelo_mapping`: SLAM Toolbox, Cartographer, mapas e RViz de mapeamento.
+- `caramelo_localization`: AMCL, map server e RViz de localizacao.
+- `caramelo_navigation`: Nav2, BTs, planners, controllers, docking, rotas e service areas.
+- `caramelo_utils`: teleop e relay `Twist -> TwistStamped`.
+- `caramelo_msgs`: actions e services proprios do projeto.
+- `caramelo_planning`: utilitarios de planejamento de tarefas.
+
+## Pasta De Cada Mapa
+
+Cada arena ou sala deve ter uma pasta propria:
+
+```text
+src/caramelo_mapping/maps/<map_name>/
+  map.yaml
+  map.pgm
+  service_areas.yaml
+  docking.yaml
+  route_graph.geojson
+```
+
+Arquivos:
+
+- `map.yaml`: metadata do mapa de ocupacao.
+- `map.pgm`: imagem do mapa.
+- `service_areas.yaml`: arquivo humano principal das areas da arena.
+- `docking.yaml`: arquivo tecnico derivado para o Nav2 Docking Server.
+- `route_graph.geojson`: grafo do Nav2 Route Server.
+
+Mapas presentes agora:
 
 - `sala_520`
-- `mini_arena` (referencia/backup do mapa copiado para `sala_520`)
+- `arena_teste`
 
-`sala_520` e o mapa padrao dos launches e exemplos atuais.
+## Criar Um Mapa Novo
 
-## Fluxo 1: Mapear com SLAM Toolbox
+Exemplo com nome `arena_2026`.
 
-Use este fluxo como padrao do projeto. Ele abre o `slam_toolbox`, o `map_saver_server`, o RViz e um adaptador `/scan -> /scan_fixed`.
-
-O adaptador existe porque alguns drivers de LiDAR publicam `/scan` com quantidade variavel de leituras. O `slam_toolbox` espera uma geometria fixa, entao o workspace republica uma grade angular fixa em `/scan_fixed` sem mexer no pacote da Raspberry.
-
-### 1. Iniciar SLAM Toolbox
-
-Terminal 1:
+### 1. Subir SLAM Toolbox
 
 ```bash
-ros2 launch caramelo_mapping slam.launch.py
+ros2 launch caramelo_mapping slam.launch.py map_name:=arena_2026
 ```
 
-Parametros principais:
+Parametros uteis:
 
+- `map_name`: nome da pasta do mapa.
 - `use_sim_time`: default `false`.
-- `map_resolution`: default `0.02`, ou seja, 2 cm por celula.
 - `use_rviz`: default `true`.
-- `scan_topic`: default `/scan`, topico bruto vindo da Raspberry.
-- `slam_scan_topic`: default `/scan_fixed`, topico usado pelo SLAM Toolbox.
+- `map_resolution`: default `0.02`.
+- `scan_topic`: default `/scan`.
+- `slam_scan_topic`: default `/scan_fixed`.
 - `use_scan_normalizer`: default `true`.
-- `fixed_scan_count`: default `0`, aprende a quantidade de raios pelo primeiro scan.
-- `scan_range_max`: default `30.0`, alcance maximo do LiDAR em metros.
+- `fixed_scan_count`: default `0`, aprende pelo primeiro scan.
+- `scan_range_max`: default `30.0`.
 
-Exemplo fixando manualmente a quantidade de raios, caso o primeiro scan venha ruim:
-
-```bash
-ros2 launch caramelo_mapping slam.launch.py fixed_scan_count:=3217
-```
-
-Exemplo sem RViz:
+Se o primeiro scan vier ruim, fixe a quantidade de raios:
 
 ```bash
-ros2 launch caramelo_mapping slam.launch.py use_rviz:=false
+ros2 launch caramelo_mapping slam.launch.py map_name:=arena_2026 fixed_scan_count:=3217
 ```
 
-### 2. Conferir no RViz
+### 2. Mover O Robo
 
-No RViz do SLAM, confira:
-
-- `Fixed Frame`: `map`.
-- Mapa em `/map`.
-- Laser em `/scan_fixed`.
-- Grafo do SLAM em `/slam_toolbox/graph_visualization`.
-- TF sem erro entre `map`, `odom`, `base_footprint` e frame do laser.
-
-Se o mapa so cria o primeiro frame e para, veja se o `/scan_fixed` existe:
-
-```bash
-ros2 topic echo /scan_fixed --once
-```
-
-### 3. Movimentar o Robo
-
-Terminal 2:
+Use teleop em outro terminal:
 
 ```bash
 ros2 launch caramelo_utils teleop.launch.py
 ```
 
-Dicas para mapa melhor:
+Dicas:
 
-- comece com o robo parado no `START`, que deve ser `0,0,0`;
-- nao empurre o robo antes do SLAM iniciar;
+- comece no `START`;
 - ande devagar;
-- evite girar muito rapido;
-- passe pelas paredes e corredores;
-- volte por regioes ja mapeadas para fechar loop;
-- evite pessoas passando perto do LiDAR durante o mapeamento.
+- evite giros muito rapidos;
+- passe de novo por regioes ja mapeadas para ajudar loop closure;
+- evite pessoas e objetos mexendo perto do LiDAR.
 
-### 4. Salvar o Mapa
-
-Escolha o nome do mapa. Exemplo: `minha_sala`.
-
-Terminal 3:
+### 3. Salvar O Mapa
 
 ```bash
-mkdir -p src/caramelo_mapping/maps/minha_sala
-ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/minha_sala/map
+mkdir -p src/caramelo_mapping/maps/arena_2026
+ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/arena_2026/map
 ```
 
-Isso cria:
+Depois:
+
+```bash
+colcon build --symlink-install --packages-select caramelo_mapping
+source install/setup.bash
+```
+
+## Service Areas
+
+Service Area e uma pose oficial da arena: `START`, `FINISH`, `WS1`, `SH1`,
+`PP1`, `RT1`, etc.
+
+O arquivo principal e:
 
 ```text
-src/caramelo_mapping/maps/minha_sala/map.yaml
-src/caramelo_mapping/maps/minha_sala/map.pgm
+src/caramelo_mapping/maps/<map_name>/service_areas.yaml
 ```
 
-Depois instale o mapa:
+Conceitos importantes:
+
+- `final_robot_pose`: pose final do robo parado em frente a mesa.
+- `final_robot_pose` nao e a pose da mesa.
+- `approach_pose`: calculada automaticamente a partir da `final_robot_pose`.
+- `approach_offset`: distancia atras da pose final usada para a aproximacao.
+- poses `0,0,0` sao placeholders e sao ignoradas no route graph.
+
+Tipos aceitos:
+
+- `start`
+- `finish`
+- `workstation`
+- `shelf`
+- `precision_placement`
+- `rotating_table`
+
+Alturas aceitas para mesas:
+
+```text
+0.00, 0.05, 0.10, 0.15
+```
+
+### Inicializar Service Areas De Um Mapa
 
 ```bash
-colcon build --packages-select caramelo_mapping
+ros2 run caramelo_navigation init_service_areas --map arena_2026 --sync-docking
+```
+
+Com lista custom:
+
+```bash
+ros2 run caramelo_navigation init_service_areas \
+  --map arena_2026 \
+  --areas START FINISH WS1 WS2 WS3 SH1 PP1 RT1 \
+  --sync-docking
+```
+
+### Salvar Uma Pose
+
+Leve o robo ate a pose final real e execute:
+
+```bash
+ros2 run caramelo_navigation save_service_area_pose \
+  --map arena_2026 \
+  --name WS1 \
+  --type workstation \
+  --height 0.10
+```
+
+Para sobrescrever uma pose existente:
+
+```bash
+ros2 run caramelo_navigation save_service_area_pose \
+  --map arena_2026 \
+  --name WS1 \
+  --type workstation \
+  --height 0.10 \
+  --overwrite
+```
+
+START e FINISH:
+
+```bash
+ros2 run caramelo_navigation save_service_area_pose --map arena_2026 --name START --type start --height 0.00 --overwrite
+ros2 run caramelo_navigation save_service_area_pose --map arena_2026 --name FINISH --type finish --height 0.00 --overwrite
+```
+
+Ajustes importantes:
+
+- `--approach-offset`: distancia da approach pose ate a pose final.
+- `--linear-tolerance`: tolerancia linear para docking.
+- `--angular-tolerance`: tolerancia angular para docking.
+- `--width` e `--depth`: tamanho aproximado da mesa no marker.
+- `--no-sync-docking`: salva sem atualizar `docking.yaml`.
+
+### Validar Service Areas
+
+```bash
+ros2 run caramelo_navigation list_service_areas --map arena_2026
+ros2 run caramelo_navigation validate_service_areas --map arena_2026 --sync-docking
+```
+
+Use `--sync-docking` sempre depois de editar `service_areas.yaml` manualmente.
+
+## Docking
+
+O docking usa dois estagios:
+
+1. Nav2 navega ate a `approach_pose` ou staging pose.
+2. Nav2 Docking Server faz a aproximacao final curta e lenta ate a dock pose.
+
+Arquivo tecnico:
+
+```text
+src/caramelo_mapping/maps/<map_name>/docking.yaml
+```
+
+Regra de manutencao:
+
+- edite `service_areas.yaml`;
+- rode `validate_service_areas --sync-docking`;
+- evite editar `docking.yaml` manualmente, porque ele e derivado.
+
+Subir navegacao com docking:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_docking:=true
+```
+
+Conferir actions:
+
+```bash
+ros2 action list | grep dock
+```
+
+Dockar por ID:
+
+```bash
+ros2 run caramelo_navigation dock_to --map-name arena_2026 --dock-id WS1
+```
+
+Para testar apenas o Docking Server sem a etapa de navegar ate staging:
+
+```bash
+ros2 run caramelo_navigation dock_to --map-name arena_2026 --dock-id WS1 --no-nav-to-staging
+```
+
+Parametros base do docking ficam em:
+
+```text
+src/caramelo_navigation/launch/docking_server.launch.py
+```
+
+Valores atuais foram deixados conservadores para aproximacao final:
+
+- `v_linear_min: 0.015`
+- `v_linear_max: 0.06`
+- `v_angular_max: 0.25`
+- `slowdown_radius: 0.45`
+- `dock_prestaging_tolerance: 0.25`
+- `use_collision_detection: true`
+
+## Route Graph
+
+O Nav2 Route Server usa:
+
+```text
+src/caramelo_mapping/maps/<map_name>/route_graph.geojson
+```
+
+Esse arquivo e gerado a partir de `service_areas.yaml`. Cada Service Area valida
+vira um no. Poses placeholder `0,0,0` sao ignoradas.
+
+Gerar para todos os mapas:
+
+```bash
+python3 src/caramelo_navigation/scripts/sync_route_graph.py
+```
+
+Gerar para um mapa especifico:
+
+```bash
+python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+  --map-folder src/caramelo_mapping/maps/arena_2026
+```
+
+Controlar quantos vizinhos cada no conecta:
+
+```bash
+python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+  --map-folder src/caramelo_mapping/maps/arena_2026 \
+  --max-neighbors 3
+```
+
+Como o launch usa o grafo:
+
+- `use_route_server:=true` e o default.
+- Se o `route_graph.geojson` tiver pelo menos 1 no e 1 aresta, o Route Server sobe.
+- Se o grafo estiver vazio, o launch pula o Route Server para nao quebrar o Nav2.
+
+Edicao manual:
+
+- pode ajustar arestas no GeoJSON se a arena tiver corredores obrigatorios;
+- preserve `Point` para nos;
+- preserve `MultiLineString` para arestas;
+- preserve `startid` e `endid` nas arestas;
+- depois de editar manualmente, nao rode `sync_route_graph` sem querer, porque ele regenera o arquivo.
+
+## Nav2 Do Caramelo
+
+Perfil principal:
+
+- Planner: `SmacLattice`.
+- Controller: `DWBHolonomic`.
+- Smoother: `savitzky_golay_smoother`.
+- Goal checker: `general_goal_checker`.
+- Footprint: poligono SE2 nao circular com ressalto frontal em `+X`.
+
+Perfil experimental:
+
+- Planner: `SmacLattice`.
+- Controller: `MPPIHolonomic`.
+- Smoother: `savitzky_golay_smoother`.
+
+Arquivos principais:
+
+```text
+src/caramelo_navigation/config/planner_server.yaml
+src/caramelo_navigation/config/controller_server.yaml
+src/caramelo_navigation/config/smoother_server.yaml
+src/caramelo_navigation/config/velocity_smoother.yaml
+src/caramelo_navigation/config/collision_monitor.yaml
+src/caramelo_navigation/config/route_server.yaml
+src/caramelo_navigation/config/waypoint_follower.yaml
+src/caramelo_navigation/config/bt_navigator.yaml
+src/caramelo_navigation/behavior_tree/caramelo_lattice_dwb.xml
+src/caramelo_navigation/behavior_tree/caramelo_lattice_mppi.xml
+```
+
+Primitives custom do Smac:
+
+```text
+src/caramelo_navigation/config/lattice/caramelo_omni_2cm_16bins.json
+```
+
+Elas usam:
+
+- `motion_model: omni`
+- `grid_resolution: 0.02`
+- `num_of_headings: 16`
+- `turning_radius: 0.0`
+
+Para regenerar:
+
+```bash
+python3 src/caramelo_navigation/scripts/generate_caramelo_omni_lattice.py
+```
+
+Depois recompile:
+
+```bash
+colcon build --symlink-install --packages-select caramelo_navigation
 source install/setup.bash
 ```
 
-## Fluxo 2: Mapear com Cartographer
+## Bringup De Navegacao
 
-Use este fluxo quando quiser comparar com o SLAM Toolbox ou quando o ambiente tiver mais objetos dinamicos. O Cartographer usa `/scan` e `/odom` diretamente e publica o mapa via `cartographer_occupancy_grid_node`.
-
-### 1. Iniciar Cartographer
-
-Terminal 1:
+Com RViz:
 
 ```bash
-ros2 launch caramelo_cartographer cartographer.launch.py
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026
 ```
 
-Parametros principais:
-
-- `use_sim_time`: default `false`.
-- `use_rviz`: default `true`.
-- `scan_topic`: default `/scan`.
-- `odom_topic`: default `/odom`.
-- `resolution`: default `0.05`.
-- `publish_period_sec`: default `1.0`.
-- `configuration_basename`: default `turtlebot3_lds_2d.lua`.
-
-Exemplo com mapa publicado a 2 cm por celula:
+Com docking:
 
 ```bash
-ros2 launch caramelo_cartographer cartographer.launch.py resolution:=0.02
-```
-
-Exemplo usando outro topico de scan:
-
-```bash
-ros2 launch caramelo_cartographer cartographer.launch.py scan_topic:=/scan odom_topic:=/odom
-```
-
-### 2. Movimentar e Salvar
-
-Use o mesmo teleop:
-
-```bash
-ros2 launch caramelo_utils teleop.launch.py
-```
-
-Para salvar o mapa, use o mesmo comando do Nav2:
-
-```bash
-mkdir -p src/caramelo_mapping/maps/minha_sala_cartographer
-ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/minha_sala_cartographer/map
-colcon build --packages-select caramelo_mapping
-source install/setup.bash
-```
-
-## Qual Mapeamento Usar?
-
-Use SLAM Toolbox quando:
-
-- voce quer o fluxo padrao do workspace;
-- quer ver o grafo do SLAM no RViz;
-- quer usar resolucao de 2 cm por padrao;
-- o `/scan_fixed` esta funcionando bem.
-
-Use Cartographer quando:
-
-- voce quer comparar qualidade de mapa;
-- o ambiente tem pessoas ou objetos dinamicos;
-- voce quer testar uma alternativa que atualiza submaps de forma diferente;
-- o SLAM Toolbox estiver sensivel demais ao LiDAR.
-
-Depois de salvar o mapa, a navegacao com Nav2 e a mesma para mapas criados por qualquer uma das duas ferramentas.
-
-## Fluxo 3: Navegar com Nav2
-
-Use este fluxo quando ja existe um mapa salvo em `src/caramelo_mapping/maps/<map_name>/map.yaml`.
-
-### 1. Iniciar Bringup de Navegacao
-
-Terminal 1:
-
-```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
-```
-
-Esse launch sobe:
-
-- AMCL;
-- `map_server`;
-- Nav2: `controller_server`, `planner_server`, `smoother_server`, `bt_navigator`, `behavior_server`;
-- `velocity_smoother`;
-- `collision_monitor`;
-- relay de `/cmd_vel` para `/mecanum_controller/reference`;
-- markers de Service Areas em `/caramelo/service_areas/markers`;
-- RViz.
-
-Parametros principais:
-
-- `map_name`: default `sala_520`.
-- `use_sim_time`: default `false`.
-- `use_rviz`: default `true`.
-- `navigation_start_delay`: default `5.0`.
-- `costmap_resolution`: default `0.02`, usa 2 cm por celula. Passe `map` para usar a resolucao do `map.yaml`.
-- `use_cmd_vel_relay`: default `true`.
-- `cmd_vel_topic`: default `/cmd_vel`, comando final depois do collision monitor.
-- `mecanum_reference_topic`: default `/mecanum_controller/reference`.
-- `use_service_area_manager`: default `true`.
-- `use_service_area_markers`: default `true`.
-
-Exemplos:
-
-```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 use_docking:=true
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_docking:=true
 ```
 
 Sem RViz:
 
 ```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 use_rviz:=false
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_rviz:=false
 ```
 
-Usando a resolucao armazenada no mapa:
+Perfil MPPI experimental:
 
 ```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520 costmap_resolution:=map
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 nav_profile:=mppi
+```
+
+Sem Route Server:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_route_server:=false
+```
+
+Sem Waypoint Follower:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_waypoint_follower:=false
 ```
 
 Cadeia de velocidade:
@@ -296,261 +474,183 @@ collision_monitor -> /cmd_vel
 twist_relay.py -> /mecanum_controller/reference
 ```
 
-### Nota Tecnica: Inflacao Curta
+## Parametros Dos Launches Principais
 
-O Caramelo usa propositalmente uma inflacao curta para manter a zona critica
-visual grudada nos obstaculos:
+### `caramelo_navigation bringup.launch.py`
 
-```yaml
-inflation_radius: 0.245
-cost_scaling_factor: 30.0
-```
+Este e o launch principal para operacao no PC. Ele inclui localizacao, Nav2 e
+opcionalmente RViz.
 
-Com o footprint atual, o raio circunscrito e aproximadamente `0.426 m`.
-Por isso, Smac e MPPI exibem um warning informando que a inflacao e menor que
-o recomendado para otimizar a verificacao de colisao. O warning e esperado
-nesta configuracao: a verificacao continua usando o footprint real, mas pode
-consumir mais CPU durante planejamento e controle.
+- `map_name`: mapa em `src/caramelo_mapping/maps/<map_name>`. Default `sala_520`.
+- `use_sim_time`: usar clock de simulacao. Default `false`.
+- `use_rviz`: abre RViz. Default `true`.
+- `rviz_config`: caminho do arquivo RViz.
+- `use_docking`: sobe Nav2 Docking Server. Default `false`.
+- `navigation_start_delay`: espera antes de iniciar Nav2 depois da localizacao. Default `5.0`.
+- `costmap_resolution`: default `0.02`; use `map` para ler de `map.yaml`.
+- `nav_profile`: `dwb` ou `mppi`. Default `dwb`.
+- `use_route_server`: tenta subir Route Server se o grafo do mapa for valido. Default `true`.
+- `use_waypoint_follower`: sobe Waypoint Follower. Default `true`.
+- `use_cmd_vel_relay`: converte `/cmd_vel` para `TwistStamped`. Default `true`.
+- `cmd_vel_topic`: topico final depois do collision monitor. Default `/cmd_vel`.
+- `mecanum_reference_topic`: topico do controlador mecanum. Default `/mecanum_controller/reference`.
+- `use_service_area_manager`: sobe API de service areas. Default `true`.
+- `use_service_area_markers`: publica markers das areas. Default `true`.
+- `service_area_marker_topic`: default `/caramelo/service_areas/markers`.
 
-Esta escolha foi feita para evitar uma faixa azul ampla no RViz e permitir
-passagens mais justas. Considere reverter se aparecerem timeouts de planejamento,
-quedas frequentes na taxa do controller, alto uso de CPU ou navegacao lenta em
-corredores estreitos.
+### `caramelo_navigation navigation.launch.py`
 
-Para voltar ao perfil mais conservador, ajuste `controller_server.yaml`,
-`planner_server.yaml` e `costmap.yaml` para:
+Sobe localizacao e stack Nav2 sem abrir RViz do bringup. Use quando ja existe um
+RViz aberto ou em testes na Raspberry/SSH.
 
-```yaml
-inflation_radius: 0.44
-cost_scaling_factor: 12.0
-```
+Tem quase os mesmos parametros do `bringup.launch.py`, exceto `use_rviz` e
+`rviz_config`.
 
-No bloco `FollowPath` de `controller_server.yaml`, mantenha os parametros
-coerentes com a inflacao revertida:
+### `caramelo_mapping slam.launch.py`
 
-```yaml
-cost_scaling_dist: 0.44
-inflation_cost_scaling_factor: 12.0
-```
+Sobe SLAM Toolbox e ferramentas de mapa.
 
-Depois de qualquer mudanca, recompile e reinicie o bringup:
+- `map_name`: nome do mapa em criacao ou edicao.
+- `use_sim_time`: default `false`.
+- `use_rviz`: default `true`.
+- `map_resolution`: default `0.02`.
+- `scan_topic`: default `/scan`.
+- `slam_scan_topic`: default `/scan_fixed`.
+- `use_scan_normalizer`: default `true`.
+- `fixed_scan_count`: default `0`.
+- `scan_range_max`: default `30.0`.
 
-```bash
-colcon build --packages-select caramelo_msgs caramelo_navigation
-source install/setup.bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=sala_520
-```
+### `caramelo_localization global_localization.launch.py`
 
-### 2. Pose Inicial
-
-Na `sala_520`, o AMCL inicia automaticamente em `START = 0,0,0`, igual a convencao de mapeamento. Use o RViz apenas se o robo tiver sido reposicionado ou se as particulas nao baterem com a pose real:
-
-1. Clique em `2D Pose Estimate`.
-2. Clique na posicao real do robo no mapa.
-3. Arraste para apontar a orientacao correta.
-4. Espere as particulas do AMCL ficarem perto do robo.
-
-Se a pose inicial estiver errada, o Nav2 pode planejar corretamente no mapa, mas o robo vai tentar navegar a partir do lugar errado.
-
-### 3. Enviar Objetivo
-
-No RViz voce pode usar:
-
-- `Nav2 Goal`, recomendado para acionar o `NavigateToPose` do Nav2.
-- `2D Goal Pose`, tambem funciona quando o plugin esta conectado ao Nav2.
-
-Depois de enviar o objetivo, confira:
+Sobe AMCL e map server para um mapa salvo.
 
 ```bash
-ros2 topic echo /plan --once
-ros2 topic echo /cmd_vel_nav
-ros2 topic echo /cmd_vel_smoothed
-ros2 topic echo /cmd_vel
-ros2 topic echo /mecanum_controller/reference
+ros2 launch caramelo_localization global_localization.launch.py map_name:=arena_2026
 ```
 
-## Fluxo 4: Service Areas E Docking
+## Launches Avulsos
 
-Use este fluxo para salvar os pontos oficiais da RoboCup@Work e depois mandar o
-robo aproximar com o Nav2 Docking Server.
-
-A regra principal e:
-
-- durante o SLAM, voce pode salvar poses provisoriamente para ir organizando o mapa;
-- depois de salvar o mapa final, reabra o mapa com Nav2/AMCL e sobrescreva as poses finais;
-- a pose salva e a `final_robot_pose`, ou seja, a pose final do robo parado em frente a mesa, nao o centro da mesa.
-
-O motivo: enquanto o SLAM ainda esta otimizando o mapa, loop closures podem
-mexer no frame `map`. Por isso, poses salvas durante o mapeamento sao uteis para
-rascunho, mas as poses de competicao devem ser confirmadas com o mapa ja salvo.
-
-Arquivos por mapa:
-
-```text
-src/caramelo_mapping/maps/<map_name>/
-  map.yaml
-  map.pgm
-  service_areas.yaml
-  docking.yaml
-```
-
-`service_areas.yaml` e o arquivo humano principal. `docking.yaml` e derivado
-dele para o Nav2 Docking Server.
-
-IDs usados:
-
-- `START`, `FINISH`;
-- `WS1`, `WS2`, `WS3`;
-- `SH1`;
-- `PP1`;
-- `RT1`.
-
-Tipos usados no comando:
-
-- `start`;
-- `finish`;
-- `workstation`;
-- `shelf`;
-- `precision_placement`;
-- `rotating_table`.
-
-### 1. Mapear E Marcar Poses Provisorias
-
-Suba o SLAM com o nome do mapa que voce quer usar:
+SLAM Toolbox:
 
 ```bash
-ros2 launch caramelo_mapping slam.launch.py map_name:=arena_teste
+ros2 launch caramelo_mapping slam.launch.py map_name:=arena_2026
 ```
 
-O launch tambem sobe os markers de Service Areas. Enquanto existir TF
-`map -> base_footprint`, voce pode parar o robo em frente a uma area e salvar:
-
-```bash
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name START --type start --height 0.00
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name WS1 --type workstation --height 0.10
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name FINISH --type finish --height 0.00
-```
-
-Se uma pose ja tiver sido salva de verdade, use `--overwrite` para atualizar:
-
-```bash
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name WS1 --type workstation --height 0.10 --overwrite
-```
-
-Durante esse passo, trate as poses como rascunho.
-
-### 2. Salvar O Mapa
-
-Quando o mapa estiver bom:
-
-```bash
-mkdir -p src/caramelo_mapping/maps/arena_teste
-ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/arena_teste/map
-colcon build --packages-select caramelo_mapping caramelo_navigation
-source install/setup.bash
-```
-
-### 3. Confirmar Poses Com O Mapa Fixo
-
-Agora suba Nav2 com docking:
-
-```bash
-ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_teste use_docking:=true
-```
-
-Use teleop para posicionar o robo exatamente na pose final de manipulacao e
-sobrescreva cada area:
-
-```bash
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name WS1 --type workstation --height 0.10 --overwrite
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name SH1 --type shelf --height 0.10 --overwrite
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name PP1 --type precision_placement --height 0.10 --overwrite
-ros2 run caramelo_navigation save_service_area_pose --map arena_teste --name RT1 --type rotating_table --height 0.10 --overwrite
-```
-
-Alturas aceitas para areas com mesa:
-
-```text
-0.00, 0.05, 0.10, 0.15
-```
-
-### 4. Conferir E Sincronizar Docking
-
-```bash
-ros2 run caramelo_navigation list_service_areas --map arena_teste
-ros2 run caramelo_navigation validate_service_areas --map arena_teste --sync-docking
-```
-
-O comando de validacao recria o `docking.yaml` tecnico a partir do
-`service_areas.yaml`.
-
-### 5. Testar Docking Por ID
-
-Confira se a action de docking existe:
-
-```bash
-ros2 action list | grep dock
-```
-
-Mande o robo aproximar de uma area:
-
-```bash
-ros2 run caramelo_navigation dock_to --map-name arena_teste --dock-id WS1
-```
-
-O comportamento esperado e:
-
-1. Nav2 navega ate a pose de approach/staging;
-2. Docking Server aproxima devagar;
-3. robo para em `final_robot_pose`.
-
-Tutorial completo:
-
-```text
-docs/service_areas_docking.md
-```
-
-Os arquivos ficam junto do mapa, entao cada arena tem seu proprio banco de
-Service Areas e docks.
-
-Parametros de seguranca usados no Docking Server:
-
-- `v_linear_min: 0.03`;
-- `v_linear_max: 0.10`;
-- `v_angular_max: 0.30`;
-- `slowdown_radius: 0.35`;
-- `use_collision_detection: true`.
-
-## Launches Separados
-
-Somente SLAM Toolbox:
-
-```bash
-ros2 launch caramelo_mapping slam.launch.py
-```
-
-Somente Cartographer:
+Cartographer, para comparar com SLAM Toolbox:
 
 ```bash
 ros2 launch caramelo_cartographer cartographer.launch.py
 ```
 
-Somente localizacao com AMCL:
+Somente localizacao:
 
 ```bash
-ros2 launch caramelo_localization global_localization.launch.py map_name:=sala_520
+ros2 launch caramelo_localization global_localization.launch.py map_name:=arena_2026
 ```
 
-Somente stack Nav2 e localizacao, sem RViz do bringup:
+Nav2 sem RViz do bringup:
 
 ```bash
-ros2 launch caramelo_navigation navigation.launch.py map_name:=sala_520
+ros2 launch caramelo_navigation navigation.launch.py map_name:=arena_2026
 ```
 
 Teleop:
 
 ```bash
 ros2 launch caramelo_utils teleop.launch.py
+```
+
+Somente Docking Server, quando a stack de navegacao ja esta rodando:
+
+```bash
+ros2 launch caramelo_navigation docking_server.launch.py map_name:=arena_2026
+```
+
+## Testar Navegacao
+
+Depois do bringup:
+
+```bash
+ros2 topic echo /global_costmap/published_footprint --once
+ros2 topic echo /local_costmap/published_footprint --once
+ros2 action list | grep navigate
+ros2 topic echo /cmd_vel_nav
+ros2 topic echo /cmd_vel_smoothed
+ros2 topic echo /cmd_vel
+ros2 topic echo /mecanum_controller/reference
+```
+
+No RViz:
+
+- confirme pose inicial do AMCL;
+- confirme footprint poligonal com ressalto frontal;
+- confirme inflacao larga ao redor dos obstaculos;
+- envie goal curto;
+- envie goal lateral curto;
+- envie goal com yaw final diferente para testar giro no proprio eixo;
+- confira se `/cmd_vel_nav` mostra `angular.z` dominante quando ele alinha yaw.
+
+## Fluxo Recomendado Para Uma Arena Nova
+
+1. Criar mapa com SLAM:
+
+```bash
+ros2 launch caramelo_mapping slam.launch.py map_name:=arena_2026
+```
+
+2. Salvar mapa:
+
+```bash
+mkdir -p src/caramelo_mapping/maps/arena_2026
+ros2 run nav2_map_server map_saver_cli -f src/caramelo_mapping/maps/arena_2026/map
+```
+
+3. Inicializar Service Areas:
+
+```bash
+ros2 run caramelo_navigation init_service_areas --map arena_2026 --sync-docking
+```
+
+4. Reabrir com Nav2:
+
+```bash
+colcon build --symlink-install --packages-select caramelo_mapping caramelo_navigation
+source install/setup.bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_docking:=true
+```
+
+5. Salvar poses reais:
+
+```bash
+ros2 run caramelo_navigation save_service_area_pose --map arena_2026 --name START --type start --height 0.00 --overwrite
+ros2 run caramelo_navigation save_service_area_pose --map arena_2026 --name WS1 --type workstation --height 0.10 --overwrite
+ros2 run caramelo_navigation save_service_area_pose --map arena_2026 --name FINISH --type finish --height 0.00 --overwrite
+```
+
+6. Validar docking:
+
+```bash
+ros2 run caramelo_navigation validate_service_areas --map arena_2026 --sync-docking
+```
+
+7. Gerar route graph:
+
+```bash
+python3 src/caramelo_navigation/scripts/sync_route_graph.py --map-folder src/caramelo_mapping/maps/arena_2026
+```
+
+8. Build final:
+
+```bash
+colcon build --symlink-install --packages-select caramelo_mapping caramelo_navigation
+source install/setup.bash
+```
+
+9. Testar:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_docking:=true
+ros2 run caramelo_navigation dock_to --map-name arena_2026 --dock-id WS1
 ```
 
 ## Problemas Comuns
@@ -561,23 +661,21 @@ ros2 launch caramelo_utils teleop.launch.py
 ros2 topic echo /map --once
 ```
 
-Se nao chegar nada, veja se o SLAM, Cartographer ou `map_server` esta ativo.
+Confira se o SLAM, Cartographer ou `map_server` esta ativo.
 
 ### O SLAM Toolbox mapeia so o primeiro frame
-
-Confira se o normalizador esta publicando:
 
 ```bash
 ros2 topic echo /scan_fixed --once
 ```
 
-Se `/scan_fixed` nao existir, rode o SLAM com:
+Se `/scan_fixed` nao existe:
 
 ```bash
 ros2 launch caramelo_mapping slam.launch.py use_scan_normalizer:=true
 ```
 
-Se ainda falhar, fixe a quantidade de raios observada no log:
+Se ainda falhar, fixe a quantidade de raios:
 
 ```bash
 ros2 launch caramelo_mapping slam.launch.py fixed_scan_count:=3217
@@ -591,11 +689,15 @@ ros2 topic echo /mecanum_controller/reference
 ros2 topic echo /odom --once
 ```
 
-Se `/cmd_vel` existe mas `/mecanum_controller/reference` nao muda, confira `use_cmd_vel_relay:=true` no bringup.
+Se `/cmd_vel` existe mas `/mecanum_controller/reference` nao muda, confira:
+
+```bash
+ros2 launch caramelo_navigation bringup.launch.py map_name:=arena_2026 use_cmd_vel_relay:=true
+```
 
 ### O robo acha que chegou sem se mover
 
-Normalmente e problema de tempo ou TF. Confira:
+Normalmente e problema de tempo, AMCL ou TF.
 
 ```bash
 ros2 run tf2_ros tf2_echo map odom
@@ -603,11 +705,58 @@ ros2 run tf2_ros tf2_echo odom base_footprint
 ros2 topic echo /odom --once
 ```
 
+### O Route Server nao sobe
+
+Veja no log:
+
+```text
+Route server enabled: False
+```
+
+Isso acontece quando o mapa nao tem `route_graph.geojson` valido ou quando o
+grafo esta vazio. Salve poses reais e rode:
+
+```bash
+python3 src/caramelo_navigation/scripts/sync_route_graph.py --map-folder src/caramelo_mapping/maps/<map_name>
+```
+
+### Docking fica perdido no fim
+
+Confira:
+
+- pose final salva no `service_areas.yaml`;
+- `approach_offset`;
+- `linear_tolerance`;
+- `angular_tolerance`;
+- se o robo chegou bem na `approach_pose` antes do docking final;
+- se `use_docking:=true` foi usado no bringup.
+
+Depois de editar:
+
+```bash
+ros2 run caramelo_navigation validate_service_areas --map <map_name> --sync-docking
+python3 src/caramelo_navigation/scripts/sync_route_graph.py --map-folder src/caramelo_mapping/maps/<map_name>
+colcon build --symlink-install --packages-select caramelo_mapping caramelo_navigation
+source install/setup.bash
+```
+
 ### O mapa salvo nao carrega
 
 Confira:
 
 - existe `src/caramelo_mapping/maps/<map_name>/map.yaml`;
-- o pacote foi rebuildado depois de criar o mapa;
-- voce rodou `source install/setup.bash`;
+- existe `src/caramelo_mapping/maps/<map_name>/map.pgm`;
+- o pacote `caramelo_mapping` foi rebuildado;
+- o terminal recebeu `source install/setup.bash`;
 - o launch foi chamado com `map_name:=<map_name>`.
+
+## Referencias Internas
+
+Tutorial detalhado de Service Areas e Docking:
+
+```text
+docs/service_areas_docking.md
+```
+
+O plano de rede PC/Raspberry deve ser mantido junto da documentacao da equipe
+ou copiado para `docs/` quando for versionado neste workspace.

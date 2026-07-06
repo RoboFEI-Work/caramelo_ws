@@ -91,4 +91,16 @@ install(PROGRAMS
   RENAME service_area_manager_node
 )
 
+install(PROGRAMS
+  scripts/generate_caramelo_omni_lattice.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME generate_caramelo_omni_lattice
+)
+
+install(PROGRAMS
+  scripts/sync_route_graph.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME sync_route_graph
+)
+
 ament_package()

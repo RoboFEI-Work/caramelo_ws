@@ -17,6 +17,9 @@ def generate_launch_description():
     rviz_config = LaunchConfiguration("rviz_config")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
     costmap_resolution = LaunchConfiguration("costmap_resolution")
+    nav_profile = LaunchConfiguration("nav_profile")
+    use_route_server = LaunchConfiguration("use_route_server")
+    use_waypoint_follower = LaunchConfiguration("use_waypoint_follower")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
@@ -68,6 +71,21 @@ def generate_launch_description():
             description="Costmap resolution in meters/cell. Pass 'map' to use map.yaml resolution",
         ),
         DeclareLaunchArgument(
+            "nav_profile",
+            default_value="dwb",
+            description="Navigation profile: dwb or mppi",
+        ),
+        DeclareLaunchArgument(
+            "use_route_server",
+            default_value="true",
+            description="Start Nav2 Route Server with the selected map route_graph.geojson",
+        ),
+        DeclareLaunchArgument(
+            "use_waypoint_follower",
+            default_value="true",
+            description="Start Nav2 Waypoint Follower",
+        ),
+        DeclareLaunchArgument(
             "use_cmd_vel_relay",
             default_value="true",
             description="Convert Nav2 cmd_vel Twist into mecanum_controller TwistStamped reference",
@@ -110,6 +128,9 @@ def generate_launch_description():
                 "use_docking": use_docking,
                 "navigation_start_delay": navigation_start_delay,
                 "costmap_resolution": costmap_resolution,
+                "nav_profile": nav_profile,
+                "use_route_server": use_route_server,
+                "use_waypoint_follower": use_waypoint_follower,
                 "use_cmd_vel_relay": use_cmd_vel_relay,
                 "cmd_vel_topic": cmd_vel_topic,
                 "mecanum_reference_topic": mecanum_reference_topic,

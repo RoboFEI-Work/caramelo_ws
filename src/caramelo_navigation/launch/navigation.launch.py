@@ -1,5 +1,6 @@
 import os
 import tempfile
+from pathlib import Path
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -12,18 +13,44 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _as_bool(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _source_maps_from_share(share_dir):
+    share_path = Path(share_dir)
+    for parent in share_path.parents:
+        if parent.name == "install":
+            return parent.parent / "src" / "caramelo_mapping" / "maps"
+    return None
+
+
+def _resolve_map_folder(context):
+    map_name = LaunchConfiguration("map_name").perform(context)
+    share_dir = get_package_share_directory("caramelo_mapping")
+    roots = []
+    source_maps = _source_maps_from_share(share_dir)
+    if source_maps:
+        roots.append(source_maps)
+    roots.append(Path(share_dir) / "maps")
+
+    checked = []
+    for root in roots:
+        candidate = root / map_name
+        checked.append(candidate)
+        if candidate.exists() and (candidate / "map.yaml").exists():
+            return candidate.resolve()
+
+    checked_text = "\n  - ".join(str(path) for path in checked)
+    raise RuntimeError(f"Nao encontrei a pasta do mapa '{map_name}' com map.yaml. Caminhos testados:\n  - {checked_text}")
+
+
 def _resolve_costmap_resolution(context):
     requested_resolution = LaunchConfiguration("costmap_resolution").perform(context).strip()
     if requested_resolution.lower() != "map":
         return float(requested_resolution)
 
-    map_name = LaunchConfiguration("map_name").perform(context)
-    map_yaml_path = os.path.join(
-        get_package_share_directory("caramelo_mapping"),
-        "maps",
-        map_name,
-        "map.yaml",
-    )
+    map_yaml_path = _resolve_map_folder(context) / "map.yaml"
 
     try:
         with open(map_yaml_path, "r", encoding="utf-8") as map_yaml_file:
@@ -33,8 +60,15 @@ def _resolve_costmap_resolution(context):
         return 0.20
 
 
-def _make_costmap_resolution_params(resolution):
+def _make_navigation_override_params(resolution, lattice_filepath, route_graph_filepath):
     params = {
+        "planner_server": {
+            "ros__parameters": {
+                "SmacLattice": {
+                    "lattice_filepath": lattice_filepath,
+                },
+            },
+        },
         "local_costmap": {
             "local_costmap": {
                 "ros__parameters": {
@@ -49,11 +83,16 @@ def _make_costmap_resolution_params(resolution):
                 },
             },
         },
+        "route_server": {
+            "ros__parameters": {
+                "graph_filepath": route_graph_filepath,
+            },
+        },
     }
 
     params_file = tempfile.NamedTemporaryFile(
         mode="w",
-        prefix="caramelo_costmap_resolution_",
+        prefix="caramelo_navigation_overrides_",
         suffix=".yaml",
         delete=False,
         encoding="utf-8",
@@ -63,11 +102,38 @@ def _make_costmap_resolution_params(resolution):
     return params_file.name
 
 
+def _route_graph_counts(route_graph_filepath):
+    try:
+        with open(route_graph_filepath, "r", encoding="utf-8") as graph_file:
+            graph = yaml.safe_load(graph_file) or {}
+    except OSError:
+        return 0, 0
+
+    nodes = 0
+    edges = 0
+    for feature in graph.get("features", []):
+        geometry = feature.get("geometry", {})
+        if geometry.get("type") == "Point":
+            nodes += 1
+        else:
+            edges += 1
+    return nodes, edges
+
+
+def _bt_xml_for_profile(context, package_share):
+    profile = LaunchConfiguration("nav_profile").perform(context).strip().lower()
+    if profile not in ("dwb", "mppi"):
+        raise RuntimeError("nav_profile precisa ser 'dwb' ou 'mppi'.")
+    return profile, os.path.join(package_share, "behavior_tree", f"caramelo_lattice_{profile}.xml")
+
+
 def _create_navigation_stack(context, *args, **kwargs):
     use_sim_time = LaunchConfiguration("use_sim_time")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
     use_docking = LaunchConfiguration("use_docking")
     map_name = LaunchConfiguration("map_name")
+    use_route_server = LaunchConfiguration("use_route_server")
+    use_waypoint_follower = LaunchConfiguration("use_waypoint_follower")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
@@ -84,11 +150,37 @@ def _create_navigation_stack(context, *args, **kwargs):
         "velocity_smoother",
         "collision_monitor",
     ]
+
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
     docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
-    bt_xml = os.path.join(caramelo_navigation_pkg, "behavior_tree", "caramelo_lattice_dwb.xml")
+    nav_profile_value, bt_xml = _bt_xml_for_profile(context, caramelo_navigation_pkg)
+    lattice_filepath = os.path.join(
+        caramelo_navigation_pkg,
+        "config",
+        "lattice",
+        "caramelo_omni_2cm_16bins.json",
+    )
+    map_folder = _resolve_map_folder(context)
+    route_graph_filepath = str(map_folder / "route_graph.geojson")
+    route_graph_nodes, route_graph_edges = _route_graph_counts(route_graph_filepath)
+    start_route_server = (
+        _as_bool(use_route_server.perform(context))
+        and route_graph_nodes > 0
+        and route_graph_edges > 0
+    )
+    start_waypoint_follower = _as_bool(use_waypoint_follower.perform(context))
+
+    if start_route_server:
+        lifecycle_nodes.append("route_server")
+    if start_waypoint_follower:
+        lifecycle_nodes.append("waypoint_follower")
+
     costmap_resolution = _resolve_costmap_resolution(context)
-    costmap_resolution_params = _make_costmap_resolution_params(costmap_resolution)
+    navigation_override_params = _make_navigation_override_params(
+        costmap_resolution,
+        lattice_filepath,
+        route_graph_filepath,
+    )
 
     nav2_controller_server = Node(
         package="nav2_controller",
@@ -96,7 +188,7 @@ def _create_navigation_stack(context, *args, **kwargs):
         output="screen",
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "controller_server.yaml"),
-            costmap_resolution_params,
+            navigation_override_params,
             {"use_sim_time": use_sim_time},
         ],
         remappings=[
@@ -111,7 +203,7 @@ def _create_navigation_stack(context, *args, **kwargs):
         output="screen",
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "planner_server.yaml"),
-            costmap_resolution_params,
+            navigation_override_params,
             {"use_sim_time": use_sim_time},
         ],
     )
@@ -141,6 +233,36 @@ def _create_navigation_stack(context, *args, **kwargs):
             {"default_nav_to_pose_bt_xml": bt_xml},
         ],
     )
+
+    route_and_waypoint_nodes = []
+    if start_route_server:
+        route_and_waypoint_nodes.append(
+            Node(
+                package="nav2_route",
+                executable="route_server",
+                name="route_server",
+                output="screen",
+                parameters=[
+                    os.path.join(caramelo_navigation_pkg, "config", "route_server.yaml"),
+                    navigation_override_params,
+                    {"use_sim_time": use_sim_time},
+                ],
+            )
+        )
+
+    if start_waypoint_follower:
+        route_and_waypoint_nodes.append(
+            Node(
+                package="nav2_waypoint_follower",
+                executable="waypoint_follower",
+                name="waypoint_follower",
+                output="screen",
+                parameters=[
+                    os.path.join(caramelo_navigation_pkg, "config", "waypoint_follower.yaml"),
+                    {"use_sim_time": use_sim_time},
+                ],
+            )
+        )
 
     nav2_smoother_server = Node(
         package="nav2_smoother",
@@ -250,6 +372,7 @@ def _create_navigation_stack(context, *args, **kwargs):
             nav2_smoother_server,
             nav2_behaviors,
             nav2_bt_navigator,
+            *route_and_waypoint_nodes,
             nav2_velocity_smoother,
             nav2_collision_monitor,
             nav2_lifecycle_manager,
@@ -261,6 +384,10 @@ def _create_navigation_stack(context, *args, **kwargs):
 
     return [
         LogInfo(msg=f"Using costmap resolution: {costmap_resolution:.3f} m/cell"),
+        LogInfo(msg=f"Using Nav2 profile: {nav_profile_value}"),
+        LogInfo(msg=f"Using Smac lattice primitives: {lattice_filepath}"),
+        LogInfo(msg=f"Using route graph: {route_graph_filepath} ({route_graph_nodes} nodes, {route_graph_edges} edges)"),
+        LogInfo(msg=f"Route server enabled: {start_route_server}"),
         delayed_navigation,
     ]
 
@@ -297,6 +424,21 @@ def generate_launch_description():
             "costmap_resolution",
             default_value="0.02",
             description="Costmap resolution in meters/cell. Pass 'map' to use map.yaml resolution",
+        ),
+        DeclareLaunchArgument(
+            "nav_profile",
+            default_value="dwb",
+            description="Navigation profile: dwb or mppi",
+        ),
+        DeclareLaunchArgument(
+            "use_route_server",
+            default_value="true",
+            description="Start Nav2 Route Server with the selected map route_graph.geojson",
+        ),
+        DeclareLaunchArgument(
+            "use_waypoint_follower",
+            default_value="true",
+            description="Start Nav2 Waypoint Follower",
         ),
         DeclareLaunchArgument(
             "use_docking",

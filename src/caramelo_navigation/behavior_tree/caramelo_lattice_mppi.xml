@@ -1,7 +1,7 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="3" name="NavigateRecovery">
-      <PipelineSequence name="SmacLatticeSavitzkyDWB">
+      <PipelineSequence name="SmacLatticeSavitzkyMPPI">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
             <Sequence name="ComputeAndSmoothPath">
@@ -13,7 +13,7 @@
         </RateController>
 
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="DWBHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{smoothed_path}" controller_id="MPPIHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>

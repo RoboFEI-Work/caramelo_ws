@@ -1,0 +1,289 @@
+{
+  "type": "FeatureCollection",
+  "name": "arena_teste_route_graph",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "date_generated": "2026-07-06",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 1,
+        "frame": "map",
+        "metadata": {
+          "service_area": {
+            "id": "FINISH",
+            "type": "finish",
+            "use_docking": false,
+            "route_pose": {
+              "x": 2.2947,
+              "y": -6.5621,
+              "yaw": -1.401113
+            },
+            "final_robot_pose": {
+              "x": 2.2947,
+              "y": -6.5621,
+              "yaw": -1.401113
+            },
+            "approach_pose": {
+              "x": 2.2187,
+              "y": -6.1186,
+              "yaw": -1.401113
+            }
+          }
+        }
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          2.2947,
+          -6.5621
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 2,
+        "frame": "map",
+        "metadata": {
+          "service_area": {
+            "id": "START",
+            "type": "start",
+            "use_docking": false,
+            "route_pose": {
+              "x": 0.151,
+              "y": 0.2544,
+              "yaw": -3.015284
+            },
+            "final_robot_pose": {
+              "x": 0.151,
+              "y": 0.2544,
+              "yaw": -3.015284
+            },
+            "approach_pose": {
+              "x": 0.5974,
+              "y": 0.3111,
+              "yaw": -3.015284
+            }
+          }
+        }
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          0.151,
+          0.2544
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 3,
+        "frame": "map",
+        "metadata": {
+          "service_area": {
+            "id": "WS1",
+            "type": "workstation",
+            "use_docking": true,
+            "route_pose": {
+              "x": 2.2233,
+              "y": -0.8808,
+              "yaw": 3.071961
+            },
+            "final_robot_pose": {
+              "x": 1.7744,
+              "y": -0.8495,
+              "yaw": 3.071961
+            },
+            "approach_pose": {
+              "x": 2.2233,
+              "y": -0.8808,
+              "yaw": 3.071961
+            }
+          }
+        }
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          2.2233,
+          -0.8808
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 4,
+        "startid": 1,
+        "endid": 2,
+        "cost": 7.1456,
+        "metadata": {
+          "from": "FINISH",
+          "to": "START"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              2.2947,
+              -6.5621
+            ],
+            [
+              0.151,
+              0.2544
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 5,
+        "startid": 1,
+        "endid": 3,
+        "cost": 5.6817,
+        "metadata": {
+          "from": "FINISH",
+          "to": "WS1"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              2.2947,
+              -6.5621
+            ],
+            [
+              2.2233,
+              -0.8808
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 6,
+        "startid": 2,
+        "endid": 1,
+        "cost": 7.1456,
+        "metadata": {
+          "from": "START",
+          "to": "FINISH"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              0.151,
+              0.2544
+            ],
+            [
+              2.2947,
+              -6.5621
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 7,
+        "startid": 2,
+        "endid": 3,
+        "cost": 2.3629,
+        "metadata": {
+          "from": "START",
+          "to": "WS1"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              0.151,
+              0.2544
+            ],
+            [
+              2.2233,
+              -0.8808
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 8,
+        "startid": 3,
+        "endid": 1,
+        "cost": 5.6817,
+        "metadata": {
+          "from": "WS1",
+          "to": "FINISH"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              2.2233,
+              -0.8808
+            ],
+            [
+              2.2947,
+              -6.5621
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": 9,
+        "startid": 3,
+        "endid": 2,
+        "cost": 2.3629,
+        "metadata": {
+          "from": "WS1",
+          "to": "START"
+        }
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              2.2233,
+              -0.8808
+            ],
+            [
+              0.151,
+              0.2544
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

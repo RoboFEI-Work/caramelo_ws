@@ -13,13 +13,18 @@ bt_navigator:
       - compute_path_error_code
       - follow_path_error_code
 
-    # O launch injeta behavior_tree/caramelo_lattice_dwb.xml como BT padrao.
+    plugin_lib_names:
+      - opennav_dock_action_bt_node
+      - opennav_undock_action_bt_node
+
+    # O launch escolhe a BT padrao com nav_profile:=dwb ou nav_profile:=mppi.
     #
     # Plugins cadastrados para testes:
     # planner_id: SmacLattice, ThetaStar
     # controller_id: FollowPath, DWBHolonomic, MPPIHolonomic
     # goal_checker_id padrao no BT: general_goal_checker, para respeitar yaw com folga.
-    # smoother_id: simple_smoother, savitzky_golay_smoother
+    # smoother_id padrao no BT: savitzky_golay_smoother; simple_smoother fica como fallback.
     #
     # caramelo_lattice_dwb.xml fixa SmacLattice + DWBHolonomic.
+    # caramelo_lattice_mppi.xml fixa SmacLattice + MPPIHolonomic.
     # simple_navigation*.xml ficam como exemplos/experimentos.
