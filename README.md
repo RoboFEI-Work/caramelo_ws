@@ -128,17 +128,10 @@ Parametros uteis:
 - `use_sim_time`: default `false`.
 - `use_rviz`: default `true`.
 - `map_resolution`: default `0.02`.
-- `scan_topic`: default `/scan`.
-- `slam_scan_topic`: default `/scan_fixed`.
-- `use_scan_normalizer`: default `true`.
-- `fixed_scan_count`: default `0`, aprende pelo primeiro scan.
+- `slam_scan_topic`: default `/scan`.
 - `scan_range_max`: default `30.0`.
-
-Se o primeiro scan vier ruim, fixe a quantidade de raios:
-
-```bash
-ros2 launch caramelo_mapping slam.launch.py map_name:=arena_2026 fixed_scan_count:=3217
-```
+- `use_service_area_markers`: default `true`.
+- `service_area_marker_topic`: default `/caramelo/service_areas/markers`.
 
 ### 2. Mover O Robo
 
@@ -514,11 +507,10 @@ Sobe SLAM Toolbox e ferramentas de mapa.
 - `use_sim_time`: default `false`.
 - `use_rviz`: default `true`.
 - `map_resolution`: default `0.02`.
-- `scan_topic`: default `/scan`.
-- `slam_scan_topic`: default `/scan_fixed`.
-- `use_scan_normalizer`: default `true`.
-- `fixed_scan_count`: default `0`.
+- `slam_scan_topic`: default `/scan`.
 - `scan_range_max`: default `30.0`.
+- `use_service_area_markers`: default `true`.
+- `service_area_marker_topic`: default `/caramelo/service_areas/markers`.
 
 ### `caramelo_localization global_localization.launch.py`
 
@@ -663,22 +655,16 @@ ros2 topic echo /map --once
 
 Confira se o SLAM, Cartographer ou `map_server` esta ativo.
 
-### O SLAM Toolbox mapeia so o primeiro frame
+### O SLAM Toolbox nao recebe laser
 
 ```bash
-ros2 topic echo /scan_fixed --once
+ros2 topic echo /scan --once
 ```
 
-Se `/scan_fixed` nao existe:
+Se o LiDAR estiver em outro topico, informe no launch:
 
 ```bash
-ros2 launch caramelo_mapping slam.launch.py use_scan_normalizer:=true
-```
-
-Se ainda falhar, fixe a quantidade de raios:
-
-```bash
-ros2 launch caramelo_mapping slam.launch.py fixed_scan_count:=3217
+ros2 launch caramelo_mapping slam.launch.py slam_scan_topic:=/nome_do_scan
 ```
 
 ### O robo planeja mas nao anda
@@ -756,6 +742,12 @@ Tutorial detalhado de Service Areas e Docking:
 
 ```text
 docs/service_areas_docking.md
+```
+
+Roteiro completo para criar mapa novo e validar Service Areas, docking e rotas:
+
+```text
+docs/passo_a_passo_mapa_service_areas_docking_route.md
 ```
 
 O plano de rede PC/Raspberry deve ser mantido junto da documentacao da equipe
