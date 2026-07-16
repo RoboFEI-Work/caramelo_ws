@@ -1,23 +1,64 @@
 #include "modules/navegacao/navegacao_module.hpp"
 
+#include <QCheckBox>
+#include <QFormLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "core/launch_runner.hpp"
 
 NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
 : QWidget(parent), bridge_(bridge)
 {
+  runner_ = new LaunchRunner(this);
+
   auto * layout = new QVBoxLayout(this);
 
   auto * title = new QLabel("Navegacao");
   title->setObjectName("tituloModulo");
   layout->addWidget(title);
 
+  // --- Ligar o stack de navegacao (Nav2 + AMCL) direto da GUI ---
+  auto * form = new QFormLayout();
+  map_name_ = new QLineEdit("sala_520");
+  com_docking_ = new QCheckBox("Com docking server");
+  form->addRow("Mapa:", map_name_);
+  form->addRow("", com_docking_);
+  layout->addLayout(form);
+
+  ligar_ = new QPushButton("Ligar navegacao (Nav2)");
+  ligar_->setObjectName("acaoPrimaria");
+  connect(
+    ligar_, &QPushButton::clicked, this, [this]() {
+      if (runner_->isRunning()) {
+        runner_->stop();
+      } else {
+        runner_->start(
+          "caramelo_navigation", "bringup.launch.py",
+          {QString("map_name:=%1").arg(map_name_->text().trimmed()),
+            "use_rviz:=false",
+            QString("use_docking:=%1")
+            .arg(com_docking_->isChecked() ? "true" : "false")});
+      }
+    });
+  layout->addWidget(ligar_);
+  connect(
+    runner_, &LaunchRunner::started, this, [this]() {
+      ligar_->setText("Desligar navegacao");
+      status_->setText("Nav2 subindo... aguarde os cartoes do Inicio ficarem verdes.");
+    });
+  connect(
+    runner_, &LaunchRunner::stopped, this, [this](int) {
+      ligar_->setText("Ligar navegacao (Nav2)");
+      status_->setText("Navegacao desligada.");
+    });
+
   auto * dica = new QLabel(
-    "Use a ferramenta \"Definir Goal\" na pagina Robo e clique no mapa para "
-    "enviar uma meta. O status aparece aqui.");
+    "Com a navegacao ligada: use \"Definir Goal\" (painel Mapa & Camadas) e "
+    "clique no mapa para enviar uma meta. O status aparece aqui.");
   dica->setObjectName("msgCartao");
   dica->setWordWrap(true);
   layout->addWidget(dica);

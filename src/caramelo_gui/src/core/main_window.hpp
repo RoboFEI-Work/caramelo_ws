@@ -1,9 +1,10 @@
 #pragma once
 
-// Janela principal (shell da GUI). Sidebar de modulos (cartoes) + area central
-// com paginas (QStackedWidget) + barra de estado com a maquina de estados.
-// v1: modulos "Inicio" (cartoes de saude) e "Robo" (RViz embutido); os demais
-// aparecem desabilitados para mostrar a estrutura.
+// Janela principal (shell da GUI) — layout "mapa sempre visivel":
+//   [ sidebar | MAPA (RViz, permanente) | painel de funcoes (troca) ]
+// A sidebar troca SO o painel da direita; o mapa nunca sai da tela (pedido do
+// dono: "como se a GUI fosse dividida em dois"). Logs ficam num painel
+// inferior oculto (botao na barra de status).
 
 #include <QMainWindow>
 
@@ -35,11 +36,13 @@ public:
 
 private:
   QWidget * buildSidebar();
-  QWidget * buildRoboPage();
-  void addModule(const QString & nome, int pageIndex, bool enabled);
+  QWidget * buildRoboPanel();   // Camadas + Ferramentas + Localizacao rapida
+  void addModule(const QString & nome, int panelIndex, bool enabled);
 
   RosBridge * bridge_ = nullptr;
   StateMachine * state_ = nullptr;
+  RVizFrame * rviz_ = nullptr;
+
   InicioModule * inicio_ = nullptr;
   NavegacaoModule * navegacao_ = nullptr;
   DockingModule * docking_ = nullptr;
@@ -50,9 +53,8 @@ private:
   ServiceAreasModule * service_areas_ = nullptr;
   WaypointsModule * waypoints_ = nullptr;
   EditorMapaModule * editor_mapa_ = nullptr;
-  RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;
-  QStackedWidget * pages_ = nullptr;
+  QStackedWidget * painel_ = nullptr;   // painel de funcoes (direita)
   QLabel * state_label_ = nullptr;
 };

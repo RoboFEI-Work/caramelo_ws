@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QTextStream>
+#include <QTimer>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
@@ -36,8 +37,22 @@ int main(int argc, char ** argv)
   MainWindow window;
   window.show();
 
+  // SIGINT/SIGTERM (Ctrl+C ou ros2 launch encerrando) derrubam o contexto ROS;
+  // o Qt nao sabe disso sozinho e a janela ficava viva ate o SIGKILL. Este
+  // timer encerra o app assim que o ROS morrer.
+  QTimer ros_watchdog;
+  QObject::connect(
+    &ros_watchdog, &QTimer::timeout, &app, [&app]() {
+      if (!rclcpp::ok()) {
+        app.quit();
+      }
+    });
+  ros_watchdog.start(200);
+
   const int ret = app.exec();
 
-  rclcpp::shutdown();
+  if (rclcpp::ok()) {
+    rclcpp::shutdown();
+  }
   return ret;
 }

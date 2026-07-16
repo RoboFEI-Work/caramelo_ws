@@ -8,8 +8,10 @@
 #include <QPlainTextEdit>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -32,16 +34,19 @@ MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
 {
   setWindowTitle("Caramelo — Interface de Operacao");
-  resize(1280, 800);
+  resize(1440, 860);
 
   bridge_ = new RosBridge(this);
   state_ = new StateMachine(this);
 
-  // Paginas (modulos).
-  pages_ = new QStackedWidget();
-  inicio_ = new InicioModule();
-
+  // MAPA permanente no centro.
   rviz_ = new RVizFrame();
+
+  // Painel de funcoes (direita) — a sidebar troca somente ele.
+  painel_ = new QStackedWidget();
+  painel_->setFixedWidth(420);
+
+  inicio_ = new InicioModule();
   navegacao_ = new NavegacaoModule(bridge_);
   docking_ = new DockingModule(bridge_);
   localizacao_ = new LocalizacaoModule(bridge_);
@@ -52,28 +57,36 @@ MainWindow::MainWindow(QWidget * parent)
   waypoints_ = new WaypointsModule(bridge_);
   editor_mapa_ = new EditorMapaModule(bridge_);
 
-  pages_->addWidget(inicio_);          // indice 0
-  pages_->addWidget(buildRoboPage());  // indice 1
-  pages_->addWidget(navegacao_);       // indice 2
-  pages_->addWidget(docking_);         // indice 3
-  pages_->addWidget(localizacao_);     // indice 4
-  pages_->addWidget(mapas_);           // indice 5
-  pages_->addWidget(mapeamento_);      // indice 6
-  pages_->addWidget(teleop_);          // indice 7
-  pages_->addWidget(service_areas_);   // indice 8
-  pages_->addWidget(waypoints_);       // indice 9
-  pages_->addWidget(editor_mapa_);     // indice 10
+  // Modulos com muito conteudo ganham scroll no painel estreito.
+  auto scrollable = [](QWidget * w) {
+      auto * sc = new QScrollArea();
+      sc->setWidgetResizable(true);
+      sc->setFrameShape(QFrame::NoFrame);
+      sc->setWidget(w);
+      return sc;
+    };
 
-  // Layout central: sidebar + paginas.
+  painel_->addWidget(scrollable(inicio_));       // 0
+  painel_->addWidget(buildRoboPanel());          // 1
+  painel_->addWidget(scrollable(navegacao_));    // 2
+  painel_->addWidget(scrollable(docking_));      // 3
+  painel_->addWidget(scrollable(localizacao_));  // 4
+  painel_->addWidget(scrollable(mapas_));        // 5
+  painel_->addWidget(scrollable(mapeamento_));   // 6
+  painel_->addWidget(scrollable(teleop_));       // 7
+  painel_->addWidget(scrollable(service_areas_));// 8
+  painel_->addWidget(scrollable(waypoints_));    // 9
+  painel_->addWidget(editor_mapa_);              // 10 (tem canvas proprio)
+
   auto * central = new QWidget();
   auto * layout = new QHBoxLayout(central);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
   layout->addWidget(buildSidebar());
-  layout->addWidget(pages_, 1);
-  // (o setCentralWidget acontece abaixo, com o painel de logs embutido)
+  layout->addWidget(rviz_, 1);        // mapa SEMPRE visivel
+  layout->addWidget(painel_);
 
-  // Painel de logs (escondido por padrao — logs dos nos via /rosout).
+  // Painel de logs (oculto por padrao — /rosout dos nos originais).
   auto * logs = new QPlainTextEdit();
   logs->setObjectName("painelLogs");
   logs->setReadOnly(true);
@@ -91,7 +104,7 @@ MainWindow::MainWindow(QWidget * parent)
     bridge_, &RosBridge::logLine, this,
     [logs](const QString & l) {logs->appendPlainText(l);});
 
-  // Barra de estado: estado + bateria + botao de logs.
+  // Barra de estado: estado + bateria + logs.
   state_label_ = new QLabel(StateMachine::label(StateMachine::State::OFFLINE));
   state_label_->setObjectName("estadoAtual");
   statusBar()->addPermanentWidget(state_label_);
@@ -115,20 +128,17 @@ MainWindow::MainWindow(QWidget * parent)
   connect(logsBtn, &QPushButton::toggled, this, [logs](bool on) {logs->setVisible(on);});
   statusBar()->addPermanentWidget(logsBtn);
 
-  // Transicao animada entre paginas (fade) — pula a pagina do RViz (contexto GL).
+  // Fade animado ao trocar o painel de funcoes (sem GL ali — seguro).
   connect(
-    pages_, &QStackedWidget::currentChanged, this, [this](int idx) {
-      if (idx == 1) {return;}
-      QWidget * w = pages_->currentWidget();
+    painel_, &QStackedWidget::currentChanged, this, [this](int) {
+      QWidget * w = painel_->currentWidget();
       auto * eff = new QGraphicsOpacityEffect(w);
       w->setGraphicsEffect(eff);
       auto * anim = new QPropertyAnimation(eff, "opacity");
-      anim->setDuration(220);
+      anim->setDuration(200);
       anim->setStartValue(0.0);
       anim->setEndValue(1.0);
-      connect(
-        anim, &QPropertyAnimation::finished, w,
-        [w]() {w->setGraphicsEffect(nullptr);});
+      connect(anim, &QPropertyAnimation::finished, w, [w]() {w->setGraphicsEffect(nullptr);});
       anim->start(QAbstractAnimation::DeleteWhenStopped);
     });
 
@@ -140,6 +150,16 @@ MainWindow::MainWindow(QWidget * parent)
     [this](int, const QString & label) {
       state_label_->setText("Estado: " + label);
     });
+
+  // Fixed frame automatico: usa map quando existir (localizado/mapeando);
+  // senao cai para odom — assim o ROBO SEMPRE APARECE, mesmo sem mapa
+  // (a Raspberry/sim esta sempre publicando TF odom->base).
+  auto * frameTimer = new QTimer(this);
+  connect(
+    frameTimer, &QTimer::timeout, this, [this]() {
+      rviz_->setFixedFrame(bridge_->bestFixedFrame());
+    });
+  frameTimer->start(2000);
 
   bridge_->start();
 }
@@ -155,10 +175,10 @@ QWidget * MainWindow::buildSidebar()
 {
   sidebar_ = new QListWidget();
   sidebar_->setObjectName("sidebar");
-  sidebar_->setFixedWidth(220);
+  sidebar_->setFixedWidth(200);
 
   addModule("Inicio", 0, true);
-  addModule("Robo", 1, true);
+  addModule("Mapa & Camadas", 1, true);
   addModule("Navegacao", 2, true);
   addModule("Docking", 3, true);
   addModule("Localizacao", 4, true);
@@ -168,7 +188,6 @@ QWidget * MainWindow::buildSidebar()
   addModule("Service Areas", 8, true);
   addModule("Waypoints", 9, true);
   addModule("Editor de Mapa", 10, true);
-  // Placeholders da estrutura (habilitam nas proximas versoes):
   addModule("Testes", -1, false);
   addModule("Simulacao", -1, false);
 
@@ -178,9 +197,9 @@ QWidget * MainWindow::buildSidebar()
       if (!current) {
         return;
       }
-      const int page = current->data(Qt::UserRole).toInt();
-      if (page >= 0) {
-        pages_->setCurrentIndex(page);
+      const int panel = current->data(Qt::UserRole).toInt();
+      if (panel >= 0) {
+        painel_->setCurrentIndex(panel);
       }
     });
 
@@ -188,24 +207,14 @@ QWidget * MainWindow::buildSidebar()
   return sidebar_;
 }
 
-QWidget * MainWindow::buildRoboPage()
+QWidget * MainWindow::buildRoboPanel()
 {
-  auto * page = new QWidget();
-  auto * layout = new QHBoxLayout(page);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(0);
-  layout->addWidget(rviz_, 1);
-
   auto * side = new QWidget();
-  side->setObjectName("painelLateral");
-  side->setFixedWidth(240);
   auto * sideLayout = new QVBoxLayout(side);
 
   auto * layersTitle = new QLabel("Camadas");
   layersTitle->setObjectName("tituloModulo");
   sideLayout->addWidget(layersTitle);
-  // As camadas so existem apos a inicializacao ADIADA do RViz (primeiro show)
-  // — populamos os checkboxes quando ele avisar que esta pronto.
   auto * layersBox = new QVBoxLayout();
   sideLayout->addLayout(layersBox);
   connect(
@@ -229,14 +238,11 @@ QWidget * MainWindow::buildRoboPage()
       connect(b, &QPushButton::clicked, this, [this, key]() {rviz_->activateTool(key);});
       sideLayout->addWidget(b);
     };
-  addToolBtn("Interagir", "interact");
+  addToolBtn("Interagir (arrastar itens)", "interact");
   addToolBtn("Mover camera", "move");
   addToolBtn("Definir Goal", "goal");
-  addToolBtn("Estimar Pose", "initial_pose");
 
-  // Localizacao manual DIRETO na tela do mapa (mapa + arrasto + confirmar na
-  // mesma pagina). Iniciar ja ativa a ferramenta Interagir — sem ela o
-  // fantasma nao arrasta.
+  // Localizacao rapida na tela do mapa: posicionar -> arrastar -> confirmar.
   sideLayout->addSpacing(12);
   auto * locTitle = new QLabel("Localizacao");
   locTitle->setObjectName("tituloModulo");
@@ -266,15 +272,18 @@ QWidget * MainWindow::buildRoboPage()
   sideLayout->addWidget(locCancelar);
   sideLayout->addStretch();
 
-  layout->addWidget(side);
-  return page;
+  auto * sc = new QScrollArea();
+  sc->setWidgetResizable(true);
+  sc->setFrameShape(QFrame::NoFrame);
+  sc->setWidget(side);
+  return sc;
 }
 
-void MainWindow::addModule(const QString & nome, int pageIndex, bool enabled)
+void MainWindow::addModule(const QString & nome, int panelIndex, bool enabled)
 {
   auto * item = new QListWidgetItem(nome, sidebar_);
-  item->setData(Qt::UserRole, pageIndex);
-  item->setSizeHint(QSize(0, 48));
+  item->setData(Qt::UserRole, panelIndex);
+  item->setSizeHint(QSize(0, 44));
   if (!enabled) {
     item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
   }

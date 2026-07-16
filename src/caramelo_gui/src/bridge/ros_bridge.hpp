@@ -29,6 +29,8 @@
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
 #include "nav2_msgs/srv/load_map.hpp"
 #include "nav2_msgs/srv/save_map.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 #include "caramelo_msgs/action/align_to_dock.hpp"
 #include "caramelo_msgs/action/save_service_area_pose.hpp"
 #include "caramelo_msgs/srv/list_service_areas.hpp"
@@ -63,6 +65,9 @@ public:
   void publishInitialPose(double x, double y, double yaw);
   ManualLocalization * manualLocalization() {return manual_loc_;}
   WaypointManager * waypoints() {return waypoints_;}
+
+  // Melhor fixed frame disponivel: map (localizado) > odom > base_footprint.
+  QString bestFixedFrame() const;
 
   // --- Mapas ---
   void loadMap(const QString & yaml_path);              // /map_server/load_map
@@ -127,6 +132,9 @@ private:
   ManualLocalization * manual_loc_ = nullptr;
   WaypointManager * waypoints_ = nullptr;
   rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
+
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp_action::Client<FollowWaypoints>::SharedPtr follow_client_;
 
   std::mutex nav_mtx_;

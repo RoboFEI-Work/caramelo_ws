@@ -7,7 +7,11 @@
 #include <QWidget>
 
 class RosBridge;
+class LaunchRunner;
 class QLabel;
+class QLineEdit;
+class QCheckBox;
+class QPushButton;
 
 class NavegacaoModule : public QWidget
 {
@@ -18,5 +22,9 @@ public:
 
 private:
   RosBridge * bridge_;
+  LaunchRunner * runner_ = nullptr;
+  QLineEdit * map_name_ = nullptr;
+  QCheckBox * com_docking_ = nullptr;
+  QPushButton * ligar_ = nullptr;
   QLabel * status_ = nullptr;
 };

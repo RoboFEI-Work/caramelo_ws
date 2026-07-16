@@ -97,8 +97,8 @@ InicioModule::Card & InicioModule::ensureCard(const QString & name)
   layout->addWidget(card.details);
   layout->addStretch();
 
-  const int row = next_pos_ / 3;
-  const int col = next_pos_ % 3;
+  const int row = next_pos_ / 2;
+  const int col = next_pos_ % 2;
   ++next_pos_;
   grid_->addWidget(card.frame, row, col);
 

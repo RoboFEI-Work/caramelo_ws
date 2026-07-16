@@ -50,6 +50,9 @@ RosBridge::RosBridge(QObject * parent)
   waypoints_ = new WaypointManager(node_, this);
   follow_client_ = rclcpp_action::create_client<FollowWaypoints>(node_, "follow_waypoints");
 
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+
   // Logs dos nos originais (/rosout) para o painel oculto da GUI. So WARN+
   // e os INFO de outros nos (o proprio caramelo_gui* fica de fora do painel).
   rosout_sub_ = node_->create_subscription<rcl_interfaces::msg::Log>(
@@ -69,6 +72,17 @@ RosBridge::RosBridge(QObject * parent)
         .arg(niveis.value(msg->level, "?"), nome,
           QString::fromStdString(msg->msg)));
     });
+}
+
+QString RosBridge::bestFixedFrame() const
+{
+  if (tf_buffer_ && tf_buffer_->_frameExists("map")) {
+    return "map";
+  }
+  if (tf_buffer_ && tf_buffer_->_frameExists("odom")) {
+    return "odom";
+  }
+  return "base_footprint";
 }
 
 void RosBridge::goTo(double x, double y, double yaw)

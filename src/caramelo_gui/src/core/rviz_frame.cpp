@@ -110,10 +110,11 @@ void RVizFrame::createDisplays()
     };
 
   add("rviz_default_plugins/Grid", "Grade", true, "", "");
-  // RobotModel comeca DESLIGADO: carregar as malhas STL pesadas derrubou o
-  // OGRE embutido quando o pacote de malhas nao casava com o robot_description
-  // publicado. Ligue pela camada "Robo" quando o ambiente tiver as malhas.
-  add("rviz_default_plugins/RobotModel", "Robo", false, "Description Topic", "/robot_description");
+  // RobotModel SEMPRE ligado (a Raspberry/sim esta sempre publicando o
+  // robot_description). Requisito: o ambiente da GUI deve resolver o mesmo
+  // caramelo_description do robot_description publicado (sourcar o workspace
+  // certo por ultimo), senao as malhas nao carregam.
+  add("rviz_default_plugins/RobotModel", "Robo", true, "Description Topic", "/robot_description");
   add("rviz_default_plugins/TF", "TF", false, "", "");
   add("rviz_default_plugins/Map", "Mapa", true, "Topic", "/map");
   add("rviz_default_plugins/LaserScan", "Laser", true, "Topic", "/scan");
