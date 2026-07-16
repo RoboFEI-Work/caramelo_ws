@@ -26,6 +26,7 @@ public:
 
 private:
   QWidget * buildSidebar();
+  QWidget * buildRoboPage();
   void addModule(const QString & nome, int pageIndex, bool enabled);
 
   RosBridge * bridge_ = nullptr;

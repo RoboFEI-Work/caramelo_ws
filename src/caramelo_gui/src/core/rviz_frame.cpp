@@ -1,39 +1,142 @@
 #include "core/rviz_frame.hpp"
 
 #include <QApplication>
-#include <QMenuBar>
-#include <QStatusBar>
 #include <QVBoxLayout>
 
-#include "rviz_common/visualization_frame.hpp"
+#include "rviz_common/display.hpp"
+#include "rviz_common/render_panel.hpp"
 #include "rviz_common/ros_integration/ros_node_abstraction.hpp"
+#include "rviz_common/tool.hpp"
+#include "rviz_common/tool_manager.hpp"
+#include "rviz_common/visualization_manager.hpp"
+#include "rviz_common/properties/property.hpp"
+#include "rviz_rendering/render_window.hpp"
 
-RVizFrame::RVizFrame(const QString & config_path, QWidget * parent)
+using rviz_common::Display;
+
+RVizFrame::RVizFrame(QWidget * parent)
 : QWidget(parent)
 {
-  // Node dedicado do RViz (separado do node do RosBridge). O RViz o "spina"
-  // pelo proprio timer de update dentro do loop de eventos Qt.
   ros_node_ =
     std::make_shared<rviz_common::ros_integration::RosNodeAbstraction>("caramelo_gui_rviz");
 
-  frame_ = new rviz_common::VisualizationFrame(ros_node_);
-  frame_->setApp(qApp);          // obrigatorio logo apos construir
-  frame_->initialize(ros_node_);
-  if (!config_path.isEmpty()) {
-    frame_->loadDisplayConfig(config_path);
-  }
-
-  // Embutido: escondemos a barra de menu/status do proprio RViz para um visual limpo.
-  if (frame_->menuBar()) {
-    frame_->menuBar()->hide();
-  }
-  if (frame_->statusBar()) {
-    frame_->statusBar()->hide();
-  }
-
+  render_panel_ = new rviz_common::RenderPanel(this);
   auto * layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
-  layout->addWidget(frame_);
+  layout->addWidget(render_panel_);
+
+  // Sequencia de init do embedding (ref. mjeronimo/rviz_embed_test). Os
+  // processEvents ajudam o contexto OGRE a se montar contra o widget.
+  QApplication::processEvents();
+  render_panel_->getRenderWindow()->initialize();
+
+  auto raw_node = ros_node_->get_raw_node();
+  manager_ = new rviz_common::VisualizationManager(
+    render_panel_, ros_node_, this, raw_node->get_clock());
+  render_panel_->initialize(manager_);
+  QApplication::processEvents();
+  manager_->initialize();
+
+  manager_->setFixedFrame("map");
+  createDisplays();
+  setupTools();
+
+  manager_->startUpdate();
 }
 
 RVizFrame::~RVizFrame() = default;
+
+// --- WindowManagerInterface ---
+QWidget * RVizFrame::getParentWindow()
+{
+  return this;
+}
+
+rviz_common::PanelDockWidget * RVizFrame::addPane(
+  const QString &, QWidget *, Qt::DockWidgetArea, bool)
+{
+  // A GUI nao usa os docks internos do RViz; painel proprio cuida da UI.
+  return nullptr;
+}
+
+void RVizFrame::setStatus(const QString & message)
+{
+  emit statusMessage(message);
+}
+
+// --- Displays / layers ---
+void RVizFrame::createDisplays()
+{
+  auto add = [this](
+    const QString & cls, const QString & name, bool enabled,
+    const QString & topic_prop, const QString & topic) {
+      Display * d = manager_->createDisplay(cls, name, enabled);
+      if (d && !topic_prop.isEmpty()) {
+        auto * prop = d->subProp(topic_prop);
+        if (prop) {
+          prop->setValue(topic);
+        }
+      }
+      displays_.insert(name, d);
+    };
+
+  add("rviz_default_plugins/Grid", "Grade", true, "", "");
+  add("rviz_default_plugins/RobotModel", "Robo", true, "Description Topic", "/robot_description");
+  add("rviz_default_plugins/TF", "TF", false, "", "");
+  add("rviz_default_plugins/Map", "Mapa", true, "Topic", "/map");
+  add("rviz_default_plugins/LaserScan", "Laser", true, "Topic", "/scan");
+  add("rviz_default_plugins/Map", "Costmap Global", false, "Topic", "/global_costmap/costmap");
+  add("rviz_default_plugins/Map", "Costmap Local", false, "Topic", "/local_costmap/costmap");
+  add("rviz_default_plugins/Path", "Caminho Global", true, "Topic", "/plan");
+  add("rviz_default_plugins/Path", "Caminho Local", true, "Topic", "/local_plan");
+  add("rviz_default_plugins/MarkerArray", "Service Areas", true, "Topic",
+    "/caramelo/service_areas/markers");
+}
+
+QStringList RVizFrame::layerNames() const
+{
+  return displays_.keys();
+}
+
+void RVizFrame::setLayerEnabled(const QString & name, bool enabled)
+{
+  auto it = displays_.find(name);
+  if (it != displays_.end() && it.value()) {
+    it.value()->setEnabled(enabled);
+  }
+}
+
+bool RVizFrame::isLayerEnabled(const QString & name) const
+{
+  auto it = displays_.find(name);
+  return it != displays_.end() && it.value() && it.value()->isEnabled();
+}
+
+// --- Tools ---
+void RVizFrame::setupTools()
+{
+  auto * tm = manager_->getToolManager();
+  tools_.insert("interact", tm->addTool("rviz_default_plugins/Interact"));
+  tools_.insert("move", tm->addTool("rviz_default_plugins/MoveCamera"));
+  // 2D Pose Estimate -> publica /initialpose ; 2D Goal -> publica /goal_pose.
+  tools_.insert("initial_pose", tm->addTool("rviz_default_plugins/SetInitialPose"));
+  tools_.insert("goal", tm->addTool("rviz_default_plugins/SetGoal"));
+  if (tools_.value("move")) {
+    tm->setCurrentTool(tools_.value("move"));
+  }
+}
+
+void RVizFrame::activateTool(const QString & key)
+{
+  auto it = tools_.find(key);
+  if (it != tools_.end() && it.value()) {
+    manager_->getToolManager()->setCurrentTool(it.value());
+  }
+}
+
+void RVizFrame::setFixedFrame(const QString & frame)
+{
+  if (manager_) {
+    manager_->setFixedFrame(frame);
+  }
+}

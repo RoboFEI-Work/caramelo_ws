@@ -1,13 +1,14 @@
 #include "core/main_window.hpp"
 
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QPushButton>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QVBoxLayout>
 #include <QWidget>
-
-#include "ament_index_cpp/get_package_share_directory.hpp"
 
 #include "bridge/ros_bridge.hpp"
 #include "core/rviz_frame.hpp"
@@ -27,18 +28,10 @@ MainWindow::MainWindow(QWidget * parent)
   pages_ = new QStackedWidget();
   inicio_ = new InicioModule();
 
-  QString rviz_config;
-  try {
-    rviz_config = QString::fromStdString(
-      ament_index_cpp::get_package_share_directory("caramelo_gui") +
-      "/resources/rviz/gui_main.rviz");
-  } catch (...) {
-    rviz_config.clear();
-  }
-  rviz_ = new RVizFrame(rviz_config);
+  rviz_ = new RVizFrame();
 
-  pages_->addWidget(inicio_);   // indice 0
-  pages_->addWidget(rviz_);     // indice 1
+  pages_->addWidget(inicio_);          // indice 0
+  pages_->addWidget(buildRoboPage());  // indice 1
 
   // Layout central: sidebar + paginas.
   auto * central = new QWidget();
@@ -106,6 +99,50 @@ QWidget * MainWindow::buildSidebar()
 
   sidebar_->setCurrentRow(0);
   return sidebar_;
+}
+
+QWidget * MainWindow::buildRoboPage()
+{
+  auto * page = new QWidget();
+  auto * layout = new QHBoxLayout(page);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  layout->addWidget(rviz_, 1);
+
+  auto * side = new QWidget();
+  side->setObjectName("painelLateral");
+  side->setFixedWidth(240);
+  auto * sideLayout = new QVBoxLayout(side);
+
+  auto * layersTitle = new QLabel("Camadas");
+  layersTitle->setObjectName("tituloModulo");
+  sideLayout->addWidget(layersTitle);
+  for (const QString & name : rviz_->layerNames()) {
+    auto * cb = new QCheckBox(name);
+    cb->setChecked(rviz_->isLayerEnabled(name));
+    connect(
+      cb, &QCheckBox::toggled, this,
+      [this, name](bool on) {rviz_->setLayerEnabled(name, on);});
+    sideLayout->addWidget(cb);
+  }
+
+  sideLayout->addSpacing(12);
+  auto * toolsTitle = new QLabel("Ferramentas");
+  toolsTitle->setObjectName("tituloModulo");
+  sideLayout->addWidget(toolsTitle);
+  auto addToolBtn = [this, sideLayout](const QString & text, const QString & key) {
+      auto * b = new QPushButton(text);
+      connect(b, &QPushButton::clicked, this, [this, key]() {rviz_->activateTool(key);});
+      sideLayout->addWidget(b);
+    };
+  addToolBtn("Interagir", "interact");
+  addToolBtn("Mover camera", "move");
+  addToolBtn("Definir Goal", "goal");
+  addToolBtn("Estimar Pose", "initial_pose");
+  sideLayout->addStretch();
+
+  layout->addWidget(side);
+  return page;
 }
 
 void MainWindow::addModule(const QString & nome, int pageIndex, bool enabled)
