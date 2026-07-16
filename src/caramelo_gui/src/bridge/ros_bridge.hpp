@@ -26,6 +26,9 @@
 #include "nav2_msgs/srv/load_map.hpp"
 #include "nav2_msgs/srv/save_map.hpp"
 #include "caramelo_msgs/action/align_to_dock.hpp"
+#include "caramelo_msgs/action/save_service_area_pose.hpp"
+#include "caramelo_msgs/srv/list_service_areas.hpp"
+#include "caramelo_msgs/srv/validate_service_areas.hpp"
 
 #include "bridge/health_types.hpp"
 
@@ -57,6 +60,12 @@ public:
   void loadMap(const QString & yaml_path);              // /map_server/load_map
   void saveMap(const QString & dir, const QString & name);  // /map_saver/save_map
 
+  // --- Service Areas (API do service_area_manager_node) ---
+  void listServiceAreas(const QString & map_name);
+  void validateServiceAreas(const QString & map_name);
+  void saveServiceAreaPose(
+    const QString & map_name, const QString & area_id, const QString & area_type);
+
   // --- Docking ---
   void sendDock(const QString & dock_id);
   void sendUndock(const QString & dock_type);
@@ -70,6 +79,8 @@ signals:
   void dockStatus(const QString & message);
   void dockResult(bool success, const QString & message);
   void mapStatus(bool success, const QString & message);
+  void serviceAreasListed(const QStringList & linhas);
+  void serviceAreaStatus(bool success, const QString & message);
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -97,6 +108,11 @@ private:
 
   rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedPtr load_map_client_;
   rclcpp::Client<nav2_msgs::srv::SaveMap>::SharedPtr save_map_client_;
+
+  using SaveServiceAreaPose = caramelo_msgs::action::SaveServiceAreaPose;
+  rclcpp::Client<caramelo_msgs::srv::ListServiceAreas>::SharedPtr sa_list_client_;
+  rclcpp::Client<caramelo_msgs::srv::ValidateServiceAreas>::SharedPtr sa_validate_client_;
+  rclcpp_action::Client<SaveServiceAreaPose>::SharedPtr sa_save_client_;
 
   ManualLocalization * manual_loc_ = nullptr;
 

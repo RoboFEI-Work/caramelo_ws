@@ -44,6 +44,7 @@ set(SOURCES
   src/modules/mapas/mapas_module.cpp
   src/modules/mapeamento/mapeamento_module.cpp
   src/modules/teleop/teleop_module.cpp
+  src/modules/service_areas/service_areas_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})

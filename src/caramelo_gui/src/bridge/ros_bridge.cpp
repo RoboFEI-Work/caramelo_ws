@@ -38,7 +38,102 @@ RosBridge::RosBridge(QObject * parent)
   load_map_client_ = node_->create_client<nav2_msgs::srv::LoadMap>("/map_server/load_map");
   save_map_client_ = node_->create_client<nav2_msgs::srv::SaveMap>("/map_saver/save_map");
 
+  sa_list_client_ = node_->create_client<caramelo_msgs::srv::ListServiceAreas>(
+    "/caramelo/service_areas/list");
+  sa_validate_client_ = node_->create_client<caramelo_msgs::srv::ValidateServiceAreas>(
+    "/caramelo/service_areas/validate");
+  sa_save_client_ = rclcpp_action::create_client<SaveServiceAreaPose>(
+    node_, "/caramelo/service_areas/save_pose");
+
   manual_loc_ = new ManualLocalization(node_, this);
+}
+
+// ------------------------------------------------------------ Service Areas
+void RosBridge::listServiceAreas(const QString & map_name)
+{
+  if (!sa_list_client_->service_is_ready()) {
+    emit serviceAreaStatus(false, "service_area_manager indisponivel (suba a navegacao)");
+    return;
+  }
+  auto req = std::make_shared<caramelo_msgs::srv::ListServiceAreas::Request>();
+  req->map_name = map_name.toStdString();
+  sa_list_client_->async_send_request(
+    req, [this](rclcpp::Client<caramelo_msgs::srv::ListServiceAreas>::SharedFuture fut) {
+      const auto resp = fut.get();
+      if (!resp || !resp->success) {
+        emit serviceAreaStatus(
+          false, resp ? QString::fromStdString(resp->message) : "falha no list");
+        return;
+      }
+      QStringList linhas;
+      for (size_t i = 0; i < resp->area_ids.size(); ++i) {
+        const double x = i < resp->x.size() ? resp->x[i] : 0.0;
+        const double y = i < resp->y.size() ? resp->y[i] : 0.0;
+        const double yaw = i < resp->yaw.size() ? resp->yaw[i] : 0.0;
+        linhas << QString("%1  [%2]  x=%3  y=%4  yaw=%5")
+          .arg(QString::fromStdString(resp->area_ids[i]))
+          .arg(i < resp->area_types.size() ?
+            QString::fromStdString(resp->area_types[i]) : "?")
+          .arg(x, 0, 'f', 2).arg(y, 0, 'f', 2).arg(yaw, 0, 'f', 2);
+      }
+      emit serviceAreasListed(linhas);
+      emit serviceAreaStatus(true, QString("%1 areas").arg(linhas.size()));
+    });
+}
+
+void RosBridge::validateServiceAreas(const QString & map_name)
+{
+  if (!sa_validate_client_->service_is_ready()) {
+    emit serviceAreaStatus(false, "service_area_manager indisponivel");
+    return;
+  }
+  auto req = std::make_shared<caramelo_msgs::srv::ValidateServiceAreas::Request>();
+  req->map_name = map_name.toStdString();
+  req->sync_docking = true;
+  sa_validate_client_->async_send_request(
+    req, [this](rclcpp::Client<caramelo_msgs::srv::ValidateServiceAreas>::SharedFuture fut) {
+      const auto resp = fut.get();
+      if (!resp) {
+        emit serviceAreaStatus(false, "falha na validacao");
+        return;
+      }
+      QString msg = QString::fromStdString(resp->message);
+      if (!resp->errors.empty()) {
+        msg += QString(" | %1 erro(s)").arg(resp->errors.size());
+      }
+      if (!resp->warnings.empty()) {
+        msg += QString(" | %1 aviso(s)").arg(resp->warnings.size());
+      }
+      emit serviceAreaStatus(resp->success, msg);
+    });
+}
+
+void RosBridge::saveServiceAreaPose(
+  const QString & map_name, const QString & area_id, const QString & area_type)
+{
+  if (!sa_save_client_->action_server_is_ready()) {
+    emit serviceAreaStatus(false, "action save_pose indisponivel");
+    return;
+  }
+  SaveServiceAreaPose::Goal goal;
+  goal.map_name = map_name.toStdString();
+  goal.name = area_id.toStdString();
+  goal.area_type = area_type.toStdString();
+  goal.yes = true;            // confirma sem prompt (a GUI ja e' a confirmacao)
+  goal.sync_docking = true;   // mantem docking.yaml derivado
+
+  rclcpp_action::Client<SaveServiceAreaPose>::SendGoalOptions opts;
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<SaveServiceAreaPose>::WrappedResult & r) {
+      const bool ok = r.code == rclcpp_action::ResultCode::SUCCEEDED && r.result &&
+        r.result->success;
+      emit serviceAreaStatus(
+        ok, ok ? QString("Pose salva (x=%1 y=%2)")
+        .arg(r.result->x, 0, 'f', 2).arg(r.result->y, 0, 'f', 2)
+        : QString::fromStdString(r.result ? r.result->message : "falhou"));
+    };
+  sa_save_client_->async_send_goal(goal, opts);
+  emit serviceAreaStatus(true, QString("Salvando pose atual como %1...").arg(area_id));
 }
 
 // ------------------------------------------------------------- Mapas
