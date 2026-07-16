@@ -1,0 +1,14 @@
+caramelo_health_monitor:
+  ros__parameters:
+    publish_period: 1.0
+    scan_topic: "/scan"
+    imu_topic: "/imu/data_raw"
+    odom_topic: "/odom"
+    joint_states_topic: "/joint_states"
+    # Minimos abaixo dos quais o componente vira WARN (ajustar conforme o robo).
+    min_scan_hz: 5.0
+    min_imu_hz: 10.0
+    min_odom_hz: 20.0
+    global_frame: "map"
+    base_frame: "base_footprint"
+    nav_lifecycle_manager: "lifecycle_manager_navigation"

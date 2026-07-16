@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>caramelo_gui</name>
+  <version>0.1.0</version>
+  <description>Interface grafica de operacao do Caramelo (Qt/C++ com RViz
+  embutido). Cliente do grafo ROS 2 — nunca a unica forma de operar o robo.</description>
+  <maintainer email="tecnologia@robotronix.com.br">Robotronix</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>rviz_common</depend>
+  <depend>rviz_rendering</depend>
+  <depend>rviz_default_plugins</depend>
+  <depend>qtbase5-dev</depend>
+
+  <exec_depend>caramelo_diagnostics</exec_depend>
+  <exec_depend>nav2_rviz_plugins</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
