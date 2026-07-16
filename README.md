@@ -1,11 +1,104 @@
 # Caramelo WS
 
 Workspace ROS 2 Jazzy do robo Caramelo para mapeamento, localizacao,
-navegacao, service areas, docking, rotas e ferramentas de operacao no PC.
+navegacao, service areas, docking, rotas, **interface grafica (GUI)** e
+ferramentas de operacao no PC.
 
 Este workspace e o lado do computador de operacao. Ele nao deve iniciar os
 drivers fisicos da Raspberry. O hardware embarcado fica no
 `caramelo_hardware_ws` e publica os topicos que este workspace consome.
+
+---
+
+## Comece por aqui (nao precisa saber programar)
+
+O Caramelo e um robo movel com rodas mecanum (anda para frente, de lado e
+gira sem manobrar) feito pela equipe RoboFEI. Ele funciona com **dois
+computadores conversando por rede**:
+
+| Computador | O que faz | Workspace |
+|---|---|---|
+| **Raspberry Pi** (dentro do robo) | Liga motores, sensores (laser, IMU), publica a posicao | `caramelo_hardware_ws` |
+| **PC de operacao** (este) | Mapa, navegacao, docking e a **interface grafica** | `caramelo_ws` |
+
+### O jeito facil: usar a Interface Grafica (GUI)
+
+A GUI mostra o **mapa sempre visivel no centro**, com o robo em cima dele, e
+uma barra lateral com todas as funcoes. Por ela voce consegue, **sem digitar
+comandos**:
+
+- Ver a saude do robo (sensores, rede, bateria) em cartoes coloridos;
+- **Criar um mapa novo** dirigindo o robo (modulo *Mapeamento* + *Teleop*);
+- **Limpar o mapa** com uma borracha (modulo *Editor de Mapa*);
+- **Ligar a navegacao** com um botao (modulo *Navegacao*);
+- **Dizer ao robo onde ele esta**: arraste o robo-fantasma laranja no mapa ate
+  o laser verde casar com as paredes e confirme (*Mapa & Camadas → Localizacao*);
+- **Cadastrar estacoes de trabalho e docking** parando o robo na posicao e
+  clicando "Salvar pose atual" (modulo *Service Areas*);
+- **Mandar o robo navegar**: botao *Definir Goal* e um clique no mapa;
+- Criar **waypoints** e mandar o robo seguir todos em ordem;
+- Ver os **logs** tecnicos num painel escondido (botao *Logs*).
+
+Para abrir a GUI (com o robo real ligado, ou com a simulacao):
+
+```bash
+source ~/caramelo_ws/install/setup.bash
+ros2 launch caramelo_gui caramelo_gui.launch.py
+```
+
+> **Passo a passo completo com a simulacao** (criar mapa, docking e navegar
+> sem precisar do robo fisico): [docs/tutorial_gui_simulacao.md](docs/tutorial_gui_simulacao.md)
+
+### Ligando o robo REAL (resumo)
+
+1. **Na Raspberry** (ligar o robo): `ros2 launch raspberry_bringup hardware_bringup.launch.py`
+2. **No PC**: abrir a GUI (comando acima) e usar o modulo *Navegacao* →
+   "Ligar navegacao (Nav2)" com o mapa da arena.
+3. Localizar o robo (fantasma) e operar.
+
+⚠️ **Seguranca**: leia os avisos do `caramelo_hardware_ws/README.md` antes de
+energizar os motores — ha um comportamento perigoso conhecido do driver de
+motor quando o sinal de controle cai (robo pode dar re sozinho).
+
+---
+
+## Indice da documentacao
+
+| Documento | O que ensina |
+|---|---|
+| [docs/tutorial_gui_simulacao.md](docs/tutorial_gui_simulacao.md) | **Tutorial completo da GUI na simulacao**: mapa novo → dock → navegar |
+| [docs/passo_a_passo_mapa_service_areas_docking_route.md](docs/passo_a_passo_mapa_service_areas_docking_route.md) | O mesmo fluxo por terminal (avancado) |
+| [docs/service_areas_docking.md](docs/service_areas_docking.md) | Como funcionam Service Areas e Docking |
+| [docs/keepout_paredes_virtuais.md](docs/keepout_paredes_virtuais.md) | Paredes virtuais (fita no chao que o laser nao ve) |
+| [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | Alinhamento fino de docking com as rodas mecanum |
+| [docs/sincronizacao_relogio_ntp.md](docs/sincronizacao_relogio_ntp.md) | Relogio PC ↔ Raspberry (obrigatorio em arena sem internet) |
+| [docs/AUDITORIA.md](docs/AUDITORIA.md) | Estado real do sistema (tecnico) |
+| `caramelo_hardware_ws/docs/` | Calibracao de odometria, tempo real na Pi, comportamento do ESC |
+
+---
+
+## Fluxo de branches (como o time desenvolve)
+
+```
+main  ← so entra o que foi VALIDADO no robo real, sem erros
+  ▲
+ dev  ← integracao: recebe as branches de funcao; testa-se aqui
+  ▲
+feature/<funcao>  ← uma branch por funcao (ex.: feature/gui,
+                    feature/navegacao, feature/docking)
+```
+
+Regras:
+1. **Ninguem desenvolve direto na `main`.** Ela representa o robo funcionando.
+2. Trabalho novo nasce numa branch de funcao a partir da `dev`
+   (`git checkout dev && git checkout -b feature/minha-funcao`).
+3. Quando a funcao fica pronta, faz-se merge na `dev` e testa-se integrado
+   (simulacao e/ou robo).
+4. So depois de **validar na `dev` sem erros/falhas** (de preferencia no robo
+   real), a `dev` e mesclada na `main`.
+5. Commits sempre com mensagem clara em portugues dizendo o *porque*.
+
+---
 
 ## Visao Geral
 
