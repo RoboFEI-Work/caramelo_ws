@@ -86,7 +86,7 @@ controller_server:
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] # Criticos usados para pontuar trajetorias.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
       BaseObstacle.scale: 0.02 # Peso para custo de obstaculos.
       PathAlign.scale: 8.0 # Reduz comportamento de seguir arco longo tipo carro.
       PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
@@ -97,6 +97,12 @@ controller_server:
       RotateToGoal.scale: 32.0 # Fortalece giro no proprio eixo para alinhar yaw final.
       RotateToGoal.slowing_factor: 4.0 # Reducao linear antes do giro final.
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
+      # ADR-01 item 4: numa base mecanum o Twirling penaliza girar quando daria
+      # para transladar (inclusive de lado), evitando que o DWB "rode como
+      # diferencial". Escala BAIXA para nao brigar com o RotateToGoal (32.0) do
+      # alinhamento final. AJUSTAR_NO_ROBO: subir se o robo girar demais no meio
+      # do caminho, baixar se demorar a alinhar o yaw no goal.
+      Twirling.scale: 2.0 # Peso (baixo) contra giro desnecessario no meio do trajeto.
 
     MPPIHolonomic:
       plugin: "nav2_mppi_controller::MPPIController" # Experimental para mecanum.
