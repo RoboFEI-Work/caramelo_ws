@@ -22,6 +22,7 @@
 #include "modules/teleop/teleop_module.hpp"
 #include "modules/service_areas/service_areas_module.hpp"
 #include "modules/waypoints/waypoints_module.hpp"
+#include "modules/editor_mapa/editor_mapa_module.hpp"
 
 MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
@@ -45,6 +46,7 @@ MainWindow::MainWindow(QWidget * parent)
   teleop_ = new TeleopModule();
   service_areas_ = new ServiceAreasModule(bridge_);
   waypoints_ = new WaypointsModule(bridge_);
+  editor_mapa_ = new EditorMapaModule(bridge_);
 
   pages_->addWidget(inicio_);          // indice 0
   pages_->addWidget(buildRoboPage());  // indice 1
@@ -56,6 +58,7 @@ MainWindow::MainWindow(QWidget * parent)
   pages_->addWidget(teleop_);          // indice 7
   pages_->addWidget(service_areas_);   // indice 8
   pages_->addWidget(waypoints_);       // indice 9
+  pages_->addWidget(editor_mapa_);     // indice 10
 
   // Layout central: sidebar + paginas.
   auto * central = new QWidget();
@@ -106,6 +109,7 @@ QWidget * MainWindow::buildSidebar()
   addModule("Teleop", 7, true);
   addModule("Service Areas", 8, true);
   addModule("Waypoints", 9, true);
+  addModule("Editor de Mapa", 10, true);
   // Placeholders da estrutura (habilitam nas proximas versoes):
   addModule("Testes", -1, false);
   addModule("Simulacao", -1, false);

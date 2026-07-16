@@ -18,6 +18,7 @@ class MapeamentoModule;
 class TeleopModule;
 class ServiceAreasModule;
 class WaypointsModule;
+class EditorMapaModule;
 class RVizFrame;
 
 class QListWidget;
@@ -48,6 +49,7 @@ private:
   TeleopModule * teleop_ = nullptr;
   ServiceAreasModule * service_areas_ = nullptr;
   WaypointsModule * waypoints_ = nullptr;
+  EditorMapaModule * editor_mapa_ = nullptr;
   RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;
