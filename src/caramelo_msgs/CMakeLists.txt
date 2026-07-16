@@ -11,6 +11,7 @@ find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/AlignToDock.action"
   "action/SaveServiceAreaPose.action"
   "srv/InitServiceAreas.srv"
   "srv/ListServiceAreas.srv"

@@ -13,6 +13,7 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>caramelo_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>nav2_collision_monitor</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
   <exec_depend>nav2_dwb_controller</exec_depend>

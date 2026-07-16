@@ -1,0 +1,25 @@
+# Alinhamento fino HOLONOMICO a um dock (ADR-05 opcao c).
+# Complementa o opennav_docking (cujo controller e' unicycle e nao usa vy).
+# Deve ser chamado DEPOIS do staging/approach do Docking Server.
+
+# --- Goal ---
+string dock_id            # ID do dock no docking.yaml do mapa (ex.: WS1, SH1, PP1)
+string map_name           # pasta do mapa em caramelo_mapping/maps/
+string map_dir            # opcional: raiz dos mapas (vazio => resolve sozinho)
+float64 xy_tolerance      # tolerancia final XY em metros (0 => default do no)
+float64 yaw_tolerance     # tolerancia final de yaw em rad (0 => default do no)
+bool use_lidar_refine     # tenta refinar a pose alvo pelos cantos da mesa no /scan
+float64 timeout           # tempo maximo em s (0 => default do no)
+---
+# --- Result ---
+bool success
+string message
+float64 final_x_error
+float64 final_y_error
+float64 final_yaw_error
+---
+# --- Feedback ---
+string phase              # "refinando", "alinhando", "concluido", "abortado"
+float64 x_error
+float64 y_error
+float64 yaw_error

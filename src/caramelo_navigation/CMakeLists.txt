@@ -43,6 +43,12 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
+  scripts/dock_align_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME dock_align_node
+)
+
+install(PROGRAMS
   scripts/dock_to.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME dock_to
