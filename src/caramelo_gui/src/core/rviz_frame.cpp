@@ -91,6 +91,12 @@ void RVizFrame::createDisplays()
   add("rviz_default_plugins/Path", "Caminho Local", true, "Topic", "/local_plan");
   add("rviz_default_plugins/MarkerArray", "Service Areas", true, "Topic",
     "/caramelo/service_areas/markers");
+
+  // Localizacao manual assistida: fantasma arrastavel + scan re-projetado.
+  add("rviz_default_plugins/InteractiveMarkers", "Fantasma", true,
+    "Interactive Markers Namespace", "/localizacao_manual");
+  add("rviz_default_plugins/Marker", "Scan Fantasma", true, "Topic",
+    "/localizacao_manual/scan_preview");
 }
 
 QStringList RVizFrame::layerNames() const

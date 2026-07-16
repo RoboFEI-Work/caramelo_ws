@@ -27,6 +27,8 @@
 
 #include "bridge/health_types.hpp"
 
+class ManualLocalization;
+
 class RosBridge : public QObject
 {
   Q_OBJECT
@@ -47,6 +49,7 @@ public:
 
   // --- Localizacao ---
   void publishInitialPose(double x, double y, double yaw);
+  ManualLocalization * manualLocalization() {return manual_loc_;}
 
   // --- Docking ---
   void sendDock(const QString & dock_id);
@@ -84,6 +87,8 @@ private:
   rclcpp_action::Client<UndockRobot>::SharedPtr undock_client_;
   rclcpp_action::Client<AlignToDock>::SharedPtr align_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr save_dock_pub_;
+
+  ManualLocalization * manual_loc_ = nullptr;
 
   std::mutex nav_mtx_;
   rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr nav_goal_handle_;

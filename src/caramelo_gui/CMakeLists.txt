@@ -15,6 +15,10 @@ find_package(rclcpp_action REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(interactive_markers REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(caramelo_msgs REQUIRED)
 find_package(rviz_common REQUIRED)
@@ -28,12 +32,14 @@ set(CMAKE_AUTOMOC ON)
 set(SOURCES
   src/main.cpp
   src/bridge/ros_bridge.cpp
+  src/bridge/manual_localization.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
   src/core/main_window.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp
+  src/modules/localizacao/localizacao_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})
@@ -46,6 +52,10 @@ ament_target_dependencies(caramelo_gui
   diagnostic_msgs
   geometry_msgs
   std_msgs
+  sensor_msgs
+  visualization_msgs
+  interactive_markers
+  tf2_ros
   nav2_msgs
   caramelo_msgs
   rviz_common

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <functional>
 
+#include "bridge/manual_localization.hpp"
+
 RosBridge::RosBridge(QObject * parent)
 : QObject(parent)
 {
@@ -32,6 +34,8 @@ RosBridge::RosBridge(QObject * parent)
   align_client_ = rclcpp_action::create_client<AlignToDock>(node_, "align_to_dock");
   save_dock_pub_ = node_->create_publisher<std_msgs::msg::String>(
     "/save_dock_pose", rclcpp::QoS(1));
+
+  manual_loc_ = new ManualLocalization(node_, this);
 }
 
 RosBridge::~RosBridge()

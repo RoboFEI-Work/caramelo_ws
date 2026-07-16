@@ -12,6 +12,7 @@ class StateMachine;
 class InicioModule;
 class NavegacaoModule;
 class DockingModule;
+class LocalizacaoModule;
 class RVizFrame;
 
 class QListWidget;
@@ -36,6 +37,7 @@ private:
   InicioModule * inicio_ = nullptr;
   NavegacaoModule * navegacao_ = nullptr;
   DockingModule * docking_ = nullptr;
+  LocalizacaoModule * localizacao_ = nullptr;
   RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;
