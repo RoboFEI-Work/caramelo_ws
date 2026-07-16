@@ -16,7 +16,7 @@ import rclpy
 from rclpy.node import Node
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from sensor_msgs.msg import LaserScan, Imu, JointState
+from sensor_msgs.msg import BatteryState, LaserScan, Imu, JointState
 from nav_msgs.msg import Odometry
 import tf2_ros
 
@@ -62,6 +62,8 @@ class HealthMonitor(Node):
         self.declare_parameter("imu_topic", "/imu/data_raw")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("joint_states_topic", "/joint_states")
+        self.declare_parameter("battery_topic", "/battery_state")
+        self.declare_parameter("battery_warn_percent", 25.0)
         self.declare_parameter("min_scan_hz", 5.0)
         self.declare_parameter("min_imu_hz", 10.0)
         self.declare_parameter("min_odom_hz", 20.0)
@@ -85,6 +87,13 @@ class HealthMonitor(Node):
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+        # Bateria (sensor_msgs/BatteryState) — guarda a ultima leitura.
+        self._battery = None
+        self._battery_stamp = None
+        self.create_subscription(
+            BatteryState, self.get_parameter("battery_topic").value,
+            self._battery_cb, 10)
 
         # Clientes de servico (nao-bloqueantes; cache atualizado por callback).
         self._ctrl_cli = self.create_client(
@@ -122,6 +131,10 @@ class HealthMonitor(Node):
             self._nav_cache = bool(fut.result().success)
         except Exception:
             self._nav_cache = None
+
+    def _battery_cb(self, msg):
+        self._battery = msg
+        self._battery_stamp = time.monotonic()
 
     # ------------------------------------------------------------- helpers
     @staticmethod
@@ -220,7 +233,26 @@ class HealthMonitor(Node):
             ("causa_provavel", "" if tf_level == OK else "AMCL/SLAM ou EKF nao publicando"),
             ("acao_recomendada", "" if tf_level == OK else "Subir localizacao ou mapeamento")]))
 
-        # 7. Nav2 (lifecycle da navegacao).
+        # 7. Bateria (percentual + tensao; STALE se ninguem publica).
+        warn_pct = float(self.get_parameter("battery_warn_percent").value)
+        if self._battery is None or (time.monotonic() - self._battery_stamp) > 10.0:
+            arr.status.append(self._status(
+                "caramelo/bateria", STALE, "sem dados de bateria",
+                [("topico_esperado", self.get_parameter("battery_topic").value),
+                 ("acao_recomendada", "publicar sensor_msgs/BatteryState no robo")]))
+        else:
+            pct = self._battery.percentage
+            # BatteryState usa 0..1 ou 0..100 dependendo do driver; normaliza.
+            pct = pct * 100.0 if pct <= 1.0 else pct
+            nivel = OK if pct >= warn_pct else WARN
+            arr.status.append(self._status(
+                "caramelo/bateria", nivel,
+                f"{pct:.0f}%" + ("" if nivel == OK else " — bateria baixa"),
+                [("percentual", f"{pct:.0f}"),
+                 ("tensao_v", f"{self._battery.voltage:.1f}"),
+                 ("minimo_warn", f"{warn_pct:.0f}")]))
+
+        # 8. Nav2 (lifecycle da navegacao).
         if self._nav_cache is None:
             arr.status.append(self._status(
                 "caramelo/nav2", STALE, "Nav2 nao iniciado",

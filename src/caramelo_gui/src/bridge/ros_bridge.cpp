@@ -49,6 +49,26 @@ RosBridge::RosBridge(QObject * parent)
   manual_loc_ = new ManualLocalization(node_, this);
   waypoints_ = new WaypointManager(node_, this);
   follow_client_ = rclcpp_action::create_client<FollowWaypoints>(node_, "follow_waypoints");
+
+  // Logs dos nos originais (/rosout) para o painel oculto da GUI. So WARN+
+  // e os INFO de outros nos (o proprio caramelo_gui* fica de fora do painel).
+  rosout_sub_ = node_->create_subscription<rcl_interfaces::msg::Log>(
+    "/rosout", rclcpp::QoS(50),
+    [this](const rcl_interfaces::msg::Log::SharedPtr msg) {
+      const QString nome = QString::fromStdString(msg->name);
+      if (nome.startsWith("caramelo_gui")) {
+        return;
+      }
+      static const QMap<int, QString> niveis = {
+        {10, "DEBUG"}, {20, "INFO"}, {30, "WARN"}, {40, "ERROR"}, {50, "FATAL"}};
+      if (msg->level < 20) {
+        return;
+      }
+      emit logLine(
+        QString("[%1] [%2] %3")
+        .arg(niveis.value(msg->level, "?"), nome,
+          QString::fromStdString(msg->msg)));
+    });
 }
 
 void RosBridge::goTo(double x, double y, double yaw)

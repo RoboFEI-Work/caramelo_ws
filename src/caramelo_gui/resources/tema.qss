@@ -1,72 +1,170 @@
-/* Tema PUDU do Caramelo: limpo, claro, cartoes grandes, alto contraste. */
+/* Tema Caramelo x RoboFEI — navy escuro do logo RoboFEI, ciano de destaque e
+   laranja Caramelo na acao primaria. Cartoes grandes, alto contraste, hover
+   reativo (estilo apps de tecnologia). */
 
 QMainWindow, QWidget {
-  background: #f4f6f8;
-  color: #1f2933;
+  background: #0b1626;               /* navy RoboFEI */
+  color: #e6f1ff;
   font-family: "Noto Sans", "DejaVu Sans", sans-serif;
   font-size: 14px;
 }
 
-/* Sidebar de modulos */
+/* ---------- Sidebar de modulos ---------- */
 QListWidget#sidebar {
-  background: #ffffff;
+  background: #081120;
   border: none;
-  border-right: 1px solid #e0e4e8;
+  border-right: 1px solid #14294a;
   outline: 0;
-  padding-top: 8px;
+  padding-top: 10px;
 }
 QListWidget#sidebar::item {
-  padding: 12px 18px;
-  margin: 2px 8px;
-  border-radius: 10px;
-  color: #52606d;
+  padding: 13px 18px;
+  margin: 3px 10px;
+  border-radius: 12px;
+  color: #7d9cc4;
+}
+QListWidget#sidebar::item:hover {
+  background: #12233f;
+  color: #bfe3ff;
 }
 QListWidget#sidebar::item:selected {
-  background: #e3f2fd;
-  color: #0b6bcb;
-  font-weight: 600;
+  background: #103154;
+  color: #35c3f0;                    /* ciano RoboFEI */
+  border-left: 3px solid #35c3f0;
+  font-weight: 700;
 }
 QListWidget#sidebar::item:disabled {
-  color: #b0b8c1;
+  color: #33507a;
 }
 
-/* Titulos */
+/* ---------- Titulos e textos ---------- */
 QLabel#tituloModulo {
-  font-size: 22px;
-  font-weight: 700;
-  color: #102a43;
+  font-size: 21px;
+  font-weight: 800;
+  color: #ffffff;
   padding: 8px 4px;
+  letter-spacing: 0.5px;
 }
-QLabel#tituloCartao {
-  font-size: 16px;
-  font-weight: 600;
-}
-QLabel#msgCartao {
-  color: #52606d;
-}
-QLabel#detalheCartao {
-  color: #7b8794;
-  font-size: 12px;
-}
+QLabel#tituloCartao { font-size: 16px; font-weight: 700; color: #dcecff; }
+QLabel#msgCartao    { color: #8fb0d8; }
+QLabel#detalheCartao{ color: #5f7ea8; font-size: 12px; }
 
-/* Cartoes de status */
+/* ---------- Cartoes de status ---------- */
 QFrame#cartaoStatus {
-  background: #ffffff;
-  border: 1px solid #e0e4e8;
-  border-radius: 14px;
-  padding: 12px;
+  background: #101e35;
+  border: 1px solid #1b3457;
+  border-radius: 16px;
+  padding: 14px;
+}
+QFrame#cartaoStatus:hover {
+  background: #142643;
+  border: 1px solid #35c3f0;
 }
 
-/* Barra de estado */
-QLabel#estadoAtual {
+/* ---------- Botoes ---------- */
+QPushButton {
+  background: #142643;
+  color: #dcecff;
+  border: 1px solid #1f3a5f;
+  border-radius: 12px;
+  padding: 10px 16px;
   font-weight: 600;
-  color: #0b6bcb;
+}
+QPushButton:hover  { background: #1b3457; border-color: #35c3f0; color: #ffffff; }
+QPushButton:pressed{ background: #0f1e36; }
+QPushButton:checked{ background: #103154; border-color: #35c3f0; color: #35c3f0; }
+QPushButton:disabled{ color: #3d5a82; border-color: #14294a; }
+
+/* Acao primaria = laranja Caramelo */
+QPushButton#acaoPrimaria {
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+    stop:0 #ff9a2e, stop:1 #f07f0e);
+  color: #1a0e00;
+  border: none;
+  font-weight: 800;
+}
+QPushButton#acaoPrimaria:hover  { background: #ffab4d; }
+QPushButton#acaoPrimaria:pressed{ background: #e0760c; }
+
+/* ---------- Formularios ---------- */
+QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
+  background: #0e1c31;
+  color: #e6f1ff;
+  border: 1px solid #1f3a5f;
+  border-radius: 10px;
+  padding: 8px 10px;
+  selection-background-color: #35c3f0;
+  selection-color: #06121f;
+}
+QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus {
+  border: 1px solid #35c3f0;
+}
+QComboBox::drop-down { border: none; width: 26px; }
+QComboBox QAbstractItemView {
+  background: #101e35; color: #e6f1ff;
+  selection-background-color: #103154; border: 1px solid #1f3a5f;
+}
+
+QCheckBox { color: #a9c6e8; spacing: 8px; }
+QCheckBox::indicator {
+  width: 18px; height: 18px; border-radius: 5px;
+  border: 1px solid #2a4a75; background: #0e1c31;
+}
+QCheckBox::indicator:hover   { border-color: #35c3f0; }
+QCheckBox::indicator:checked { background: #35c3f0; border-color: #35c3f0; }
+
+/* ---------- Sliders ---------- */
+QSlider::groove:horizontal {
+  height: 6px; background: #14294a; border-radius: 3px;
+}
+QSlider::sub-page:horizontal { background: #35c3f0; border-radius: 3px; }
+QSlider::handle:horizontal {
+  width: 18px; height: 18px; margin: -7px 0;
+  border-radius: 9px; background: #ffffff;
+}
+QSlider::handle:horizontal:hover { background: #35c3f0; }
+
+/* ---------- Listas ---------- */
+QListWidget {
+  background: #0e1c31;
+  border: 1px solid #1b3457;
+  border-radius: 12px;
+  padding: 6px;
+}
+QListWidget::item { padding: 8px; border-radius: 8px; color: #cfe4fb; }
+QListWidget::item:hover    { background: #142643; }
+QListWidget::item:selected { background: #103154; color: #35c3f0; }
+
+/* ---------- Barra de estado ---------- */
+QStatusBar { background: #081120; border-top: 1px solid #14294a; }
+QLabel#estadoAtual {
+  font-weight: 800;
+  color: #06121f;
+  background: #35c3f0;
+  border-radius: 10px;
+  padding: 4px 14px;
+}
+QLabel#bateriaLabel {
+  color: #ffd28f;
+  font-weight: 700;
   padding: 2px 10px;
 }
 
-QCheckBox {
-  color: #52606d;
+/* ---------- Painel de logs (oculto por padrao) ---------- */
+QPlainTextEdit#painelLogs {
+  background: #050d18;
+  color: #7fe3a8;
+  border-top: 1px solid #14294a;
+  font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  font-size: 12px;
 }
-QScrollArea {
-  background: transparent;
+
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical {
+  background: #0b1626; width: 10px; border-radius: 5px;
 }
+QScrollBar::handle:vertical {
+  background: #1f3a5f; border-radius: 5px; min-height: 30px;
+}
+QScrollBar::handle:vertical:hover { background: #35c3f0; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }

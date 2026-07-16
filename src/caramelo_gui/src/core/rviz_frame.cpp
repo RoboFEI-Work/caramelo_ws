@@ -8,6 +8,8 @@
 #include "rviz_common/ros_integration/ros_node_abstraction.hpp"
 #include "rviz_common/tool.hpp"
 #include "rviz_common/tool_manager.hpp"
+#include "rviz_common/view_manager.hpp"
+#include "rviz_common/view_controller.hpp"
 #include "rviz_common/visualization_manager.hpp"
 #include "rviz_common/properties/property.hpp"
 #include "rviz_rendering/render_window.hpp"
@@ -56,6 +58,18 @@ void RVizFrame::initializeRViz()
   manager_->setFixedFrame("map");
   createDisplays();
   setupTools();
+
+  // Mapa 2D visto de CIMA (ortografico): e' a vista dos apps comerciais e o
+  // que torna o arrasto de markers no plano natural (sem perspectiva 3D).
+  auto * vm = manager_->getViewManager();
+  if (vm) {
+    vm->setCurrentViewControllerType("rviz_default_plugins/TopDownOrtho");
+    if (auto * vc = vm->getCurrent()) {
+      if (auto * scale = vc->subProp("Scale")) {
+        scale->setValue(55.0);
+      }
+    }
+  }
 
   manager_->startUpdate();
   emit pronto();

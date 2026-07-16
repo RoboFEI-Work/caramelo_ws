@@ -1,15 +1,19 @@
 #include "core/main_window.hpp"
 
 #include <QCheckBox>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QPlainTextEdit>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include "bridge/manual_localization.hpp"
 #include "bridge/ros_bridge.hpp"
 #include "core/rviz_frame.hpp"
 #include "core/state_machine.hpp"
@@ -67,12 +71,66 @@ MainWindow::MainWindow(QWidget * parent)
   layout->setSpacing(0);
   layout->addWidget(buildSidebar());
   layout->addWidget(pages_, 1);
-  setCentralWidget(central);
+  // (o setCentralWidget acontece abaixo, com o painel de logs embutido)
 
-  // Barra de estado.
+  // Painel de logs (escondido por padrao — logs dos nos via /rosout).
+  auto * logs = new QPlainTextEdit();
+  logs->setObjectName("painelLogs");
+  logs->setReadOnly(true);
+  logs->setMaximumBlockCount(500);
+  logs->setFixedHeight(180);
+  logs->hide();
+  auto * centralComLogs = new QWidget();
+  auto * vlayout = new QVBoxLayout(centralComLogs);
+  vlayout->setContentsMargins(0, 0, 0, 0);
+  vlayout->setSpacing(0);
+  vlayout->addWidget(central, 1);
+  vlayout->addWidget(logs);
+  setCentralWidget(centralComLogs);
+  connect(
+    bridge_, &RosBridge::logLine, this,
+    [logs](const QString & l) {logs->appendPlainText(l);});
+
+  // Barra de estado: estado + bateria + botao de logs.
   state_label_ = new QLabel(StateMachine::label(StateMachine::State::OFFLINE));
   state_label_->setObjectName("estadoAtual");
   statusBar()->addPermanentWidget(state_label_);
+
+  auto * bateria = new QLabel("Bateria: —");
+  bateria->setObjectName("bateriaLabel");
+  statusBar()->addPermanentWidget(bateria);
+  connect(
+    bridge_, &RosBridge::diagnosticsUpdated, this,
+    [bateria](const QVector<ComponentHealth> & health) {
+      for (const auto & c : health) {
+        if (c.name == "caramelo/bateria") {
+          const QString pct = c.values.value("percentual", "");
+          bateria->setText(pct.isEmpty() ? "Bateria: —" : "Bateria: " + pct + "%");
+        }
+      }
+    });
+
+  auto * logsBtn = new QPushButton("Logs");
+  logsBtn->setCheckable(true);
+  connect(logsBtn, &QPushButton::toggled, this, [logs](bool on) {logs->setVisible(on);});
+  statusBar()->addPermanentWidget(logsBtn);
+
+  // Transicao animada entre paginas (fade) — pula a pagina do RViz (contexto GL).
+  connect(
+    pages_, &QStackedWidget::currentChanged, this, [this](int idx) {
+      if (idx == 1) {return;}
+      QWidget * w = pages_->currentWidget();
+      auto * eff = new QGraphicsOpacityEffect(w);
+      w->setGraphicsEffect(eff);
+      auto * anim = new QPropertyAnimation(eff, "opacity");
+      anim->setDuration(220);
+      anim->setStartValue(0.0);
+      anim->setEndValue(1.0);
+      connect(
+        anim, &QPropertyAnimation::finished, w,
+        [w]() {w->setGraphicsEffect(nullptr);});
+      anim->start(QAbstractAnimation::DeleteWhenStopped);
+    });
 
   // Ligacoes ROS -> UI.
   connect(bridge_, &RosBridge::diagnosticsUpdated, inicio_, &InicioModule::onDiagnostics);
@@ -175,6 +233,37 @@ QWidget * MainWindow::buildRoboPage()
   addToolBtn("Mover camera", "move");
   addToolBtn("Definir Goal", "goal");
   addToolBtn("Estimar Pose", "initial_pose");
+
+  // Localizacao manual DIRETO na tela do mapa (mapa + arrasto + confirmar na
+  // mesma pagina). Iniciar ja ativa a ferramenta Interagir — sem ela o
+  // fantasma nao arrasta.
+  sideLayout->addSpacing(12);
+  auto * locTitle = new QLabel("Localizacao");
+  locTitle->setObjectName("tituloModulo");
+  sideLayout->addWidget(locTitle);
+  auto * ml = bridge_->manualLocalization();
+  auto * locIniciar = new QPushButton("Posicionar robo");
+  connect(
+    locIniciar, &QPushButton::clicked, this, [this, ml]() {
+      ml->start();
+      rviz_->activateTool("interact");
+    });
+  sideLayout->addWidget(locIniciar);
+  auto * locConfirmar = new QPushButton("Confirmar pose");
+  locConfirmar->setObjectName("acaoPrimaria");
+  connect(
+    locConfirmar, &QPushButton::clicked, this, [this, ml]() {
+      ml->confirm();
+      rviz_->activateTool("move");
+    });
+  sideLayout->addWidget(locConfirmar);
+  auto * locCancelar = new QPushButton("Cancelar");
+  connect(
+    locCancelar, &QPushButton::clicked, this, [this, ml]() {
+      ml->cancel();
+      rviz_->activateTool("move");
+    });
+  sideLayout->addWidget(locCancelar);
   sideLayout->addStretch();
 
   layout->addWidget(side);

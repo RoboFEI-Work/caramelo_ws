@@ -21,6 +21,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "rcl_interfaces/msg/log.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/action/follow_waypoints.hpp"
 #include "nav2_msgs/action/dock_robot.hpp"
@@ -88,6 +89,7 @@ signals:
   void mapStatus(bool success, const QString & message);
   void serviceAreasListed(const QStringList & linhas);
   void serviceAreaStatus(bool success, const QString & message);
+  void logLine(const QString & line);   // /rosout (logs dos nos), p/ painel oculto
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -124,6 +126,7 @@ private:
 
   ManualLocalization * manual_loc_ = nullptr;
   WaypointManager * waypoints_ = nullptr;
+  rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
   rclcpp_action::Client<FollowWaypoints>::SharedPtr follow_client_;
 
   std::mutex nav_mtx_;

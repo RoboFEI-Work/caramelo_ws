@@ -20,6 +20,7 @@ QString friendlyName(const QString & name)
     {"caramelo/odometria", "Odometria"},
     {"caramelo/tf", "TF"},
     {"caramelo/nav2", "Nav2"},
+    {"caramelo/bateria", "Bateria"},
   };
   return nomes.value(name, name);
 }

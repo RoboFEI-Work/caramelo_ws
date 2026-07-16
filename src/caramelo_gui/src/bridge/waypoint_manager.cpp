@@ -62,17 +62,15 @@ void WaypointManager::insertMarker(const std::string & name, double x, double y,
   seta.color.b = 1.0f;
   seta.color.a = 0.9f;
 
-  InteractiveMarkerControl visual;
-  visual.always_visible = true;
-  visual.markers.push_back(esfera);
-  visual.markers.push_back(seta);
-  im.controls.push_back(visual);
-
+  // Corpo DENTRO do controle MOVE_PLANE: arrasta clicando na propria esfera.
   InteractiveMarkerControl move;
   move.name = "mover_xy";
   move.interaction_mode = InteractiveMarkerControl::MOVE_PLANE;
   move.orientation.w = 1.0;
   move.orientation.y = 1.0;
+  move.always_visible = true;
+  move.markers.push_back(esfera);
+  move.markers.push_back(seta);
   im.controls.push_back(move);
 
   InteractiveMarkerControl gira;

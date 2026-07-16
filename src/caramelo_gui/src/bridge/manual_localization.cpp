@@ -93,18 +93,17 @@ void ManualLocalization::start()
   seta.color.b = 0.0f;
   seta.color.a = 0.95f;
 
-  InteractiveMarkerControl visual;
-  visual.always_visible = true;
-  visual.markers.push_back(corpo);
-  visual.markers.push_back(seta);
-  im.controls.push_back(visual);
-
-  // Arrastar no plano do chao (normal Z).
+  // O corpo fica DENTRO do controle MOVE_PLANE: assim arrasta-se clicando no
+  // proprio fantasma (controle sem markers nao tem area clicavel — era o bug
+  // de "nao consigo arrastar o robo").
   InteractiveMarkerControl move;
   move.name = "mover_xy";
   move.interaction_mode = InteractiveMarkerControl::MOVE_PLANE;
   move.orientation.w = 1.0;
   move.orientation.y = 1.0;
+  move.always_visible = true;
+  move.markers.push_back(corpo);
+  move.markers.push_back(seta);
   im.controls.push_back(move);
 
   // Girar em yaw (em torno de Z).

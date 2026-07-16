@@ -20,6 +20,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(interactive_markers REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(caramelo_msgs REQUIRED)
 find_package(rviz_common REQUIRED)
@@ -65,6 +66,7 @@ ament_target_dependencies(caramelo_gui
   visualization_msgs
   interactive_markers
   tf2_ros
+  rcl_interfaces
   nav2_msgs
   caramelo_msgs
   rviz_common
