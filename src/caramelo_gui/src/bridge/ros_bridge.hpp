@@ -4,10 +4,12 @@
 // e converte mensagens em sinais Qt (entregues na thread da UI por conexao
 // enfileirada). Widgets NUNCA falam ROS direto — so' via este RosBridge.
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <QObject>
 #include <QString>
@@ -20,6 +22,7 @@
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "nav2_msgs/action/follow_waypoints.hpp"
 #include "nav2_msgs/action/dock_robot.hpp"
 #include "nav2_msgs/action/undock_robot.hpp"
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
@@ -33,6 +36,7 @@
 #include "bridge/health_types.hpp"
 
 class ManualLocalization;
+class WaypointManager;
 
 class RosBridge : public QObject
 {
@@ -51,10 +55,13 @@ public:
   // pelos botoes do modulo de Navegacao.
   void cancelNav();
   void clearCostmaps();
+  void goTo(double x, double y, double yaw);   // meta direta (waypoints)
+  void followWaypoints(const std::vector<std::array<double, 3>> & poses);
 
   // --- Localizacao ---
   void publishInitialPose(double x, double y, double yaw);
   ManualLocalization * manualLocalization() {return manual_loc_;}
+  WaypointManager * waypoints() {return waypoints_;}
 
   // --- Mapas ---
   void loadMap(const QString & yaml_path);              // /map_server/load_map
@@ -84,6 +91,7 @@ signals:
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
+  using FollowWaypoints = nav2_msgs::action::FollowWaypoints;
   using DockRobot = nav2_msgs::action::DockRobot;
   using UndockRobot = nav2_msgs::action::UndockRobot;
   using AlignToDock = caramelo_msgs::action::AlignToDock;
@@ -115,6 +123,8 @@ private:
   rclcpp_action::Client<SaveServiceAreaPose>::SharedPtr sa_save_client_;
 
   ManualLocalization * manual_loc_ = nullptr;
+  WaypointManager * waypoints_ = nullptr;
+  rclcpp_action::Client<FollowWaypoints>::SharedPtr follow_client_;
 
   std::mutex nav_mtx_;
   rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr nav_goal_handle_;

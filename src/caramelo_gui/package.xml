@@ -20,6 +20,7 @@
   <depend>visualization_msgs</depend>
   <depend>interactive_markers</depend>
   <depend>tf2_ros</depend>
+  <depend>yaml-cpp</depend>
   <depend>nav2_msgs</depend>
   <depend>caramelo_msgs</depend>
   <depend>rviz_common</depend>

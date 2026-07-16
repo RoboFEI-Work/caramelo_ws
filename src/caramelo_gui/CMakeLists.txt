@@ -19,6 +19,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(interactive_markers REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(caramelo_msgs REQUIRED)
 find_package(rviz_common REQUIRED)
@@ -33,6 +34,7 @@ set(SOURCES
   src/main.cpp
   src/bridge/ros_bridge.cpp
   src/bridge/manual_localization.cpp
+  src/bridge/waypoint_manager.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
   src/core/launch_runner.cpp
@@ -45,6 +47,7 @@ set(SOURCES
   src/modules/mapeamento/mapeamento_module.cpp
   src/modules/teleop/teleop_module.cpp
   src/modules/service_areas/service_areas_module.cpp
+  src/modules/waypoints/waypoints_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})
@@ -72,6 +75,7 @@ target_link_libraries(caramelo_gui
   Qt5::Core
   Qt5::Widgets
   Qt5::Gui
+  yaml-cpp
 )
 
 install(TARGETS caramelo_gui

@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "bridge/manual_localization.hpp"
+#include "bridge/waypoint_manager.hpp"
 
 RosBridge::RosBridge(QObject * parent)
 : QObject(parent)
@@ -46,6 +47,61 @@ RosBridge::RosBridge(QObject * parent)
     node_, "/caramelo/service_areas/save_pose");
 
   manual_loc_ = new ManualLocalization(node_, this);
+  waypoints_ = new WaypointManager(node_, this);
+  follow_client_ = rclcpp_action::create_client<FollowWaypoints>(node_, "follow_waypoints");
+}
+
+void RosBridge::goTo(double x, double y, double yaw)
+{
+  geometry_msgs::msg::PoseStamped pose;
+  pose.header.frame_id = "map";
+  pose.header.stamp = node_->now();
+  pose.pose.position.x = x;
+  pose.pose.position.y = y;
+  pose.pose.orientation.z = std::sin(yaw / 2.0);
+  pose.pose.orientation.w = std::cos(yaw / 2.0);
+  sendNavGoal(pose);
+}
+
+void RosBridge::followWaypoints(const std::vector<std::array<double, 3>> & poses)
+{
+  if (poses.empty()) {
+    emit navResult(false, "Nenhum waypoint para seguir");
+    return;
+  }
+  if (!follow_client_->action_server_is_ready()) {
+    emit navResult(false, "Servidor follow_waypoints indisponivel");
+    return;
+  }
+  FollowWaypoints::Goal goal;
+  for (const auto & p : poses) {
+    geometry_msgs::msg::PoseStamped ps;
+    ps.header.frame_id = "map";
+    ps.header.stamp = node_->now();
+    ps.pose.position.x = p[0];
+    ps.pose.position.y = p[1];
+    ps.pose.orientation.z = std::sin(p[2] / 2.0);
+    ps.pose.orientation.w = std::cos(p[2] / 2.0);
+    goal.poses.push_back(ps);
+  }
+  rclcpp_action::Client<FollowWaypoints>::SendGoalOptions opts;
+  opts.feedback_callback =
+    [this](
+    rclcpp_action::ClientGoalHandle<FollowWaypoints>::SharedPtr,
+    const std::shared_ptr<const FollowWaypoints::Feedback> fb) {
+      emit navStatus(QString("Seguindo waypoints — atual: %1").arg(fb->current_waypoint + 1));
+    };
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<FollowWaypoints>::WrappedResult & r) {
+      const bool ok = r.code == rclcpp_action::ResultCode::SUCCEEDED;
+      const int perdidos = r.result ? static_cast<int>(r.result->missed_waypoints.size()) : 0;
+      emit navResult(
+        ok && perdidos == 0,
+        perdidos ? QString("Percurso terminou com %1 waypoint(s) perdido(s)").arg(perdidos)
+        : "Percurso de waypoints concluido");
+    };
+  follow_client_->async_send_goal(goal, opts);
+  emit navStatus(QString("Seguindo %1 waypoints...").arg(poses.size()));
 }
 
 // ------------------------------------------------------------ Service Areas

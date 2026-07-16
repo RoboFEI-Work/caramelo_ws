@@ -97,6 +97,10 @@ void RVizFrame::createDisplays()
     "Interactive Markers Namespace", "/localizacao_manual");
   add("rviz_default_plugins/Marker", "Scan Fantasma", true, "Topic",
     "/localizacao_manual/scan_preview");
+
+  // Waypoints arrastaveis (modulo Waypoints).
+  add("rviz_default_plugins/InteractiveMarkers", "Waypoints", true,
+    "Interactive Markers Namespace", "/waypoints");
 }
 
 QStringList RVizFrame::layerNames() const
