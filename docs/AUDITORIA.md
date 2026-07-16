@@ -10,6 +10,11 @@
 
 > **Nota importante sobre estado do código vs. robô rodando.** Este documento reflete o **código no repositório** (branch `robot_docking`/`develop`), que já inclui as correções feitas nesta sessão. O robô físico só passa a rodar essas correções depois de `git pull` + `colcon build` na Pi. As mudanças de mapa do ESC, watchdog e geometria (último commit) **ainda não foram validadas no hardware** — ver §16.
 
+> **Atualização 2026-07-15 — respostas do dono do projeto:**
+> 1. **Recorte 180° do LiDAR (§9): É PROPOSITAL.** Resolvido — deixa de ser pendência.
+> 2. **Contator/E-stop (§12): NÃO EXISTE ainda.** Confirmado ausente → RK-13/16 seguem BLOQUEANTES; é hardware, prioridade nº 1 do plano.
+> 3. **Sincronia de relógio (§4): setup de NTP preparado** em `docs/sincronizacao_relogio_ntp.md` (PC como servidor da LAN + Pi cliente). Falta aplicar nas máquinas reais (requer sudo).
+
 ---
 
 ## 0. Sumário executivo
