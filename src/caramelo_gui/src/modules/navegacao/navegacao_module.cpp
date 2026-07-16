@@ -25,23 +25,27 @@ NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
   auto * form = new QFormLayout();
   map_name_ = new QLineEdit("sala_520");
   com_docking_ = new QCheckBox("Com docking server");
+  auto * sim_time = new QCheckBox("Relogio da simulacao (Gazebo)");
   form->addRow("Mapa:", map_name_);
   form->addRow("", com_docking_);
+  form->addRow("", sim_time);
   layout->addLayout(form);
 
   ligar_ = new QPushButton("Ligar navegacao (Nav2)");
   ligar_->setObjectName("acaoPrimaria");
   connect(
-    ligar_, &QPushButton::clicked, this, [this]() {
+    ligar_, &QPushButton::clicked, this, [this, sim_time]() {
       if (runner_->isRunning()) {
         runner_->stop();
       } else {
-        runner_->start(
-          "caramelo_navigation", "bringup.launch.py",
-          {QString("map_name:=%1").arg(map_name_->text().trimmed()),
-            "use_rviz:=false",
-            QString("use_docking:=%1")
-            .arg(com_docking_->isChecked() ? "true" : "false")});
+        QStringList args;
+        args << QString("map_name:=%1").arg(map_name_->text().trimmed())
+             << "use_rviz:=false"
+             << QString("use_docking:=%1")
+          .arg(com_docking_->isChecked() ? "true" : "false")
+             << QString("use_sim_time:=%1")
+          .arg(sim_time->isChecked() ? "true" : "false");
+        runner_->start("caramelo_navigation", "bringup.launch.py", args);
       }
     });
   layout->addWidget(ligar_);

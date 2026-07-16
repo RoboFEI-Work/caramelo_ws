@@ -1,5 +1,6 @@
 #include "modules/mapeamento/mapeamento_module.hpp"
 
+#include <QCheckBox>
 #include <QDir>
 #include <QFormLayout>
 #include <QLabel>
@@ -32,19 +33,24 @@ MapeamentoModule::MapeamentoModule(RosBridge * bridge, QWidget * parent)
 
   auto * form = new QFormLayout();
   nome_ = new QLineEdit("novo_mapa");
+  auto * sim_time = new QCheckBox("Relogio da simulacao (Gazebo)");
   form->addRow("Nome do mapa:", nome_);
+  form->addRow("", sim_time);
   layout->addLayout(form);
 
   botao_ = new QPushButton("Iniciar SLAM");
   botao_->setObjectName("acaoPrimaria");
   connect(
-    botao_, &QPushButton::clicked, this, [this]() {
+    botao_, &QPushButton::clicked, this, [this, sim_time]() {
       if (runner_->isRunning()) {
         runner_->stop();
       } else {
-        runner_->start(
-          "caramelo_mapping", "slam.launch.py",
-          {QString("map_name:=%1").arg(nome_->text().trimmed()), "use_rviz:=false"});
+        QStringList args;
+        args << QString("map_name:=%1").arg(nome_->text().trimmed())
+             << "use_rviz:=false"
+             << QString("use_sim_time:=%1")
+          .arg(sim_time->isChecked() ? "true" : "false");
+        runner_->start("caramelo_mapping", "slam.launch.py", args);
       }
     });
   layout->addWidget(botao_);
