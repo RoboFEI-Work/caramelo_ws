@@ -34,6 +34,8 @@ public:
   explicit RVizFrame(QWidget * parent = nullptr);
   ~RVizFrame() override;
 
+  bool isReady() const {return initialized_;}
+
   // --- WindowManagerInterface (minimo para o embedding) ---
   QWidget * getParentWindow() override;
   rviz_common::PanelDockWidget * addPane(
@@ -49,10 +51,19 @@ public:
 
 signals:
   void statusMessage(const QString & message);
+  void pronto();   // emitido apos a inicializacao adiada (widget visivel)
+
+protected:
+  // Inicializacao ADIADA para o primeiro show: criar o contexto OGRE antes da
+  // janela existir gerava "failed to create drawable" e crash de buffer GL.
+  void showEvent(QShowEvent * event) override;
 
 private:
+  void initializeRViz();
   void createDisplays();
   void setupTools();
+
+  bool initialized_ = false;
 
   std::shared_ptr<rviz_common::ros_integration::RosNodeAbstraction> ros_node_;
   rviz_common::RenderPanel * render_panel_ = nullptr;

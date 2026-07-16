@@ -23,10 +23,11 @@ def generate_launch_description():
         condition=IfCondition(use_diagnostics),
     )
 
+    # Sem "name=": o processo tem 3 nos internos (bridge, rviz, markers) e o
+    # remap de nome unico os colidia ("Publisher already registered").
     gui = Node(
         package="caramelo_gui",
         executable="caramelo_gui",
-        name="caramelo_gui",
         output="screen",
     )
 

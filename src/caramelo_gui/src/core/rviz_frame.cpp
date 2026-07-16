@@ -24,9 +24,25 @@ RVizFrame::RVizFrame(QWidget * parent)
   auto * layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->addWidget(render_panel_);
+  // O resto da inicializacao acontece no primeiro showEvent (widget visivel),
+  // senao o OGRE cria o contexto sem drawable valido e o render quebra.
+}
 
+RVizFrame::~RVizFrame() = default;
+
+void RVizFrame::showEvent(QShowEvent * event)
+{
+  QWidget::showEvent(event);
+  if (!initialized_) {
+    initialized_ = true;
+    initializeRViz();
+  }
+}
+
+void RVizFrame::initializeRViz()
+{
   // Sequencia de init do embedding (ref. mjeronimo/rviz_embed_test). Os
-  // processEvents ajudam o contexto OGRE a se montar contra o widget.
+  // processEvents deixam o Qt materializar o widget antes do contexto OGRE.
   QApplication::processEvents();
   render_panel_->getRenderWindow()->initialize();
 
@@ -42,9 +58,8 @@ RVizFrame::RVizFrame(QWidget * parent)
   setupTools();
 
   manager_->startUpdate();
+  emit pronto();
 }
-
-RVizFrame::~RVizFrame() = default;
 
 // --- WindowManagerInterface ---
 QWidget * RVizFrame::getParentWindow()
@@ -81,7 +96,10 @@ void RVizFrame::createDisplays()
     };
 
   add("rviz_default_plugins/Grid", "Grade", true, "", "");
-  add("rviz_default_plugins/RobotModel", "Robo", true, "Description Topic", "/robot_description");
+  // RobotModel comeca DESLIGADO: carregar as malhas STL pesadas derrubou o
+  // OGRE embutido quando o pacote de malhas nao casava com o robot_description
+  // publicado. Ligue pela camada "Robo" quando o ambiente tiver as malhas.
+  add("rviz_default_plugins/RobotModel", "Robo", false, "Description Topic", "/robot_description");
   add("rviz_default_plugins/TF", "TF", false, "", "");
   add("rviz_default_plugins/Map", "Mapa", true, "Topic", "/map");
   add("rviz_default_plugins/LaserScan", "Laser", true, "Topic", "/scan");

@@ -146,14 +146,21 @@ QWidget * MainWindow::buildRoboPage()
   auto * layersTitle = new QLabel("Camadas");
   layersTitle->setObjectName("tituloModulo");
   sideLayout->addWidget(layersTitle);
-  for (const QString & name : rviz_->layerNames()) {
-    auto * cb = new QCheckBox(name);
-    cb->setChecked(rviz_->isLayerEnabled(name));
-    connect(
-      cb, &QCheckBox::toggled, this,
-      [this, name](bool on) {rviz_->setLayerEnabled(name, on);});
-    sideLayout->addWidget(cb);
-  }
+  // As camadas so existem apos a inicializacao ADIADA do RViz (primeiro show)
+  // — populamos os checkboxes quando ele avisar que esta pronto.
+  auto * layersBox = new QVBoxLayout();
+  sideLayout->addLayout(layersBox);
+  connect(
+    rviz_, &RVizFrame::pronto, this, [this, layersBox]() {
+      for (const QString & name : rviz_->layerNames()) {
+        auto * cb = new QCheckBox(name);
+        cb->setChecked(rviz_->isLayerEnabled(name));
+        connect(
+          cb, &QCheckBox::toggled, this,
+          [this, name](bool on) {rviz_->setLayerEnabled(name, on);});
+        layersBox->addWidget(cb);
+      }
+    });
 
   sideLayout->addSpacing(12);
   auto * toolsTitle = new QLabel("Ferramentas");
