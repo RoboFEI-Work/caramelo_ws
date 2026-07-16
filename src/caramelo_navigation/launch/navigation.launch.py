@@ -136,7 +136,14 @@ def _bt_xml_for_profile(context, package_share):
     profile = LaunchConfiguration("nav_profile").perform(context).strip().lower()
     if profile not in ("dwb", "mppi"):
         raise RuntimeError("nav_profile precisa ser 'dwb' ou 'mppi'.")
-    return profile, os.path.join(package_share, "behavior_tree", f"caramelo_lattice_{profile}.xml")
+    # to_pose E through_poses: os DOIS precisam ser custom. O default de
+    # through_poses do Nav2 usa Spin, que nao existe mais no behavior_server
+    # (RK-05) — sem o override, o bt_navigator falhava ao ativar e o lifecycle
+    # abortava o bringup inteiro ("navegacao inativa").
+    to_pose = os.path.join(package_share, "behavior_tree", f"caramelo_lattice_{profile}.xml")
+    through = os.path.join(
+        package_share, "behavior_tree", f"caramelo_lattice_through_{profile}.xml")
+    return profile, to_pose, through
 
 
 def _create_navigation_stack(context, *args, **kwargs):
@@ -165,7 +172,8 @@ def _create_navigation_stack(context, *args, **kwargs):
 
     caramelo_navigation_pkg = get_package_share_directory("caramelo_navigation")
     docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
-    nav_profile_value, bt_xml = _bt_xml_for_profile(context, caramelo_navigation_pkg)
+    nav_profile_value, bt_xml, bt_through_xml = _bt_xml_for_profile(
+        context, caramelo_navigation_pkg)
     lattice_filepath = os.path.join(
         caramelo_navigation_pkg,
         "config",
@@ -245,6 +253,7 @@ def _create_navigation_stack(context, *args, **kwargs):
             os.path.join(caramelo_navigation_pkg, "config", "bt_navigator.yaml"),
             {"use_sim_time": use_sim_time},
             {"default_nav_to_pose_bt_xml": bt_xml},
+            {"default_nav_through_poses_bt_xml": bt_through_xml},
         ],
     )
 
