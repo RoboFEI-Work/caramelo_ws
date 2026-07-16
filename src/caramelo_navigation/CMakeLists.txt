@@ -20,6 +20,11 @@ install(FILES
 )
 
 install(PROGRAMS
+  scripts/init_keepout_mask.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
   scripts/init_map_docking.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME init_map_docking

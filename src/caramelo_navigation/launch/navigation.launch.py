@@ -60,7 +60,23 @@ def _resolve_costmap_resolution(context):
         return 0.20
 
 
-def _make_navigation_override_params(resolution, lattice_filepath, route_graph_filepath):
+def _make_navigation_override_params(resolution, lattice_filepath, route_graph_filepath,
+                                     keepout_enabled=False):
+    # Parametros por costmap (local e global). So injetamos o Keepout Filter
+    # (RK-04) quando use_keepout:=true, para nao gerar avisos de "esperando
+    # CostmapFilterInfo" quando os servidores de mascara nao estao no ar.
+    local_costmap_params = {"resolution": resolution}
+    global_costmap_params = {"resolution": resolution}
+    if keepout_enabled:
+        keepout_plugin = {
+            "plugin": "nav2_costmap_2d::KeepoutFilter",
+            "enabled": True,
+            "filter_info_topic": "/costmap_filter_info",
+        }
+        for costmap_params in (local_costmap_params, global_costmap_params):
+            costmap_params["filters"] = ["keepout_filter"]
+            costmap_params["keepout_filter"] = keepout_plugin
+
     params = {
         "planner_server": {
             "ros__parameters": {
@@ -71,16 +87,12 @@ def _make_navigation_override_params(resolution, lattice_filepath, route_graph_f
         },
         "local_costmap": {
             "local_costmap": {
-                "ros__parameters": {
-                    "resolution": resolution,
-                },
+                "ros__parameters": local_costmap_params,
             },
         },
         "global_costmap": {
             "global_costmap": {
-                "ros__parameters": {
-                    "resolution": resolution,
-                },
+                "ros__parameters": global_costmap_params,
             },
         },
         "route_server": {
@@ -176,10 +188,12 @@ def _create_navigation_stack(context, *args, **kwargs):
         lifecycle_nodes.append("waypoint_follower")
 
     costmap_resolution = _resolve_costmap_resolution(context)
+    keepout_enabled = _as_bool(LaunchConfiguration("use_keepout").perform(context))
     navigation_override_params = _make_navigation_override_params(
         costmap_resolution,
         lattice_filepath,
         route_graph_filepath,
+        keepout_enabled=keepout_enabled,
     )
 
     nav2_controller_server = Node(
@@ -407,6 +421,7 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": use_sim_time,
             "map_name": map_name,
+            "use_keepout": LaunchConfiguration("use_keepout"),
         }.items(),
     )
 
@@ -444,6 +459,13 @@ def generate_launch_description():
             "use_docking",
             default_value="false",
             description="Start Nav2 Docking Server using this map folder",
+        ),
+        DeclareLaunchArgument(
+            "use_keepout",
+            default_value="false",
+            description="Ativa o Keepout Filter (RK-04): sobe os servidores de mascara "
+                        "e injeta o plugin KeepoutFilter nos costmaps. Requer "
+                        "maps/<mapa>/keepout_mask.{yaml,pgm} (ver init_keepout_mask.py).",
         ),
         DeclareLaunchArgument(
             "navigation_start_delay",

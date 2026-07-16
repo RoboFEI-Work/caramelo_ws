@@ -1,4 +1,5 @@
 import os
+import subprocess
 from launch import LaunchDescription
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
@@ -8,7 +9,33 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 
 
+def _abortar_se_conflito(nos_conflitantes, este_modo, outro_modo):
+    """Trava estrutural RK-02: SLAM e AMCL publicam ambos map->odom; rodar os dois
+    faz o TF piscar entre as duas estimativas. Se o modo conflitante ja estiver no
+    ar, aborta este launch com mensagem clara. Best-effort: se a checagem falhar
+    (sem daemon/grafo), nao bloqueia."""
+    try:
+        saida = subprocess.run(
+            ["ros2", "node", "list"], capture_output=True, text=True, timeout=4
+        ).stdout
+    except Exception:
+        return
+    ativos = set(saida.split())
+    presentes = [no for no in nos_conflitantes if no in ativos]
+    if presentes:
+        raise RuntimeError(
+            f"\n[CARAMELO] Abortando {este_modo}: detectei {outro_modo} rodando "
+            f"({', '.join(presentes)}).\nSLAM e AMCL publicam ambos map->odom; rodar "
+            f"os dois faz o TF piscar (RK-02).\nEncerre {outro_modo} antes de subir "
+            f"{este_modo}."
+        )
+
+
 def generate_launch_description():
+
+    # RK-02: nao subir o mapeamento se a localizacao (AMCL) ja estiver ativa.
+    _abortar_se_conflito(["/amcl"], "o mapeamento (SLAM)", "a localizacao (AMCL)")
+
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     slam_config = LaunchConfiguration("slam_config")

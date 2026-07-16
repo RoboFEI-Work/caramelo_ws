@@ -14,6 +14,7 @@ def generate_launch_description():
     map_name = LaunchConfiguration("map_name")
     use_rviz = LaunchConfiguration("use_rviz")
     use_docking = LaunchConfiguration("use_docking")
+    use_keepout = LaunchConfiguration("use_keepout")
     rviz_config = LaunchConfiguration("rviz_config")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
     costmap_resolution = LaunchConfiguration("costmap_resolution")
@@ -59,6 +60,12 @@ def generate_launch_description():
             "use_docking",
             default_value="false",
             description="Start Nav2 Docking Server using this map folder",
+        ),
+        DeclareLaunchArgument(
+            "use_keepout",
+            default_value="false",
+            description="Ativa o Keepout Filter (parede virtual RK-04). Requer "
+                        "maps/<mapa>/keepout_mask.{yaml,pgm}.",
         ),
         DeclareLaunchArgument(
             "navigation_start_delay",
@@ -126,6 +133,7 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
                 "map_name": map_name,
                 "use_docking": use_docking,
+                "use_keepout": use_keepout,
                 "navigation_start_delay": navigation_start_delay,
                 "costmap_resolution": costmap_resolution,
                 "nav_profile": nav_profile,
