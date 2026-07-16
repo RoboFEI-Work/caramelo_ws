@@ -35,12 +35,15 @@ set(SOURCES
   src/bridge/manual_localization.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
+  src/core/launch_runner.cpp
   src/core/main_window.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp
   src/modules/localizacao/localizacao_module.cpp
   src/modules/mapas/mapas_module.cpp
+  src/modules/mapeamento/mapeamento_module.cpp
+  src/modules/teleop/teleop_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})

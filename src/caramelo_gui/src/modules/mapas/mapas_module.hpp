@@ -19,10 +19,12 @@ class MapasModule : public QWidget
 public:
   explicit MapasModule(RosBridge * bridge, QWidget * parent = nullptr);
 
+  // Pasta dos mapas (arvore fonte) — compartilhada com Mapeamento.
+  static QString mapsDir();
+
 private:
   void refresh();
   QString selectedMap() const;
-  static QString mapsDir();
 
   RosBridge * bridge_;
   QListWidget * lista_ = nullptr;

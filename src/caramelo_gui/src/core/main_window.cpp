@@ -18,6 +18,8 @@
 #include "modules/docking/docking_module.hpp"
 #include "modules/localizacao/localizacao_module.hpp"
 #include "modules/mapas/mapas_module.hpp"
+#include "modules/mapeamento/mapeamento_module.hpp"
+#include "modules/teleop/teleop_module.hpp"
 
 MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
@@ -37,6 +39,8 @@ MainWindow::MainWindow(QWidget * parent)
   docking_ = new DockingModule(bridge_);
   localizacao_ = new LocalizacaoModule(bridge_);
   mapas_ = new MapasModule(bridge_);
+  mapeamento_ = new MapeamentoModule(bridge_);
+  teleop_ = new TeleopModule();
 
   pages_->addWidget(inicio_);          // indice 0
   pages_->addWidget(buildRoboPage());  // indice 1
@@ -44,6 +48,8 @@ MainWindow::MainWindow(QWidget * parent)
   pages_->addWidget(docking_);         // indice 3
   pages_->addWidget(localizacao_);     // indice 4
   pages_->addWidget(mapas_);           // indice 5
+  pages_->addWidget(mapeamento_);      // indice 6
+  pages_->addWidget(teleop_);          // indice 7
 
   // Layout central: sidebar + paginas.
   auto * central = new QWidget();
@@ -90,12 +96,12 @@ QWidget * MainWindow::buildSidebar()
   addModule("Docking", 3, true);
   addModule("Localizacao", 4, true);
   addModule("Mapas", 5, true);
+  addModule("Mapeamento", 6, true);
+  addModule("Teleop", 7, true);
   // Placeholders da estrutura (habilitam nas proximas versoes):
-  addModule("Mapeamento", -1, false);
   addModule("Service Areas", -1, false);
   addModule("Waypoints", -1, false);
   addModule("Testes", -1, false);
-  addModule("Diagnostico", -1, false);
   addModule("Simulacao", -1, false);
 
   connect(
