@@ -13,6 +13,7 @@ class InicioModule;
 class NavegacaoModule;
 class DockingModule;
 class LocalizacaoModule;
+class MapasModule;
 class RVizFrame;
 
 class QListWidget;
@@ -38,6 +39,7 @@ private:
   NavegacaoModule * navegacao_ = nullptr;
   DockingModule * docking_ = nullptr;
   LocalizacaoModule * localizacao_ = nullptr;
+  MapasModule * mapas_ = nullptr;
   RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;

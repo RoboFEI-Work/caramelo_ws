@@ -35,7 +35,53 @@ RosBridge::RosBridge(QObject * parent)
   save_dock_pub_ = node_->create_publisher<std_msgs::msg::String>(
     "/save_dock_pose", rclcpp::QoS(1));
 
+  load_map_client_ = node_->create_client<nav2_msgs::srv::LoadMap>("/map_server/load_map");
+  save_map_client_ = node_->create_client<nav2_msgs::srv::SaveMap>("/map_saver/save_map");
+
   manual_loc_ = new ManualLocalization(node_, this);
+}
+
+// ------------------------------------------------------------- Mapas
+void RosBridge::loadMap(const QString & yaml_path)
+{
+  if (!load_map_client_->service_is_ready()) {
+    emit mapStatus(false, "map_server indisponivel (suba a localizacao)");
+    return;
+  }
+  auto req = std::make_shared<nav2_msgs::srv::LoadMap::Request>();
+  req->map_url = yaml_path.toStdString();
+  load_map_client_->async_send_request(
+    req, [this, yaml_path](rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedFuture fut) {
+      const auto resp = fut.get();
+      const bool ok = resp &&
+        resp->result == nav2_msgs::srv::LoadMap::Response::RESULT_SUCCESS;
+      emit mapStatus(
+        ok, ok ? QString("Mapa carregado: %1").arg(yaml_path)
+        : "Falha ao carregar o mapa");
+    });
+  emit mapStatus(true, "Carregando mapa...");
+}
+
+void RosBridge::saveMap(const QString & dir, const QString & name)
+{
+  if (!save_map_client_->service_is_ready()) {
+    emit mapStatus(false, "map_saver indisponivel (rodando o mapeamento?)");
+    return;
+  }
+  auto req = std::make_shared<nav2_msgs::srv::SaveMap::Request>();
+  req->map_topic = "map";
+  req->map_url = (dir + "/" + name + "/map").toStdString();
+  req->image_format = "pgm";
+  req->map_mode = "trinary";
+  req->free_thresh = 0.196f;
+  req->occupied_thresh = 0.65f;
+  save_map_client_->async_send_request(
+    req, [this](rclcpp::Client<nav2_msgs::srv::SaveMap>::SharedFuture fut) {
+      const auto resp = fut.get();
+      const bool ok = resp && resp->result;
+      emit mapStatus(ok, ok ? "Mapa salvo" : "Falha ao salvar o mapa");
+    });
+  emit mapStatus(true, "Salvando mapa...");
 }
 
 RosBridge::~RosBridge()

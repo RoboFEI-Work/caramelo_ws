@@ -40,6 +40,7 @@ set(SOURCES
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp
   src/modules/localizacao/localizacao_module.cpp
+  src/modules/mapas/mapas_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})

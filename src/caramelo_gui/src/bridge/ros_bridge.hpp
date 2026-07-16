@@ -23,6 +23,8 @@
 #include "nav2_msgs/action/dock_robot.hpp"
 #include "nav2_msgs/action/undock_robot.hpp"
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
+#include "nav2_msgs/srv/load_map.hpp"
+#include "nav2_msgs/srv/save_map.hpp"
 #include "caramelo_msgs/action/align_to_dock.hpp"
 
 #include "bridge/health_types.hpp"
@@ -51,6 +53,10 @@ public:
   void publishInitialPose(double x, double y, double yaw);
   ManualLocalization * manualLocalization() {return manual_loc_;}
 
+  // --- Mapas ---
+  void loadMap(const QString & yaml_path);              // /map_server/load_map
+  void saveMap(const QString & dir, const QString & name);  // /map_saver/save_map
+
   // --- Docking ---
   void sendDock(const QString & dock_id);
   void sendUndock(const QString & dock_type);
@@ -63,6 +69,7 @@ signals:
   void navResult(bool success, const QString & message);
   void dockStatus(const QString & message);
   void dockResult(bool success, const QString & message);
+  void mapStatus(bool success, const QString & message);
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -87,6 +94,9 @@ private:
   rclcpp_action::Client<UndockRobot>::SharedPtr undock_client_;
   rclcpp_action::Client<AlignToDock>::SharedPtr align_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr save_dock_pub_;
+
+  rclcpp::Client<nav2_msgs::srv::LoadMap>::SharedPtr load_map_client_;
+  rclcpp::Client<nav2_msgs::srv::SaveMap>::SharedPtr save_map_client_;
 
   ManualLocalization * manual_loc_ = nullptr;
 

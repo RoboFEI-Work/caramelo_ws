@@ -17,6 +17,7 @@
 #include "modules/navegacao/navegacao_module.hpp"
 #include "modules/docking/docking_module.hpp"
 #include "modules/localizacao/localizacao_module.hpp"
+#include "modules/mapas/mapas_module.hpp"
 
 MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
@@ -35,12 +36,14 @@ MainWindow::MainWindow(QWidget * parent)
   navegacao_ = new NavegacaoModule(bridge_);
   docking_ = new DockingModule(bridge_);
   localizacao_ = new LocalizacaoModule(bridge_);
+  mapas_ = new MapasModule(bridge_);
 
   pages_->addWidget(inicio_);          // indice 0
   pages_->addWidget(buildRoboPage());  // indice 1
   pages_->addWidget(navegacao_);       // indice 2
   pages_->addWidget(docking_);         // indice 3
   pages_->addWidget(localizacao_);     // indice 4
+  pages_->addWidget(mapas_);           // indice 5
 
   // Layout central: sidebar + paginas.
   auto * central = new QWidget();
@@ -86,8 +89,8 @@ QWidget * MainWindow::buildSidebar()
   addModule("Navegacao", 2, true);
   addModule("Docking", 3, true);
   addModule("Localizacao", 4, true);
+  addModule("Mapas", 5, true);
   // Placeholders da estrutura (habilitam nas proximas versoes):
-  addModule("Mapas", -1, false);
   addModule("Mapeamento", -1, false);
   addModule("Service Areas", -1, false);
   addModule("Waypoints", -1, false);
