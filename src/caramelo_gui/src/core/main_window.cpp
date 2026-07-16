@@ -15,6 +15,7 @@
 #include "core/state_machine.hpp"
 #include "modules/inicio/inicio_module.hpp"
 #include "modules/navegacao/navegacao_module.hpp"
+#include "modules/docking/docking_module.hpp"
 
 MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
@@ -31,10 +32,12 @@ MainWindow::MainWindow(QWidget * parent)
 
   rviz_ = new RVizFrame();
   navegacao_ = new NavegacaoModule(bridge_);
+  docking_ = new DockingModule(bridge_);
 
   pages_->addWidget(inicio_);          // indice 0
   pages_->addWidget(buildRoboPage());  // indice 1
   pages_->addWidget(navegacao_);       // indice 2
+  pages_->addWidget(docking_);         // indice 3
 
   // Layout central: sidebar + paginas.
   auto * central = new QWidget();
@@ -78,11 +81,11 @@ QWidget * MainWindow::buildSidebar()
   addModule("Inicio", 0, true);
   addModule("Robo", 1, true);
   addModule("Navegacao", 2, true);
+  addModule("Docking", 3, true);
   // Placeholders da estrutura (habilitam nas proximas versoes):
   addModule("Mapas", -1, false);
   addModule("Mapeamento", -1, false);
   addModule("Service Areas", -1, false);
-  addModule("Docking", -1, false);
   addModule("Waypoints", -1, false);
   addModule("Testes", -1, false);
   addModule("Diagnostico", -1, false);

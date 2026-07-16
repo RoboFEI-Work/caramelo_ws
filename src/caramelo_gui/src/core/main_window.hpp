@@ -11,6 +11,7 @@ class RosBridge;
 class StateMachine;
 class InicioModule;
 class NavegacaoModule;
+class DockingModule;
 class RVizFrame;
 
 class QListWidget;
@@ -34,6 +35,7 @@ private:
   StateMachine * state_ = nullptr;
   InicioModule * inicio_ = nullptr;
   NavegacaoModule * navegacao_ = nullptr;
+  DockingModule * docking_ = nullptr;
   RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;

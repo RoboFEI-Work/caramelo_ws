@@ -14,7 +14,9 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(caramelo_msgs REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_rendering REQUIRED)
 find_package(rviz_default_plugins REQUIRED)
@@ -31,6 +33,7 @@ set(SOURCES
   src/core/main_window.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/navegacao/navegacao_module.cpp
+  src/modules/docking/docking_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})
@@ -42,7 +45,9 @@ ament_target_dependencies(caramelo_gui
   rclcpp_action
   diagnostic_msgs
   geometry_msgs
+  std_msgs
   nav2_msgs
+  caramelo_msgs
   rviz_common
   rviz_rendering
   rviz_default_plugins

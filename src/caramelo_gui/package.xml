@@ -15,7 +15,9 @@
   <depend>ament_index_cpp</depend>
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>nav2_msgs</depend>
+  <depend>caramelo_msgs</depend>
   <depend>rviz_common</depend>
   <depend>rviz_rendering</depend>
   <depend>rviz_default_plugins</depend>

@@ -18,8 +18,12 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "nav2_msgs/action/dock_robot.hpp"
+#include "nav2_msgs/action/undock_robot.hpp"
 #include "nav2_msgs/srv/clear_entire_costmap.hpp"
+#include "caramelo_msgs/action/align_to_dock.hpp"
 
 #include "bridge/health_types.hpp"
 
@@ -44,13 +48,24 @@ public:
   // --- Localizacao ---
   void publishInitialPose(double x, double y, double yaw);
 
+  // --- Docking ---
+  void sendDock(const QString & dock_id);
+  void sendUndock(const QString & dock_type);
+  void sendAlign(const QString & dock_id, const QString & map_name, bool use_lidar_refine);
+  void saveDockPose(const QString & dock_id);
+
 signals:
   void diagnosticsUpdated(const QVector<ComponentHealth> & health);
   void navStatus(const QString & message);
   void navResult(bool success, const QString & message);
+  void dockStatus(const QString & message);
+  void dockResult(bool success, const QString & message);
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
+  using DockRobot = nav2_msgs::action::DockRobot;
+  using UndockRobot = nav2_msgs::action::UndockRobot;
+  using AlignToDock = caramelo_msgs::action::AlignToDock;
 
   void onDiagnostics(const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg);
   void onGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
@@ -64,6 +79,11 @@ private:
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_pub_;
+
+  rclcpp_action::Client<DockRobot>::SharedPtr dock_client_;
+  rclcpp_action::Client<UndockRobot>::SharedPtr undock_client_;
+  rclcpp_action::Client<AlignToDock>::SharedPtr align_client_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr save_dock_pub_;
 
   std::mutex nav_mtx_;
   rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr nav_goal_handle_;

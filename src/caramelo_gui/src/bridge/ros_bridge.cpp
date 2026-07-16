@@ -26,6 +26,12 @@ RosBridge::RosBridge(QObject * parent)
     "/local_costmap/clear_entirely_local_costmap");
   initialpose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
     "/initialpose", rclcpp::QoS(1));
+
+  dock_client_ = rclcpp_action::create_client<DockRobot>(node_, "/dock_robot");
+  undock_client_ = rclcpp_action::create_client<UndockRobot>(node_, "/undock_robot");
+  align_client_ = rclcpp_action::create_client<AlignToDock>(node_, "align_to_dock");
+  save_dock_pub_ = node_->create_publisher<std_msgs::msg::String>(
+    "/save_dock_pose", rclcpp::QoS(1));
 }
 
 RosBridge::~RosBridge()
@@ -165,4 +171,88 @@ void RosBridge::publishInitialPose(double x, double y, double yaw)
   msg.pose.covariance[7] = 0.25;    // y
   msg.pose.covariance[35] = 0.0685; // yaw
   initialpose_pub_->publish(msg);
+}
+
+// ------------------------------------------------------------- Docking
+void RosBridge::sendDock(const QString & dock_id)
+{
+  if (!dock_client_->action_server_is_ready()) {
+    emit dockResult(false, "Servidor /dock_robot indisponivel");
+    return;
+  }
+  DockRobot::Goal goal;
+  goal.use_dock_id = true;
+  goal.dock_id = dock_id.toStdString();
+  goal.navigate_to_staging_pose = true;
+  goal.max_staging_time = 120.0;
+
+  rclcpp_action::Client<DockRobot>::SendGoalOptions opts;
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<DockRobot>::WrappedResult & r) {
+      const bool ok = r.code == rclcpp_action::ResultCode::SUCCEEDED && r.result &&
+        r.result->success;
+      emit dockResult(ok, ok ? "Dock concluido" : "Dock falhou");
+    };
+  dock_client_->async_send_goal(goal, opts);
+  emit dockStatus(QString("Dockando em %1...").arg(dock_id));
+}
+
+void RosBridge::sendUndock(const QString & dock_type)
+{
+  if (!undock_client_->action_server_is_ready()) {
+    emit dockResult(false, "Servidor /undock_robot indisponivel");
+    return;
+  }
+  UndockRobot::Goal goal;
+  goal.dock_type = dock_type.toStdString();
+  goal.max_undocking_time = 30.0;
+
+  rclcpp_action::Client<UndockRobot>::SendGoalOptions opts;
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<UndockRobot>::WrappedResult & r) {
+      const bool ok = r.code == rclcpp_action::ResultCode::SUCCEEDED && r.result &&
+        r.result->success;
+      emit dockResult(ok, ok ? "Undock concluido" : "Undock falhou");
+    };
+  undock_client_->async_send_goal(goal, opts);
+  emit dockStatus("Undock...");
+}
+
+void RosBridge::sendAlign(const QString & dock_id, const QString & map_name, bool use_lidar_refine)
+{
+  if (!align_client_->action_server_is_ready()) {
+    emit dockResult(false, "Servidor align_to_dock indisponivel");
+    return;
+  }
+  AlignToDock::Goal goal;
+  goal.dock_id = dock_id.toStdString();
+  goal.map_name = map_name.toStdString();
+  goal.use_lidar_refine = use_lidar_refine;
+  goal.timeout = 30.0;
+
+  rclcpp_action::Client<AlignToDock>::SendGoalOptions opts;
+  opts.feedback_callback =
+    [this](
+    rclcpp_action::ClientGoalHandle<AlignToDock>::SharedPtr,
+    const std::shared_ptr<const AlignToDock::Feedback> fb) {
+      emit dockStatus(QString::fromStdString(fb->phase));
+    };
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<AlignToDock>::WrappedResult & r) {
+      const bool ok = r.code == rclcpp_action::ResultCode::SUCCEEDED && r.result &&
+        r.result->success;
+      emit dockResult(
+        ok, ok ? "Alinhamento fino concluido" :
+        QString::fromStdString(r.result ? r.result->message : "falhou"));
+    };
+  align_client_->async_send_goal(goal, opts);
+  emit dockStatus(QString("Alinhando em %1...").arg(dock_id));
+}
+
+void RosBridge::saveDockPose(const QString & dock_id)
+{
+  std_msgs::msg::String msg;
+  msg.data = dock_id.toStdString();
+  save_dock_pub_->publish(msg);
+  emit dockStatus(QString("Pose atual salva como dock %1").arg(dock_id));
 }
