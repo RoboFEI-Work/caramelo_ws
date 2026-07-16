@@ -1,6 +1,7 @@
 #include "bridge/ros_bridge.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <functional>
 
 RosBridge::RosBridge(QObject * parent)
@@ -14,6 +15,17 @@ RosBridge::RosBridge(QObject * parent)
   diag_sub_ = node_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
     "/diagnostics", rclcpp::QoS(10),
     std::bind(&RosBridge::onDiagnostics, this, std::placeholders::_1));
+
+  nav_client_ = rclcpp_action::create_client<NavigateToPose>(node_, "navigate_to_pose");
+  goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
+    "/goal_pose", rclcpp::QoS(1),
+    std::bind(&RosBridge::onGoalPose, this, std::placeholders::_1));
+  clear_global_ = node_->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+    "/global_costmap/clear_entirely_global_costmap");
+  clear_local_ = node_->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+    "/local_costmap/clear_entirely_local_costmap");
+  initialpose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "/initialpose", rclcpp::QoS(1));
 }
 
 RosBridge::~RosBridge()
@@ -62,4 +74,95 @@ void RosBridge::onDiagnostics(const diagnostic_msgs::msg::DiagnosticArray::Share
     health.push_back(c);
   }
   emit diagnosticsUpdated(health);
+}
+
+// ------------------------------------------------------------- Navegacao
+void RosBridge::onGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+{
+  sendNavGoal(*msg);
+}
+
+void RosBridge::sendNavGoal(const geometry_msgs::msg::PoseStamped & pose)
+{
+  if (!nav_client_->action_server_is_ready()) {
+    emit navResult(false, "Servidor navigate_to_pose indisponivel");
+    return;
+  }
+  NavigateToPose::Goal goal;
+  goal.pose = pose;
+  if (goal.pose.header.frame_id.empty()) {
+    goal.pose.header.frame_id = "map";
+  }
+
+  rclcpp_action::Client<NavigateToPose>::SendGoalOptions opts;
+  opts.goal_response_callback =
+    [this](rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr handle) {
+      {
+        std::lock_guard<std::mutex> lk(nav_mtx_);
+        nav_goal_handle_ = handle;
+      }
+      emit navStatus(handle ? "Meta aceita — navegando" : "Meta rejeitada");
+    };
+  opts.feedback_callback =
+    [this](
+    rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr,
+    const std::shared_ptr<const NavigateToPose::Feedback> fb) {
+      emit navStatus(
+        QString("Navegando — %1 m restantes")
+        .arg(static_cast<double>(fb->distance_remaining), 0, 'f', 2));
+    };
+  opts.result_callback =
+    [this](const rclcpp_action::ClientGoalHandle<NavigateToPose>::WrappedResult & result) {
+      const bool ok = result.code == rclcpp_action::ResultCode::SUCCEEDED;
+      QString msg;
+      switch (result.code) {
+        case rclcpp_action::ResultCode::SUCCEEDED: msg = "Chegou ao destino"; break;
+        case rclcpp_action::ResultCode::ABORTED: msg = "Navegacao abortada"; break;
+        case rclcpp_action::ResultCode::CANCELED: msg = "Navegacao cancelada"; break;
+        default: msg = "Navegacao terminou"; break;
+      }
+      emit navResult(ok, msg);
+    };
+  nav_client_->async_send_goal(goal, opts);
+  emit navStatus("Enviando meta...");
+}
+
+void RosBridge::cancelNav()
+{
+  std::lock_guard<std::mutex> lk(nav_mtx_);
+  if (nav_goal_handle_) {
+    nav_client_->async_cancel_goal(nav_goal_handle_);
+    emit navStatus("Cancelando...");
+  } else {
+    emit navStatus("Nada para cancelar");
+  }
+}
+
+void RosBridge::clearCostmaps()
+{
+  if (clear_global_->service_is_ready()) {
+    clear_global_->async_send_request(
+      std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>());
+  }
+  if (clear_local_->service_is_ready()) {
+    clear_local_->async_send_request(
+      std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>());
+  }
+  emit navStatus("Costmaps limpos");
+}
+
+// ------------------------------------------------------------- Localizacao
+void RosBridge::publishInitialPose(double x, double y, double yaw)
+{
+  geometry_msgs::msg::PoseWithCovarianceStamped msg;
+  msg.header.frame_id = "map";
+  msg.header.stamp = node_->now();
+  msg.pose.pose.position.x = x;
+  msg.pose.pose.position.y = y;
+  msg.pose.pose.orientation.z = std::sin(yaw / 2.0);
+  msg.pose.pose.orientation.w = std::cos(yaw / 2.0);
+  msg.pose.covariance[0] = 0.25;    // x
+  msg.pose.covariance[7] = 0.25;    // y
+  msg.pose.covariance[35] = 0.0685; // yaw
+  initialpose_pub_->publish(msg);
 }

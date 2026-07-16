@@ -6,13 +6,20 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include <QObject>
+#include <QString>
 #include <QVector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "nav2_msgs/srv/clear_entire_costmap.hpp"
 
 #include "bridge/health_types.hpp"
 
@@ -27,14 +34,40 @@ public:
   void start();
   void stop();
 
+  // --- Navegacao ---
+  // O goal chega pela ferramenta "2D Goal" do RViz (/goal_pose); o Bridge o
+  // encaminha para a action navigate_to_pose. Cancelar/limpar sao chamados
+  // pelos botoes do modulo de Navegacao.
+  void cancelNav();
+  void clearCostmaps();
+
+  // --- Localizacao ---
+  void publishInitialPose(double x, double y, double yaw);
+
 signals:
   void diagnosticsUpdated(const QVector<ComponentHealth> & health);
+  void navStatus(const QString & message);
+  void navResult(bool success, const QString & message);
 
 private:
+  using NavigateToPose = nav2_msgs::action::NavigateToPose;
+
   void onDiagnostics(const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg);
+  void onGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void sendNavGoal(const geometry_msgs::msg::PoseStamped & pose);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
+
+  rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initialpose_pub_;
+
+  std::mutex nav_mtx_;
+  rclcpp_action::ClientGoalHandle<NavigateToPose>::SharedPtr nav_goal_handle_;
+
   std::thread spin_thread_;
   std::atomic<bool> running_{false};
 };

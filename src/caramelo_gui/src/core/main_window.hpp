@@ -10,6 +10,7 @@
 class RosBridge;
 class StateMachine;
 class InicioModule;
+class NavegacaoModule;
 class RVizFrame;
 
 class QListWidget;
@@ -32,6 +33,7 @@ private:
   RosBridge * bridge_ = nullptr;
   StateMachine * state_ = nullptr;
   InicioModule * inicio_ = nullptr;
+  NavegacaoModule * navegacao_ = nullptr;
   RVizFrame * rviz_ = nullptr;
 
   QListWidget * sidebar_ = nullptr;

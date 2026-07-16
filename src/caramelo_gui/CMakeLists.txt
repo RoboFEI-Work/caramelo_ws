@@ -11,7 +11,10 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_rendering REQUIRED)
 find_package(rviz_default_plugins REQUIRED)
@@ -27,6 +30,7 @@ set(SOURCES
   src/core/state_machine.cpp
   src/core/main_window.cpp
   src/modules/inicio/inicio_module.cpp
+  src/modules/navegacao/navegacao_module.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})
@@ -35,7 +39,10 @@ target_include_directories(caramelo_gui PRIVATE src)
 ament_target_dependencies(caramelo_gui
   ament_index_cpp
   rclcpp
+  rclcpp_action
   diagnostic_msgs
+  geometry_msgs
+  nav2_msgs
   rviz_common
   rviz_rendering
   rviz_default_plugins
