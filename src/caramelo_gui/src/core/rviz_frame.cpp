@@ -1,6 +1,7 @@
 #include "core/rviz_frame.hpp"
 
 #include <QApplication>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "rviz_common/display.hpp"
@@ -37,7 +38,10 @@ void RVizFrame::showEvent(QShowEvent * event)
   QWidget::showEvent(event);
   if (!initialized_) {
     initialized_ = true;
-    initializeRViz();
+    // NAO inicializar dentro do showEvent: neste momento a janela ainda nao
+    // esta exposta para o OpenGL (segfault no arranque). Adia para o loop de
+    // eventos, com uma folga para a janela pintar de fato.
+    QTimer::singleShot(300, this, [this]() {initializeRViz();});
   }
 }
 
