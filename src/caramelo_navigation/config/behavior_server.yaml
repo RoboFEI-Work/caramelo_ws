@@ -5,11 +5,11 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "wait"]
-    spin:
-      plugin: "nav2_behaviors::Spin"
-    backup:
-      plugin: "nav2_behaviors::BackUp"
+    # RK-05: Spin e BackUp DESABILITADOS de proposito. Uma recovery que gira ou
+    # recua perto de parede pode colidir, e colisao custa metade da pontuacao.
+    # Preferimos falhar parado a "se salvar" colidindo. Mantemos so o Wait; a
+    # limpeza de costmap (ClearEntireCostmap) continua no proprio behavior tree.
+    behavior_plugins: ["wait"]
     wait:
       plugin: "nav2_behaviors::Wait"
     local_frame: odom
@@ -18,6 +18,3 @@ behavior_server:
     transform_tolerance: 0.1
     use_sim_time: false
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 3.2

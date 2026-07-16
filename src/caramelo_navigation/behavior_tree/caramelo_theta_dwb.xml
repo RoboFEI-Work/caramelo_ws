@@ -7,11 +7,12 @@
                 </RateController>
                 <FollowPath path="{path}" controller_id="DWBHolonomic"/>
             </PipelineSequence>
-            <Sequence name="ConservativeRecovery">
+            <!-- RK-05: Spin e BackUp removidos (colisao = -50%). So limpamos e esperamos. -->
+            <RoundRobin name="ConservativeRecovery">
+                <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+                <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
                 <Wait wait_duration="2.0"/>
-                <BackUp backup_dist="0.20" backup_speed="0.05"/>
-                <Spin spin_dist="1.57"/>
-            </Sequence>
+            </RoundRobin>
         </RecoveryNode>
     </BehaviorTree>
 </root>

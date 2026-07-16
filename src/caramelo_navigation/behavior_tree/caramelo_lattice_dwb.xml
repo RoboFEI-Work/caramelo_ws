@@ -18,12 +18,13 @@
         </RecoveryNode>
       </PipelineSequence>
 
+      <!-- RK-05: Spin e BackUp removidos. Recovery que gira/recua perto de parede
+           pode colidir (colisao = -50% da pontuacao). Preferimos falhar parado:
+           so limpamos os costmaps e esperamos. -->
       <RoundRobin name="ConservativeRecoveries">
         <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
         <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
         <Wait wait_duration="1.0"/>
-        <BackUp backup_dist="0.15" backup_speed="0.04" time_allowance="6.0"/>
-        <Spin spin_dist="1.57" time_allowance="8.0"/>
       </RoundRobin>
     </RecoveryNode>
   </BehaviorTree>
