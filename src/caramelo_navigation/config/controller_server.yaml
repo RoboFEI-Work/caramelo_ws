@@ -60,23 +60,33 @@ controller_server:
     DWBHolonomic:
       plugin: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
       debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
-      min_vel_x: -0.12 # Velocidade minima em x.
+      # RE PROIBIDA: o scan util cobre so os 180 graus FRONTAIS (scan_normalizer
+      # na Pi corta a metade traseira). Dar re e andar cego — houve colisao
+      # traseira real em teste. Se um dia houver sensor traseiro, reavaliar.
+      min_vel_x: 0.0 # Velocidade minima em x (sem re).
       max_vel_x: 0.20 # Velocidade maxima em x.
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
       max_vel_theta: 0.90 # Velocidade angular maxima para favorecer giro no eixo.
-      min_speed_xy: 0.0 # Menor modulo de velocidade linear.
+      # Pisos casados com o ESC: roda so gira a partir de 3.74 rad/s (~0.19 m/s
+      # de corpo; o driver arredonda p/ cima a partir da metade disso). Com
+      # minimo 0.0 o DWB comandava 0.05-0.09 m/s perto de obstaculo/goal, o
+      # driver zerava as rodas e o robo congelava ("Failed to make progress").
+      min_speed_xy: 0.10 # Menor modulo de velocidade linear que vira movimento real.
       max_speed_xy: 0.20 # Limite do modulo da velocidade linear.
-      min_speed_theta: 0.0 # Menor velocidade angular.
+      min_speed_theta: 0.25 # Menor velocidade angular que vira giro real.
       acc_lim_x: 0.35 # Aceleracao maxima em x.
       decel_lim_x: -0.45 # Desaceleracao maxima em x.
       acc_lim_y: 0.35 # Aceleracao maxima lateral.
       decel_lim_y: -0.45 # Desaceleracao maxima lateral.
       acc_lim_theta: 2.0 # Aceleracao angular maxima para girar com mais decisao.
       decel_lim_theta: -2.0 # Desaceleracao angular maxima para parar o giro com firmeza.
-      vx_samples: 20 # Amostras de velocidade em x.
-      vy_samples: 20 # Amostras de velocidade lateral.
-      vtheta_samples: 30 # Mais amostras angulares para achar giro no eixo.
+      vx_samples: 10 # Amostras de velocidade em x.
+      vy_samples: 10 # Amostras de velocidade lateral.
+      vtheta_samples: 20 # Amostras angulares.
+      # 10x10x20 = 2000 trajetorias/ciclo. Com 20x20x30 = 12000 o loop de 20 Hz
+      # caia para ~3 Hz (300 ms de calculo por ciclo no PC). Amostras mais finas
+      # sao inuteis abaixo do piso de velocidade do ESC (~0.19 m/s).
       sim_time: 1.7 # Horizonte de simulacao em segundos.
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
@@ -86,8 +96,12 @@ controller_server:
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
-      BaseObstacle.scale: 0.02 # Peso para custo de obstaculos.
+      # ObstacleFootprint (nao BaseObstacle): avalia o FOOTPRINT real 0.79x0.39 m
+      # contra o costmap, em vez do custo no CENTRO do robo. Com BaseObstacle o
+      # centro entrava na zona inflada perto de caixas e TODAS as trajetorias
+      # viravam invalidas — robo congelava a ~0.3 m do obstaculo.
+      critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
+      ObstacleFootprint.scale: 0.02 # Peso para custo de obstaculos.
       PathAlign.scale: 8.0 # Reduz comportamento de seguir arco longo tipo carro.
       PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
       GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal.
@@ -102,7 +116,9 @@ controller_server:
       # diferencial". Escala BAIXA para nao brigar com o RotateToGoal (32.0) do
       # alinhamento final. AJUSTAR_NO_ROBO: subir se o robo girar demais no meio
       # do caminho, baixar se demorar a alinhar o yaw no goal.
-      Twirling.scale: 2.0 # Peso (baixo) contra giro desnecessario no meio do trajeto.
+      # 2.0 -> 1.0: com a re proibida, girar virou obrigatorio para progredir;
+      # operador reportou "demora pra virar" perto de obstaculo.
+      Twirling.scale: 1.0 # Peso (baixo) contra giro desnecessario no meio do trajeto.
 
     MPPIHolonomic:
       plugin: "nav2_mppi_controller::MPPIController" # Experimental para mecanum.
@@ -114,7 +130,7 @@ controller_server:
       vy_std: 0.1 # Ruido de amostragem em vy.
       wz_std: 0.2 # Ruido de amostragem em wz.
       vx_max: 0.2 # Velocidade maxima em x.
-      vx_min: -0.2 # Velocidade minima em x.
+      vx_min: 0.0 # Sem re: scan cobre so a frente (mesmo racional do DWB).
       vy_max: 0.2 # Velocidade maxima lateral.
       wz_max: 1.0 # Velocidade angular maxima.
       ax_max: 0.5 # Aceleracao maxima em x.
@@ -219,8 +235,9 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        # AJUSTAR_NO_ROBO: campo potencial amplo para favorecer caminhos no centro dos corredores.
-        inflation_radius: 0.85
+        # AJUSTAR_NO_ROBO: 0.85 -> 0.55, mesmo racional do costmap global (o robo
+        # congelava dentro da zona inflada perto de caixas).
+        inflation_radius: 0.55
         cost_scaling_factor: 3.0
         inflate_unknown: false
         inflate_around_unknown: false

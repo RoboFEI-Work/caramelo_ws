@@ -25,6 +25,8 @@ bt_navigator:
     # goal_checker_id padrao no BT: general_goal_checker, para respeitar yaw com folga.
     # smoother_id padrao no BT: savitzky_golay_smoother; simple_smoother fica como fallback.
     #
-    # caramelo_lattice_dwb.xml fixa SmacLattice + DWBHolonomic.
-    # caramelo_lattice_mppi.xml fixa SmacLattice + MPPIHolonomic.
+    # caramelo_lattice_dwb.xml: SmacLattice + DWBHolonomic como DEFAULT; o
+    # caramelo_lattice_mppi.xml: SmacLattice + MPPIHolonomic como DEFAULT; ambos
+    # tem ControllerSelector — o painel Selector do RViz troca o controlador ao
+    # vivo (topico controller_selector), sem relancar.
     # simple_navigation*.xml ficam como exemplos/experimentos.

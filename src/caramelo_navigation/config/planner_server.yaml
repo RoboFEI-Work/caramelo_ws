@@ -109,8 +109,11 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         enabled: true
-        # AJUSTAR_NO_ROBO: campo potencial amplo para favorecer caminhos no centro dos corredores.
-        inflation_radius: 0.85
+        # AJUSTAR_NO_ROBO: campo potencial para favorecer caminhos no centro dos corredores.
+        # 0.85 -> 0.55: com 0.85 cada caixa projetava ~1 m de zona de custo alto;
+        # em percurso apertado o robo "congelava de medo" (planner abortava com o
+        # robo dentro da zona inflada). 0.55 ainda cobre o circunscrito (0.44 m).
+        inflation_radius: 0.55
         cost_scaling_factor: 3.0
         inflate_unknown: false
         inflate_around_unknown: false

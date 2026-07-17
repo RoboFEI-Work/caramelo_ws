@@ -2,18 +2,22 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="3" name="NavigateRecovery">
       <PipelineSequence name="SmacLatticeSavitzkyMPPI">
+        <!-- Painel Selector do RViz troca DWB<->MPPI ao vivo; default MPPI. -->
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="MPPIHolonomic" topic_name="controller_selector"/>
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
             <Sequence name="ComputeAndSmoothPath">
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice" error_code_id="{compute_path_error_code}"/>
-              <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="true"/>
+              <!-- check_for_collisions=false: mesmo racional do BT do DWB (aborto do
+                   smoother paralisava a navegacao em espacos apertados). -->
+              <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="false"/>
             </Sequence>
             <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
 
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="MPPIHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{smoothed_path}" controller_id="{selected_controller}" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
