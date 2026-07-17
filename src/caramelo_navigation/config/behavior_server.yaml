@@ -15,6 +15,6 @@ behavior_server:
     local_frame: odom
     global_frame: map
     robot_base_frame: base_footprint
-    transform_tolerance: 0.1
+    transform_tolerance: 0.6
     use_sim_time: false
     simulate_ahead_time: 2.0

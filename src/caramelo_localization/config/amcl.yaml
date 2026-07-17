@@ -6,7 +6,7 @@ amcl:
     odom_frame_id: "odom"
     scan_topic: "scan"
     tf_broadcast: True
-    transform_tolerance: 0.1
+    transform_tolerance: 0.6
     save_pose_rate: 0.5
 
     # Convencao sala_520: o robo inicia a navegacao no START, que e 0,0,0.

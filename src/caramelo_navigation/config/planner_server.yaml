@@ -81,6 +81,7 @@ global_costmap:
       footprint_padding: 0.0
       resolution: 0.02
       track_unknown_space: true
+      transform_tolerance: 0.6 # EKF da Pi tem picos de atraso de TF (~0.5s)
       plugins: ["static_layer", "obstacle_layer", "denoise_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

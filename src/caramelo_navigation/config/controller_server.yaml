@@ -36,7 +36,7 @@ controller_server:
       max_lookahead_dist: 0.9 # Maior lookahead permitido.
       lookahead_time: 1.5 # Tempo usado no lookahead por velocidade.
       rotate_to_heading_angular_vel: 1.8 # Velocidade de giro para alinhar ao path.
-      transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
+      transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
       use_velocity_scaled_lookahead_dist: false # Mantem lookahead fixo.
       min_approach_linear_velocity: 0.05 # Velocidade minima ao aproximar do goal.
       approach_velocity_scaling_dist: 1.0 # Distancia onde reduz velocidade no goal.
@@ -80,7 +80,7 @@ controller_server:
       sim_time: 1.7 # Horizonte de simulacao em segundos.
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
-      transform_tolerance: 0.2 # Atraso de TF aceito em segundos.
+      transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
       xy_goal_tolerance: 0.05 # Coerente com o general_goal_checker.
       yaw_goal_tolerance: 0.12 # Coerente com o general_goal_checker.
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
@@ -123,7 +123,7 @@ controller_server:
       ay_min: -0.5 # Desaceleracao maxima lateral.
       az_max: 1.5 # Aceleracao angular maxima.
       prune_distance: 1.7 # Remove trecho distante atras do robo.
-      transform_tolerance: 0.1 # Atraso de TF aceito em segundos.
+      transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
       temperature: 0.3 # Explora trajetorias menos provaveis.
       gamma: 0.015 # Peso do esforco de controle.
       motion_model: "Omni" # Modelo holonomico para base mecanum.
@@ -190,6 +190,7 @@ local_costmap:
       robot_base_frame: base_footprint
       use_sim_time: false
       rolling_window: true
+      transform_tolerance: 0.6 # EKF da Pi tem picos de atraso de TF (~0.5s)
       width: 3
       height: 3
       resolution: 0.02
