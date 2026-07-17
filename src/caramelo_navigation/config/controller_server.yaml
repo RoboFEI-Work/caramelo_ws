@@ -67,7 +67,7 @@ controller_server:
       max_vel_x: 0.20 # Velocidade maxima em x.
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
-      max_vel_theta: 0.90 # Velocidade angular maxima para favorecer giro no eixo.
+      max_vel_theta: 1.20 # Velocidade angular maxima (subida p/ curvar mais rapido; operador: "demora a virar").
       # Pisos casados com o ESC: roda so gira a partir de 3.74 rad/s (~0.19 m/s
       # de corpo; o driver arredonda p/ cima a partir da metade disso). Com
       # minimo 0.0 o DWB comandava 0.05-0.09 m/s perto de obstaculo/goal, o
@@ -83,10 +83,10 @@ controller_server:
       decel_lim_theta: -2.0 # Desaceleracao angular maxima para parar o giro com firmeza.
       vx_samples: 10 # Amostras de velocidade em x.
       vy_samples: 10 # Amostras de velocidade lateral.
-      vtheta_samples: 20 # Amostras angulares.
-      # 10x10x20 = 2000 trajetorias/ciclo. Com 20x20x30 = 12000 o loop de 20 Hz
-      # caia para ~3 Hz (300 ms de calculo por ciclo no PC). Amostras mais finas
-      # sao inuteis abaixo do piso de velocidade do ESC (~0.19 m/s).
+      vtheta_samples: 30 # Amostras angulares (subida 20->30 p/ resolucao de giro).
+      # 10x10x30 = 3000 trajetorias/ciclo (~13 Hz no PC). Com 20x20x30 = 12000 o
+      # loop caia para ~3 Hz. Amostras lineares mais finas sao inuteis abaixo do
+      # piso do ESC (~0.19 m/s), mas as angulares ajudam a achar a curva certa.
       sim_time: 1.7 # Horizonte de simulacao em segundos.
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
@@ -102,8 +102,8 @@ controller_server:
       # viravam invalidas — robo congelava a ~0.3 m do obstaculo.
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
       ObstacleFootprint.scale: 0.02 # Peso para custo de obstaculos.
-      PathAlign.scale: 8.0 # Reduz comportamento de seguir arco longo tipo carro.
-      PathAlign.forward_point_distance: 0.1 # Ponto a frente usado no alinhamento.
+      PathAlign.scale: 14.0 # 8->14: alinha o rumo ao path mais cedo (menos arco tipo carro / "anda reto demais").
+      PathAlign.forward_point_distance: 0.2 # 0.1->0.2: antecipa a curva olhando um pouco mais a frente.
       GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal.
       GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
       PathDist.scale: 24.0 # Peso para manter proximo ao path.

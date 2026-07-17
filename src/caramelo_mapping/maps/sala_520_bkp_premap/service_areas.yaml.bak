@@ -22,16 +22,17 @@ service_areas:
     type: finish
     frame_id: map
     final_robot_pose:
-      x: -3.0856
-      y: -6.7187
-      yaw: -2.402896
+      x: 0.0
+      y: 0.0
+      yaw: 0.0
     docking:
-      approach_offset: 0.45
-      linear_tolerance: 0.1
-      angular_tolerance: 0.1
+      approach_offset: 0.0
+      linear_tolerance: 0.05
+      angular_tolerance: 0.05
       use_docking: false
     manipulation_enabled: false
-    notes: FINISH - pose final do robo
+    notes: "FINISH - pose final do robo"
+
   WS1:
     type: workstation
     frame_id: map
