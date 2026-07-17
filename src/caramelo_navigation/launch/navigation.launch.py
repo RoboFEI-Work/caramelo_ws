@@ -466,7 +466,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_docking",
-            default_value="false",
+            default_value="true",
             description="Start Nav2 Docking Server using this map folder",
         ),
         DeclareLaunchArgument(
