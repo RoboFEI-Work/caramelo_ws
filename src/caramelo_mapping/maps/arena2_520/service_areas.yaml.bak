@@ -1,0 +1,100 @@
+service_areas:
+  START:
+    type: start
+    frame_id: map
+    final_robot_pose:
+      x: -0.0329
+      y: 0.1191
+      yaw: -0.195757
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.1
+      angular_tolerance: 0.1
+      use_docking: false
+    manipulation_enabled: false
+    notes: Area start da arena.
+  FINISH:
+    kind: FINISH
+    dock_id: FINISH
+    approach: front
+    notes: Area finish da arena.
+  WS1:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 1.4622
+      y: -2.1941
+      yaw: -0.073313
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.1
+      angular_tolerance: 0.1
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS1 - pose final do robo em frente a mesa
+  WS2:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 0.1921
+      y: -3.1004
+      yaw: 2.920988
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.1
+      angular_tolerance: 0.1
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS2 - pose final do robo em frente a mesa
+  WS3:
+    kind: WS
+    dock_id: WS3
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+  WS4:
+    kind: WS
+    dock_id: WS4
+    approach: front
+    full_name: Workstation
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+  SH1:
+    kind: SH
+    dock_id: SH1
+    approach: front
+    full_name: Shelf
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: normal
+  PP1:
+    kind: PP
+    dock_id: PP1
+    approach: front
+    full_name: Precise Placement
+    table_height_m: 0.1
+    width_m: 0.8
+    depth_m: 0.5
+    precision: high
+  RT1:
+    kind: RT
+    dock_id: RT1
+    approach: front
+    full_name: Rotating Table
+    table_height_m: 0.1
+    diameter_m: 0.6
+    precision: high
