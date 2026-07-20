@@ -14,8 +14,8 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker" # Verifica se o robo continua avancando.
-      required_movement_radius: 0.5 # Deslocamento minimo para considerar progresso.
-      movement_time_allowance: 10.0 # Tempo maximo sem progresso.
+      required_movement_radius: 0.10 # 0.5->0.10: 10cm ja conta como progresso (nav normal reseta facil); detecta travamento real mais cedo.
+      movement_time_allowance: 6.0 # 10->6: dispara a recovery (backup) em 6s em vez de 10s, mas ainda cabe uma rotacao final saudavel (~3s com slowing_factor 8).
 
     position_goal_checker:
       plugin: "nav2_controller::PositionGoalChecker" # Para goals de RViz em que importa chegar no ponto, nao no yaw.
@@ -25,7 +25,11 @@ controller_server:
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
       xy_goal_tolerance: 0.05 # Folga suficiente para parar sem caca ao goal.
-      yaw_goal_tolerance: 0.12 # Cerca de 6.9 graus para respeitar a seta sem giro infinito.
+      # 0.12->0.20 (11.5 graus): com a localizacao a ~15 graus de incerteza, uma
+      # janela de 6.9 graus era menor que o tremor do AMCL — o robo passava do
+      # alvo e dava voltas de 360 caçando o yaw. 11.5 graus e alcançavel; o
+      # docking/align fino cuida da precisao final na mesa.
+      yaw_goal_tolerance: 0.20
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
     FollowPath:
@@ -67,7 +71,7 @@ controller_server:
       max_vel_x: 0.20 # Velocidade maxima em x.
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
-      max_vel_theta: 1.20 # Velocidade angular maxima (subida p/ curvar mais rapido; operador: "demora a virar").
+      max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
       # Pisos casados com o ESC: roda so gira a partir de 3.74 rad/s (~0.19 m/s
       # de corpo; o driver arredonda p/ cima a partir da metade disso). Com
       # minimo 0.0 o DWB comandava 0.05-0.09 m/s perto de obstaculo/goal, o
@@ -92,7 +96,7 @@ controller_server:
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
       xy_goal_tolerance: 0.05 # Coerente com o general_goal_checker.
-      yaw_goal_tolerance: 0.12 # Coerente com o general_goal_checker.
+      yaw_goal_tolerance: 0.20 # Coerente com o general_goal_checker (11.5 graus).
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
@@ -109,7 +113,7 @@ controller_server:
       PathDist.scale: 24.0 # Peso para manter proximo ao path.
       GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal.
       RotateToGoal.scale: 32.0 # Fortalece giro no proprio eixo para alinhar yaw final.
-      RotateToGoal.slowing_factor: 4.0 # Reducao linear antes do giro final.
+      RotateToGoal.slowing_factor: 8.0 # 4->8: freia mais cedo no giro final (limita a vel angular perto do alvo, evita passar do yaw).
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
       # ADR-01 item 4: numa base mecanum o Twirling penaliza girar quando daria
       # para transladar (inclusive de lado), evitando que o DWB "rode como

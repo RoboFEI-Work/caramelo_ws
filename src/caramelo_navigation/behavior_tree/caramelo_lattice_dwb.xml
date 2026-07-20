@@ -1,10 +1,11 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="SmacLatticeSavitzkyDWB">
-        <!-- Deixa o painel Selector do RViz trocar DWB<->MPPI ao vivo (topico
-             controller_selector). Sem mensagem no topico, usa o default. -->
-        <ControllerSelector selected_controller="{selected_controller}" default_controller="DWBHolonomic" topic_name="controller_selector"/>
+        <!-- 2026-07-20: ControllerSelector REMOVIDO. O painel Selector do RViz
+             publicava um default != DWB (MPPI), e o MPPI colapsa para ~0 e
+             CONGELA o robo. Fixamos DWBHolonomic direto ate o MPPI ser
+             consertado. Ver [[mppi-nao-move-investigar]]. -->
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
             <Sequence name="ComputeAndSmoothPath">
@@ -20,17 +21,21 @@
         </RateController>
 
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="{selected_controller}" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{smoothed_path}" controller_id="DWBHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
 
-      <!-- RK-05: Spin e BackUp removidos. Recovery que gira/recua perto de parede
-           pode colidir (colisao = -50% da pontuacao). Preferimos falhar parado:
-           so limpamos os costmaps e esperamos. -->
-      <RoundRobin name="ConservativeRecoveries">
-        <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
-        <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      <!-- Recovery de escape (2026-07-20): 1) limpa os costmaps; 2) se ainda
+           travado, RE curta de 0.20 m para sair da zona inflada; 3) espera.
+           A re vem DEPOIS de limpar o costmap local, entao o BackUp nao ve
+           obstaculo-fantasma atras. Spin continua fora (risco de colisao). -->
+      <RoundRobin name="EscapeRecoveries">
+        <Sequence name="ClearAndBackUp">
+          <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+          <BackUp backup_dist="0.20" backup_speed="0.10" time_allowance="10"/>
+        </Sequence>
         <Wait wait_duration="1.0"/>
       </RoundRobin>
     </RecoveryNode>

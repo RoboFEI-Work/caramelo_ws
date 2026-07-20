@@ -1,6 +1,6 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateThroughPosesDWB">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPosesRecovery">
@@ -18,13 +18,16 @@
         </RecoveryNode>
       </PipelineSequence>
 
-      <!-- RK-05: sem Spin/BackUp (colisao = -50%). O BT default de
-           navigate_through_poses do Nav2 usa Spin e QUEBRAVA a ativacao do
-           bt_navigator quando o behavior_server deixou de carregar spin/backup
-           — este XML substitui aquele default. -->
-      <RoundRobin name="ConservativeRecoveries">
-        <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
-        <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      <!-- Recovery de escape (2026-07-20): limpa costmaps -> RE curta 0.20 m
+           para sair da zona inflada -> espera. Spin continua fora (colisao =
+           -50%). Substitui o BT default do Nav2 (que usa Spin e quebrava a
+           ativacao do bt_navigator sem spin no behavior_server). -->
+      <RoundRobin name="EscapeRecoveries">
+        <Sequence name="ClearAndBackUp">
+          <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+          <BackUp backup_dist="0.20" backup_speed="0.10" time_allowance="10"/>
+        </Sequence>
         <Wait wait_duration="1.0"/>
       </RoundRobin>
     </RecoveryNode>

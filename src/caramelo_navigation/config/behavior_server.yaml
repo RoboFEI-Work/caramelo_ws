@@ -5,13 +5,18 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
-    # RK-05: Spin e BackUp DESABILITADOS de proposito. Uma recovery que gira ou
-    # recua perto de parede pode colidir, e colisao custa metade da pontuacao.
-    # Preferimos falhar parado a "se salvar" colidindo. Mantemos so o Wait; a
-    # limpeza de costmap (ClearEntireCostmap) continua no proprio behavior tree.
-    behavior_plugins: ["wait"]
+    # RK-05 revisado (2026-07-20, decisao do operador): BackUp REABILITADO como
+    # modo de escape. O robo estava CONGELANDO ao entrar na zona inflada
+    # ("Start occupied": posicao atual vira celula ocupada, planner nao planeja,
+    # e sem re/spin ele nao saia — operador tinha que mover na mao). Uma re
+    # curta (0.20 m) para escapar e melhor que ficar travado. Spin continua
+    # DESABILITADO (giro perto de parede ainda arrisca colisao). O BackUp e
+    # cego atras (LiDAR so na frente), por isso e curto e so como recovery.
+    behavior_plugins: ["wait", "backup"]
     wait:
       plugin: "nav2_behaviors::Wait"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
     local_frame: odom
     global_frame: map
     robot_base_frame: base_footprint

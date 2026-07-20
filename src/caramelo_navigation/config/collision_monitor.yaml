@@ -13,6 +13,12 @@ collision_monitor:
 
     # AJUSTAR_NO_ROBO: comece conservador, teste com rodas suspensas e area livre.
     polygons: ["PolygonStop", "FootprintApproach"]
+    # PolygonStop DESLIGADO (2026-07-20): zona de STOP estatica (direcao-cega)
+    # travava a RE de escape — o obstaculo em que o robo encostava ficava
+    # dentro dela e ela mandava parar tudo, inclusive a ré que ia p/ LONGE do
+    # obstaculo. O FootprintApproach abaixo e projetado pela velocidade (sabe
+    # a direcao): freia so quando o movimento aponta p/ o obstaculo, e libera
+    # a ré. Protecao mantida, escape destravado.
     PolygonStop:
       type: "polygon"
       points: "[[0.45, 0.30], [0.45, -0.30], [-0.25, -0.30], [-0.25, 0.30]]"
@@ -20,7 +26,7 @@ collision_monitor:
       min_points: 4
       visualize: true
       polygon_pub_topic: "/collision_monitor/stop_polygon"
-      enabled: true
+      enabled: false
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
