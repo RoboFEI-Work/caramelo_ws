@@ -45,8 +45,8 @@ amcl:
 
 
     resample_interval: 1
-    max_particles: 5000
-    min_particles: 1000
+    max_particles: 500 # 5000->500 (operador, CPU): laptop saturado. 500 localiza no mapa e alivia MUITO o filtro.
+    min_particles: 250
     recovery_alpha_fast: 0.1
     recovery_alpha_slow: 0.1
     update_min_a: 0.2
