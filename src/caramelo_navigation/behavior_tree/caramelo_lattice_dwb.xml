@@ -34,7 +34,7 @@
         <Sequence name="ClearAndBackUp">
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
           <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
-          <BackUp backup_dist="0.20" backup_speed="0.10" time_allowance="10"/>
+          <BackUp backup_dist="0.20" backup_speed="0.10" time_allowance="20"/>
         </Sequence>
         <Wait wait_duration="1.0"/>
       </RoundRobin>
