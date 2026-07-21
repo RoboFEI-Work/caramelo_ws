@@ -74,7 +74,12 @@ controller_server:
       # DWB. rotate_to_goal_heading tambem faz o giro final pelo lado curto.
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
-      angular_dist_threshold: 0.52 # 45->30 graus (video 2026-07-21: giro de 270 pelo lado longo em t79-94 — abaixo do limiar o DWB ainda escolhia o lado; com 30 graus o shim, que sempre vai pelo lado curto, assume mais giros).
+      # REVERTIDO 30->45 graus: com 30 o shim engajava perto da bancada, a
+      # checagem de colisao do giro (zona inflada) bloqueava, FollowPath falhava
+      # e a recovery dava RE CEGA em direcao a mesa (robo "dockando de costas").
+      # A ronda completa validada rodou com 45. O giro-pelo-lado-longo ocasional
+      # do DWB abaixo de 45 e um custo aceito por ora.
+      angular_dist_threshold: 0.785
       forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo.
       rotate_to_heading_angular_vel: 0.6 # 0.4->0.6 (operador): mais velocidade = mais torque para vencer o atrito estatico do giro no lugar ("robo tremia sem sair da inercia").
       max_angular_accel: 2.0
