@@ -122,7 +122,9 @@ class ServiceAreaMarkers(Node):
         text.pose.position.y = pose["y"]
         text.pose.position.z = 0.38
         text.scale.z = 0.18
-        text.text = f"{area_id} - pose final do robo"
+        # So o nome: a frase longa virava um "trem de palavras" de ~3m no mapa
+        # (texto de 0.18m de altura x 24 caracteres).
+        text.text = f"{area_id}"
         text.color = color
         markers.markers.append(text)
 

@@ -1,3 +1,4 @@
+# Service Areas da arena2_520 (final_robot_pose SINCRONIZADA do docking.yaml em 2026-07-21).
 service_areas:
   START:
     type: start
@@ -17,9 +18,9 @@ service_areas:
     type: finish
     frame_id: map
     final_robot_pose:
-      x: 1.2584
-      y: -6.8069
-      yaw: -1.739268
+      x: 0.8032
+      y: -6.818
+      yaw: 1.807581
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.1
@@ -31,9 +32,9 @@ service_areas:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 1.4622
-      y: -2.1941
-      yaw: -0.073313
+      x: 0.2859
+      y: -3.0834
+      yaw: 3.018439
     table:
       width: 0.8
       depth: 0.5
@@ -49,9 +50,9 @@ service_areas:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 0.1921
-      y: -3.1004
-      yaw: 2.920988
+      x: 1.306
+      y: -1.1277
+      yaw: 2.978096
     table:
       width: 0.8
       depth: 0.5
