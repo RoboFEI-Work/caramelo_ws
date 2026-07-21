@@ -22,7 +22,7 @@ WaypointsModule::WaypointsModule(RosBridge * bridge, QWidget * parent)
   layout->addWidget(title);
 
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("sala_520");
+  map_name_ = new QLineEdit("arena2_520");
   nome_ = new QLineEdit("WP1");
   form->addRow("Mapa:", map_name_);
   form->addRow("Nome do waypoint:", nome_);

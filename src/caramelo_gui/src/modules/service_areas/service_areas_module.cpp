@@ -28,7 +28,7 @@ ServiceAreasModule::ServiceAreasModule(RosBridge * bridge, QWidget * parent)
   layout->addWidget(dica);
 
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("sala_520");
+  map_name_ = new QLineEdit("arena2_520");
   area_id_ = new QLineEdit("WS1");
   tipo_ = new QComboBox();
   // Tipos como strings de configuracao (R6) — nomenclatura do rulebook.

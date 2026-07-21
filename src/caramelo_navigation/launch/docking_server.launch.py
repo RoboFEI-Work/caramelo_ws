@@ -218,7 +218,36 @@ def _launch_setup(context, *args, **kwargs):
         ],
     )
 
-    return [docking_server, lifecycle_manager]
+    # Alinhamento fino holonomico (action /align_to_dock): validado no robo em
+    # 2026-07-21 (erros ~1-2cm / ~1-2 graus). Pisos casados com o firmware novo
+    # dos ESCs. Antes nenhum launch subia o node e o botao da GUI/mission_runner
+    # dependia de rodar na mao.
+    dock_align = Node(
+        package="caramelo_navigation",
+        executable="dock_align_node",
+        name="dock_align_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"min_body_vel": 0.06},
+            {"min_body_omega": 0.16},
+        ],
+    )
+
+    # Gravador de pose de dock (topico /save_dock_pose): sem ele o botao
+    # "Salvar pose como dock" da GUI publicava no vazio (sucesso falso).
+    dock_recorder = Node(
+        package="caramelo_navigation",
+        executable="dock_pose_recorder_node",
+        name="dock_pose_recorder_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"map_name": map_name},
+        ],
+    )
+
+    return [docking_server, lifecycle_manager, dock_align, dock_recorder]
 
 
 def generate_launch_description():

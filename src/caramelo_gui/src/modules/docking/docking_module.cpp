@@ -20,7 +20,7 @@ DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
 
   auto * form = new QFormLayout();
   dock_id_ = new QLineEdit("WS1");
-  map_name_ = new QLineEdit("sala_520");
+  map_name_ = new QLineEdit("arena2_520");
   refine_ = new QCheckBox("Refinar alinhamento com LiDAR");
   form->addRow("Dock:", dock_id_);
   form->addRow("Mapa:", map_name_);
@@ -44,7 +44,9 @@ DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
   auto * undockBtn = new QPushButton("Undock");
   connect(
     undockBtn, &QPushButton::clicked, this,
-    [this]() {bridge_->sendUndock("");});
+    // Tipo explicito: com "" o opennav_docking so resolve se lembrar do ultimo
+    // dock DA MESMA sessao — apos reiniciar a nav o undock falhava.
+    [this]() {bridge_->sendUndock("caramelo_front_dock");});
   layout->addWidget(undockBtn);
 
   auto * saveBtn = new QPushButton("Salvar pose atual como este dock");

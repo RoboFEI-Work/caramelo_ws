@@ -46,8 +46,9 @@ MapeamentoModule::MapeamentoModule(RosBridge * bridge, QWidget * parent)
         runner_->stop();
       } else {
         QStringList args;
-        args << QString("map_name:=%1").arg(nome_->text().trimmed())
-             << "use_rviz:=false"
+        // slam.launch.py nao declara map_name (era ignorado em silencio);
+        // o nome digitado vale apenas para o salvamento do mapa.
+        args << "use_rviz:=false"
              << QString("use_sim_time:=%1")
           .arg(sim_time->isChecked() ? "true" : "false");
         runner_->start("caramelo_mapping", "slam.launch.py", args);

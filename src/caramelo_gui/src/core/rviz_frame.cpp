@@ -165,9 +165,17 @@ void RVizFrame::setupTools()
   auto * tm = manager_->getToolManager();
   tools_.insert("interact", tm->addTool("rviz_default_plugins/Interact"));
   tools_.insert("move", tm->addTool("rviz_default_plugins/MoveCamera"));
-  // 2D Pose Estimate -> publica /initialpose ; 2D Goal -> publica /goal_pose.
+  // 2D Pose Estimate -> publica /initialpose ; 2D Goal -> topico PRIVADO da
+  // GUI (/caramelo_gui/goal_pose): o bt_navigator tambem assina /goal_pose e
+  // com o topico compartilhado cada goal disparava DUAS navegacoes.
   tools_.insert("initial_pose", tm->addTool("rviz_default_plugins/SetInitialPose"));
-  tools_.insert("goal", tm->addTool("rviz_default_plugins/SetGoal"));
+  auto * goal_tool = tm->addTool("rviz_default_plugins/SetGoal");
+  if (goal_tool) {
+    if (auto * topic_prop = goal_tool->getPropertyContainer()->subProp("Topic")) {
+      topic_prop->setValue("/caramelo_gui/goal_pose");
+    }
+  }
+  tools_.insert("goal", goal_tool);
   if (tools_.value("move")) {
     tm->setCurrentTool(tools_.value("move"));
   }

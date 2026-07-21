@@ -20,8 +20,11 @@ RosBridge::RosBridge(QObject * parent)
     std::bind(&RosBridge::onDiagnostics, this, std::placeholders::_1));
 
   nav_client_ = rclcpp_action::create_client<NavigateToPose>(node_, "navigate_to_pose");
+  // Topico PRIVADO da GUI: o bt_navigator do Nav2 Jazzy tambem assina
+  // /goal_pose — com o topico compartilhado, um "Definir Goal" disparava DOIS
+  // NavigateToPose (um preemptava o outro e o status da GUI mentia).
   goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
-    "/goal_pose", rclcpp::QoS(1),
+    "/caramelo_gui/goal_pose", rclcpp::QoS(1),
     std::bind(&RosBridge::onGoalPose, this, std::placeholders::_1));
   clear_global_ = node_->create_client<nav2_msgs::srv::ClearEntireCostmap>(
     "/global_costmap/clear_entirely_global_costmap");
@@ -37,7 +40,9 @@ RosBridge::RosBridge(QObject * parent)
     "/save_dock_pose", rclcpp::QoS(1));
 
   load_map_client_ = node_->create_client<nav2_msgs::srv::LoadMap>("/map_server/load_map");
-  save_map_client_ = node_->create_client<nav2_msgs::srv::SaveMap>("/map_saver/save_map");
+  // O node do slam.launch.py chama-se "map_saver_server" -> servico
+  // /map_saver_server/save_map (o antigo /map_saver/save_map nao existe).
+  save_map_client_ = node_->create_client<nav2_msgs::srv::SaveMap>("/map_saver_server/save_map");
 
   sa_list_client_ = node_->create_client<caramelo_msgs::srv::ListServiceAreas>(
     "/caramelo/service_areas/list");

@@ -23,8 +23,11 @@ NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
 
   // --- Ligar o stack de navegacao (Nav2 + AMCL) direto da GUI ---
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("sala_520");
+  map_name_ = new QLineEdit("arena2_520");
   com_docking_ = new QCheckBox("Com docking server");
+  // Docking validado no robo real (2026-07-21) e default true no bringup:
+  // a GUI nasce coerente com a operacao validada.
+  com_docking_->setChecked(true);
   auto * sim_time = new QCheckBox("Relogio da simulacao (Gazebo)");
   form->addRow("Mapa:", map_name_);
   form->addRow("", com_docking_);

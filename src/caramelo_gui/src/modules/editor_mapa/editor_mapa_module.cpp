@@ -140,7 +140,7 @@ EditorMapaModule::EditorMapaModule(RosBridge * bridge, QWidget * parent)
 
   // Linha 1: mapa + carregar/salvar.
   auto * topo = new QHBoxLayout();
-  map_name_ = new QLineEdit("sala_520");
+  map_name_ = new QLineEdit("arena2_520");
   topo->addWidget(new QLabel("Mapa:"));
   topo->addWidget(map_name_);
 
