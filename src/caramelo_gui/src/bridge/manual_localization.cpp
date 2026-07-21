@@ -169,23 +169,32 @@ void ManualLocalization::publishPreview()
   }
 
   // Pose do laser relativa a base (TF estatica base_footprint -> laser).
-  // FALLBACK com a convencao REAL do Caramelo: o laser monta com o eixo X
-  // apontando para TRAS (yaw = pi; ver scan_normalizer: FOV centrado em -X).
-  // O fallback antigo (identidade) desenhava o scan do fantasma ESPELHADO
-  // 180 graus quando o TF ainda nao estava disponivel.
-  double lx = 0.0, ly = 0.0, lyaw = M_PI;
+  // ATENCAO: o LiDAR do Caramelo monta DE CABECA PARA BAIXO (RPY 180,0,180 no
+  // URDF). Extrair "so o yaw" do quaternion (como era feito) vira uma rotacao
+  // plana — mas a projecao 2D de um laser invertido e um ESPELHAMENTO, nao
+  // uma rotacao: o preview saia espelhado. Usamos a base 3D completa da
+  // rotacao projetada no plano XY (correta p/ qualquer montagem).
+  // Fallback = a montagem real do Caramelo: (x,y)_base = (-x, +y)_laser.
+  double lx = 0.0, ly = 0.0;
+  double exx = -1.0, exy = 0.0;  // imagem do eixo X do laser no plano da base
+  double eyx = 0.0, eyy = 1.0;   // imagem do eixo Y do laser no plano da base
   try {
     const auto tf = tf_buffer_->lookupTransform(
       "base_footprint", scan->header.frame_id, tf2::TimePointZero);
     lx = tf.transform.translation.x;
     ly = tf.transform.translation.y;
     const auto & q = tf.transform.rotation;
-    lyaw = yawFromQuat(q.z, q.w, q.x, q.y);
+    // Colunas X e Y da matriz de rotacao do quaternion (projetadas em XY).
+    exx = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    exy = 2.0 * (q.x * q.y + q.w * q.z);
+    eyx = 2.0 * (q.x * q.y - q.w * q.z);
+    eyy = 1.0 - 2.0 * (q.x * q.x + q.z * q.z);
   } catch (const std::exception & e) {
     RCLCPP_WARN_ONCE(
       node_->get_logger(),
-      "Preview do fantasma sem TF base_footprint->%s (%s); usando montagem "
-      "conhecida do laser (X para tras).", scan->header.frame_id.c_str(), e.what());
+      "Preview do fantasma sem TF base_footprint->%s (%s); usando a montagem "
+      "conhecida do laser do Caramelo (invertido, RPY 180/0/180).",
+      scan->header.frame_id.c_str(), e.what());
   }
 
   Marker m;
@@ -203,7 +212,6 @@ void ManualLocalization::publishPreview()
   m.color.a = 0.9f;
 
   const double cg = std::cos(gyaw), sg = std::sin(gyaw);
-  const double cl = std::cos(lyaw), sl = std::sin(lyaw);
   double angle = scan->angle_min;
   for (const float r : scan->ranges) {
     const double a = angle;
@@ -211,11 +219,11 @@ void ManualLocalization::publishPreview()
     if (!std::isfinite(r) || r <= scan->range_min || r >= scan->range_max) {
       continue;
     }
-    // ponto no frame do laser -> base -> mapa (pose candidata do fantasma)
+    // ponto no frame do laser -> base (rotacao 3D projetada) -> mapa
     const double pxl = r * std::cos(a);
     const double pyl = r * std::sin(a);
-    const double pxb = lx + cl * pxl - sl * pyl;
-    const double pyb = ly + sl * pxl + cl * pyl;
+    const double pxb = lx + exx * pxl + eyx * pyl;
+    const double pyb = ly + exy * pxl + eyy * pyl;
     geometry_msgs::msg::Point p;
     p.x = gx + cg * pxb - sg * pyb;
     p.y = gy + sg * pxb + cg * pyb;

@@ -154,6 +154,9 @@ MainWindow::MainWindow(QWidget * parent)
     [this](bool active) {
       rviz_->setLayerEnabled("Robo", !active);
       rviz_->setLayerEnabled("Laser", !active);
+      // Ferramenta Interact ativa: sem ela o clique so arrastava a CAMERA e
+      // era impossivel pegar o fantasma. Volta p/ mover-camera ao sair.
+      rviz_->activateTool(active ? "interact" : "move");
     });
   connect(
     state_, &StateMachine::stateChanged, this,
