@@ -90,12 +90,12 @@ controller_server:
       decel_lim_y: -0.45 # Desaceleracao maxima lateral.
       acc_lim_theta: 2.0 # Aceleracao angular maxima para girar com mais decisao.
       decel_lim_theta: -2.0 # Desaceleracao angular maxima para parar o giro com firmeza.
-      vx_samples: 10 # Amostras de velocidade em x.
-      vy_samples: 10 # Amostras de velocidade lateral.
-      vtheta_samples: 30 # Amostras angulares (subida 20->30 p/ resolucao de giro).
-      # 10x10x30 = 3000 trajetorias/ciclo (~13 Hz no PC). Com 20x20x30 = 12000 o
-      # loop caia para ~3 Hz. Amostras lineares mais finas sao inuteis abaixo do
-      # piso do ESC (~0.19 m/s), mas as angulares ajudam a achar a curva certa.
+      vx_samples: 8 # Amostras de velocidade em x.
+      vy_samples: 8 # Amostras de velocidade lateral.
+      vtheta_samples: 20 # Amostras angulares.
+      # 8x8x20 = 1280 trajetorias/ciclo (2026-07-21: o laptop nao segurava 20Hz
+      # com 3000; 1280 corta ~57% do custo do loop). Historico: 20x20x30=12000
+      # dava ~3Hz; 10x10x30=3000 dava ~9-13Hz com RViz aberto.
       sim_time: 1.7 # Horizonte de simulacao em segundos.
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
