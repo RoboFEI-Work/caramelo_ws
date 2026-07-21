@@ -41,6 +41,8 @@ try:
 except ImportError:  # pragma: no cover
     from opennav_docking_msgs.action import DockRobot, UndockRobot  # type: ignore
 
+from nav2_msgs.action import NavigateToPose
+
 
 class MissionRunner(Node):
     def __init__(self):
@@ -48,6 +50,47 @@ class MissionRunner(Node):
         self._dock = ActionClient(self, DockRobot, "/dock_robot")
         self._undock = ActionClient(self, UndockRobot, "/undock_robot")
         self._align = ActionClient(self, AlignToDock, "align_to_dock")
+        self._nav = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+
+    def navigate_to(self, dock_id, map_name, map_dir):
+        """Navegacao PURA ate a pose do dock (sem approach/threshold de dock).
+
+        Para START/FINISH: nao sao bancadas — basta chegar na zona com as
+        tolerancias do goal checker (xy 0.10 / yaw 0.20). O dock() ficava
+        ajustando milimetros que nao importam e estourava o staging_time.
+        """
+        import math
+        try:
+            data = load_yaml(docking_file(resolve_map_folder(map_name, map_dir)))
+            pose = data["docks"][dock_id]["pose"]
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"[{dock_id}] pose nao encontrada: {exc}")
+            return False
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = "map"
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = float(pose[0])
+        goal.pose.pose.position.y = float(pose[1])
+        goal.pose.pose.orientation.z = math.sin(float(pose[2]) / 2.0)
+        goal.pose.pose.orientation.w = math.cos(float(pose[2]) / 2.0)
+        self.get_logger().info(f"[{dock_id}] navegacao pura ate ({pose[0]:.2f}, {pose[1]:.2f})...")
+        res = self._send_with_status(self._nav, goal, "/navigate_to_pose")
+        return res is not None and res
+
+    def _send_with_status(self, client, goal, name):
+        if not client.wait_for_server(timeout_sec=10.0):
+            self.get_logger().error(f"Action server '{name}' nao respondeu.")
+            return None
+        send_future = client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future)
+        handle = send_future.result()
+        if not handle or not handle.accepted:
+            self.get_logger().error(f"Goal '{name}' rejeitado.")
+            return None
+        result_future = handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+        wrapper = result_future.result()
+        return wrapper is not None and wrapper.status == 4  # STATUS_SUCCEEDED
 
     # -- helpers de action (bloqueantes, no estilo dos scripts existentes) -----
     def _send(self, client, goal, name):
@@ -149,10 +192,10 @@ def main(argv=None) -> int:
     node = MissionRunner()
     ok_geral = True
     try:
-        # START (opcional): so navega/dock, sem manipular nem undock automatico.
+        # START (opcional): navegacao pura — nao e bancada, basta chegar na zona.
         if start:
             node.get_logger().info(f"=== START: {start} ===")
-            if not node.dock(start, args.max_staging_time):
+            if not node.navigate_to(start, args.map_name, args.map_dir):
                 node.get_logger().error("Falha ao ir para START.")
                 if not args.continue_on_error:
                     return 1
@@ -175,9 +218,12 @@ def main(argv=None) -> int:
                 if not args.continue_on_error:
                     return 1
 
+        # FINISH: navegacao pura — nao e bancada, basta chegar na zona (operador
+        # 2026-07-21: o dock() ficava ajustando milimetros e estourava o tempo
+        # com o robo JA na zona do finish).
         if finish:
             node.get_logger().info(f"=== FINISH: {finish} ===")
-            if not node.dock(finish, args.max_staging_time):
+            if not node.navigate_to(finish, args.map_name, args.map_dir):
                 ok_geral = False
                 node.get_logger().error("Falha ao ir para FINISH.")
     finally:
