@@ -67,7 +67,19 @@ controller_server:
       inflation_cost_scaling_factor: 3.0 # Deve acompanhar a inflation layer.
 
     DWBHolonomic:
-      plugin: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
+      # RotationShim (2026-07-21): "de costas" para o caminho, o DWB nao girava
+      # (criticos brigando) e quando girava escolhia o lado LONGO (Oscillation
+      # trava a direcao). O shim gira NO LUGAR pelo lado MAIS CURTO quando o
+      # erro de rumo passa de angular_dist_threshold, e so entao entrega ao
+      # DWB. rotate_to_goal_heading tambem faz o giro final pelo lado curto.
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
+      angular_dist_threshold: 0.785 # >45 graus de erro de rumo -> gira no lugar primeiro.
+      forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo.
+      rotate_to_heading_angular_vel: 0.4 # Giro do shim (acima do minimo executavel 0.145).
+      max_angular_accel: 2.0
+      simulate_ahead_time: 1.0 # Checa colisao do giro no costmap antes de girar.
+      rotate_to_goal_heading: true # Giro final do goal tambem pelo lado curto.
       debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
       # RE PROIBIDA: o scan util cobre so os 180 graus FRONTAIS (scan_normalizer
       # na Pi corta a metade traseira). Dar re e andar cego — houve colisao
