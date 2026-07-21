@@ -29,6 +29,16 @@ def generate_launch_description():
         package="caramelo_gui",
         executable="caramelo_gui",
         output="screen",
+        # Silencia o DEBUG do RViz embutido: antes de localizar (sem TF
+        # map->base) ele logava "Unable to transform marker message" por
+        # marcador POR FRAME e inundava o terminal. E benigno e some ao
+        # localizar; em warn o terminal fica legivel.
+        arguments=[
+            "--ros-args",
+            "--log-level", "rviz_common:=warn",
+            "--log-level", "rviz_rendering:=warn",
+            "--log-level", "rviz_default_plugins:=warn",
+        ],
     )
 
     return LaunchDescription([
