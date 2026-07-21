@@ -14,11 +14,17 @@ DEFAULT_DOCK_IDS = ["START", "FINISH", "WS1", "WS2", "WS3", "WS4", "SH1", "PP1",
 DEFAULT_CONTROLLER = {
     "k_phi": 2.0,
     "k_delta": 1.5,
-    "v_linear_min": 0.015,
-    "v_linear_max": 0.06,
-    "v_angular_max": 0.25,
+    # 2026-07-21: velocidades casadas com o firmware novo dos ESCs (piso de
+    # roda 300 rpm = 0.056 m/s de corpo). Os antigos 0.015-0.06 ficavam ABAIXO
+    # do piso: o driver zerava as rodas e o approach dava timeout parado.
+    "v_linear_min": 0.08,
+    "v_linear_max": 0.12,
+    "v_angular_max": 0.4,
     "slowdown_radius": 0.45,
-    "use_collision_detection": True,
+    # False: o dock fica ENCOSTADO na bancada (obstaculo no costmap) — o
+    # checker de colisao sempre disparava na aproximacao ("Collision detected")
+    # e abortava. A protecao da navegacao normal continua no collision_monitor.
+    "use_collision_detection": False,
     "costmap_topic": "local_costmap/costmap_raw",
     "footprint_topic": "local_costmap/published_footprint",
     "transform_tolerance": 0.2,

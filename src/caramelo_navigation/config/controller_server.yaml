@@ -24,11 +24,16 @@ controller_server:
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker" # Verifica posicao e orientacao finais.
-      xy_goal_tolerance: 0.05 # Folga suficiente para parar sem caca ao goal.
-      # 0.12->0.20 (11.5 graus): com a localizacao a ~15 graus de incerteza, uma
-      # janela de 6.9 graus era menor que o tremor do AMCL — o robo passava do
-      # alvo e dava voltas de 360 caçando o yaw. 11.5 graus e alcançavel; o
-      # docking/align fino cuida da precisao final na mesa.
+      # 0.05->0.10 (2026-07-21): ruido de posicao do AMCL e ~16cm; janela de
+      # 5cm menor que o ruido fazia o goal de staging do docking NUNCA fechar
+      # (micro-ajustes abaixo do piso do ESC). 10cm fecha; a precisao final na
+      # bancada e do approach do docking + align.
+      xy_goal_tolerance: 0.10
+      # 0.20 (11.5 graus) e o MINIMO CONFIAVEL: a incerteza de yaw do AMCL e
+      # ~10 graus; janela menor que o ruido (testado 0.12 em 2026-07-21) faz o
+      # robo GIRAR SEM ASSENTAR no goal (visto na staging do docking). Precisao
+      # fina de orientacao na bancada e papel do approach do docking, nao do
+      # goal checker.
       yaw_goal_tolerance: 0.20
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
