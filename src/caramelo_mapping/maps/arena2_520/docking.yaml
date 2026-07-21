@@ -2,9 +2,6 @@ dock_plugins:
   caramelo_front_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.05
-    # -0.7 -> -0.45 (operador, 2026-07-21): com 0.7 a staging caia perto de
-    # parede em bancadas encostadas (WS2) e o UNDOCK (que recua ate a staging)
-    # estourava timeout sem espaco fisico. 0.30 (operador 2026-07-21): FINISH tinha parede ate na staging de 0.45.
     staging_x_offset: -0.25
     staging_yaw_offset: 0.0
     dock_direction: forward
@@ -37,9 +34,9 @@ docks:
     type: caramelo_front_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+    - 0.0979
+    - 0.0384
+    - -0.219523
     id: START
   FINISH:
     type: caramelo_front_dock

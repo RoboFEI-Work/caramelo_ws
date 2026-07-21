@@ -119,6 +119,7 @@ void ManualLocalization::start()
   server_->applyChanges();
 
   active_ = true;
+  emit activeChanged(true);
   emit stateChanged("Arraste o fantasma ate o scan casar com o mapa; depois Confirmar.");
   emit ghostMoved(gx_, gy_, gyaw_);
 }
@@ -168,7 +169,11 @@ void ManualLocalization::publishPreview()
   }
 
   // Pose do laser relativa a base (TF estatica base_footprint -> laser).
-  double lx = 0.0, ly = 0.0, lyaw = 0.0;
+  // FALLBACK com a convencao REAL do Caramelo: o laser monta com o eixo X
+  // apontando para TRAS (yaw = pi; ver scan_normalizer: FOV centrado em -X).
+  // O fallback antigo (identidade) desenhava o scan do fantasma ESPELHADO
+  // 180 graus quando o TF ainda nao estava disponivel.
+  double lx = 0.0, ly = 0.0, lyaw = M_PI;
   try {
     const auto tf = tf_buffer_->lookupTransform(
       "base_footprint", scan->header.frame_id, tf2::TimePointZero);
@@ -176,8 +181,11 @@ void ManualLocalization::publishPreview()
     ly = tf.transform.translation.y;
     const auto & q = tf.transform.rotation;
     lyaw = yawFromQuat(q.z, q.w, q.x, q.y);
-  } catch (...) {
-    // Sem TF do laser: assume laser na origem da base (melhor que nada).
+  } catch (const std::exception & e) {
+    RCLCPP_WARN_ONCE(
+      node_->get_logger(),
+      "Preview do fantasma sem TF base_footprint->%s (%s); usando montagem "
+      "conhecida do laser (X para tras).", scan->header.frame_id.c_str(), e.what());
   }
 
   Marker m;
@@ -257,6 +265,7 @@ void ManualLocalization::confirm()
   server_->erase(kMarkerName);
   server_->applyChanges();
   clearPreview();
+  emit activeChanged(false);
   emit stateChanged("Pose confirmada — AMCL relocalizando.");
 }
 
@@ -272,5 +281,6 @@ void ManualLocalization::cancel()
   server_->erase(kMarkerName);
   server_->applyChanges();
   clearPreview();
+  emit activeChanged(false);
   emit stateChanged("Localizacao manual cancelada.");
 }

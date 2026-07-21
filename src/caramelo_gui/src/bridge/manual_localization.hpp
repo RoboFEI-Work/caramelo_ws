@@ -41,6 +41,9 @@ public:
 signals:
   void ghostMoved(double x, double y, double yaw);
   void stateChanged(const QString & message);
+  // true enquanto o modo fantasma esta ativo (a MainWindow esconde o robo
+  // real e o scan real para nao confundir com o fantasma + scan verde).
+  void activeChanged(bool active);
 
 private:
   void onScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);

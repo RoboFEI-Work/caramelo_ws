@@ -145,6 +145,16 @@ MainWindow::MainWindow(QWidget * parent)
   // Ligacoes ROS -> UI.
   connect(bridge_, &RosBridge::diagnosticsUpdated, inicio_, &InicioModule::onDiagnostics);
   connect(bridge_, &RosBridge::diagnosticsUpdated, state_, &StateMachine::updateFromHealth);
+
+  // Modo fantasma: esconde o ROBO REAL e o SCAN REAL enquanto o operador
+  // arrasta o fantasma (ficavam sobrepostos e confundiam a localizacao
+  // manual); restaura ao confirmar/cancelar.
+  connect(
+    bridge_->manualLocalization(), &ManualLocalization::activeChanged, this,
+    [this](bool active) {
+      rviz_->setLayerEnabled("Robo", !active);
+      rviz_->setLayerEnabled("Laser", !active);
+    });
   connect(
     state_, &StateMachine::stateChanged, this,
     [this](int, const QString & label) {
