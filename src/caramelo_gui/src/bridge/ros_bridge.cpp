@@ -307,8 +307,13 @@ void RosBridge::stop()
 
 void RosBridge::onDiagnostics(const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg)
 {
-  QVector<ComponentHealth> health;
-  health.reserve(static_cast<int>(msg->status.size()));
+  // /diagnostics recebe arrays de VARIOS publicadores (health_monitor com os
+  // caramelo/*, controller_manager, EKF, lifecycle managers...). Emitir so a
+  // mensagem recem-chegada fazia a StateMachine avaliar snapshots PARCIAIS:
+  // quando chegava um array sem caramelo/rede_raspberry, levelOf() devolvia
+  // STALE e a barra caia para OFFLINE mesmo com tudo verde. Mesclamos por
+  // nome num cache e emitimos sempre o estado consolidado.
+  static QMap<QString, ComponentHealth> latest;
   for (const auto & st : msg->status) {
     ComponentHealth c;
     c.name = QString::fromStdString(st.name);
@@ -317,6 +322,11 @@ void RosBridge::onDiagnostics(const diagnostic_msgs::msg::DiagnosticArray::Share
     for (const auto & kv : st.values) {
       c.values.insert(QString::fromStdString(kv.key), QString::fromStdString(kv.value));
     }
+    latest.insert(c.name, c);
+  }
+  QVector<ComponentHealth> health;
+  health.reserve(latest.size());
+  for (const auto & c : latest) {
     health.push_back(c);
   }
   emit diagnosticsUpdated(health);
