@@ -1,15 +1,14 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="SmacLatticeSavitzkyMPPI">
-        <!-- Painel Selector do RViz troca DWB<->MPPI ao vivo; default MPPI. -->
-        <ControllerSelector selected_controller="{selected_controller}" default_controller="MPPIHolonomic" topic_name="controller_selector"/>
+        <!-- 2026-07-21: espelho do BT do DWB validado, com MPPIHolonomic FIXO
+             (ControllerSelector removido — o latch do RViz ja nos enganou). -->
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
             <Sequence name="ComputeAndSmoothPath">
               <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice" error_code_id="{compute_path_error_code}"/>
-              <!-- check_for_collisions=false: mesmo racional do BT do DWB (aborto do
-                   smoother paralisava a navegacao em espacos apertados). -->
+              <!-- check_for_collisions=false: mesmo racional do BT do DWB. -->
               <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="false"/>
             </Sequence>
             <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
@@ -17,17 +16,18 @@
         </RateController>
 
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="{selected_controller}" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{smoothed_path}" controller_id="MPPIHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
 
-      <!-- RK-05: Spin e BackUp removidos. Recovery que gira/recua perto de parede
-           pode colidir (colisao = -50% da pontuacao). Preferimos falhar parado:
-           so limpamos os costmaps e esperamos. -->
-      <RoundRobin name="ConservativeRecoveries">
-        <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
-        <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+      <!-- Recovery de escape: identica ao BT do DWB validado. -->
+      <RoundRobin name="EscapeRecoveries">
+        <Sequence name="ClearAndBackUp">
+          <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+          <BackUp backup_dist="0.20" backup_speed="0.10" time_allowance="20"/>
+        </Sequence>
         <Wait wait_duration="1.0"/>
       </RoundRobin>
     </RecoveryNode>

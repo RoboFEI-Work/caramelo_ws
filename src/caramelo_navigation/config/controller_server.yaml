@@ -148,9 +148,9 @@ controller_server:
 
     MPPIHolonomic:
       plugin: "nav2_mppi_controller::MPPIController" # Experimental para mecanum.
-      time_steps: 56 # Pontos avaliados em cada trajetoria.
+      time_steps: 40 # 56->40 (horizonte 2.0s; CPU do laptop nao segura 2000x56).
       model_dt: 0.05 # Intervalo entre pontos em segundos.
-      batch_size: 2000 # Quantidade de trajetorias amostradas.
+      batch_size: 1200 # 2000->1200 (CPU; DWB com 1280 trajetorias roda ~15-20Hz aqui).
       iteration_count: 1 # Iteracoes de otimizacao por ciclo.
       vx_std: 0.1 # Ruido de amostragem em vx.
       vy_std: 0.1 # Ruido de amostragem em vy.

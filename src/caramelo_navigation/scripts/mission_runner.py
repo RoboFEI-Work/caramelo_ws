@@ -171,6 +171,8 @@ def _parse_args(argv):
     p.add_argument("--max-staging-time", type=float, default=120.0)
     p.add_argument("--align-timeout", type=float, default=30.0)
     p.add_argument("--max-undocking-time", type=float, default=30.0)
+    p.add_argument("--manip-delay", type=float, default=5.0,
+                   help="Pausa em s na estacao simulando a manipulacao (0 desliga).")
     return p.parse_args(remove_ros_args(args=argv)[1:])
 
 
@@ -208,7 +210,11 @@ def main(argv=None) -> int:
                                       args.align_timeout)
             if etapa_ok:
                 # HOOK de manipulacao (Fase 8). Hoje so um marcador.
-                node.get_logger().info(f"[{dock_id}] manipulacao (placeholder — Fase 8).")
+                node.get_logger().info(
+                    f"[{dock_id}] manipulacao (placeholder — Fase 8): "
+                    f"pausa de {args.manip_delay:.0f}s simulando a tarefa do braco.")
+                import time as _time
+                _time.sleep(max(0.0, args.manip_delay))
             if etapa_ok and not args.no_undock:
                 etapa_ok = node.undock(types.get(dock_id, ""), args.max_undocking_time)
 
