@@ -185,7 +185,7 @@ def _launch_setup(context, *args, **kwargs):
         "wait_charge_timeout": 1.0,
         "dock_approach_timeout": 25.0,
         "undock_linear_tolerance": 0.15,
-        "undock_angular_tolerance": 0.40,
+        "undock_angular_tolerance": 3.14,
         "max_retries": 1,
         "base_frame": base_frame,
         "fixed_frame": fixed_frame,
