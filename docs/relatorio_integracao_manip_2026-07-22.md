@@ -282,6 +282,41 @@ manip_ws (manip_dev): limpo — INTOCADO
 caramelo_hardware_ws (dev): limpo — INTOCADO
 ```
 
+## Adendo 2026-07-23 — Diagnóstico e correção da manipulação em campo
+
+Sintomas do teste de campo do operador: pick falhava 3× (garra fechando no ar),
+braço não ia a home no início, voz muda, flood de logs no launch.
+
+**Causa raiz do pick (hipótese do OPERADOR, confirmada no código):**
+`getTagTransform` usava `tf2::TimePointZero` sem checagem de idade — tag vista
+uma vez ficava ~10 s no buffer TF; com o robô/braço movido depois (câmera fica
+no link5!), o alvo do grasp virava fantasma → garra fechava no ar → verificação
+de esforço reprovava → 3 tentativas trocando solver → "Pick skipped" mascarado
+como success. Corrigido: param `max_tag_age_sec` (1.0 s) no pick E no place —
+tag precisa ter sido vista AGORA.
+
+Demais correções: prólogo `home` no executor (params `startup_home`=true /
+`startup_pose_name`); WARN gritante no PickTagBT quando o pick é pulado;
+include da RealSense escopado (GroupAction scoped, zera 58 warnings de
+startup); `decimate` 1.0→2.0 no cfg das tags (decisão do operador; notebook
+saturava). Voz: binário Piper em `~/piper/` (release oficial rhasspy — CUIDADO:
+`apt install piper` é um app de mouse) + `espeak-ng`/`ffmpeg` via apt (ffplay
+aplica o efeito dog); modelo já estava no share.
+
+**Validação 23/07 (robô real, mesa de 15 cm):** braço→pegar_obj, tag_1 fresca a
+[0.55, -0.03, 0.19] (~34 cm do ombro), pick na PRIMEIRA tentativa com esforço
+M6=1,00/M7=0,96 N·m (limiar 0,15) → container → `Pick completed`; place de
+volta à mesa `Place completed`; prólogo home visível no dry-run; flood de
+startup zerado; voz Piper+dog falando.
+
+**VEREDICTO FINAL DO TCP: 0.200 CORRETO** (pick perfeito com tag fresca) — as
+falhas de campo eram 100% a tag velha. **caramelo_hardware_ws permanece
+intocado em definitivo.**
+
+Nota operacional: a câmera D455 EXIGE porta USB 3 (numa 2.1 o nó sobe com
+"Reduced performance" e NÃO publica imagens — foi a causa da câmera muda após
+retrocar o cabo).
+
 ## Pendências
 - Etapa 4 (validação real) quando a Pi for conectada — checklist na seção 5.
 - Gate TCP 0.17×0.20 antes do primeiro pick real.

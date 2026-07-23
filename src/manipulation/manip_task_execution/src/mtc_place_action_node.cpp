@@ -59,12 +59,17 @@ public:
                 execution_lock_->error());
         }
 
+        // Mesma protecao do pick: tag precisa ter sido vista AGORA (TF velha
+        // com robo/braco movido = alvo fantasma; tambem evitaria que uma tag
+        // velha "fingisse presenca" no skip_missing_place_tag).
+        max_tag_age_sec_ = this->declare_parameter<double>("max_tag_age_sec", 1.0);
+
         const auto default_container_state_file = getDefaultContainerStatePath();
         container_state_file_ = this->declare_parameter<std::string>(
             "container_state_file",
             default_container_state_file);
         container_place_z_offset_ =
-            this->declare_parameter<double>("container_place_z_offset", 0.1);  
+            this->declare_parameter<double>("container_place_z_offset", 0.1);
         skip_missing_place_tag_ =
             this->declare_parameter<bool>("skip_missing_place_tag", true);
         container_state_store_ =
@@ -464,6 +469,7 @@ private:
     {
         const auto start = std::chrono::steady_clock::now();
         tf2::TransformException last_ex("unknown TF error");
+        double stale_age_sec = -1.0;
 
         while (std::chrono::steady_clock::now() - start < timeout) {
             if (cancellationRequested()) {
@@ -475,7 +481,13 @@ private:
             }
             try {
                 out_tf = getTagTransform(reference_frame, tag_frame);
-                return true;
+                // Transform existir nao basta: precisa ser deteccao RECENTE.
+                const double age_sec =
+                    (this->get_clock()->now() - rclcpp::Time(out_tf.header.stamp)).seconds();
+                if (age_sec <= max_tag_age_sec_) {
+                    return true;
+                }
+                stale_age_sec = age_sec;
             } catch (const tf2::TransformException & ex) {
                 last_ex = ex;
             }
@@ -485,14 +497,25 @@ private:
             }
         }
 
-        RCLCPP_ERROR_STREAM(
-            get_logger(),
-            "[" << cycle_name << "] Timed out waiting TF "
-                << reference_frame << " <- " << tag_frame
-                << " after " << timeout.count() << " ms. Last error: "
-                << last_ex.what());
+        if (stale_age_sec >= 0.0) {
+            RCLCPP_ERROR_STREAM(
+                get_logger(),
+                "[" << cycle_name << "] Tag " << tag_frame
+                    << " vista pela ultima vez ha " << stale_age_sec
+                    << " s (max " << max_tag_age_sec_
+                    << " s) — a camera NAO esta vendo a tag agora.");
+        } else {
+            RCLCPP_ERROR_STREAM(
+                get_logger(),
+                "[" << cycle_name << "] Timed out waiting TF "
+                    << reference_frame << " <- " << tag_frame
+                    << " after " << timeout.count() << " ms. Last error: "
+                    << last_ex.what());
+        }
         return false;
     }
+
+    double max_tag_age_sec_{1.0};
 
     bool moveToTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,

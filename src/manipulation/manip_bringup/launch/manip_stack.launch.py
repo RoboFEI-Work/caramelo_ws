@@ -10,7 +10,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
@@ -198,21 +198,32 @@ def generate_launch_description():
 
     # --- Camera RealSense ---
     # publish_tf:=false: o TF da camera vem do URDF do Caramelo (RSP), nao do driver.
-    realsense = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"
-            ])
-        ),
+    # GroupAction scoped+forwarding=False: o rs_launch.py itera as launch
+    # configurations do contexto e emitia ~58 warnings "Parameter 'X' is not
+    # supported" para cada arg NOSSO vazado; o escopo entrega a ele so' os
+    # launch_arguments abaixo. A condicao fica no GRUPO (dentro do escopo o
+    # use_camera nao existe mais).
+    realsense = GroupAction(
+        [
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"
+                    ])
+                ),
+                launch_arguments={
+                    "camera_name": "camera",
+                    "align_depth.enable": "true",
+                    "pointcloud.enable": "false",
+                    "enable_color": "true",
+                    "enable_depth": "true",
+                    "publish_tf": "false",
+                }.items(),
+            ),
+        ],
+        scoped=True,
+        forwarding=False,
         condition=IfCondition(use_camera),
-        launch_arguments={
-            "camera_name": "camera",
-            "align_depth.enable": "true",
-            "pointcloud.enable": "false",
-            "enable_color": "true",
-            "enable_depth": "true",
-            "publish_tf": "false",
-        }.items(),
     )
 
     # --- AprilTag (config vendorado no manip_bringup) ---

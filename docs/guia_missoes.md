@@ -156,6 +156,15 @@ ros2 run manip_bt bt_yaml_executor minhas_acoes.yaml --ros-args \
 O undock antes de sair de uma estação é automático (embutido no goto seguinte);
 `home` antes de cada goto é responsabilidade de quem escreve as ações.
 
+## 6b. Parâmetros novos do executor (23/07)
+
+- `startup_home` (true): braço vai a `home` ANTES da primeira ação da missão.
+- `startup_pose_name` ("home"): pose do prólogo.
+- `max_tag_age_sec` (1.0, nos nós de pick/place): a tag precisa ter sido VISTA
+  há menos de 1 s — protege contra alvo fantasma (TF velha com robô movido).
+  Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
+  campo de visão (não é erro de IK).
+
 ## 7. Avisos rápidos (aprendidos na validação)
 
 - **Cabo de rede caiu durante trajetória do braço** = o braço termina o
@@ -164,6 +173,18 @@ O undock antes de sair de uma estação é automático (embutido no goto seguint
 - **Câmera "Device or resource busy"** ao relançar = sobrou processo do launch
   anterior segurando a USB. Matar os órfãos (move_group, mtc_*, realsense,
   apriltag) antes de subir de novo.
+- **Robô "teleportando" na GUI/RViz** = DOIS AMCLs (stack de nav duplicado —
+  launch antigo que não morreu) brigando pelo map→odom. Conferir com
+  `ps -eo pid,lstart,comm | grep amcl` e matar o launch antigo INTEIRO. O
+  mesmo vale p/ nós rodados à mão dias antes (ex.: dock_align_node duplicado
+  rouba goals da action com params errados). Higiene: antes de relançar,
+  `ps -eo pid,lstart,comm | grep -E "amcl|nav|dock_align"` e limpar o velho.
+- **Câmera muda com nó no ar** = provavelmente porta USB 2 ("Device USB type:
+  2.1" + "Reduced performance" no log). O D455 exige USB 3 (porta azul) — sem
+  isso o nó sobe mas NÃO publica imagens.
+- **Voz**: motor Piper em `~/piper/piper` + `espeak-ng`/`ffmpeg` (ffplay aplica
+  o efeito dog). NUNCA `apt install piper` (é um app de mouse gamer). Tirar o
+  efeito: `voice_effect` no speech_node do manip_stack.launch.py.
 - **Script Python novo em install(PROGRAMS) precisa de `chmod +x` no src** —
   com `--symlink-install`, sem o bit de execução o launch falha com
   "executable not found on the libexec directory".

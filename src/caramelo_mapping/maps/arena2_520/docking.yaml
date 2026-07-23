@@ -50,17 +50,17 @@ docks:
     type: caramelo_front_dock
     frame: map
     pose:
-    - 0.2859
-    - -3.0834
-    - 3.018439
+    - 0.2893
+    - -3.1235
+    - 2.907471
     id: WS1
   WS2:
     type: caramelo_front_dock
     frame: map
     pose:
-    - 1.306
-    - -1.1277
-    - 2.978096
+    - 1.2902
+    - -1.1354
+    - 2.994724
     id: WS2
   WS3:
     type: caramelo_front_dock

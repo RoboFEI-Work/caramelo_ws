@@ -1,4 +1,3 @@
-# Service Areas da arena2_520 (final_robot_pose SINCRONIZADA do docking.yaml em 2026-07-21).
 service_areas:
   START:
     type: start
@@ -46,6 +45,9 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS1 - pose final do robo em frente a mesa
+    kind: WS
+    dock_id: WS1
+    approach: front
   WS2:
     type: workstation
     frame_id: map
@@ -64,6 +66,9 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS2 - pose final do robo em frente a mesa
+    kind: WS
+    dock_id: WS2
+    approach: front
   WS3:
     kind: WS
     dock_id: WS3

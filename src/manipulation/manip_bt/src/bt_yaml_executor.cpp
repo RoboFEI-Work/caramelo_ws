@@ -173,6 +173,8 @@ struct MissionBuildContext
   manip_bt::MissionMapConfigPtr map_config;
   bool simulate_navigation{false};
   std::string finish_dock_id;
+  bool startup_home{true};
+  std::string startup_pose_name{"home"};
   std::vector<std::string> plan_rows;  // tabela do --dry-run
 };
 
@@ -250,6 +252,17 @@ std::string buildTreeXmlFromActions(
   xml << "<root main_tree_to_execute=\"MainTree\">\n";
   xml << "  <BehaviorTree ID=\"MainTree\">\n";
   xml << "    <Sequence>\n";
+
+  // Prologo: braco em home ANTES de qualquer acao (pedido do operador —
+  // o robo pode bootar com o braco em pose qualquer; GoToNamedPose planeja
+  // do estado atual via MoveIt, com colisoes da SRDF). Chave "prologue_*"
+  // nunca colide com action_<i>_* nem com o epilogo (N/N+1).
+  if (ctx.startup_home) {
+    blackboard->set("prologue_pose_name", ctx.startup_pose_name);
+    xml << "      <GoToNamedPose pose_name=\""
+        << escapeXmlAttr(blackboardPort("prologue_pose_name")) << "\"/>\n";
+    ctx.plan_rows.push_back("[ini] " + ctx.startup_pose_name + " (prologo automatico)");
+  }
 
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
 
@@ -401,6 +414,9 @@ int main(int argc, char ** argv)
       node->declare_parameter<bool>("simulate_navigation", false);
     const std::string finish_dock_id =
       node->declare_parameter<std::string>("finish_dock_id", "FINISH");
+    const bool startup_home = node->declare_parameter<bool>("startup_home", true);
+    const std::string startup_pose_name =
+      node->declare_parameter<std::string>("startup_pose_name", "home");
 
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
@@ -419,6 +435,8 @@ int main(int argc, char ** argv)
     MissionBuildContext ctx;
     ctx.simulate_navigation = simulate_navigation;
     ctx.finish_dock_id = finish_dock_id;
+    ctx.startup_home = startup_home;
+    ctx.startup_pose_name = startup_pose_name;
 
     std::string map_folder = map_folder_param;
     if (map_folder.empty() && !map_name_param.empty()) {

@@ -14,17 +14,26 @@ service_areas:
     manipulation_enabled: false
     notes: Area start da arena.
   FINISH:
-    kind: FINISH
-    dock_id: FINISH
-    approach: front
+    type: finish
+    frame_id: map
+    final_robot_pose:
+      x: 0.8032
+      y: -6.818
+      yaw: 1.807581
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.1
+      angular_tolerance: 0.1
+      use_docking: false
+    manipulation_enabled: false
     notes: Area finish da arena.
   WS1:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 1.4622
-      y: -2.1941
-      yaw: -0.073313
+      x: 0.2859
+      y: -3.0834
+      yaw: 3.018439
     table:
       width: 0.8
       depth: 0.5
@@ -36,13 +45,16 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS1 - pose final do robo em frente a mesa
+    kind: WS
+    dock_id: WS1
+    approach: front
   WS2:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 0.1921
-      y: -3.1004
-      yaw: 2.920988
+      x: 1.306
+      y: -1.1277
+      yaw: 2.978096
     table:
       width: 0.8
       depth: 0.5
@@ -54,6 +66,9 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS2 - pose final do robo em frente a mesa
+    kind: WS
+    dock_id: WS2
+    approach: front
   WS3:
     kind: WS
     dock_id: WS3

@@ -9,7 +9,9 @@ apriltag:
 
     detector:
       threads: 4
-      decimate: 1.0
+      # 2026-07-23: 1.0 -> 2.0 (decisao do operador): o notebook saturava com
+      # decimate 1.0 (floods de "Control loop missed"); 2.0 corta ~4x o custo.
+      decimate: 2.0
       blur: 0.0
       refine: true
       sharpening: 0.25
