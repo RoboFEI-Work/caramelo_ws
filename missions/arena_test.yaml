@@ -1,0 +1,39 @@
+# Tarefa de teste da arena2_520 — EDITE conforme sua montagem física.
+#
+# Formato = YAML da competição (igual BMT.yaml do manip_bt/behavior_tree_manip/).
+# Regras desta arena:
+#   - Estações com pose REAL gravada: WS_1 (dock WS1) e WS_2 (dock WS2).
+#     WS_3/WS_4/SH_1 etc. têm pose placeholder -> o executor aborta (fail-fast).
+#   - id do objeto = id da AprilTag colada nele (cfg: 1..7 -> tag_1..tag_7,
+#     20..28 -> tag_20..tag_28; potes: 10..16 -> ct_10..ct_16).
+#   - Altura da mesa: WS_1 usa a pose de braco Mesa0 e WS_2 usa Mesa5
+#     (ws_table_mapping.yaml do mapa). Hoje o place real validado foi na Mesa0.
+#
+# Fluxo gerado pelo planner: goto WS_1 -> pick(s) -> home -> goto WS_2 ->
+# place(s) -> home; o executor ainda anexa sozinho: home -> goto FINISH.
+
+task_id: ARENA_TEST
+name: Teste integrado arena2_520
+duration_min: 10
+active_service_areas: [WS_1, WS_2]
+
+objects:
+  - {id: 01, type: ATTC, color: RED}    # objeto com a tag id 1 (frame tag_1)
+
+containers: []                          # sem potes na mesa neste teste
+
+start_state:
+  WS_1:
+    obj_ids: [01]                       # objeto comeca na mesa da WS1
+    cont_ids: []
+  WS_2:
+    obj_ids: []
+    cont_ids: []
+
+finish_state:
+  WS_1:
+    obj_ids: []
+    cont_ids: []
+  WS_2:
+    obj_ids: [01]                       # deve terminar na mesa da WS2
+    cont_ids: []

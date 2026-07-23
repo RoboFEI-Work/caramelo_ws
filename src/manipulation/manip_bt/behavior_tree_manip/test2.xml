@@ -1,0 +1,28 @@
+<root BTCPP_format="4">
+
+  <BehaviorTree ID="MainTree">
+
+    <Sequence>
+
+      <PickTag
+        tag_frame="tag_M30_nut"/>
+
+      <PickTag
+        tag_frame="tag_S40_40_B"/>
+
+      <PlaceTag
+        tag_frame="tag_S40_40_B"
+        table_pose="Mesa15.1"/>
+
+        <PlaceTag
+        tag_frame="tag_M30_nut"
+        table_pose="Mesa15.2"/>
+
+      <GoToNamedPose
+        pose_name="home"/>
+
+    </Sequence>
+
+  </BehaviorTree>
+
+</root>

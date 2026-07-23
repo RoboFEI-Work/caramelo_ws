@@ -1,0 +1,11 @@
+arm:
+  kinematics_solver: pick_ik/PickIkPlugin
+  kinematics_solver_timeout: 0.2
+  mode: global
+  position_scale: 1.0
+  rotation_scale: 0.03
+  position_threshold: 0.001
+  orientation_threshold: 0.08
+  cost_threshold: 0.001
+  minimal_displacement_weight: 0.02
+  gd_step_size: 0.0008

@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SRDF do robo COMBINADO Caramelo (base movel + manipulador), correspondente a URDF
+    publicada pela Pi a partir de caramelo_description/urdf/robots/robot.urdf.xacro.
+    Nela a base do braco chama-se "manip_base_link" (filha de base_link via
+    manipulator_mount_joint) e a raiz da arvore e base_footprint.
+    A manip.srdf continua sendo a SRDF da bancada standalone (braco sozinho,
+    onde a base do braco chama-se "base_link"). NAO apague nenhuma das duas.
+-->
+<!--This does not replace URDF, and is not an extension of URDF.
+    This is a format for representing semantic information about the robot structure.
+    A URDF file must exist for this robot as well, where the joints and the links that are referenced are defined
+-->
+<robot name="caramelo">
+    <!--GROUPS: Representation of a set of joints and links. This can be useful for specifying DOF to plan for, defining arms, end effectors, etc-->
+    <!--LINKS: When a link is specified, the parent joint of that link (if it exists) is automatically included-->
+    <!--JOINTS: When a joint is specified, the child link of that joint (which will always exist) is automatically included-->
+    <!--CHAINS: When a chain is specified, all the links along the chain (including endpoints) are included in the group. Additionally, all the joints that are parents to included links are also included. This means that joints along the chain and the parent joint of the base link are included in the group-->
+    <!--SUBGROUPS: Groups can also be formed by referencing to already defined group names-->
+    <group name="arm">
+        <joint name="manip_joint1"/>
+        <joint name="manip_joint2"/>
+        <joint name="manip_joint3"/>
+        <joint name="manip_joint4"/>
+        <joint name="manip_joint5"/>
+    </group>
+    <group name="gripper">
+        <joint name="gripper_base_joint"/>
+        <joint name="manip_joint6"/>
+        <joint name="manip_joint7"/>
+    </group>
+    <!--GROUP STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is useful to define states like 'folded arms'-->
+    <group_state name="home" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="-1.5359"/>
+        <joint name="manip_joint3" value="2.3911"/>
+        <joint name="manip_joint4" value="1.39626"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="pirocao" group="arm">
+        <joint name="manip_joint1" value="0.0"/>
+        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint3" value="0.0"/>
+        <joint name="manip_joint4" value="0.0"/>
+        <joint name="manip_joint5" value="0.0"/>
+    </group_state>
+    <group_state name="pose_1" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.0099"/>
+        <joint name="manip_joint3" value="1.4796"/>
+        <joint name="manip_joint4" value="1.4707"/>
+        <joint name="manip_joint5" value="0.0173"/>
+    </group_state>
+    <group_state name="pose_2" group="arm">
+        <joint name="manip_joint1" value="2.6984"/>
+        <joint name="manip_joint2" value="0.6265"/>
+        <joint name="manip_joint3" value="-0.7613"/>
+        <joint name="manip_joint4" value="0.8873"/>
+        <joint name="manip_joint5" value="-1.6481"/>
+    </group_state>
+    <group_state name="pegar_obj" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.0873"/>
+        <joint name="manip_joint3" value="0.9599"/>
+        <joint name="manip_joint4" value="1.9373"/>
+        <joint name="manip_joint5" value="-1.4486"/>
+    </group_state>
+    <group_state name="tag_cima" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.628319"/>
+        <joint name="manip_joint3" value="0.837758"/>
+        <joint name="manip_joint4" value="1.62316"/>
+        <joint name="manip_joint5" value="-1.44862"/>
+    </group_state>
+    <group_state name="tag_direita" group="arm">
+        <joint name="manip_joint1" value="0.9599"/>
+        <joint name="manip_joint2" value="0.2618"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.9373"/>
+        <joint name="manip_joint5" value="-2.1468"/>
+    </group_state>
+    <group_state name="tag_direita_cima" group="arm">
+        <joint name="manip_joint1" value="0.9599"/>
+        <joint name="manip_joint2" value="0.698132"/>
+        <joint name="manip_joint3" value="0.488692"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.22173"/>
+    </group_state>
+    <group_state name="tag_esquerda" group="arm">
+        <joint name="manip_joint1" value="2.1642"/>
+        <joint name="manip_joint2" value="0.2618"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.9373"/>
+        <joint name="manip_joint5" value="-1.2217"/>
+    </group_state>
+    <group_state name="tag_esquerda_cima" group="arm">
+        <joint name="manip_joint1" value="2.1642"/>
+        <joint name="manip_joint2" value="0.698132"/>
+        <joint name="manip_joint3" value="0.488692"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.22173"/>
+    </group_state>
+    <group_state name="pre_container" group="arm">
+        <joint name="manip_joint1" value="-1.5708"/>
+        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint3" value="1.0821"/>
+        <joint name="manip_joint4" value="1.8151"/>
+        <joint name="manip_joint5" value="1.5708"/>
+    </group_state>
+    <group_state name="container1" group="arm">
+        <joint name="manip_joint1" value="-1.13446"/>
+        <joint name="manip_joint2" value="0.20944"/>
+        <joint name="manip_joint3" value="1.43117"/>
+        <joint name="manip_joint4" value="1.39626"/>
+        <joint name="manip_joint5" value="-1.01229"/>
+    </group_state>
+    <group_state name="container2" group="arm">
+        <joint name="manip_joint1" value="-1.58825"/>
+        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint3" value="1.67552"/>
+        <joint name="manip_joint4" value="1.27409"/>
+        <joint name="manip_joint5" value="-1.64061"/>
+    </group_state>
+    <group_state name="container3" group="arm">
+        <joint name="manip_joint1" value="-1.97222"/>
+        <joint name="manip_joint2" value="0.08727"/>
+        <joint name="manip_joint3" value="1.55334"/>
+        <joint name="manip_joint4" value="1.3439"/>
+        <joint name="manip_joint5" value="-1.8675"/>
+    </group_state>
+    <group_state name="Mesa0" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="Mesa0.1" group="arm">
+        <joint name="manip_joint1" value="0.8029"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="Mesa0.2" group="arm">
+        <joint name="manip_joint1" value="2.0944"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="Mesa5" group="arm">
+        <joint name="manip_joint1" value="1.4835"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+    </group_state>
+    <group_state name="Mesa5.1" group="arm">
+        <joint name="manip_joint1" value="1.9373"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+    </group_state>
+    <group_state name="Mesa5.2" group="arm">
+        <joint name="manip_joint1" value="0.9425"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+    </group_state>
+    <group_state name="Mesa10" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.5760"/>
+        <joint name="manip_joint3" value="1.1519"/>
+        <joint name="manip_joint4" value="1.1694"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="Mesa10.1" group="arm">
+        <joint name="manip_joint1" value="1.0123"/>
+        <joint name="manip_joint2" value="0.9774"/>
+        <joint name="manip_joint3" value="0.5585"/>
+        <joint name="manip_joint4" value="1.4835"/>
+        <joint name="manip_joint5" value="-1.5882"/>
+    </group_state>
+    <group_state name="Mesa10.2" group="arm">
+        <joint name="manip_joint1" value="2.1991"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.4712"/>
+        <joint name="manip_joint4" value="1.4137"/>
+        <joint name="manip_joint5" value="-1.6057"/>
+    </group_state>
+    <group_state name="Mesa15" group="arm">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="Mesa15.1" group="arm">
+        <joint name="manip_joint1" value="-1.9373"/>
+        <joint name="manip_joint2" value="-0.5411"/>
+        <joint name="manip_joint3" value="-0.9948"/>
+        <joint name="manip_joint4" value="-1.5184"/>
+        <joint name="manip_joint5" value="1.6232"/>
+    </group_state>
+    <group_state name="Mesa15.2" group="arm">
+        <joint name="manip_joint1" value="2.0595"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+    </group_state>
+    <group_state name="MesaSh" group="arm">
+        <joint name="manip_joint1" value="1.44862"/>
+        <joint name="manip_joint2" value="0.890118"/>
+        <joint name="manip_joint3" value="-0.436332"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.44862"/>
+    </group_state>
+    <group_state name="gripper_close" group="gripper">
+        <joint name="manip_joint6" value="0.170"/>
+        <joint name="manip_joint7" value="0.170"/>
+    </group_state>
+    <group_state name="gripper_open" group="gripper">
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="gripper_half_open" group="gripper">
+        <joint name="manip_joint6" value="0"/>
+        <joint name="manip_joint7" value="0"/>
+    </group_state>
+    <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
+    <end_effector name="gripper" parent_link="link5" group="gripper" parent_group="arm"/>
+    <!--VIRTUAL JOINT: Purpose: this element defines a virtual joint between a robot link and an external frame of reference (considered fixed with respect to the robot)-->
+    <virtual_joint name="virtual_joint" type="fixed" parent_frame="world" child_link="base_footprint"/>
+    <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
+    <!--Braco: pares originais da manip.srdf. Na URDF combinada a base do braco e "manip_base_link" (na standalone chamava-se "base_link").-->
+    <disable_collisions link1="manip_base_link" link2="link1" reason="Adjacent"/>
+    <disable_collisions link1="manip_base_link" link2="link2" reason="Never"/>
+    <disable_collisions link1="finger_left" link2="finger_right" reason="Adjacent"/>
+    <disable_collisions link1="finger_left" link2="camera_link" reason="Never"/>
+    <disable_collisions link1="finger_left" link2="link3" reason="Never"/>
+    <disable_collisions link1="finger_left" link2="link5" reason="Adjacent"/>
+    <disable_collisions link1="finger_right" link2="camera_link" reason="Never"/>
+    <disable_collisions link1="finger_right" link2="link3" reason="Never"/>
+    <disable_collisions link1="finger_right" link2="link5" reason="Adjacent"/>
+    <disable_collisions link1="camera_link" link2="link3" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="link4" reason="Never"/>
+    <disable_collisions link1="camera_link" link2="link5" reason="Adjacent"/>
+    <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
+    <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
+    <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
+    <disable_collisions link1="link3" link2="link5" reason="Never"/>
+    <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
+    <!--Chassi (base_link) x braco: apenas manip_base_link (Adjacent via manipulator_mount_joint) e link1 (nunca alcanca o chassi).
+        NAO desabilitar base_link x link2..link5/fingers/camera_link: sao colisoes REAIS que o MoveIt deve evitar.-->
+    <disable_collisions link1="base_link" link2="manip_base_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="link1" reason="Never"/>
+    <!--Rodas x chassi: fixas ao chassi pelos wheel_joints (Adjacent).-->
+    <disable_collisions link1="base_link" link2="front_left_wheel_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="front_right_wheel_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="back_left_wheel_link" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="back_right_wheel_link" reason="Adjacent"/>
+    <!--Rodas entre si: posicao relativa fixa via chassi, jamais colidem.-->
+    <disable_collisions link1="front_left_wheel_link" link2="front_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="front_left_wheel_link" link2="back_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="front_left_wheel_link" link2="back_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="front_right_wheel_link" link2="back_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="front_right_wheel_link" link2="back_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="back_left_wheel_link" link2="back_right_wheel_link" reason="Never"/>
+    <!--Rodas x base do braco e x link1: geometrias nunca se alcancam.-->
+    <disable_collisions link1="front_left_wheel_link" link2="manip_base_link" reason="Never"/>
+    <disable_collisions link1="front_right_wheel_link" link2="manip_base_link" reason="Never"/>
+    <disable_collisions link1="back_left_wheel_link" link2="manip_base_link" reason="Never"/>
+    <disable_collisions link1="back_right_wheel_link" link2="manip_base_link" reason="Never"/>
+    <disable_collisions link1="front_left_wheel_link" link2="link1" reason="Never"/>
+    <disable_collisions link1="front_right_wheel_link" link2="link1" reason="Never"/>
+    <disable_collisions link1="back_left_wheel_link" link2="link1" reason="Never"/>
+    <disable_collisions link1="back_right_wheel_link" link2="link1" reason="Never"/>
+</robot>

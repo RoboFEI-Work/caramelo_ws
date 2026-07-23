@@ -1,0 +1,146 @@
+Falas para gravacao
+=======================================
+
+Caso queira adaptar algo, ou adicionar mais alguma coisa fique a vontade, como por exemplo trocar o robo pronto por GUTEEEEEEEEEN MOOOOOOOOOORGEN
+
+Falas gerais
+------------
+robot_ready: Robo pronto.
+starting_run: Iniciando a rodada.
+task_complete: Tarefa concluida.
+run_finished: Rodada finalizada.
+searching_tag: Procurando tag.
+tag_found: Tag encontrada.
+tag_not_found: Tag nao encontrada.
+pick_complete: Objeto pego.
+pick_failed: Falha ao pegar o objeto. 
+place_complete: Objeto posicionado.
+place_failed: Falha ao posicionar o objeto.
+pick_skip_next_objective: Nao consegui pegar o bloco. Vou seguir para o proximo objetivo.
+place_skip_missing_container_tag: Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa.
+
+
+Navegacao por workstation
+-------------------------
+going_to_ws_1: Indo para WS 1.
+going_to_ws_2: Indo para WS 2.
+going_to_ws_3: Indo para WS 3.
+going_to_ws_4: Indo para WS 4.
+going_to_ws_5: Indo para WS 5.
+going_to_ws_6: Indo para WS 6.
+going_to_ws_7: Indo para WS 7.
+going_to_ws_8: Indo para WS 8.
+arrived_at_ws_1: Cheguei na WS 1.
+arrived_at_ws_2: Cheguei na WS 2.
+arrived_at_ws_3: Cheguei na WS 3.
+arrived_at_ws_4: Cheguei na WS 4.
+arrived_at_ws_5: Cheguei na WS 5.
+arrived_at_ws_6: Cheguei na WS 6.
+arrived_at_ws_7: Cheguei na WS 7.
+arrived_at_ws_8: Cheguei na WS 8.
+
+
+Tag identificada
+----------------
+identified_tag_1: Tag 1 identificada.
+identified_tag_2: Tag 2 identificada.
+identified_tag_3: Tag 3 identificada.
+identified_tag_4: Tag 4 identificada.
+identified_tag_5: Tag 5 identificada.
+identified_tag_6: Tag 6 identificada.
+identified_tag_7: Tag 7 identificada.
+identified_ct10: Tag C T 10 identificada.
+identified_ct11: Tag C T 11 identificada.
+identified_ct12: Tag C T 12 identificada.
+identified_ct13: Tag C T 13 identificada.
+identified_ct14: Tag C T 14 identificada.
+identified_ct15: Tag C T 15 identificada.
+identified_ct16: Tag C T 16 identificada.
+identified_tag_20: Tag 20 identificada.
+identified_tag_21: Tag 21 identificada.
+identified_tag_22: Tag 22 identificada.
+identified_tag_23: Tag 23 identificada.
+identified_tag_24: Tag 24 identificada.
+identified_tag_25: Tag 25 identificada.
+identified_tag_26: Tag 26 identificada.
+identified_tag_27: Tag 27 identificada.
+identified_tag_28: Tag 28 identificada.
+identified_tag_42: Tag 42 identificada.
+
+
+Pick por tag
+------------
+pick_tag_1: Pegando a tag 1.
+pick_tag_2: Pegando a tag 2.
+pick_tag_3: Pegando a tag 3.
+pick_tag_4: Pegando a tag 4.
+pick_tag_5: Pegando a tag 5.
+pick_tag_6: Pegando a tag 6.
+pick_tag_7: Pegando a tag 7.
+pick_ct10: Pegando a tag C T 10.
+pick_ct11: Pegando a tag C T 11.
+pick_ct12: Pegando a tag C T 12.
+pick_ct13: Pegando a tag C T 13.
+pick_ct14: Pegando a tag C T 14.
+pick_ct15: Pegando a tag C T 15.
+pick_ct16: Pegando a tag C T 16.
+pick_tag_20: Pegando a tag 20.
+pick_tag_21: Pegando a tag 21.
+pick_tag_22: Pegando a tag 22.
+pick_tag_23: Pegando a tag 23.
+pick_tag_24: Pegando a tag 24.
+pick_tag_25: Pegando a tag 25.
+pick_tag_26: Pegando a tag 26.
+pick_tag_27: Pegando a tag 27.
+pick_tag_28: Pegando a tag 28.
+pick_tag_42: Pegando a tag 42.
+
+
+Place por tag
+-------------
+place_tag_1: Colocando a tag 1.
+place_tag_2: Colocando a tag 2.
+place_tag_3: Colocando a tag 3.
+place_tag_4: Colocando a tag 4.
+place_tag_5: Colocando a tag 5.
+place_tag_6: Colocando a tag 6.
+place_tag_7: Colocando a tag 7.
+place_ct10: Colocando a tag C T 10.
+place_ct11: Colocando a tag C T 11.
+place_ct12: Colocando a tag C T 12.
+place_ct13: Colocando a tag C T 13.
+place_ct14: Colocando a tag C T 14.
+place_ct15: Colocando a tag C T 15.
+place_ct16: Colocando a tag C T 16.
+place_tag_20: Colocando a tag 20.
+place_tag_21: Colocando a tag 21.
+place_tag_22: Colocando a tag 22.
+place_tag_23: Colocando a tag 23.
+place_tag_24: Colocando a tag 24.
+place_tag_25: Colocando a tag 25.
+place_tag_26: Colocando a tag 26.
+place_tag_27: Colocando a tag 27.
+place_tag_28: Colocando a tag 28.
+place_tag_42: Colocando a tag 42.
+
+
+Pick - rotina e recuperacao
+---------------------------
+pick_attempt_1: Tentativa de pegar numero 1.
+pick_attempt_2: Tentativa de pegar numero 2.
+pick_attempt_3: Tentativa de pegar numero 3.
+pick_switch_ik: Vou trocar o modelo de I K para a proxima tentativa.
+pick_tag_searching_named: Procurando a tag.
+pick_tag_found_named: Identifiquei a tag.
+pick_tag_not_found_named: Nao encontrei a tag.
+pick_ik_found_named: Encontrei uma solucao de I K para a tag.
+pick_ik_not_found_named: Nao encontrei uma solucao de I K para a tag.
+pick_block_secured: Bloco seguro. Voltando para a pose de transporte.
+pick_gripper_checking: Verificando o bloco pela forca da garra.
+pick_gripper_detected: A garra detectou o bloco.
+pick_gripper_not_detected: A garra nao detectou o bloco.
+pick_gripper_effort_unavailable: Nao consigo verificar o esforco da garra.
+pick_camera_retry: Vou realinhar a camera e tentar novamente com a primeira I K.
+pick_complete_verbose: Coleta concluida com sucesso.
+
+

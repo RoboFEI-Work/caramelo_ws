@@ -55,6 +55,12 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
+  scripts/run_mission.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME run_mission
+)
+
+install(PROGRAMS
   scripts/dock_to.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME dock_to

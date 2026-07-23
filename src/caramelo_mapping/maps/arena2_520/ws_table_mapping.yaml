@@ -1,0 +1,20 @@
+# Mapeamento centralizado da arena (1 arquivo POR MAPA):
+#  - ws_to_table_pose: WS da tarefa -> group_state do braco (lido pelo task_planner)
+#  - ws_to_dock_id:    WS da tarefa -> dock_id do docking.yaml (lido pelo executor de missao)
+ws_to_table_pose:
+  WS_1: Mesa15
+  WS_2: Mesa10
+  WS_3: Mesa10
+  WS_4: Mesa15
+  WS_5: Mesa0
+  WS_6: Mesa5
+  WS_7: Mesa10
+  WS_8: Mesa15
+  SH_1: Mesa0
+  SH_2: Mesa5
+ws_to_dock_id:
+  WS_1: WS1
+  WS_2: WS2
+  WS_3: WS3
+  WS_4: WS4
+  SH_1: SH1

@@ -1,0 +1,10 @@
+# Default initial positions for manip's ros2_control fake system
+
+initial_positions:
+  manip_joint1: 0
+  manip_joint2: 0
+  manip_joint3: 0
+  manip_joint4: 0
+  manip_joint5: 0
+  manip_joint6: 0
+  manip_joint7: 0

@@ -1,0 +1,31 @@
+task_id: BMT
+name: Basic Manipulation Test
+duration_min: 10
+active_service_areas: [WS_1, WS_8]
+objects:
+  - {id: 01, type: ATTC, color: RED}
+  - {id: 02, type: ATTC, color: BLUE}
+  - {id: 04, type: ATTC, color: BLUE}
+  - {id: 07, type: ATTC, color: RED}
+containers:
+  - {id: 10, color: BLUE, at: WS_8}
+  - {id: 16, color: RED,  at: WS_8}
+
+start_state:
+  WS_1:
+    obj_ids: [01, 02, 04, 07]
+    cont_ids: []
+  WS_8:
+    obj_ids: []
+    cont_ids: [10, 16]
+
+finish_state:
+  WS_1:
+    obj_ids: []
+    cont_ids: []
+  WS_8:
+    obj_ids: [01, 02, 04, 07]
+    cont_ids: [10, 16]
+    constraints:
+      - O2,O4 must be inside 10 (BLUE)
+      - O1,O7 must be inside 16 (RED)

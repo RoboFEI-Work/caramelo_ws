@@ -19,6 +19,11 @@ A navegacao ate cada estacao e' feita pelo proprio DockRobot
 
 Depende de: dock poses reais gravadas em docking.yaml (hoje placeholders), do
 Docking Server no ar e do dock_align_node. NAO validado em hardware.
+
+NOTA (integracao manip -> caramelo): a missao COMPLETA (navegacao +
+manipulacao) agora e' executada por run_mission + bt_yaml_executor (manip_bt).
+Este script permanece como utilitario de teste de navegacao/docking puro e
+como referencia A/B do no GoToWS.
 """
 import argparse
 import os

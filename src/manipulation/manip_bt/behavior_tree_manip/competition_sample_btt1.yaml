@@ -1,0 +1,21 @@
+task_id: BTT1
+name: Basic Transportation Test I
+duration_min: 20
+active_service_areas: [WS_3, WS_4]
+objects:
+  - {id: 01, type: ATTC, color: BLUE}
+  - {id: 03, type: ATTC, color: BLUE}
+  - {id: 05, type: ATTC, color: BLUE}
+  - {id: 06, type: ATTC, color: BLUE}
+
+start_state:
+  WS_3:
+    obj_ids: [01, 03, 05, 06]
+  WS_4:
+    obj_ids: []
+
+finish_state:
+  WS_3:
+    obj_ids: []
+  WS_4:
+    obj_ids: [01]

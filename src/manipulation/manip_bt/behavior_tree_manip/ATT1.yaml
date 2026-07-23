@@ -1,0 +1,50 @@
+task_id: ATT1
+name: Advanced Transportation Test I
+duration_min: 30
+
+active_service_areas:
+  - { id: WS_1}
+  - { id: WS_3}
+  - { id: WS_4}
+  - { id: WS_6}
+  - { id: WS_8}
+  - { id: SH_2}
+
+objects:
+  - { id: 20, type: ADVANCED, color: BLACK }
+  - { id: 21, type: ADVANCED, color: BLACK }
+  - { id: 22, type: ADVANCED, color: BLACK }
+  - { id: 23, type: ADVANCED, color: BLACK }
+  - { id: 7, type: ADVANCED, color: BLACK }
+  - { id: 3, type: ADVANCED, color: BLACK }
+  - { id: 12, type: DECOY, color: BLUE, at_ws: WS_1 }
+  - { id: 15, type: DECOY, color: BLUE, at_ws: WS_3 }
+  - { id: 16, type: DECOY, color: BLUE, at_ws: WS_6 }
+
+start_state:
+  WS_1:
+    obj_ids: [20, 22]
+  WS_3:
+    obj_ids: []
+  WS_4:
+    obj_ids: [21, 23, 7]
+  WS_6:
+    obj_ids: [3]
+  WS_8:
+    obj_ids: []
+  SH_2:
+    obj_ids: []
+
+finish_state:
+  WS_1:  
+    obj_ids: [21]
+  WS_3:  
+    obj_ids: [20, 22]
+  WS_4:  
+    obj_ids: []
+  WS_6:  
+    obj_ids: []
+  WS_8:  
+    obj_ids: [3, 23]
+  SH_2:  
+    obj_ids: [7]

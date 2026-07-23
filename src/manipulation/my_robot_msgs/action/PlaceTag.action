@@ -1,0 +1,9 @@
+string tag_frame
+string table_pose
+
+---
+bool success
+string message
+
+---
+string current_stage

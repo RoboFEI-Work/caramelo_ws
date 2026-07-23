@@ -1,0 +1,20 @@
+task_id: DIFF_TEST
+name: Diff Validation
+duration_min: 10
+active_service_areas: [WS_1, WS_2]
+objects:
+  - {id: 01, type: ATTC, color: BLUE}
+  - {id: 02, type: ATTC, color: BLUE}
+  - {id: 03, type: ATTC, color: BLUE}
+
+start_state:
+  WS_1:
+    obj_ids: [01, 03]
+  WS_2:
+    obj_ids: [02]
+
+finish_state:
+  WS_1:
+    obj_ids: [03]
+  WS_2:
+    obj_ids: [01, 02]

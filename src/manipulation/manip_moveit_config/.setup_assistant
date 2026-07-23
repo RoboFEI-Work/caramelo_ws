@@ -1,0 +1,23 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: manip_description
+    relative_path: urdf/manip.urdf.xacro
+  srdf:
+    relative_path: config/manip.srdf
+  package_settings:
+    author_name: Thomas Ay
+    author_email: thomasay4747@gmail.com
+    generated_timestamp: 1777609074
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
