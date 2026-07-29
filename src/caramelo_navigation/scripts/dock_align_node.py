@@ -108,6 +108,15 @@ class DockAlignNode(Node):
         self.declare_parameter("refine_front_min_x", 0.10)
         self.declare_parameter("refine_front_max_x", 1.20)
         self.declare_parameter("refine_half_width_y", 0.45)
+        # Guardas anti-falso-positivo do refino (2026-07-23):
+        # residuo RMS maximo do ajuste de reta (face plana de verdade) e largura
+        # minima da face detectada (rejeita perna de mesa/objeto isolado).
+        self.declare_parameter("refine_max_residual", 0.02)
+        self.declare_parameter("refine_min_face_width", 0.30)
+        # Distancia frontal DESEJADA robo->face na pose final (calibrar no robo:
+        # posicione o robo na pose perfeita e leia o face_dist do log). Valor
+        # negativo = ainda nao calibrado -> o refino corrige SO o yaw.
+        self.declare_parameter("refine_desired_face_dist", -1.0)
 
         self._ref_topic = self.get_parameter("reference_topic").value
         self._global_frame = self.get_parameter("global_frame").value
@@ -169,26 +178,30 @@ class DockAlignNode(Node):
         return float(pose[0]), float(pose[1]), float(pose[2])
 
     # --------------------------------------------------------- Refino LiDAR
-    def _refine_target_from_scan(self, target):
-        """Refina a pose alvo pela FACE da mesa no /scan.
+    def _scan_points_in_base(self, scan):
+        """Pontos validos do scan TRANSFORMADOS para o base_frame (2D).
 
-        Corrige X (distancia a face) e YAW (normal da face), que SAO observaveis
-        numa face reta. NAO corrige Y (problema da abertura, ADR-05).
-
-        AJUSTAR_NO_ROBO: a deteccao de CANTOS para fechar Y (casar retangulo
-        ~80x50 cm) ainda nao esta implementada — precisa de dados reais do scan
-        para validar/tunar. Ate la, Y fica por conta da localizacao.
-
-        Retorna (target_refinado, confiante: bool).
+        2026-07-23: a versao antiga usava os angulos crus do scan assumindo
+        0 grau = frente do robo — mas o LiDAR e' montado de cabeca para baixo
+        (RPY 180/0/180) e o crop do scan_normalizer poe a frente fisica em
+        ~180 graus, entao px saia sempre <= 0 e o refino NUNCA achava pontos.
+        Agora usamos a TF real (base <- frame do scan), que absorve a inversao.
         """
-        scan = self._last_scan
-        if scan is None:
-            return target, False
-        fx_min = self.get_parameter("refine_front_min_x").value
-        fx_max = self.get_parameter("refine_front_max_x").value
-        hy = self.get_parameter("refine_half_width_y").value
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._base_frame, scan.header.frame_id, rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException,
+                tf2_ros.ConnectivityException) as exc:
+            self.get_logger().warn(f"refino: sem TF {self._base_frame}<-{scan.header.frame_id}: {exc}")
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        # Linhas X e Y da matriz de rotacao (aplicadas a pontos no plano do laser).
+        r00 = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        r01 = 2.0 * (q.x * q.y - q.z * q.w)
+        r10 = 2.0 * (q.x * q.y + q.z * q.w)
+        r11 = 1.0 - 2.0 * (q.x * q.x + q.z * q.z)
 
-        # Pontos do scan no frame do robo (x para frente).
         pts = []
         angle = scan.angle_min
         for r in scan.ranges:
@@ -196,35 +209,102 @@ class DockAlignNode(Node):
             angle += scan.angle_increment
             if not math.isfinite(r) or r <= scan.range_min or r >= scan.range_max:
                 continue
-            px = r * math.cos(a)
-            py = r * math.sin(a)
-            if fx_min <= px <= fx_max and abs(py) <= hy:
-                pts.append((px, py))
+            lx = r * math.cos(a)
+            ly = r * math.sin(a)
+            pts.append((r00 * lx + r01 * ly + t.x, r10 * lx + r11 * ly + t.y))
+        return pts
+
+    def _refine_target_from_scan(self, target):
+        """Refina a pose alvo pela FACE da mesa no /scan.
+
+        Corrige YAW (esquadra com a normal da face) e, se
+        refine_desired_face_dist estiver calibrado (>=0), tambem X (distancia
+        perpendicular a face). Y (lateral) continua por conta da localizacao
+        (problema da abertura, ADR-05) — no pick, a camera fecha a lateral.
+
+        Retorna (target_refinado, confiante: bool). Sem confianca, o chamador
+        usa a pose do banco (comportamento identico ao antigo).
+        """
+        scan = self._last_scan
+        if scan is None:
+            self.get_logger().warn("refino: nenhum /scan recebido ainda.")
+            return target, False
+        fx_min = self.get_parameter("refine_front_min_x").value
+        fx_max = self.get_parameter("refine_front_max_x").value
+        hy = self.get_parameter("refine_half_width_y").value
+        max_residual = self.get_parameter("refine_max_residual").value
+        min_width = self.get_parameter("refine_min_face_width").value
+        desired_dist = self.get_parameter("refine_desired_face_dist").value
+
+        all_pts = self._scan_points_in_base(scan)
+        if all_pts is None:
+            return target, False
+        pts = [p for p in all_pts if fx_min <= p[0] <= fx_max and abs(p[1]) <= hy]
 
         fit = _fit_line_tls(pts)
         if fit is None:
+            self.get_logger().warn(
+                f"refino: pontos insuficientes na janela frontal ({len(pts)} < 8).")
             return target, False
         cx, cy, nx, ny = fit
-        # Distancia do robo a face ao longo da normal (aponta para frente => nx>0).
+        # Normal apontando para FRENTE do robo (da base em direcao a face).
         if nx < 0:
             nx, ny = -nx, -ny
         face_dist = cx * nx + cy * ny
-        face_yaw = math.atan2(ny, nx)  # yaw do robo relativo a normal da face
+        face_yaw = math.atan2(ny, nx)  # orientacao da normal no frame do robo
 
-        # Correcoes pequenas e conservadoras (so X e yaw). Se a face estiver
-        # muito torta em relacao ao esperado, nao confia (provavel deteccao ruim).
+        # Guardas anti-falso-positivo: face plana (residuo), larga o bastante
+        # (nao e' perna de mesa/objeto), pouco inclinada e a distancia sensata.
+        residual_rms = math.sqrt(
+            sum(((p[0] - cx) * nx + (p[1] - cy) * ny) ** 2 for p in pts) / len(pts))
+        tang = (-ny, nx)
+        along = [ (p[0] - cx) * tang[0] + (p[1] - cy) * tang[1] for p in pts ]
+        face_width = max(along) - min(along)
+
+        # Log SEMPRE (e' o instrumento de calibracao do refine_desired_face_dist).
+        self.get_logger().info(
+            f"refino face: dist={face_dist:.3f} m, yaw_rel={math.degrees(face_yaw):.1f} deg, "
+            f"largura={face_width:.2f} m, residuo={residual_rms*1000:.0f} mm, pts={len(pts)}")
+
+        if residual_rms > max_residual:
+            self.get_logger().warn("refino: residuo alto (face nao-plana?); descartando.")
+            return target, False
+        if face_width < min_width:
+            self.get_logger().warn("refino: face estreita demais (perna/objeto?); descartando.")
+            return target, False
         if abs(_normalize_angle(face_yaw)) > math.radians(30) or not (0.05 < face_dist < fx_max):
+            self.get_logger().warn("refino: face torta/distante demais; descartando.")
             return target, False
 
+        pose = self._robot_pose()
+        if pose is None:
+            self.get_logger().warn("refino: sem TF do robo; descartando.")
+            return target, False
+        rx, ry, ryaw = pose
+
         tx, ty, tyaw = target
-        # Ajusta o yaw alvo para ficar de frente a face; X e' informativo aqui
-        # (a servo-malha ja fecha a distancia), entao mantemos ty/tx do banco e
-        # so alinhamos o yaw. Deixamos o gancho de correcao de X/Y para tuning.
-        refined_yaw = _normalize_angle(tyaw - face_yaw * 0.0)  # placeholder: sem giro extra
-        self.get_logger().info(
-            f"refino face: dist={face_dist:.3f} m, yaw_rel={math.degrees(face_yaw):.1f} deg "
-            f"(Y nao corrigido — ver AJUSTAR_NO_ROBO)")
-        return (tx, ty, refined_yaw), True
+        # Yaw alvo: esquadrar com a normal da face (direcao dela no mapa).
+        refined_yaw = _normalize_angle(ryaw + face_yaw)
+
+        refined_tx, refined_ty = tx, ty
+        if desired_dist >= 0.0:
+            # Plano da face no mapa: p . n_map = c_face. Move o alvo do banco ao
+            # longo da normal para que a distancia final robo->face = calibrada.
+            n_map = (math.cos(ryaw + face_yaw), math.sin(ryaw + face_yaw))
+            c_face = rx * n_map[0] + ry * n_map[1] + face_dist
+            desired_proj = c_face - desired_dist
+            shift = desired_proj - (tx * n_map[0] + ty * n_map[1])
+            refined_tx = tx + shift * n_map[0]
+            refined_ty = ty + shift * n_map[1]
+            self.get_logger().info(
+                f"refino aplicado: X ajustado {shift*100:+.1f} cm ao longo da normal "
+                f"(alvo dist={desired_dist:.3f} m) + yaw esquadrado "
+                f"({math.degrees(face_yaw):+.1f} deg). Y mantido do banco.")
+        else:
+            self.get_logger().info(
+                f"refino aplicado: SO yaw esquadrado ({math.degrees(face_yaw):+.1f} deg) — "
+                "refine_desired_face_dist nao calibrado (X do banco).")
+        return (refined_tx, refined_ty, refined_yaw), True
 
     # ------------------------------------------------------------- Controle
     def _publish_cmd(self, vx, vy, wz):

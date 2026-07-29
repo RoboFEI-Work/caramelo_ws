@@ -55,7 +55,11 @@ slam_toolbox:
     # Correlation Parameters - Correlation Parameters
     correlation_search_space_dimension: 0.3
     correlation_search_space_resolution: 0.005
-    correlation_search_space_smear_deviation: 0.05 
+    # 2026-07-23: 0.05 -> 0.03 (linhas mais finas p/ as MESAS — o plano do scan
+    # a 4,5 cm ve so uma fatia da face e o smear de 5 cm borrava a posicao em
+    # dezenas de cm; laudo do PGM arena2_520). Reverter p/ 0.05 se o
+    # scan-matching "pular" durante o mapeamento.
+    correlation_search_space_smear_deviation: 0.03
 
     # Correlation Parameters - Loop Closure Parameters
     loop_search_space_dimension: 8.0

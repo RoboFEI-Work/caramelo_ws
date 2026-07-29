@@ -317,6 +317,62 @@ Nota operacional: a câmera D455 EXIGE porta USB 3 (numa 2.1 o nó sobe com
 "Reduced performance" e NÃO publica imagens — foi a causa da câmera muda após
 retrocar o cabo).
 
+## Adendo 2026-07-23 (parte 2) — Mapa novo, AMCL, relógio e MISSÃO NO ARENA3_520
+
+Problema de campo: perto das mesas o robô "entrava na mesa" no RViz (AMCL
+arrastado ~30-40 cm; paredes deslocavam junto). Diagnóstico em 3 camadas +
+correções, todas VALIDADAS com missão completa ao final:
+
+1. **Mapa arena3_520 (novo, via slam_toolbox + teleop, smear 0.05→0.03)**:
+   mesas nítidas (protocolo: aproximar devagar, parar 3 s, 2-3 ângulos por
+   mesa). Aceitação por régua quantitativa (scan×mapa): baseline 2,0 cm; na
+   mesa 4,5 cm (antes: 30-40 cm). Região da WS2 é localmente mais fraca
+   (~10 cm) — coberto pelo refine.
+2. **AMCL endurecido (A/B medido)**: `laser_likelihood_max_dist` 2.0→0.5
+   (obstáculo deslocado deixa de "atrair" a pose) e `recovery_alpha_slow`
+   0.1→0.001 (alphas iguais = recuperação NUNCA disparava — bug teórico).
+   Validado: após o conserto do relógio o AMCL se RE-ANCOROU SOZINHO (2,0 cm
+   sem 2D Pose). Regra operacional comprovada com dados: 2D Pose com ZOOM +
+   vai-e-vem de 0,5 m até a nuvem fechar (10 cm→6 cm→2 cm nos três níveis de
+   capricho).
+3. **Relógio da Pi derivou DE NOVO (832 ms→envenenava o AMCL em movimento
+   ~16 cm a 0,2 m/s)**: `systemctl restart systemd-timesyncd` na Pi resolveu
+   (121 ms depois, ~100 ms é a própria varredura do LiDAR). PENDÊNCIA de
+   infra: chrony servidor NESTE notebook (timesyncd depende de internet).
+4. **Refine LiDAR calibrado e OPERANTE**: `refine_desired_face_dist=0.403 m`
+   (WS1, resíduo 3 mm, face 0,60-0,73 m detectada nas duas mesas). Em teste
+   isolado corrigiu +3,7 cm e convergiu a x=2,4 cm; NA MISSÃO: erro X final
+   **2 mm (WS1) e 0,0 mm (WS2)** — docking ancorado na mesa FÍSICA.
+5. **Colisão primitive: 1 ajuste de SRDF** — em home, as caixas envolventes de
+   link2/link3 interpenetravam o chassi (~1-2 cm; falso-positivo de bounding;
+   "Planning failed" instantâneo). Pares base_link↔link2/link3 desabilitados
+   na caramelo.srdf; regressão de 13 poses (todas as group_states) passou no
+   braço físico em 41 s.
+6. **BUG do gerador**: `init_service_areas --sync-docking` escreve
+   `dock_plugins` num esquema POR-DOCK (caramelo_ws1_dock...) incompatível com
+   o launch validado (3 tipos genéricos) → "Dock requested has no valid
+   plugin". Workaround aplicado: bloco dock_plugins copiado do mapa validado +
+   tipos re-normalizados. CORRIGIR o gerador em sessão futura.
+7. Observado 1×: "Failed to make progress" do Nav2 na navegação ao staging
+   (retry interno resolveu; na missão final não ocorreu). Monitorar; se
+   recorrer, é item próprio (progress checker × piso do ESC × inflação).
+
+**MISSÃO FINAL NO ARENA3_520 (3min48s, SUCCESS)**: prólogo home → WS1
+dock+align (x=-0,002 y=0,006) → PICK → home → WS2 undock+dock+align
+(x=-0,000 y=-0,024) → PLACE → home → FINISH. Poses gravadas: START
+[0.239,-0.002], WS1 [0.884,-2.964], WS2 [1.593,-0.987], FINISH [1.881,-6.450].
+Default da missão agora é arena3_520 (robot_manipulation.launch.py).
+
+### Pendência nova (23/07, pedido do operador): garra pega o bloco "na borda"
+Descer o ponto de pega ~1 cm. Correção: **encurtar o tcp** em
+`caramelo_hardware_ws/src/caramelo_description/urdf/mech/manipulator_arm.xacro`
+(tcp_fixed, z **0.20 → 0.19**) — tcp mais curto = link5/dedos 1 cm mais
+próximos da tag = pega mais profunda. É a ÚNICA mudança no hardware_ws:
+sincronizar via git e REBUILDAR NOS DOIS LADOS (PC e Pi). Validar depois:
+(a) pick nas mesas usadas; (b) folga dos dedos com o TAMPO na mesa mais baixa
+(pega 1 cm mais funda = dedo 1 cm mais perto da mesa); (c) NÃO mexer no
+refine_desired_face_dist (é distância da BASE à mesa, independente).
+
 ## Pendências
 - Etapa 4 (validação real) quando a Pi for conectada — checklist na seção 5.
 - Gate TCP 0.17×0.20 antes do primeiro pick real.

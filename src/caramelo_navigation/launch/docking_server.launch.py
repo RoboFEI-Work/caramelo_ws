@@ -14,11 +14,12 @@ DEFAULT_DOCK_IDS = ["START", "FINISH", "WS1", "WS2", "WS3", "WS4", "SH1", "PP1",
 DEFAULT_CONTROLLER = {
     "k_phi": 2.0,
     "k_delta": 1.5,
-    # 2026-07-21: velocidades casadas com o firmware novo dos ESCs (piso de
-    # roda 300 rpm = 0.056 m/s de corpo). Os antigos 0.015-0.06 ficavam ABAIXO
-    # do piso: o driver zerava as rodas e o approach dava timeout parado.
-    "v_linear_min": 0.08,
-    "v_linear_max": 0.12,
+    # 2026-07-27: firmware ESC com speed_min 650 rpm (piso de corpo 0.121 m/s).
+    # Comandos abaixo do piso viram roda PARADA (o driver arredonda) — v_min
+    # precisa ficar ACIMA do piso com margem, e v_max acima do v_min.
+    # (Historico 21/07: piso 300 rpm = 0.056 m/s, v 0.08-0.12.)
+    "v_linear_min": 0.13,
+    "v_linear_max": 0.16,
     "v_angular_max": 0.4,
     "slowdown_radius": 0.45,
     # False: o dock fica ENCOSTADO na bancada (obstaculo no costmap) — o
@@ -229,8 +230,15 @@ def _launch_setup(context, *args, **kwargs):
         output="screen",
         parameters=[
             {"use_sim_time": use_sim_time},
-            {"min_body_vel": 0.06},
-            {"min_body_omega": 0.16},
+            # 2026-07-27: pisos casados com o firmware ESC speed_min 650 rpm
+            # (roda 2.43 rad/s -> corpo 0.121 m/s / 0.315 rad/s).
+            {"min_body_vel": 0.13},
+            {"min_body_omega": 0.33},
+            # Refino LiDAR: distancia frontal robo->face na pose final.
+            # CALIBRADO 2026-07-23 na WS1 do arena3_520 (robo na pose ideal,
+            # "refino face: dist=0.403 m, largura=0.60 m, residuo=3 mm").
+            # Recalibrar se a pose ideal em relacao a mesa mudar.
+            {"refine_desired_face_dist": 0.403},
         ],
     )
 

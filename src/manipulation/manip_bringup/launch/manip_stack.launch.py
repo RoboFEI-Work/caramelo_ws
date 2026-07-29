@@ -137,6 +137,26 @@ def generate_launch_description():
     )
 
     # --- Pick/Place MTC ---
+    # URDF primitive LOCAL como parametro: sem ele, o RDFLoader dos nos MTC cai
+    # no topico /robot_description da Pi (malhas via http://raspberrypi:8000 —
+    # ~68 MB de STL baixados e parseados VARIAS vezes por no; era a demora de
+    # minutos na largada). Parametro tem precedencia sobre topico. A SRDF
+    # continua vindo do topico /robot_description_semantic do move_group.
+    primitive_robot_description = ParameterValue(
+        Command([
+            "xacro ",
+            PathJoinSubstitution([
+                FindPackageShare("caramelo_description"),
+                "urdf", "robots", "robot.urdf.xacro",
+            ]),
+            " use_manipulator:=true",
+            " use_realsense:=true",
+            " use_mock_components:=true",
+            " visual_mode:=primitive",
+        ]),
+        value_type=str,
+    )
+
     pick_action = Node(
         package="manip_task_execution",
         executable="mtc_pick_action_node",
@@ -180,6 +200,7 @@ def generate_launch_description():
                 LaunchConfiguration("use_camera_alignment_retry"), value_type=bool),
             "container_state_file": container_state_file,
             "manipulator_lock_file": manipulator_lock_file,
+            "robot_description": primitive_robot_description,
         }],
     )
 
@@ -193,6 +214,7 @@ def generate_launch_description():
                 LaunchConfiguration("skip_missing_place_tag"), value_type=bool),
             "container_state_file": container_state_file,
             "manipulator_lock_file": manipulator_lock_file,
+            "robot_description": primitive_robot_description,
         }],
     )
 

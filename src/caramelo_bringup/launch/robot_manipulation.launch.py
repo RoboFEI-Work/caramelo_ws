@@ -61,7 +61,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "map_name",
-            default_value="arena2_520",
+            default_value="arena3_520",
             description="Nome da pasta do mapa em caramelo_mapping/maps/",
         ),
         DeclareLaunchArgument(

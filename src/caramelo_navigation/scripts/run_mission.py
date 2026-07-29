@@ -58,7 +58,66 @@ def _parse_args(argv):
                    help='Dock final apos a missao (default: FINISH; "" desliga).')
     p.add_argument("--use-lidar-refine", action="store_true",
                    help="Repassa use_lidar_refine:=true ao executor (refino no /scan).")
+    p.add_argument("--preflight-timeout", type=float, default=120.0,
+                   help="Segundos maximos aguardando os servidores da missao "
+                        "(move_group, pick/place, nav) antes de abortar.")
     return p.parse_args(argv[1:])
+
+
+def _graph_actions() -> set:
+    """Snapshot dos action servers visiveis no grafo (barato, nunca pendura)."""
+    try:
+        proc = subprocess.run(
+            ["ros2", "action", "list"], capture_output=True, text=True, timeout=10.0)
+    except subprocess.TimeoutExpired:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def _preflight(args) -> bool:
+    """Espera os servidores da missao aparecerem no grafo, com progresso.
+
+    Sem isso, o executor ficava pendurado EM SILENCIO esperando o move_group
+    (minutos com o MoveIt subindo; para sempre com o stack desligado).
+    IMPORTANTE: sonda so' o grafo (ros2 action list) — nunca `ros2 param get
+    /move_group ...`, que pendura igual quando o MoveIt esta ocupado.
+    """
+    import time as _time
+
+    exigidos = ["/move_action", "/pick_tag", "/place_tag"]
+    if not args.simulate_nav:
+        exigidos += ["/navigate_to_pose", "/dock_robot", "/undock_robot", "/align_to_dock"]
+
+    rotulos = {"/move_action": "move_group (MoveIt)"}
+    print("Verificando os servidores da missao (pre-flight)...")
+    inicio = _time.monotonic()
+    pendentes = list(exigidos)
+    ultimo_print = {}
+    while pendentes:
+        decorrido = _time.monotonic() - inicio
+        if decorrido > args.preflight_timeout:
+            faltam = ", ".join(rotulos.get(n, n) for n in pendentes)
+            print(f"\nPre-flight FALHOU apos {decorrido:.0f}s. Ainda faltam: {faltam}",
+                  file=sys.stderr)
+            print("O stack esta no ar? -> ros2 launch caramelo_bringup "
+                  "robot_manipulation.launch.py map_name:=...", file=sys.stderr)
+            return False
+        visiveis = _graph_actions()
+        for nome in list(pendentes):
+            if nome in visiveis:
+                pendentes.remove(nome)
+                print(f"  {rotulos.get(nome, nome)}... ok ({decorrido:.0f}s)")
+            else:
+                anterior = ultimo_print.get(nome, -10.0)
+                if decorrido - anterior >= 10.0:
+                    print(f"  aguardando {rotulos.get(nome, nome)}... ({decorrido:.0f}s)")
+                    ultimo_print[nome] = decorrido
+        if pendentes:
+            _time.sleep(1.0)
+    print("Pre-flight OK — todos os servidores no ar.\n")
+    return True
 
 
 def _resolve_task_yaml(task: str) -> Path:
@@ -226,6 +285,9 @@ def main(argv=None) -> int:
         if resposta not in ("s", "sim"):
             print("Missao cancelada pelo operador.")
             return 0
+
+    if not _preflight(args):
+        return 1
 
     return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=False))
 

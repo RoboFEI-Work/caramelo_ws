@@ -5,47 +5,109 @@
 
 #include <chrono>
 #include <cstdint>
+#include <mutex>
+#include <stdexcept>
+#include <string>
 
 namespace
 {
 
-void ensureRobotDescription(
+// Cache compartilhado entre as instancias (prologo/home/epilogo): o
+// robot_description e' estatico durante a missao — buscar 1x basta.
+std::mutex g_description_mutex;
+std::string g_cached_robot_description;
+
+// Busca o robot_description do move_group SEM pendurar mudo: a versao antiga
+// usava get_parameters SINCRONO sem timeout — se o move_group estivesse
+// ocupado inicializando, ficava minutos em silencio total (e, com o stack
+// desligado, o MoveGroupInterface travava PARA SEMPRE). Agora: espera em
+// janelas com log de progresso, timeout total e retorno de erro.
+bool ensureRobotDescription(
   const rclcpp::Node::SharedPtr & node,
   const std::string & source_node,
   const std::string & parameter_name,
   const std::chrono::milliseconds timeout)
 {
   if (node->has_parameter(parameter_name)) {
-    return;
+    return true;
   }
 
-  auto client = std::make_shared<rclcpp::SyncParametersClient>(node, source_node);
-  if (!client->wait_for_service(timeout)) {
-    RCLCPP_WARN(
+  {
+    std::lock_guard<std::mutex> lock(g_description_mutex);
+    if (!g_cached_robot_description.empty()) {
+      node->declare_parameter<std::string>(parameter_name, g_cached_robot_description);
+      return true;
+    }
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = start + timeout;
+  const auto elapsed_s = [&start]() {
+      return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
+
+  auto client = std::make_shared<rclcpp::AsyncParametersClient>(node, source_node);
+  while (!client->wait_for_service(std::chrono::seconds(2))) {
+    if (!rclcpp::ok() || std::chrono::steady_clock::now() > deadline) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "Servico de parametros de '%s' nao apareceu em %.0f s.",
+        source_node.c_str(), elapsed_s());
+      return false;
+    }
+    RCLCPP_INFO(
       node->get_logger(),
-      "Parameter service from '%s' not available within %.2f s while fetching '%s'",
-      source_node.c_str(),
-      std::chrono::duration<double>(timeout).count(),
-      parameter_name.c_str());
-    return;
+      "Aguardando o servico de parametros de '%s'... (%.0f s)",
+      source_node.c_str(), elapsed_s());
   }
 
-  auto parameters = client->get_parameters({parameter_name});
-  if (parameters.empty()) {
-    return;
+  auto future = client->get_parameters({parameter_name});
+  while (rclcpp::spin_until_future_complete(node, future, std::chrono::seconds(2)) !=
+    rclcpp::FutureReturnCode::SUCCESS)
+  {
+    if (!rclcpp::ok() || std::chrono::steady_clock::now() > deadline) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "'%s' nao respondeu '%s' em %.0f s.",
+        source_node.c_str(), parameter_name.c_str(), elapsed_s());
+      return false;
+    }
+    RCLCPP_INFO(
+      node->get_logger(),
+      "Aguardando '%s' servir '%s'... (%.0f s — o MoveIt pode levar um tempo "
+      "para terminar de subir)",
+      source_node.c_str(), parameter_name.c_str(), elapsed_s());
   }
 
-  const auto & param = parameters.front();
-  if (param.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
-    return;
+  const auto parameters = future.get();
+  if (parameters.empty() ||
+    parameters.front().get_type() != rclcpp::ParameterType::PARAMETER_STRING)
+  {
+    RCLCPP_ERROR(
+      node->get_logger(),
+      "'%s' nao tem o parametro string '%s'.",
+      source_node.c_str(), parameter_name.c_str());
+    return false;
   }
 
-  const auto robot_description = param.as_string();
+  const auto robot_description = parameters.front().as_string();
   if (robot_description.empty()) {
-    return;
+    RCLCPP_ERROR(
+      node->get_logger(), "'%s' devolveu '%s' VAZIO.",
+      source_node.c_str(), parameter_name.c_str());
+    return false;
   }
 
+  {
+    std::lock_guard<std::mutex> lock(g_description_mutex);
+    g_cached_robot_description = robot_description;
+  }
   node->declare_parameter<std::string>(parameter_name, robot_description);
+  RCLCPP_INFO(
+    node->get_logger(),
+    "robot_description obtido de '%s' em %.0f s.",
+    source_node.c_str(), elapsed_s());
+  return true;
 }
 
 }  // namespace
@@ -71,14 +133,22 @@ GoToNamedPoseBT::GoToNamedPoseBT(
   const auto pose_reference_frame =
     node_->declare_parameter<std::string>("pose_reference_frame", "");
   const auto robot_description_wait_ms =
-    node_->declare_parameter<int>("robot_description_wait_ms", 10000);
+    node_->declare_parameter<int>("robot_description_wait_ms", 120000);
   const auto wait_ms = robot_description_wait_ms > 0 ? robot_description_wait_ms : 0;
 
-  ensureRobotDescription(
-    node_,
-    source_move_group_node,
-    robot_description_parameter,
-    std::chrono::milliseconds(wait_ms));
+  if (!ensureRobotDescription(
+      node_,
+      source_move_group_node,
+      robot_description_parameter,
+      std::chrono::milliseconds(wait_ms)))
+  {
+    // Sem descricao, o MoveGroupInterface abaixo bloquearia PARA SEMPRE.
+    // Melhor falhar alto: o try/catch do executor imprime e sai limpo.
+    throw std::runtime_error(
+            "GoToNamedPose: nao obtive robot_description de '" + source_move_group_node +
+            "' — o stack de manipulacao (move_group) esta' no ar? "
+            "(ros2 launch caramelo_bringup robot_manipulation.launch.py ...)");
+  }
 
   arm_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(node_, "arm");
   if (pose_reference_frame.empty()) {

@@ -31,7 +31,12 @@ amcl:
     beam_skip_threshold: 0.3
     do_beamskip: false
     lambda_short: 0.1
-    laser_likelihood_max_dist: 2.0
+    # 2026-07-23 (A/B rodada 1, medido): 2.0 -> 0.5. Com 2.0 + sigma 0.2 a
+    # bacia de likelihood era mole demais: mesa mal-desenhada "atraia" a pose
+    # (arrasto de 30-40cm no arena2_520) e um offset de 6-8cm nao era puxado
+    # de volta (medido: mediano 6cm/p90 12.8cm a 2m da mesa SEM recuperar).
+    # Com 0.5, obstaculo fora do lugar vira ruido em vez de ima.
+    laser_likelihood_max_dist: 0.5
     laser_max_range: 15.0
     laser_min_range: 0.07
     max_beams: 80
@@ -48,6 +53,10 @@ amcl:
     max_particles: 500 # 5000->500 (operador, CPU): laptop saturado. 500 localiza no mapa e alivia MUITO o filtro.
     min_particles: 250
     recovery_alpha_fast: 0.1
-    recovery_alpha_slow: 0.1
+    # 2026-07-23: 0.1 -> 0.001. Com slow == fast a razao w_fast/w_slow fica ~1
+    # e a injecao de recuperacao (1 - w_fast/w_slow) NUNCA dispara — o filtro
+    # ficava preso em bacia errada sem mecanismo de escape (teoria: slow<<fast,
+    # valores canonicos 0.001/0.1).
+    recovery_alpha_slow: 0.001
     update_min_a: 0.2
     update_min_d: 0.2

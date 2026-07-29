@@ -24,6 +24,59 @@ Args úteis do launch: `use_nav:=false` (só manipulação), `use_camera:=false`
 `use_rviz_manip:=true` (RViz do MoveIt), `use_mock_hardware:=true` (tudo
 simulado no PC, sem robô).
 
+## 1a. RUNBOOK 100% TERMINAL (sem GUI) — atualizado 2026-07-23
+
+```bash
+# ── 1. SUBIR (terminal 1; Pi ja com hardware_bringup rodando) ──────────────
+ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arena2_520 use_rviz:=true
+# use_rviz e' opcional (so para VER; o 2D Pose Estimate dele e' util).
+# Aguarde ~40 s. NAO precisa cronometrar: o run_mission (passo 4) espera
+# sozinho com progresso ("aguardando move_group... ok (14s)").
+
+# ── 2. LOCALIZAR (terminal 2) ──────────────────────────────────────────────
+# Opcao A — RViz: botao "2D Pose Estimate" -> clique onde o robo esta e
+#           arraste na direcao que ele aponta (scan deve "vestir" as paredes).
+#   REGRA COMPROVADA (23/07): de ZOOM antes de clicar (semente precisa) e
+#   depois faca VAI-E-VEM de ~0,5 m ate a nuvem verde de particulas FECHAR —
+#   o AMCL so corrige quando o robo anda (medido: 10cm sem ritual -> 2cm com).
+# Opcao B — robo na zona START, sem RViz:
+ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
+  '{header: {frame_id: map}, pose: {pose: {position: {x: 0.0979, y: 0.0384},
+   orientation: {z: -0.1095, w: 0.9940}}, covariance: [0.25,0,0,0,0,0,
+   0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0.0685]}}'
+# Conferir:
+ros2 run tf2_ros tf2_echo map base_footprint     # pose deve bater com a real
+
+# ── 3. SALVAR DOCK (robo parado na pose ideal em frente a mesa) ────────────
+ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'WS1'}"
+ros2 topic pub --once /save_dock_pose std_msgs/msg/String "{data: 'WS2'}"
+# Conferir:
+grep -A6 "WS1:" ~/caramelo_ws/src/caramelo_mapping/maps/arena2_520/docking.yaml
+# So salve com a localizacao BOA (scan batendo com o mapa). Perto da mesa o
+# AMCL degrada (mesas remontadas != mapa) — com o refine calibrado (passo 5),
+# o erro X/yaw da gravacao deixa de ser critico.
+
+# ── 4. MISSAO (terminal 2) ─────────────────────────────────────────────────
+cd ~/caramelo_ws
+ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/arena_test.yaml
+#   --dry-run            so mostra o plano (nao espera nada, nao move nada)
+#   --use-lidar-refine   docking ancorado na face FISICA da mesa (apos passo 5)
+#   --preflight-timeout 180   se o notebook estiver lento na subida
+# Ctrl-C = cancela tudo limpo (nav + braco).
+
+# ── 5. CALIBRAR O REFINO LiDAR (uma vez; robo posicionado NA MAO na pose
+#       perfeita em frente a mesa) ─────────────────────────────────────────
+ros2 action send_goal /align_to_dock caramelo_msgs/action/AlignToDock \
+  "{dock_id: WS1, map_name: arena2_520, use_lidar_refine: true, timeout: 1.0}"
+# No log do launch (terminal 1) aparece: "refino face: dist=0.XXX m, ...".
+# Grave esse valor AO VIVO:
+ros2 param set /dock_align_node refine_desired_face_dist 0.XXX
+# E deixe permanente editando o mesmo valor em:
+#   src/caramelo_navigation/launch/docking_server.launch.py (refine_desired_face_dist)
+# A partir dai, missoes com --use-lidar-refine param X (distancia a face real)
+# e yaw esquadrado com a mesa, mesmo com AMCL/mapa deslocados.
+```
+
 ## 1b. Passo a passo com visualização (nav + MoveIt + câmera)
 
 ```bash
@@ -165,6 +218,25 @@ O undock antes de sair de uma estação é automático (embutido no goto seguint
   Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
   campo de visão (não é erro de IK).
 
+## 6c. Raspberry NOVA (ou reinstalada): restaurar o SSH sem senha
+
+Troca de Pi = host key nova + authorized_keys vazio. No PC:
+
+```bash
+# 1. Limpar a chave da Pi ANTIGA do known_hosts (senão o ssh recusa conectar):
+ssh-keygen -R raspberrypi.local
+
+# 2. Copiar a chave publica do PC para a Pi nova (senha padrao: raspberrypi):
+sshpass -p raspberrypi ssh-copy-id -o StrictHostKeyChecking=accept-new raspberrypi@raspberrypi.local
+
+# 3. Testar (nao pode pedir senha):
+ssh raspberrypi@raspberrypi.local 'echo ok'
+```
+
+Se o PC ainda não tiver chave (`ls ~/.ssh/id_*` vazio): `ssh-keygen -t ed25519`
+(enter em tudo) antes do passo 2. Regras que continuam valendo: 1 conexão SSH
+por vez; NTP da Pi (sem RTC, deriva rápido — conferir `timedatectl` sempre).
+
 ## 7. Avisos rápidos (aprendidos na validação)
 
 - **Cabo de rede caiu durante trajetória do braço** = o braço termina o
@@ -192,3 +264,26 @@ O undock antes de sair de uma estação é automático (embutido no goto seguint
   (`sudo apt install espeak-ng` habilita o fallback).
 - Warnings "Parameter 'X' is not supported" no launch = a RealSense reclamando
   de args do launch pai. Benigno, pode ignorar.
+- **Robô ruim de localização que PIORA com o tempo/movimento** = relógio da Pi
+  derivou (o gremlin clássico). Medir: stamp do /scan vs relógio do PC (>150 ms
+  = doente). Curar: `sudo systemctl restart systemd-timesyncd` NA PI. Solução
+  definitiva pendente: chrony servidor no notebook (timesyncd quer internet).
+- **"Dock requested has no valid plugin"** = docking.yaml com esquema de
+  dock_plugins errado (o `init_service_areas --sync-docking` gera por-dock;
+  o launch validado espera os 3 tipos caramelo_front/precision/shelf_dock).
+  Copiar o bloco `dock_plugins` de um mapa validado e normalizar os `type`.
+- **Calibração do refine**: o goal de "espiar" (`timeout: 1.0`) só é read-only
+  ANTES de setar `refine_desired_face_dist`; depois de calibrado o refine AGE
+  (move o robô para a distância certa) — o que é o comportamento de missão.
+- Mapa atual da missão: **arena3_520** (default do robot_manipulation.launch).
+  O arena2_520 fica como fallback histórico.
+- **"No such file: .../caramelo_hardware_ws/.../global_localization.launch.py"**
+  (27/07) = ordem dos workspaces invertida. Causa: `install/setup.bash` GRAVA a
+  cadeia de underlays da hora do build — rebuildar um ws num terminal com outro
+  ws sourceado envenena a ordem para sempre (o pacote duplicado
+  caramelo_localization passa a resolver para o hardware_ws). Correção aplicada
+  no ~/.bashrc: sourcear `local_setup.bash` (ignora cadeias gravadas; a ordem
+  do bashrc vira a única autoridade). REGRA DE OURO para builds: rode `colcon
+  build` sempre de um terminal NOVO (bashrc padrão), nunca de um com sources
+  manuais extras. E após mexer no bashrc: FECHAR o terminal e abrir outro
+  (`exec bash` não limpa — o path antigo fica herdado nas variáveis).

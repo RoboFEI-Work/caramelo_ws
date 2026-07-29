@@ -37,7 +37,11 @@ def generate_launch_description():
                 "use_manipulator": "true",
                 "use_realsense": "true",
                 "use_mock_components": "true",
-                "visual_mode": "package",
+                # primitive: colisao por box/cilindro. Em modo package a colisao
+                # usava as malhas STL completas (1,36 MILHAO de triangulos, 82%
+                # nas 4 rodas) — dava "too many vertices" e deixava o MoveIt
+                # inteiro lento. Mesma arvore de links/joints; SRDF inalterada.
+                "visual_mode": "primitive",
                 "mesh_uri_prefix": "package://caramelo_description",
             },
         )

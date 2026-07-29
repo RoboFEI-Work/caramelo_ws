@@ -478,7 +478,16 @@ int main(int argc, char ** argv)
       factory.registerNodeType<manip_bt::GoToWSBT>("GoToWS");
     }
 
+    RCLCPP_INFO(
+      rclcpp::get_logger("bt_yaml_executor"),
+      "Instanciando os nos da arvore (conectando ao /move_group — o MoveIt "
+      "pode levar um tempo para terminar de subir; acompanhe os logs)...");
+    const auto build_start = std::chrono::steady_clock::now();
     auto tree = factory.createTreeFromText(tree_xml, blackboard);
+    RCLCPP_INFO(
+      rclcpp::get_logger("bt_yaml_executor"),
+      "Arvore construida em %.1f s.",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - build_start).count());
 
     if (dry_run) {
       std::cout << "=== Plano da missao (" << yaml_path << ") ===\n";

@@ -255,9 +255,15 @@
     <disable_collisions link1="link3" link2="link5" reason="Never"/>
     <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
     <!--Chassi (base_link) x braco: apenas manip_base_link (Adjacent via manipulator_mount_joint) e link1 (nunca alcanca o chassi).
-        NAO desabilitar base_link x link2..link5/fingers/camera_link: sao colisoes REAIS que o MoveIt deve evitar.-->
+        NAO desabilitar base_link x link4/link5/fingers/camera_link: sao colisoes REAIS que o MoveIt deve evitar.-->
     <disable_collisions link1="base_link" link2="manip_base_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="link1" reason="Never"/>
+    <!--2026-07-23: com colisao PRIMITIVE (caixas envolventes), link2/link3 dobrados
+        sobre o chassi em home interpenetram ~1-2cm onde as malhas reais tem folga
+        (CheckStartStateCollision reprovava a pose home). Falso-positivo de bounding:
+        a protecao fisica do chassi segue nos pares ativos link4/link5/fingers/camera.-->
+    <disable_collisions link1="base_link" link2="link2" reason="Default"/>
+    <disable_collisions link1="base_link" link2="link3" reason="Default"/>
     <!--Rodas x chassi: fixas ao chassi pelos wheel_joints (Adjacent).-->
     <disable_collisions link1="base_link" link2="front_left_wheel_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="front_right_wheel_link" reason="Adjacent"/>
