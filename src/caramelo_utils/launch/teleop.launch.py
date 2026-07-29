@@ -3,9 +3,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
 
@@ -57,21 +56,24 @@ def generate_launch_description():
         ],
     )
     
-    twist_mux_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("twist_mux"),
-                "launch",
-                "twist_mux_launch.py",
-            )
-        ),
-        launch_arguments={
-            "cmd_vel_out": "caramelo_controller/cmd_vel_unstamped",
-            "config_locks": os.path.join(caramelo_utils_pkg, "config", "twist_mux_locks.yaml"),
-            "config_topics": os.path.join(caramelo_utils_pkg, "config", "twist_mux_topics.yaml"),
-            "config_joy": os.path.join(caramelo_utils_pkg, "config", "twist_mux_joy.yaml"),
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-        }.items(),
+    # 2026-07-29: twist_mux como Node DIRETO (antes: IncludeLaunchDescription
+    # do twist_mux_launch.py do Jazzy, que subia junto um joystick_relay
+    # "turbo" MORTO — escutava input_joy/cmd_vel, que ninguem publica, e
+    # disputava /joy_vel com o joy_teleop — e um twist_marker inutil).
+    # Auditoria 2026-07-29; twist_mux_joy.yaml ficou sem uso (turbo removido).
+    twist_mux_node = Node(
+        package="twist_mux",
+        executable="twist_mux",
+        name="twist_mux",
+        parameters=[
+            os.path.join(caramelo_utils_pkg, "config", "twist_mux_topics.yaml"),
+            os.path.join(caramelo_utils_pkg, "config", "twist_mux_locks.yaml"),
+            {"use_sim_time": LaunchConfiguration("use_sim_time")},
+        ],
+        remappings=[
+            ("/cmd_vel_out", "caramelo_controller/cmd_vel_unstamped"),
+        ],
+        output="screen",
     )
 
     twist_relay_node = Node(
@@ -92,7 +94,7 @@ def generate_launch_description():
             use_sim_time_arg,
             joy_teleop,
             joy_node,
-            twist_mux_launch,
+            twist_mux_node,
             teleop_keyboard_node,
             twist_relay_node
         ]

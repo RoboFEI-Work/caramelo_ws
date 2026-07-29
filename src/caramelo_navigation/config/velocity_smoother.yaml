@@ -7,8 +7,12 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
 
     # Limites iniciais conservadores para a base mecanum do Caramelo.
-    max_velocity: [0.20, 0.16, 0.90]
-    min_velocity: [-0.12, -0.16, -0.90]
+    # 2026-07-29: wz 0.90 -> 0.50 casando com max_vel_theta do DWB — o
+    # behavior_server publica DIRETO em /cmd_vel_nav (sem passar pelo DWB) e
+    # um spin sairia a 0.9 rad/s, quase 2x o limite tunado p/ o AMCL
+    # acompanhar giros.
+    max_velocity: [0.20, 0.16, 0.50]
+    min_velocity: [-0.12, -0.16, -0.50]
     max_accel: [0.35, 0.35, 2.0]
     max_decel: [-0.45, -0.45, -2.0]
     deadband_velocity: [0.005, 0.005, 0.01]
