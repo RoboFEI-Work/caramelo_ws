@@ -2,7 +2,9 @@ joystick:
   ros__parameters:
     device_id: 0
     device_name: ""
-    deadzone: 0.5
+    # 2026-07-29: 0.5 matava metade do curso do analogico (comando saltava de
+    # 0 direto p/ ~50% da escala). 0.1 cobre drift tipico de manche.
+    deadzone: 0.1
     autorepeat_rate: 20.0
     sticky_buttons: false
     coalesce_interval_ms: 1

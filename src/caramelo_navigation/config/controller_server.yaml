@@ -94,13 +94,13 @@ controller_server:
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
-      # Pisos casados com o ESC: roda so gira a partir de 3.74 rad/s (~0.19 m/s
-      # de corpo; o driver arredonda p/ cima a partir da metade disso). Com
-      # minimo 0.0 o DWB comandava 0.05-0.09 m/s perto de obstaculo/goal, o
-      # driver zerava as rodas e o robo congelava ("Failed to make progress").
-      min_speed_xy: 0.10 # Menor modulo de velocidade linear que vira movimento real.
+      # Pisos casados com o ESC (2026-07-29, firmware speed_min 650 rpm): roda
+      # so gira a partir de 2.43 rad/s = 0.121 m/s / 0.315 rad/s de corpo. Com
+      # minimo abaixo disso o DWB comanda velocidades que o driver zera (roda
+      # parada) e o robo congela ("Failed to make progress").
+      min_speed_xy: 0.13 # Menor modulo de velocidade linear que vira movimento real.
       max_speed_xy: 0.20 # Limite do modulo da velocidade linear.
-      min_speed_theta: 0.25 # Menor velocidade angular que vira giro real.
+      min_speed_theta: 0.33 # Menor velocidade angular que vira giro real.
       acc_lim_x: 0.35 # Aceleracao maxima em x.
       decel_lim_x: -0.45 # Desaceleracao maxima em x.
       acc_lim_y: 0.35 # Aceleracao maxima lateral.

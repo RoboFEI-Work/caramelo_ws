@@ -17,10 +17,10 @@ LIMITES HONESTOS (ADR-05):
     abertura). Este no deixa o Y por conta da localizacao (AMCL/EKF, ~2-5 cm).
     Corrigir Y de verdade exige detectar os CANTOS da mesa (casar retangulo
     ~80x50 cm) -> marcado como AJUSTAR_NO_ROBO em _refine_target_from_scan().
-  - PISO DO ESC: a base nao anda abaixo de ~0.19 m/s nem gira abaixo de
-    ~0.49 rad/s (firmware do ESC, ver docs/esc_stm32_comportamento_e_riscos.md).
-    Entao a precisao fina e' limitada por isso ate o firmware baixar speed_min.
-    O controle aqui respeita esse piso e para dentro da tolerancia possivel.
+  - PISO DO ESC (2026-07-29, firmware speed_min 650 rpm): a base nao anda
+    abaixo de ~0.13 m/s nem gira abaixo de ~0.33 rad/s (ver
+    docs/esc_stm32_comportamento_e_riscos.md). A precisao fina e' limitada por
+    isso; o controle aqui respeita esse piso e para dentro da tolerancia.
 
 Nada aqui foi validado no robo — a percepcao e os ganhos precisam de dados reais.
 """
@@ -96,8 +96,11 @@ class DockAlignNode(Node):
         self.declare_parameter("max_vel_y", 0.16)
         self.declare_parameter("max_vel_theta", 0.9)
         # Piso fisico do ESC (ver docstring). Abaixo disso a base nao anda/gira.
-        self.declare_parameter("min_body_vel", 0.19)
-        self.declare_parameter("min_body_omega", 0.49)
+        # 2026-07-29: defaults casados com o firmware 650 rpm (0.121 m/s /
+        # 0.315 rad/s + folga). Os antigos 0.19/0.49 eram da era speed_min
+        # 1000 rpm e chutavam o robo alem do alvo quando rodado standalone.
+        self.declare_parameter("min_body_vel", 0.13)
+        self.declare_parameter("min_body_omega", 0.33)
         self.declare_parameter("kp_linear", 1.2)
         self.declare_parameter("kp_theta", 1.5)
         self.declare_parameter("default_xy_tolerance", 0.03)

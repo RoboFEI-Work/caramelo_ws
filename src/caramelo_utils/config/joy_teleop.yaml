@@ -5,16 +5,20 @@ joy_teleop:
       interface_type: geometry_msgs/msg/Twist
       topic_name: /joy_vel
       deadman_buttons: [5]
+      # 2026-07-29: scales 2.0/2.0/5.0 eram ~10x os limites reais do robo
+      # (0.20/0.16/0.50 do controller_server) — deflexao total saturava a IK
+      # mecanum e distorcia a trajetoria (clipping assimetrico das rodas).
+      # Piso fisico do ESC: 0.121 m/s / 0.315 rad/s (650 rpm).
       axis_mappings:
         twist-linear-x:
           axis: 1
-          scale: 2.0
+          scale: 0.20
           offset: 0.0
         twist-linear-y:
           axis: 3
-          scale: 2.0
+          scale: 0.16
           offset: 0.0
         twist-angular-z:
           axis: 0
-          scale: 5.0
+          scale: 0.50
           offset: 0.0
