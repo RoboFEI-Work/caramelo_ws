@@ -22,6 +22,9 @@ DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
   dock_id_ = new QLineEdit("WS1");
   map_name_ = new QLineEdit("arena2_520");
   refine_ = new QCheckBox("Refinar alinhamento com LiDAR");
+  // Default LIGADO (2026-08-03): politica unica com o bt_yaml_executor —
+  // alinhar sem refino herda o offset do AMCL na hora critica.
+  refine_->setChecked(true);
   form->addRow("Dock:", dock_id_);
   form->addRow("Mapa:", map_name_);
   form->addRow("", refine_);

@@ -19,7 +19,12 @@ controller_server:
 
     position_goal_checker:
       plugin: "nav2_controller::PositionGoalChecker" # Para goals de RViz em que importa chegar no ponto, nao no yaw.
-      xy_goal_tolerance: 0.04 # Evita caca ao goal perto do alvo.
+      # 0.04 -> 0.10 (2026-08-03): este e o checker DEFAULT (1o da lista) e o
+      # staging do docking cai nele. 4cm < ruido do AMCL (~16cm) e < passo
+      # minimo executavel (piso 0.1215 m/s) -> "Failed to make progress" no
+      # pre-dock (round 1 do gauntlet). 10cm e o valor ja comprovado no
+      # general_goal_checker (2026-07-21); precisao final = approach + align.
+      xy_goal_tolerance: 0.10
       stateful: true # Mantem o goal aceito depois que entra na janela.
 
     general_goal_checker:
@@ -81,8 +86,17 @@ controller_server:
       # do DWB abaixo de 45 e um custo aceito por ora.
       angular_dist_threshold: 0.785
       forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo.
-      rotate_to_heading_angular_vel: 0.6 # 0.4->0.6 (operador): mais velocidade = mais torque para vencer o atrito estatico do giro no lugar ("robo tremia sem sair da inercia").
-      max_angular_accel: 2.0
+      # 0.6 -> 0.5 (2026-08-03): igual ao wz max do smoother e ao max_vel_theta
+      # do DWB (0.6 era pedido de torque da era pre-fix do firmware; o smoother
+      # clampava em 0.5 de qualquer forma).
+      rotate_to_heading_angular_vel: 0.5
+      # 2.0 -> 7.0 (2026-08-03): o shim acelera em degraus de accel/20Hz A
+      # PARTIR DO ODOM. Com 2.0 o degrau era 0.1 rad/s — dentro da zona neutra
+      # do driver (<0.5x piso = 0.157) -> pulso neutro, robo parado, odom 0,
+      # shim repete 0.1 = DEADLOCK (visto no gauntlet: "Failed to make
+      # progress" em loop a caminho do FINISH). Com 7.0 o 1o degrau e 0.35 >=
+      # piso 0.315: o giro parte no primeiro ciclo.
+      max_angular_accel: 7.0
       simulate_ahead_time: 1.0 # Checa colisao do giro no costmap antes de girar.
       rotate_to_goal_heading: true # Giro final do goal tambem pelo lado curto.
       debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
@@ -94,13 +108,14 @@ controller_server:
       min_vel_y: -0.16 # Velocidade minima lateral.
       max_vel_y: 0.16 # Velocidade maxima lateral.
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
-      # Pisos casados com o ESC: roda so gira a partir de 3.74 rad/s (~0.19 m/s
-      # de corpo; o driver arredonda p/ cima a partir da metade disso). Com
-      # minimo 0.0 o DWB comandava 0.05-0.09 m/s perto de obstaculo/goal, o
-      # driver zerava as rodas e o robo congelava ("Failed to make progress").
-      min_speed_xy: 0.10 # Menor modulo de velocidade linear que vira movimento real.
+      # Pisos casados com o ESC (2026-08-03, firmware novo: piso 650rpm =
+      # 0.1215 m/s / 0.315 rad/s de corpo, EXECUTADO exato apos o fix do mapa).
+      # min_speed = 1.08x o piso fisico: o DWB nunca emite comando que o driver
+      # nao consiga executar (abaixo disso as rodas zeravam e o robo congelava
+      # com "Failed to make progress").
+      min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s.
       max_speed_xy: 0.20 # Limite do modulo da velocidade linear.
-      min_speed_theta: 0.25 # Menor velocidade angular que vira giro real.
+      min_speed_theta: 0.34 # 1.08 x piso fisico 0.315 rad/s.
       acc_lim_x: 0.35 # Aceleracao maxima em x.
       decel_lim_x: -0.45 # Desaceleracao maxima em x.
       acc_lim_y: 0.35 # Aceleracao maxima lateral.
@@ -117,7 +132,12 @@ controller_server:
       linear_granularity: 0.05 # Passo linear da simulacao.
       angular_granularity: 0.025 # Passo angular da simulacao.
       transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
-      xy_goal_tolerance: 0.05 # Coerente com o general_goal_checker.
+      # 0.05 -> 0.03 (2026-08-03): precisa ficar ESTRITAMENTE MENOR que a
+      # tolerancia de QUALQUER goal checker em uso (position 0.04, general
+      # 0.10) — senao o RotateToGoal engaja a fase "slowing" antes do checker
+      # fechar o goal, e com min_speed_xy 0.131 nao existe amostra translacional
+      # "mais lenta que a atual" legal: o robo gira parado na borda do anel.
+      xy_goal_tolerance: 0.03
       yaw_goal_tolerance: 0.20 # Coerente com o general_goal_checker (11.5 graus).
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.

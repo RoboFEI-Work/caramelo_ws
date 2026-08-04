@@ -169,7 +169,12 @@ def _parse_args(argv):
     p.add_argument("--start", default=None, help="Dock inicial (ex.: START). Opcional.")
     p.add_argument("--finish", default=None, help="Dock final (ex.: FINISH). Opcional.")
     p.add_argument("--no-align", action="store_true", help="Nao rodar alinhamento holonomico.")
-    p.add_argument("--use-lidar-refine", action="store_true", help="Refino da face no /scan.")
+    # Default LIGADO (2026-08-03): politica unica com o bt_yaml_executor.
+    p.add_argument("--use-lidar-refine", dest="use_lidar_refine",
+                   action="store_true", default=True,
+                   help="Refino da face no /scan (default: ligado).")
+    p.add_argument("--no-lidar-refine", dest="use_lidar_refine",
+                   action="store_false", help="Desliga o refino da face.")
     p.add_argument("--no-undock", action="store_true", help="Nao dar undock apos cada estacao.")
     p.add_argument("--continue-on-error", action="store_true",
                    help="Segue para a proxima estacao mesmo se uma falhar.")

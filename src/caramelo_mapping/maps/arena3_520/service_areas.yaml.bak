@@ -30,6 +30,9 @@ service_areas:
       use_docking: false
     manipulation_enabled: false
     notes: FINISH - pose final do robo.
+    kind: FINISH
+    dock_id: FINISH
+    approach: front
   WS1:
     type: workstation
     frame_id: map

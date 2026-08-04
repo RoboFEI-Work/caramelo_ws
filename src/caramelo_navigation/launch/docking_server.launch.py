@@ -14,11 +14,10 @@ DEFAULT_DOCK_IDS = ["START", "FINISH", "WS1", "WS2", "WS3", "WS4", "SH1", "PP1",
 DEFAULT_CONTROLLER = {
     "k_phi": 2.0,
     "k_delta": 1.5,
-    # 2026-07-27: firmware ESC com speed_min 650 rpm (piso de corpo 0.121 m/s).
-    # Comandos abaixo do piso viram roda PARADA (o driver arredonda) — v_min
-    # precisa ficar ACIMA do piso com margem, e v_max acima do v_min.
-    # (Historico 21/07: piso 300 rpm = 0.056 m/s, v 0.08-0.12.)
-    "v_linear_min": 0.13,
+    # 2026-08-03: firmware corrigido — piso 650 rpm (0.1215 m/s de corpo)
+    # agora executa EXATO. v_min segue a regra 1.08x piso do controller_server
+    # (comando sempre executavel com folga); v_max acima do v_min.
+    "v_linear_min": 0.131,
     "v_linear_max": 0.16,
     "v_angular_max": 0.4,
     "slowdown_radius": 0.45,
@@ -232,13 +231,17 @@ def _launch_setup(context, *args, **kwargs):
             {"use_sim_time": use_sim_time},
             # 2026-07-27: pisos casados com o firmware ESC speed_min 650 rpm
             # (roda 2.43 rad/s -> corpo 0.121 m/s / 0.315 rad/s).
-            {"min_body_vel": 0.13},
-            {"min_body_omega": 0.33},
+            # Piso fisico exato do ESC pos-fix do mapa (650rpm executa 650):
+            # passo minimo do alinhamento fino 40% menor que os 0.19/0.49 antigos.
+            {"min_body_vel": 0.1215},
+            {"min_body_omega": 0.315},
             # Refino LiDAR: distancia frontal robo->face na pose final.
             # CALIBRADO 2026-07-23 na WS1 do arena3_520 (robo na pose ideal,
             # "refino face: dist=0.403 m, largura=0.60 m, residuo=3 mm").
             # Recalibrar se a pose ideal em relacao a mesa mudar.
-            {"refine_desired_face_dist": 0.403},
+            # 0.403 -> 0.393 (2026-08-03): medido na pose ideal de manipulacao
+            # da WS1 (regua TF na face real; pose tambem re-gravada no banco).
+            {"refine_desired_face_dist": 0.393},
         ],
     )
 

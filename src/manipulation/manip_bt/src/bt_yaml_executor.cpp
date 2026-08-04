@@ -426,7 +426,10 @@ int main(int argc, char ** argv)
     blackboard->set("nav_timeout", node->declare_parameter<double>("nav_timeout", 180.0));
     blackboard->set(
       "server_wait_timeout", node->declare_parameter<double>("server_wait_timeout", 10.0));
-    blackboard->set("use_lidar_refine", node->declare_parameter<bool>("use_lidar_refine", false));
+    // Default true (2026-08-03): sem refino a missao alinha só pelo AMCL e
+    // herda o offset global (~cm) na hora critica. Desligar (debug):
+    //   --ros-args -p use_lidar_refine:=false
+    blackboard->set("use_lidar_refine", node->declare_parameter<bool>("use_lidar_refine", true));
     blackboard->set("skip_align", node->declare_parameter<bool>("skip_align", false));
     blackboard->set("docked", false);
     blackboard->set("current_dock_id", std::string(""));

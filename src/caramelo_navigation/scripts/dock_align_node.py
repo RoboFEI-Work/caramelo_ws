@@ -17,10 +17,11 @@ LIMITES HONESTOS (ADR-05):
     abertura). Este no deixa o Y por conta da localizacao (AMCL/EKF, ~2-5 cm).
     Corrigir Y de verdade exige detectar os CANTOS da mesa (casar retangulo
     ~80x50 cm) -> marcado como AJUSTAR_NO_ROBO em _refine_target_from_scan().
-  - PISO DO ESC: a base nao anda abaixo de ~0.19 m/s nem gira abaixo de
-    ~0.49 rad/s (firmware do ESC, ver docs/esc_stm32_comportamento_e_riscos.md).
-    Entao a precisao fina e' limitada por isso ate o firmware baixar speed_min.
-    O controle aqui respeita esse piso e para dentro da tolerancia possivel.
+  - PISO DO ESC (2026-08-03, firmware corrigido): 0.1215 m/s / 0.315 rad/s de
+    corpo, EXECUTADOS EXATOS (ganhos do PI + mapa ancorado; ver
+    caramelo_hardware_ws/docs). O piso e por RODA (2.43 rad/s): em comandos
+    mistos vx/vy/wz uma roda individual pode ficar sub-piso e o driver a
+    arredonda — a garantia "executa exato" vale p/ movimentos de eixo puro.
 
 Nada aqui foi validado no robo — a percepcao e os ganhos precisam de dados reais.
 """
@@ -30,6 +31,7 @@ import sys
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.time import Time
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -94,10 +96,13 @@ class DockAlignNode(Node):
         # Limites coerentes com o Nav2 (controller_server.yaml).
         self.declare_parameter("max_vel_x", 0.20)
         self.declare_parameter("max_vel_y", 0.16)
-        self.declare_parameter("max_vel_theta", 0.9)
-        # Piso fisico do ESC (ver docstring). Abaixo disso a base nao anda/gira.
-        self.declare_parameter("min_body_vel", 0.19)
-        self.declare_parameter("min_body_omega", 0.49)
+        # 0.9 -> 0.5 (2026-08-03): coerente com o max_vel_theta do DWB; giro
+        # lento o bastante p/ o AMCL acompanhar e nao passar do alvo no fino.
+        self.declare_parameter("max_vel_theta", 0.5)
+        # Piso fisico do ESC pos-fix do firmware (2026-08-03): 650rpm = 0.1215
+        # m/s / 0.315 rad/s de corpo, executado EXATO (mapa ancorado 1570us).
+        self.declare_parameter("min_body_vel", 0.1215)
+        self.declare_parameter("min_body_omega", 0.315)
         self.declare_parameter("kp_linear", 1.2)
         self.declare_parameter("kp_theta", 1.5)
         self.declare_parameter("default_xy_tolerance", 0.03)
@@ -112,11 +117,27 @@ class DockAlignNode(Node):
         # residuo RMS maximo do ajuste de reta (face plana de verdade) e largura
         # minima da face detectada (rejeita perna de mesa/objeto isolado).
         self.declare_parameter("refine_max_residual", 0.02)
-        self.declare_parameter("refine_min_face_width", 0.30)
+        # 0.30 -> 0.50 (2026-08-03, gauntlet WS1 r3): um fit com largura 0.39m
+        # (segmento parcial da face vista de perto) passou nos guards com
+        # residuo 5mm e girou o alvo 16.7 graus. Fits saudaveis medem 0.61-0.65
+        # (face real 0.80m). Abaixo de 0.50 = vista degradada, sem confianca.
+        self.declare_parameter("refine_min_face_width", 0.50)
         # Distancia frontal DESEJADA robo->face na pose final (calibrar no robo:
         # posicione o robo na pose perfeita e leia o face_dist do log). Valor
         # negativo = ainda nao calibrado -> o refino corrige SO o yaw.
         self.declare_parameter("refine_desired_face_dist", -1.0)
+        # Re-refino periodico (s) durante o loop de alinhamento (2026-08-03):
+        # o AMCL agora corrige map->odom DURANTE o docking (update_min 0.05) e a
+        # pose refinada de 1x so envelhece; re-ancorar na face real a cada ~2s.
+        # Os guards (residual/largura) descartam fit ruim e mantem o alvo vigente.
+        # <= 0 desliga (comportamento antigo: refina 1x antes do loop).
+        self.declare_parameter("refine_period", 2.0)
+        # Trava de salto dos RE-refinos periodicos (2026-08-03): a mesa nao se
+        # move — correcao maior que isso vs alvo vigente = fit ruim, descarta.
+        # O 1o refino (pre-loop) fica livre: e ele que come o offset do AMCL
+        # (ja medimos 11.4 graus legitimos).
+        self.declare_parameter("refine_max_step_xy", 0.04)
+        self.declare_parameter("refine_max_step_yaw", 0.14)
 
         self._ref_topic = self.get_parameter("reference_topic").value
         self._global_frame = self.get_parameter("global_frame").value
@@ -228,6 +249,16 @@ class DockAlignNode(Node):
         scan = self._last_scan
         if scan is None:
             self.get_logger().warn("refino: nenhum /scan recebido ainda.")
+            return target, False
+        # Guard de idade (2026-08-03): com o re-refino periodico, um /scan
+        # CONGELADO (LiDAR/USB) faria o alvo seguir o robo — runaway rumo a
+        # mesa. Scan velho -> sem confianca, mantem o alvo vigente.
+        scan_age = (
+            self.get_clock().now() - Time.from_msg(scan.header.stamp)
+        ).nanoseconds * 1e-9
+        if scan_age > 0.5:
+            self.get_logger().warn(
+                f"refino: /scan com {scan_age:.1f}s de idade; descartado.")
             return target, False
         fx_min = self.get_parameter("refine_front_min_x").value
         fx_max = self.get_parameter("refine_front_max_x").value
@@ -361,6 +392,10 @@ class DockAlignNode(Node):
         start = self.get_clock().now()
         rate = self.create_rate(1.0 / period)
         settle = 0
+        refine_period = float(self.get_parameter("refine_period").value)
+        max_step_xy = float(self.get_parameter("refine_max_step_xy").value)
+        max_step_yaw = float(self.get_parameter("refine_max_step_yaw").value)
+        last_refine = self.get_clock().now()
 
         while rclpy.ok():
             if goal_handle.is_cancel_requested:
@@ -373,6 +408,28 @@ class DockAlignNode(Node):
             if (self.get_clock().now() - start).nanoseconds * 1e-9 > timeout:
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return self._abort(goal_handle, result, "timeout no alinhamento")
+
+            # Re-refino periodico: re-ancora o alvo na face real da mesa
+            # enquanto o AMCL move map->odom sob o robo. Sem confianca, os
+            # guards do refino mantem o alvo vigente.
+            if (
+                g.use_lidar_refine and refine_period > 0.0
+                and (self.get_clock().now() - last_refine).nanoseconds * 1e-9
+                >= refine_period
+            ):
+                last_refine = self.get_clock().now()
+                new_target, confident = self._refine_target_from_scan(
+                    (tx, ty, tyaw))
+                if confident:
+                    step_xy = math.hypot(new_target[0] - tx, new_target[1] - ty)
+                    step_yaw = abs(_normalize_angle(new_target[2] - tyaw))
+                    if step_xy <= max_step_xy and step_yaw <= max_step_yaw:
+                        tx, ty, tyaw = new_target
+                    else:
+                        self.get_logger().warn(
+                            "re-refino descartado: salto implausivel "
+                            f"(dxy={step_xy * 100:.1f}cm, "
+                            f"dyaw={math.degrees(step_yaw):.1f}deg)")
 
             pose = self._robot_pose()
             if pose is None:

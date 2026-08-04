@@ -58,5 +58,9 @@ amcl:
     # ficava preso em bacia errada sem mecanismo de escape (teoria: slow<<fast,
     # valores canonicos 0.001/0.1).
     recovery_alpha_slow: 0.001
-    update_min_a: 0.2
-    update_min_d: 0.2
+    # 0.2 -> 0.05 (2026-08-03): com 0.2 o AMCL CONGELAVA map->odom durante os
+    # movimentos finos do docking (passos < 20cm/11deg nao disparavam update) e
+    # o refino via LiDAR brigava com uma pose global defasada. 0.05 atualiza a
+    # cada 5cm/3deg; 500 particulas seguram o custo na CPU do notebook.
+    update_min_a: 0.05
+    update_min_d: 0.05
