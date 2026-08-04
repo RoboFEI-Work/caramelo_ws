@@ -188,6 +188,38 @@ BT::NodeStatus GoToNamedPoseBT::tick()
   moveit::planning_interface::MoveGroupInterface::Plan plan;
   const auto plan_result = arm_->plan(plan);
   if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
+    if (pose_name != "home") {
+      RCLCPP_WARN(
+        rclcpp::get_logger("GoToNamedPoseBT"),
+        "Planning failed for named pose: %s. Retrying from safe home fallback.",
+        pose_name.c_str());
+
+      arm_->setStartStateToCurrentState();
+      arm_->setNamedTarget("home");
+      const auto home_plan_result = arm_->plan(plan);
+      if (home_plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("GoToNamedPoseBT"),
+          "Planning failed for named pose: %s and fallback home also failed.",
+          pose_name.c_str());
+        return BT::NodeStatus::FAILURE;
+      }
+
+      const auto home_exec_result = arm_->execute(plan);
+      if (home_exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("GoToNamedPoseBT"),
+          "Execution failed for fallback named pose: home");
+        return BT::NodeStatus::FAILURE;
+      }
+
+      RCLCPP_INFO(
+        rclcpp::get_logger("GoToNamedPoseBT"),
+        "Reached named pose: home via fallback recovery from %s",
+        pose_name.c_str());
+      return BT::NodeStatus::SUCCESS;
+    }
+
     RCLCPP_ERROR(
       rclcpp::get_logger("GoToNamedPoseBT"),
       "Planning failed for named pose: %s",

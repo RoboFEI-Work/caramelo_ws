@@ -143,9 +143,7 @@ private:
 
         ~ExecutionGuard()
         {
-            server_.clearActiveInterfaces();
-            server_.cancel_requested_.store(false);
-            server_.execution_lock_->release();
+            server_.releaseExecutionResources();
         }
 
     private:
@@ -200,6 +198,13 @@ private:
         std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
         active_arm_.reset();
         active_gripper_.reset();
+    }
+
+    void releaseExecutionResources()
+    {
+        clearActiveInterfaces();
+        cancel_requested_.store(false);
+        execution_lock_->release();
     }
 
     void stopActiveMotion()
@@ -754,6 +759,7 @@ private:
             [this, &goal_handle, &result](const std::string & message)
             {
                 result->success = false;
+                releaseExecutionResources();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Place canceled: " + message;
                     goal_handle->canceled(result);
@@ -769,6 +775,7 @@ private:
                 result->message = message;
                 publish_stage(goal_handle, "skipped_missing_container_tag");
                 speak("Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa");
+                releaseExecutionResources();
                 goal_handle->succeed(result);
             };
 
@@ -853,6 +860,7 @@ private:
         {
             publish_stage(goal_handle, "done");
             speak("Entrega concluida com sucesso");
+            releaseExecutionResources();
             goal_handle->succeed(result);
         }
         else

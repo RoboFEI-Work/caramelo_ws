@@ -575,10 +575,7 @@ private:
 
         ~ExecutionGuard()
         {
-            server_.publishPickActive(false);
-            server_.clearActiveInterfaces();
-            server_.cancel_requested_.store(false);
-            server_.execution_lock_->release();
+            server_.releaseExecutionResources();
         }
 
     private:
@@ -905,6 +902,14 @@ private:
         std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
         active_arm_.reset();
         active_gripper_.reset();
+    }
+
+    void releaseExecutionResources()
+    {
+        publishPickActive(false);
+        clearActiveInterfaces();
+        cancel_requested_.store(false);
+        execution_lock_->release();
     }
 
     void stopActiveMotion()
@@ -1571,6 +1576,7 @@ private:
             [this, &goal_handle, &result](const std::string & message)
             {
                 result->success = false;
+                releaseExecutionResources();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Pick canceled: " + message;
                     goal_handle->canceled(result);
@@ -1620,8 +1626,24 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
         if (!planAndExecute(arm, "pegar_obj initial")) {
-            finish_failure("Pick failed while moving to pegar_obj");
-            return;
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Initial pegar_obj move failed. Retrying from home to avoid residual state between sequential picks.");
+
+            arm->setStartStateToCurrentState();
+            arm->setNamedTarget("home");
+            if (!planAndExecute(arm, "home recovery before pegar_obj")) {
+                finish_failure("Pick failed while recovering to home before pegar_obj");
+                return;
+            }
+
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (!planAndExecute(arm, "pegar_obj initial after home recovery")) {
+                finish_failure("Pick failed while moving to pegar_obj after home recovery");
+                return;
+            }
         }
 
         publish_stage(goal_handle, "approach_task");
@@ -1757,12 +1779,14 @@ private:
         if (result->success) {
             publish_stage(goal_handle, "done");
             speak("Coleta concluida com sucesso");
+            releaseExecutionResources();
             goal_handle->succeed(result);
         } else if (!cycle_success && skip_failed_pick_after_retries_) {
             publish_stage(goal_handle, "skipped_after_pick_retries");
             result->success = true;
             result->message = "Pick skipped after all retry attempts failed";
             speak("Nao consegui pegar o bloco. Vou seguir para o proximo objetivo");
+            releaseExecutionResources();
             goal_handle->succeed(result);
         } else {
             speak("Nao consegui pegar o bloco");
