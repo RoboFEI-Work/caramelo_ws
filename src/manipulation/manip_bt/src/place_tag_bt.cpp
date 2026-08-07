@@ -63,7 +63,17 @@ BT::NodeStatus PlaceTagBT::onStart()
 	goal_msg.tag_frame = tag_frame;
 	goal_msg.table_pose = table_pose;
 
-	goal_future_ = action_client_->async_send_goal(goal_msg);
+	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
+	// stage — acao saudavel publica stage continuamente, nunca e cancelada.
+	last_progress_ = std::chrono::steady_clock::now();
+	rclcpp_action::Client<PlaceTag>::SendGoalOptions options;
+	options.feedback_callback =
+		[this](GoalHandlePlaceTag::SharedPtr,
+		const std::shared_ptr<const PlaceTag::Feedback> &) {
+			last_progress_ = std::chrono::steady_clock::now();
+		};
+
+	goal_future_ = action_client_->async_send_goal(goal_msg, options);
 	goal_sent_ = true;
 	waiting_result_ = false;
 	goal_handle_.reset();
@@ -80,6 +90,22 @@ BT::NodeStatus PlaceTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
+	// 120s sem NENHUM feedback de stage = server pendurado: cancela e falha
+	// em vez de a missao ficar muda para sempre.
+	constexpr auto kStageWatchdog = std::chrono::seconds(120);
+	if (std::chrono::steady_clock::now() - last_progress_ > kStageWatchdog) {
+		RCLCPP_FATAL(
+			rclcpp::get_logger("PlaceTagBT"),
+			"WATCHDOG: 120s sem feedback de stage do /place_tag — server "
+			"pendurado. Cancelando o goal e falhando o no.");
+		if (goal_handle_) {
+			action_client_->async_cancel_goal(goal_handle_);
+		}
+		goal_sent_ = false;
+		waiting_result_ = false;
+		return BT::NodeStatus::FAILURE;
+	}
+
 	if (!waiting_result_) {
 		if (goal_future_.valid() && goal_future_.wait_for(0s) == std::future_status::ready) {
 			goal_handle_ = goal_future_.get();
@@ -91,6 +117,7 @@ BT::NodeStatus PlaceTagBT::onRunning()
 
 			result_future_ = action_client_->async_get_result(goal_handle_);
 			waiting_result_ = true;
+			last_progress_ = std::chrono::steady_clock::now();
 			return BT::NodeStatus::RUNNING;
 		}
 

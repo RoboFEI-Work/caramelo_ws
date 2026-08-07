@@ -3,7 +3,7 @@
 #  - ws_to_dock_id:    WS da tarefa -> dock_id do docking.yaml (lido pelo executor de missao)
 ws_to_table_pose:
   WS_1: Mesa15
-  WS_2: Mesa10
+  WS_2: Mesa15  # 2026-08-07: mesa da WS2 trocada para 15cm (era Mesa10)
   WS_3: Mesa10
   WS_4: Mesa15
   WS_5: Mesa0

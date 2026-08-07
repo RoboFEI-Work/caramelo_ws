@@ -10,7 +10,13 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    GroupAction,
+    IncludeLaunchDescription,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
@@ -24,6 +30,7 @@ def generate_launch_description():
     use_mock_hardware = LaunchConfiguration("use_mock_hardware")
     use_camera = LaunchConfiguration("use_camera")
     use_apriltag = LaunchConfiguration("use_apriltag")
+    camera_profile = LaunchConfiguration("camera_profile")
     use_audio = LaunchConfiguration("use_audio")
     use_pick_place = LaunchConfiguration("use_pick_place")
     use_rviz_manip = LaunchConfiguration("use_rviz_manip")
@@ -54,6 +61,15 @@ def generate_launch_description():
             "use_camera",
             default_value="true",
             description="Inicia a RealSense (rs_launch.py) sem publicar TF",
+        ),
+        DeclareLaunchArgument(
+            "camera_profile",
+            # 640x480x5: unico modo estavel em porta USB 2 (2026-08-07: em 2.1
+            # a 15fps dava "Incomplete video frame"/"Frame Corrupted" e o driver
+            # reiniciava em loop, derrubando ate a navegacao). Em USB 3 passe
+            # camera_profile:=640x480x15 (ou mais).
+            default_value="640x480x5",
+            description="Perfil WxHxFPS dos streams color e depth da RealSense",
         ),
         DeclareLaunchArgument(
             "use_apriltag",
@@ -157,7 +173,23 @@ def generate_launch_description():
         value_type=str,
     )
 
+    # SRDF LOCAL como parametro (2026-08-07, achado do teste mock): quando o
+    # move_group cai, o RDFLoader dos nos MTC esperava a SRDF via topico por
+    # 10s e o construtor do MoveGroupInterface ABORTAVA O PROCESSO (SIGABRT em
+    # thread interna). Com a SRDF local, o modelo monta sempre e a falta do
+    # move_group vira falha limpa da sonda/timeout de action server.
+    with open(
+        os.path.join(moveit_config_share, "config", "caramelo.srdf"),
+        "r", encoding="utf-8",
+    ) as srdf_file:
+        robot_description_semantic_content = srdf_file.read()
+
+    # respawn (2026-08-07, achado do teste mock): se o no de pick/place morrer
+    # (ex.: SIGABRT interno do MoveIt), renasce sozinho em vez de deixar a
+    # missao sem action server ate reiniciar o stack na mao.
     pick_action = Node(
+        respawn=True,
+        respawn_delay=3.0,
         package="manip_task_execution",
         executable="mtc_pick_action_node",
         output="screen",
@@ -201,10 +233,13 @@ def generate_launch_description():
             "container_state_file": container_state_file,
             "manipulator_lock_file": manipulator_lock_file,
             "robot_description": primitive_robot_description,
+            "robot_description_semantic": robot_description_semantic_content,
         }],
     )
 
     place_action = Node(
+        respawn=True,
+        respawn_delay=3.0,
         package="manip_task_execution",
         executable="mtc_place_action_node",
         output="screen",
@@ -215,6 +250,7 @@ def generate_launch_description():
             "container_state_file": container_state_file,
             "manipulator_lock_file": manipulator_lock_file,
             "robot_description": primitive_robot_description,
+            "robot_description_semantic": robot_description_semantic_content,
         }],
     )
 
@@ -240,18 +276,32 @@ def generate_launch_description():
                     "enable_color": "true",
                     "enable_depth": "true",
                     "publish_tf": "false",
+                    # 2026-08-07: resolucao/fps reduzidos (default era
+                    # 1280x720@30). O pick acontece com o robo PARADO a ~30cm
+                    # da tag (>100px mesmo em 480p); full-res so servia para o
+                    # apriltag comer 125% de CPU e afogar o Nav2. O perfil vem
+                    # do arg camera_profile (USB2 vs USB3 — ver declaracao).
+                    "rgb_camera.color_profile": camera_profile,
+                    "depth_module.depth_profile": camera_profile,
                 }.items(),
             ),
         ],
         scoped=True,
         forwarding=False,
+        # forwarding=False isola o escopo: configs de fora nao entram. O
+        # camera_profile precisa ser injetado explicitamente aqui dentro.
+        launch_configurations={"camera_profile": camera_profile},
         condition=IfCondition(use_camera),
     )
 
     # --- AprilTag (config vendorado no manip_bringup) ---
+    # nice +15: percepcao cede CPU para o Nav2 (controller a 20Hz) durante a
+    # navegacao; no pick/place o robo esta parado e ha CPU de sobra. Sem isso
+    # o controller_server caiu a 2-8Hz e o staging abortava (2026-08-03).
     apriltag = Node(
         package="apriltag_ros",
         executable="apriltag_node",
+        prefix="nice -n 15",
         output="screen",
         condition=IfCondition(use_apriltag),
         remappings=[
@@ -358,12 +408,29 @@ def generate_launch_description():
         arguments=["gripper_controller"],
     )
 
+    # A RealSense entra por IncludeLaunchDescription (sem como aplicar prefix):
+    # renice apos o driver subir. Mesma justificativa do nice do apriltag.
+    renice_camera = TimerAction(
+        period=12.0,
+        actions=[
+            ExecuteProcess(
+                cmd=[
+                    "bash", "-c",
+                    "pgrep -f realsense2_camera_node | xargs -r renice +15 -p",
+                ],
+                output="log",
+                condition=IfCondition(use_camera),
+            ),
+        ],
+    )
+
     return LaunchDescription(declared_args + [
         move_group,
         commander,
         pick_action,
         place_action,
         realsense,
+        renice_camera,
         apriltag,
         speech,
         pick_telemetry,

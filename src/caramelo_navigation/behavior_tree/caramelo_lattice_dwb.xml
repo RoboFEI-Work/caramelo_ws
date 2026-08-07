@@ -1,6 +1,6 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
       <PipelineSequence name="SmacLatticeSavitzkyDWB">
         <!-- 2026-07-20: ControllerSelector REMOVIDO. O painel Selector do RViz
              publicava um default != DWB (MPPI), e o MPPI colapsa para ~0 e
@@ -34,7 +34,7 @@
         <Sequence name="ClearAndBackUp">
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
           <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
-          <BackUp backup_dist="0.20" backup_speed="0.13" time_allowance="20"/>
+          <BackUp backup_dist="0.10" backup_speed="0.13" time_allowance="20"/>
         </Sequence>
         <Wait wait_duration="1.0"/>
       </RoundRobin>

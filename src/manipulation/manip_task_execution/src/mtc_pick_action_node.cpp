@@ -6,6 +6,7 @@
 #include <moveit/task_constructor/solvers.h>
 #include <moveit/task_constructor/stages.h>
 #include <moveit/task_constructor/task.h>
+#include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 
 #include <tf2/exceptions.h>
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -709,21 +711,59 @@ private:
         arm->setMaxAccelerationScalingFactor(1.0);
     }
 
+    // Auditoria 2026-08-07, item 1.2: sem prazo, o construtor do
+    // MoveGroupInterface espera o action server do move_group PARA SEMPRE.
+    // 15s folgados; no estouro (throw do MoveIt) devolve nullptr e o
+    // chamador converte em falha de goal explicita.
+    std::shared_ptr<MoveGroupInterface> makeInterfaceWithTimeout(
+        const std::string & group)
+    {
+        // Sonda ANTES de construir (teste mock 2026-08-07): sem move_group no
+        // ar, o construtor do MGI aborta o processo inteiro (SIGABRT em thread
+        // interna do MoveIt, fora do alcance do try/catch). Se /move_action
+        // nao existe, falha limpa sem tocar no construtor.
+        auto probe = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
+            shared_from_this(), "move_action");
+        if (!probe->wait_for_action_server(std::chrono::seconds(15))) {
+            RCLCPP_ERROR_STREAM(
+                this->get_logger(),
+                "move_group ('/move_action') indisponivel em 15s — nao "
+                "construindo MoveGroupInterface('" << group << "').");
+            return nullptr;
+        }
+        try {
+            return std::make_shared<MoveGroupInterface>(
+                shared_from_this(), group,
+                std::shared_ptr<tf2_ros::Buffer>(),
+                rclcpp::Duration::from_seconds(15.0));
+        } catch (const std::exception & e) {
+            RCLCPP_ERROR_STREAM(
+                this->get_logger(),
+                "MoveGroupInterface('" << group << "') indisponivel em 15s: "
+                    << e.what());
+            return nullptr;
+        }
+    }
+
     std::shared_ptr<MoveGroupInterface> createArmInterface(bool fallback_profile)
     {
         applyIkProfile(
             fallback_profile ? fallback_ik_profile_ : primary_ik_profile_,
             fallback_profile ? "fallback" : "primary");
-        auto arm = std::make_shared<MoveGroupInterface>(shared_from_this(), "arm");
-        configureArmInterface(arm);
+        auto arm = makeInterfaceWithTimeout("arm");
+        if (arm) {
+            configureArmInterface(arm);
+        }
         return arm;
     }
 
     std::shared_ptr<MoveGroupInterface> createArmInterfaceForAttempt(int attempt)
     {
         applyIkProfile(ikProfileForAttempt(attempt), ikProfileNameForAttempt(attempt));
-        auto arm = std::make_shared<MoveGroupInterface>(shared_from_this(), "arm");
-        configureArmInterface(arm);
+        auto arm = makeInterfaceWithTimeout("arm");
+        if (arm) {
+            configureArmInterface(arm);
+        }
         return arm;
     }
 
@@ -1065,6 +1105,95 @@ private:
 
     double max_tag_age_sec_{1.0};
 
+    // ---- Deadlines client-side (auditoria 2026-08-07, item 1.1) ----
+    // MoveGroupInterface::plan()/execute() bloqueiam em `while(!done) sleep(1ms)`
+    // SEM timeout e sem checar rclcpp::ok(): resposta perdida no DDS = chamada
+    // pendurada PARA SEMPRE (2 travamentos observados em campo em 07/08).
+    // Prazos LARGOS que nunca cancelam acao saudavel: plan = 15s de planning
+    // + 10s de margem; execute = duracao planejada x3 + 3s (espelho do monitor
+    // server-side) + 10s de margem. No estouro: FATAL + stop() + falha; a
+    // thread orfa fica no busy-wait de 1ms do MoveIt (custo desprezivel) e
+    // escreve num Plan proprio (nunca no do chamador — sem use-after-free).
+    // Estouros repetidos = reiniciar o no.
+    template<typename Fn>
+    bool runWithDeadline(Fn && fn, double timeout_s, const std::string & label)
+    {
+        auto prom = std::make_shared<std::promise<bool>>();
+        auto fut = prom->get_future();
+        std::thread(
+            [prom, fn = std::forward<Fn>(fn)]() mutable {
+                bool ok = false;
+                try {
+                    ok = fn();
+                } catch (...) {
+                }
+                try {
+                    prom->set_value(ok);
+                } catch (...) {
+                }
+            }).detach();
+        if (fut.wait_for(std::chrono::duration<double>(timeout_s)) ==
+            std::future_status::ready)
+        {
+            return fut.get();
+        }
+        RCLCPP_FATAL_STREAM(
+            this->get_logger(),
+            "DEADLINE de " << timeout_s << "s estourado em '" << label
+                << "' — chamada MoveIt pendurada (provavel perda DDS). "
+                   "Abortando; estouros repetidos => reiniciar o no.");
+        return false;
+    }
+
+    static double plannedTrajectoryDurationSec(const MoveGroupInterface::Plan & plan)
+    {
+        const auto & pts = plan.trajectory.joint_trajectory.points;
+        if (pts.empty()) {
+            return 0.0;
+        }
+        return rclcpp::Duration(pts.back().time_from_start).seconds();
+    }
+
+    bool planWithDeadline(
+        const std::shared_ptr<MoveGroupInterface> & iface,
+        MoveGroupInterface::Plan & plan_out,
+        const std::string & label)
+    {
+        auto plan_box = std::make_shared<MoveGroupInterface::Plan>();
+        const bool ok = runWithDeadline(
+            [iface, plan_box]() {
+                return iface->plan(*plan_box) ==
+                       moveit::core::MoveItErrorCode::SUCCESS;
+            },
+            25.0, label + " [plan]");
+        if (ok) {
+            plan_out = *plan_box;
+        } else {
+            iface->stop();
+        }
+        return ok;
+    }
+
+    bool executeWithDeadline(
+        const std::shared_ptr<MoveGroupInterface> & iface,
+        const MoveGroupInterface::Plan & plan,
+        const std::string & label)
+    {
+        const double timeout_s =
+            plannedTrajectoryDurationSec(plan) * 3.0 + 3.0 + 10.0;
+        auto plan_box = std::make_shared<MoveGroupInterface::Plan>(plan);
+        const bool ok = runWithDeadline(
+            [iface, plan_box]() {
+                return iface->execute(*plan_box) ==
+                       moveit::core::MoveItErrorCode::SUCCESS;
+            },
+            timeout_s, label + " [execute]");
+        if (!ok) {
+            iface->stop();
+        }
+        return ok;
+    }
+
     bool planAndExecute(
         const std::shared_ptr<MoveGroupInterface> & iface,
         const std::string & label)
@@ -1075,10 +1204,7 @@ private:
 
         MoveGroupInterface::Plan plan;
 
-        const bool success =
-            (iface->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-
-        if (!success) {
+        if (!planWithDeadline(iface, plan, label)) {
             RCLCPP_ERROR_STREAM(
                 this->get_logger(),
                 "Planning failed: " << label);
@@ -1089,13 +1215,13 @@ private:
             return false;
         }
 
-        const auto exec_result = iface->execute(plan);
+        const bool exec_ok = executeWithDeadline(iface, plan, label);
 
         if (cancellationRequested()) {
             return false;
         }
 
-        if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        if (!exec_ok) {
             RCLCPP_ERROR_STREAM(
                 this->get_logger(),
                 "Execution failed: " << label);
@@ -1103,6 +1229,59 @@ private:
         }
 
         return true;
+    }
+
+    // Varredura de busca da tag (2026-08-07): o robo pode docar com alguns
+    // cm/graus de erro e a tag cair fora do FOV da camera (visto na missao
+    // 3-objetos: WS1 "um pouco torta" = picks pulados sem nem ver as tags).
+    // Gira a junta 1 em passos alternados a partir da pose atual, re-testando
+    // a deteccao em cada parada. Achou -> segue o ciclo (o alinhamento XY da
+    // camera centraliza depois). Nao achou -> volta ao centro e falha.
+    bool sweepForTag(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & tag_frame,
+        geometry_msgs::msg::TransformStamped & out_tf,
+        const std::string & cycle_name)
+    {
+        const std::vector<double> offsets = {-0.30, 0.30, -0.60, 0.60};
+        std::vector<double> joints = arm->getCurrentJointValues();
+        if (joints.empty()) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] varredura abortada: sem estado atual do braco",
+                cycle_name.c_str());
+            return false;
+        }
+        const double center = joints[0];
+        speak("Vou procurar a tag " + spokenTagName(tag_frame));
+        for (const double offset : offsets) {
+            if (cancellationRequested()) {
+                return false;
+            }
+            joints[0] = center + offset;
+            arm->setJointValueTarget(joints);
+            if (!planAndExecute(arm, cycle_name + " sweep")) {
+                continue;  // passo invalido (limite/colisao): tenta o proximo
+            }
+            if (waitForTagTransform(
+                    "base_footprint",
+                    tag_frame,
+                    out_tf,
+                    std::chrono::milliseconds(900),
+                    std::chrono::milliseconds(100),
+                    cycle_name + " sweep_detect"))
+            {
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[%s] tag %s encontrada na varredura (offset %+.2f rad)",
+                    cycle_name.c_str(), tag_frame.c_str(), offset);
+                return true;
+            }
+        }
+        joints[0] = center;
+        arm->setJointValueTarget(joints);
+        planAndExecute(arm, cycle_name + " sweep_return");
+        return false;
     }
 
     bool moveToTarget(
@@ -1145,7 +1324,14 @@ private:
         if (use_orientation_constraint) {
             tf2::Quaternion desired_q;
             if (enforce_pitch_pi) {
-                desired_q.setRPY(0.0, M_PI, yaw);
+                // 2026-08-07 (decisao do operador): a orientacao da TAG sai da
+                // conta — pegada top-down com yaw RADIAL (base->alvo), que e o
+                // yaw naturalmente alcancavel deste braco de 5 juntas (a junta
+                // 5 gira a garra em torno do eixo vertical). O yaw da tag em
+                // 480p/USB2 e ruidoso e gerava poses sem solucao de IK
+                // ("unable to sample goal states") de forma intermitente.
+                const double yaw_radial = std::atan2(y, x);
+                desired_q.setRPY(0.0, M_PI, yaw_radial);
             } else {
                 const auto current_pose = arm->getCurrentPose(eef_link).pose;
                 tf2::Quaternion current_q;
@@ -1175,8 +1361,7 @@ private:
         arm->clearPoseTargets();
         arm->setPoseTarget(target_pose, eef_link);
 
-        bool success =
-            (arm->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+        bool success = planWithDeadline(arm, plan, label + " setPoseTarget");
 
         if (!success) {
             RCLCPP_WARN_STREAM(
@@ -1184,11 +1369,23 @@ private:
                 "Plan falhou com setPoseTarget em " << label
                                                                                          << ". Tentando IK aproximada.");
 
+            // Guarda anti-travamento (2026-08-07): a IK aproximada precisa do
+            // estado atual; sem ele o fluxo ficava pendurado INDEFINIDAMENTE
+            // (visto: 6 min mudo apos "Failed to fetch current robot state").
+            // Sem estado em 2 s -> falha limpa e o ladder de retry/skip segue.
+            if (!arm->getCurrentState(2.0)) {
+                RCLCPP_ERROR_STREAM(
+                    this->get_logger(),
+                    "Sem estado atual do braco para IK aproximada em " << label
+                        << " — abortando a tentativa.");
+                speak(ik_failure_speech);
+                return false;
+            }
+
             arm->clearPoseTargets();
             arm->setApproximateJointValueTarget(target_pose, eef_link);
 
-            success =
-                (arm->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+            success = planWithDeadline(arm, plan, label + " IK aproximada");
         }
 
         if (!success) {
@@ -1205,13 +1402,13 @@ private:
             return false;
         }
 
-        const auto exec_result = arm->execute(plan);
+        const bool exec_ok = executeWithDeadline(arm, plan, label);
 
         if (cancellationRequested()) {
             return false;
         }
 
-        if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        if (!exec_ok) {
             RCLCPP_ERROR_STREAM(
                 this->get_logger(),
                 "Execution failed: " << label);
@@ -1221,96 +1418,12 @@ private:
         return true;
     }
 
-    mtc::Task createApproachTask()
-    {
-        mtc::Task task;
-
-        task.stages()->setName("approach task");
-        task.loadRobotModel(shared_from_this());
-
-        const auto & arm_group_name = "arm";
-        const auto & hand_group_name = "gripper";
-        const auto & hand_frame = "tcp";
-
-        task.setProperty("group", arm_group_name);
-        task.setProperty("eef", hand_group_name);
-        task.setProperty("ik_frame", hand_frame);
-
-        auto current_state =
-            std::make_unique<mtc::stages::CurrentState>("current");
-        task.add(std::move(current_state));
-
-        auto sampling_planner =
-            std::make_shared<mtc::solvers::PipelinePlanner>(
-            shared_from_this());
-
-        auto move_to_pregrasp =
-            std::make_unique<mtc::stages::MoveTo>(
-            "go pegar_obj",
-            sampling_planner);
-
-        move_to_pregrasp->setGroup(arm_group_name);
-        move_to_pregrasp->setGoal("pegar_obj");
-        task.add(std::move(move_to_pregrasp));
-
-        return task;
-    }
-
-    bool executeTask(
-        mtc::Task & task,
-        const std::string & task_name)
-    {
-        if (cancellationRequested()) {
-            return false;
-        }
-
-        try {
-            task.init();
-        } catch (mtc::InitStageException & e) {
-            RCLCPP_ERROR_STREAM(
-                this->get_logger(),
-                "Task init failed [" << task_name << "]: " << e);
-            return false;
-        } catch (const std::exception & e) {
-            RCLCPP_ERROR_STREAM(
-                this->get_logger(),
-                "Task init threw exception [" << task_name << "]: " << e.what());
-            return false;
-        }
-
-        try {
-            if (!task.plan(6)) {
-                RCLCPP_ERROR_STREAM(
-                    this->get_logger(),
-                    "Task planning failed [" << task_name << "]");
-                return false;
-            }
-
-            if (cancellationRequested()) {
-                return false;
-            }
-
-            task.introspection().publishSolution(*task.solutions().front());
-
-            const auto result = task.execute(*task.solutions().front());
-            if (cancellationRequested()) {
-                return false;
-            }
-            if (result.val != moveit_msgs::msg::MoveItErrorCodes::SUCCESS) {
-                RCLCPP_ERROR_STREAM(
-                    this->get_logger(),
-                    "Task execution failed [" << task_name << "]");
-                return false;
-            }
-        } catch (const std::exception & e) {
-            RCLCPP_ERROR_STREAM(
-                this->get_logger(),
-                "Task runtime exception [" << task_name << "]: " << e.what());
-            return false;
-        }
-
-        return true;
-    }
+    // createApproachTask/executeTask REMOVIDOS (auditoria 2026-08-07, item
+    // 1.3): a task MTC era um CurrentState->MoveTo("pegar_obj") REDUNDANTE
+    // (o fluxo ja leva o braco a pegar_obj com recovery logo antes), a falha
+    // era sempre engolida pelo fallback, e task.execute() do MTC espera o
+    // result SEM timeout — resposta perdida no DDS = server "ocupado" para
+    // sempre (raiz dos travamentos e do bug "server ocupado" de 04/08).
 
     bool transferGraspedObjectToContainer(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -1433,6 +1546,9 @@ private:
         speak("Vou realinhar a camera e tentar novamente com a primeira I K");
 
         arm = createArmInterface(false);
+        if (!arm) {
+            return false;
+        }
         setActiveInterfaces(arm, gripper);
 
         bool failed_grasp_verification = false;
@@ -1468,7 +1584,9 @@ private:
                 tag_tf,
                 std::chrono::milliseconds(900),
                 std::chrono::milliseconds(100),
-                cycle_name + " detect_tag")) {
+                cycle_name + " detect_tag")
+            && !sweepForTag(arm, tag_frame, tag_tf, cycle_name))
+        {
             speak("Não encontrei a tag " + spokenTagName(tag_frame));
             return false;
         }
@@ -1605,7 +1723,13 @@ private:
         //speak("Container livre selecionado: " + container_pose);
 
         auto arm = createArmInterface(false);
-        auto gripper = std::make_shared<MoveGroupInterface>(shared_from_this(), "gripper");
+        auto gripper = makeInterfaceWithTimeout("gripper");
+        if (!arm || !gripper) {
+            finish_failure(
+                "Pick failed: move_group indisponivel (MoveGroupInterface nao "
+                "conectou em 15s) — stack de manipulacao no ar?");
+            return;
+        }
         setActiveInterfaces(arm, gripper);
 
         gripper->setMaxVelocityScalingFactor(1.0);
@@ -1646,26 +1770,8 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "approach_task");
-        //speak("Preparando a aproximacao planejada");
-        mtc::Task approach_task;
-        try {
-            approach_task = createApproachTask();
-        } catch (const std::exception & e) {
-            result->success = false;
-            result->message = std::string("Approach creation failed: ") + e.what();
-            finish_failure(result->message);
-            return;
-        }
-
-        if (!executeTask(approach_task, "approach")) {
-            publish_stage(goal_handle, "approach_task_failed_fallback");
-            //speak("A aproximacao planejada falhou. Vou continuar pelo caminho alternativo");
-            RCLCPP_WARN(
-                this->get_logger(),
-                "Approach task failed. Continuing pick cycle with fallback path.");
-        }
-
+        // approach_task MTC removido (auditoria 2026-08-07, item 1.3) — o
+        // braco ja esta em pegar_obj pelo bloco acima; segue direto ao ciclo.
         if (!sleepInterruptibly(std::chrono::milliseconds(200))) {
             finish_failure("canceled before the pick cycle");
             return;
@@ -1683,6 +1789,10 @@ private:
                 "ACTION_CYCLE_ATTEMPT_" + std::to_string(attempt);
 
             arm = createArmInterfaceForAttempt(attempt);
+            if (!arm) {
+                cycle_success = false;
+                break;  // move_group sumiu no meio: falha o goal (sem retry cego)
+            }
             setActiveInterfaces(arm, gripper);
 
             if (max_pick_attempts > 1) {

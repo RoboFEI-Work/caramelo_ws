@@ -2,6 +2,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <moveit/move_group_interface/move_group_interface.hpp>
+#include <moveit_msgs/action/move_group.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -11,6 +12,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <chrono>
+#include <future>
 #include <atomic>
 #include <cctype>
 #include <cstdlib>
@@ -394,6 +396,122 @@ private:
         RCLCPP_INFO(get_logger(), "[PLACE] stage=%s", stage.c_str());
     }
 
+    // Auditoria 2026-08-07, item 1.2: sem prazo, o construtor do
+    // MoveGroupInterface espera o action server do move_group PARA SEMPRE.
+    // 15s folgados; no estouro devolve nullptr e o chamador falha o goal.
+    std::shared_ptr<MoveGroupInterface> makeInterfaceWithTimeout(
+        const std::string & group)
+    {
+        // Sonda ANTES de construir (teste mock 2026-08-07): sem move_group no
+        // ar, o construtor do MGI aborta o processo inteiro (SIGABRT em thread
+        // interna do MoveIt, fora do alcance do try/catch).
+        auto probe = rclcpp_action::create_client<moveit_msgs::action::MoveGroup>(
+            shared_from_this(), "move_action");
+        if (!probe->wait_for_action_server(std::chrono::seconds(15))) {
+            RCLCPP_ERROR_STREAM(
+                get_logger(),
+                "move_group ('/move_action') indisponivel em 15s — nao "
+                "construindo MoveGroupInterface('" << group << "').");
+            return nullptr;
+        }
+        try {
+            return std::make_shared<MoveGroupInterface>(
+                shared_from_this(), group,
+                std::shared_ptr<tf2_ros::Buffer>(),
+                rclcpp::Duration::from_seconds(15.0));
+        } catch (const std::exception & e) {
+            RCLCPP_ERROR_STREAM(
+                get_logger(),
+                "MoveGroupInterface('" << group << "') indisponivel em 15s: "
+                    << e.what());
+            return nullptr;
+        }
+    }
+
+    // ---- Deadlines client-side (auditoria 2026-08-07, item 1.1) ----
+    // Espelho exato dos wrappers do pick: plan/execute do MoveGroupInterface
+    // bloqueiam SEM timeout; resposta perdida no DDS = espera infinita (e no
+    // place a thread pendurada segura o flock do braco, matando pick E place).
+    // Prazos largos: plan 25s; execute = duracao planejada x3 + 3s + 10s.
+    template<typename Fn>
+    bool runWithDeadline(Fn && fn, double timeout_s, const std::string & label)
+    {
+        auto prom = std::make_shared<std::promise<bool>>();
+        auto fut = prom->get_future();
+        std::thread(
+            [prom, fn = std::forward<Fn>(fn)]() mutable {
+                bool ok = false;
+                try {
+                    ok = fn();
+                } catch (...) {
+                }
+                try {
+                    prom->set_value(ok);
+                } catch (...) {
+                }
+            }).detach();
+        if (fut.wait_for(std::chrono::duration<double>(timeout_s)) ==
+            std::future_status::ready)
+        {
+            return fut.get();
+        }
+        RCLCPP_FATAL_STREAM(
+            get_logger(),
+            "DEADLINE de " << timeout_s << "s estourado em '" << label
+                << "' — chamada MoveIt pendurada (provavel perda DDS). "
+                   "Abortando; estouros repetidos => reiniciar o no.");
+        return false;
+    }
+
+    static double plannedTrajectoryDurationSec(const MoveGroupInterface::Plan & plan)
+    {
+        const auto & pts = plan.trajectory.joint_trajectory.points;
+        if (pts.empty()) {
+            return 0.0;
+        }
+        return rclcpp::Duration(pts.back().time_from_start).seconds();
+    }
+
+    bool planWithDeadline(
+        const std::shared_ptr<MoveGroupInterface> & iface,
+        MoveGroupInterface::Plan & plan_out,
+        const std::string & label)
+    {
+        auto plan_box = std::make_shared<MoveGroupInterface::Plan>();
+        const bool ok = runWithDeadline(
+            [iface, plan_box]() {
+                return iface->plan(*plan_box) ==
+                       moveit::core::MoveItErrorCode::SUCCESS;
+            },
+            25.0, label + " [plan]");
+        if (ok) {
+            plan_out = *plan_box;
+        } else {
+            iface->stop();
+        }
+        return ok;
+    }
+
+    bool executeWithDeadline(
+        const std::shared_ptr<MoveGroupInterface> & iface,
+        const MoveGroupInterface::Plan & plan,
+        const std::string & label)
+    {
+        const double timeout_s =
+            plannedTrajectoryDurationSec(plan) * 3.0 + 3.0 + 10.0;
+        auto plan_box = std::make_shared<MoveGroupInterface::Plan>(plan);
+        const bool ok = runWithDeadline(
+            [iface, plan_box]() {
+                return iface->execute(*plan_box) ==
+                       moveit::core::MoveItErrorCode::SUCCESS;
+            },
+            timeout_s, label + " [execute]");
+        if (!ok) {
+            iface->stop();
+        }
+        return ok;
+    }
+
     bool planAndExecute(
         const std::shared_ptr<MoveGroupInterface> & iface,
         const std::string & label)
@@ -404,10 +522,7 @@ private:
 
         MoveGroupInterface::Plan plan;
 
-        const bool success =
-            (iface->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-
-        if (!success) {
+        if (!planWithDeadline(iface, plan, label)) {
             RCLCPP_ERROR_STREAM(get_logger(), "Planning failed: " << label);
             return false;
         }
@@ -416,11 +531,11 @@ private:
             return false;
         }
 
-        const auto exec_result = iface->execute(plan);
+        const bool exec_ok = executeWithDeadline(iface, plan, label);
         if (cancellationRequested()) {
             return false;
         }
-        if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        if (!exec_ok) {
             RCLCPP_ERROR_STREAM(get_logger(), "Execution failed: " << label);
             return false;
         }
@@ -564,8 +679,7 @@ private:
         arm->clearPoseTargets();
         arm->setPoseTarget(target_pose, eef_link);
 
-        bool success =
-            (arm->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+        bool success = planWithDeadline(arm, plan, label + " setPoseTarget");
 
         if (!success) {
             RCLCPP_WARN_STREAM(
@@ -573,10 +687,20 @@ private:
                 "Plan failed with setPoseTarget for " << label
                     << ". Trying approximate IK.");
 
+            // Guarda anti-travamento (auditoria 2026-08-07, item 1.4 —
+            // espelho da guarda validada no pick): a IK aproximada precisa do
+            // estado atual; sem ele o fluxo pendurava indefinidamente.
+            if (!arm->getCurrentState(2.0)) {
+                RCLCPP_ERROR_STREAM(
+                    get_logger(),
+                    "Sem estado atual do braco para IK aproximada em " << label
+                        << " — abortando a tentativa.");
+                return false;
+            }
+
             arm->clearPoseTargets();
             arm->setApproximateJointValueTarget(target_pose, eef_link);
-            success =
-                (arm->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+            success = planWithDeadline(arm, plan, label + " IK aproximada");
         }
 
         if (!success) {
@@ -588,11 +712,11 @@ private:
             return false;
         }
 
-        const auto exec_result = arm->execute(plan);
+        const bool exec_ok = executeWithDeadline(arm, plan, label);
         if (cancellationRequested()) {
             return false;
         }
-        if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        if (!exec_ok) {
             RCLCPP_ERROR_STREAM(get_logger(), "Execution failed: " << label);
             return false;
         }
@@ -788,10 +912,9 @@ private:
             "Iniciando a rotina de entregar a " +
             spokenTargetName(goal->tag_frame));
 
-        auto arm = std::make_shared<MoveGroupInterface>(shared_from_this(), "arm");
-        auto gripper = std::make_shared<MoveGroupInterface>(shared_from_this(), "gripper");
-        setActiveInterfaces(arm, gripper);
-
+        // Auditoria 2026-08-07, item 1.2: resolver o container ANTES de
+        // construir os MoveGroupInterfaces — o caminho de skip deixa de pagar
+        // 1-2s de conexao e de segurar o flock do braco a toa.
         std::string container_pose;
         std::string lookup_error;
         if (!container_state_store_->findContainerByTag(
@@ -811,6 +934,18 @@ private:
             return;
         }
         speak("Objeto localizado no " + spokenTargetName(container_pose));
+
+        auto arm = makeInterfaceWithTimeout("arm");
+        auto gripper = makeInterfaceWithTimeout("gripper");
+        if (!arm || !gripper) {
+            result->success = false;
+            result->message =
+                "Place failed: move_group indisponivel (MoveGroupInterface nao "
+                "conectou em 15s) — stack de manipulacao no ar?";
+            finish_failure(result->message);
+            return;
+        }
+        setActiveInterfaces(arm, gripper);
 
         arm->setPoseReferenceFrame("base_footprint");
         arm->setPlanningTime(15.0);

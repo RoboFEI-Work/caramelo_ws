@@ -54,7 +54,17 @@ BT::NodeStatus PickTagBT::onStart()
 	PickTag::Goal goal_msg;
 	goal_msg.tag_frame = tag_frame;
 
-	goal_future_ = action_client_->async_send_goal(goal_msg);
+	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
+	// stage. Acao saudavel publica stage o tempo todo — nunca e cancelada.
+	last_progress_ = std::chrono::steady_clock::now();
+	rclcpp_action::Client<PickTag>::SendGoalOptions options;
+	options.feedback_callback =
+		[this](GoalHandlePickTag::SharedPtr,
+		const std::shared_ptr<const PickTag::Feedback> &) {
+			last_progress_ = std::chrono::steady_clock::now();
+		};
+
+	goal_future_ = action_client_->async_send_goal(goal_msg, options);
 	goal_sent_ = true;
 	waiting_result_ = false;
 	goal_handle_.reset();
@@ -71,6 +81,24 @@ BT::NodeStatus PickTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
+	// 120s sem NENHUM feedback de stage = server pendurado (perda DDS ou
+	// espera infinita interna): cancela e reporta FAILURE em vez de a
+	// missao ficar muda para sempre. O ciclo completo de retry do pick
+	// troca de stage muito antes disso.
+	constexpr auto kStageWatchdog = std::chrono::seconds(120);
+	if (std::chrono::steady_clock::now() - last_progress_ > kStageWatchdog) {
+		RCLCPP_FATAL(
+			rclcpp::get_logger("PickTagBT"),
+			"WATCHDOG: 120s sem feedback de stage do /pick_tag — server "
+			"pendurado. Cancelando o goal e falhando o no.");
+		if (goal_handle_) {
+			action_client_->async_cancel_goal(goal_handle_);
+		}
+		goal_sent_ = false;
+		waiting_result_ = false;
+		return BT::NodeStatus::FAILURE;
+	}
+
 	if (!waiting_result_) {
 		if (goal_future_.valid() && goal_future_.wait_for(0s) == std::future_status::ready) {
 			goal_handle_ = goal_future_.get();
@@ -82,6 +110,7 @@ BT::NodeStatus PickTagBT::onRunning()
 
 			result_future_ = action_client_->async_get_result(goal_handle_);
 			waiting_result_ = true;
+			last_progress_ = std::chrono::steady_clock::now();
 			return BT::NodeStatus::RUNNING;
 		}
 

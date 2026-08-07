@@ -530,7 +530,10 @@ void appendGotoIfNeeded(
   }
 
   const std::string table_pose = ws_it->second;
-  if (state.current_ws == table_pose) {
+  // BUG 2026-08-07: current_ws guardava a MESA (table_pose), nao a estacao.
+  // Com WS_1 e WS_2 ambas Mesa15, o goto WS_2 era pulado e o robo "colocava
+  // na WS_2" sem sair da WS_1. Comparar/registrar SEMPRE pela estacao (ws).
+  if (state.current_ws == ws) {
     return;
   }
 
@@ -546,7 +549,7 @@ void appendGotoIfNeeded(
   nav["ws"] = ws;
   nav["mesa"] = table_pose;
   action_seq.push_back(nav);
-  state.current_ws = table_pose;
+  state.current_ws = ws;
 }
 
 void appendPlacesAtWs(

@@ -7,32 +7,38 @@ default_acceleration_scaling_factor: 0.1
 
 # Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
 # Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
+# 2026-08-07 v2: 1.0 -> 0.6 rad/s (accel 0.5). O corte inicial p/ 0.25 deixou
+# os movimentos gravados 2.7x mais lentos que o real (WS->home: 2.7s medido
+# vs 7.3s planejado a 0.25). 0.6 ~= capacidade tipica medida; movimentos
+# extremos (dobra grande contra gravidade) lagam, e o monitor 3x+3s absorve.
+# Historico: a 1.0 o monitor cancelava execucao viva ("taking too long").
+# Garra (6/7) intacta: movimentos curtos, nunca estourou o monitor.
 joint_limits:
   manip_joint1:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 0.6
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 0.5
   manip_joint2:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 0.6
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 0.5
   manip_joint3:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 0.6
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 0.5
   manip_joint4:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 0.6
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 0.5
   manip_joint5:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 0.6
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 0.5
   manip_joint6:
     has_velocity_limits: true
     max_velocity: 1.0

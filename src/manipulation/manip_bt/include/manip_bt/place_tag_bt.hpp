@@ -1,6 +1,8 @@
 #pragma once
 
 #include <behaviortree_cpp_v3/action_node.h>
+
+#include <chrono>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -31,6 +33,8 @@ private:
   GoalHandlePlaceTag::SharedPtr goal_handle_;
   bool goal_sent_;
   bool waiting_result_;
+  // Watchdog de progresso (auditoria 2026-08-07, item 1.5) — ver pick_tag_bt.
+  std::chrono::steady_clock::time_point last_progress_;
 };
 
 }  // namespace manip_bt

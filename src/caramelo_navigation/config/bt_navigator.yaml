@@ -5,7 +5,12 @@ bt_navigator:
     robot_base_frame: base_footprint
     odom_topic: /odom
     transform_tolerance: 0.6
-    default_server_timeout: 20
+    # 20 -> 300ms (2026-08-07): com o notebook sob pico de carga (ex.: driver
+    # da camera reiniciando), 20ms de espera pelo ACK dos action servers
+    # derrubava a navegacao em cascata ("Timed out waiting to acknowledge
+    # compute_path_to_pose" -> dock abortado em 6s). 300ms tolera o soluco;
+    # o custo e so latencia de INICIO de cada acao do BT no pior caso.
+    default_server_timeout: 300
     bt_loop_duration: 10
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0

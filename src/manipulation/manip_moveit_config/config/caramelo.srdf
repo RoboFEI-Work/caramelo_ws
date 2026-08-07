@@ -264,6 +264,20 @@
         a protecao fisica do chassi segue nos pares ativos link4/link5/fingers/camera.-->
     <disable_collisions link1="base_link" link2="link2" reason="Default"/>
     <disable_collisions link1="base_link" link2="link3" reason="Default"/>
+    <!--2026-08-07: mesmo falso-positivo de bounding acima, agora com as RODAS:
+        o caminho pre_container->home raspou a caixa da back_left_wheel no
+        ponto 60/76 (ValidateSolution: INVALID_MOTION_PLAN) e derrubou a missao
+        ja completa. Fisicamente link2/link3 nunca alcancam as rodas — a chapa
+        do chassi esta no meio, e a protecao real segue nos pares ATIVOS de
+        base_link x link4/link5/fingers/camera.-->
+    <disable_collisions link1="link2" link2="front_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="link2" link2="front_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="link2" link2="back_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="link2" link2="back_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="link3" link2="front_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="link3" link2="front_right_wheel_link" reason="Never"/>
+    <disable_collisions link1="link3" link2="back_left_wheel_link" reason="Never"/>
+    <disable_collisions link1="link3" link2="back_right_wheel_link" reason="Never"/>
     <!--Rodas x chassi: fixas ao chassi pelos wheel_joints (Adjacent).-->
     <disable_collisions link1="base_link" link2="front_left_wheel_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="front_right_wheel_link" reason="Adjacent"/>

@@ -1,5 +1,14 @@
 # MoveIt uses this configuration for controller management
 
+# 2026-08-07: braco REAL (Dynamixel) executa mais devagar que o perfil
+# planejado — o monitor default (scaling ~1.1 + margem 0.5s) cancelava a
+# trajetoria em pleno movimento saudavel ("Controller is taking too long...
+# expected upper bound 5.47s", missao 3-objetos). 3x + 3s de margem cobre a
+# folga real; o monitor continua ligado como rede contra braco travado.
+trajectory_execution:
+  allowed_execution_duration_scaling: 3.0
+  allowed_goal_duration_margin: 3.0
+
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
 moveit_simple_controller_manager:
