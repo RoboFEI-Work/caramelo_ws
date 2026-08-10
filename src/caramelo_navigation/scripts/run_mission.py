@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ponto de entrada da MISSAO COMPLETA (navegacao + manipulacao) do Caramelo.
 
-Fluxo (integracao manip -> caramelo):
+Fluxo (inalterado do ponto de vista do operador):
   1. Resolve a pasta do mapa (docking.yaml, service_areas.yaml e
      ws_table_mapping.yaml precisam existir nela).
   2. Roda o task_planner (manip_bt) sobre o YAML da competicao, gerando o
@@ -10,30 +10,36 @@ Fluxo (integracao manip -> caramelo):
   4. Executa o bt_yaml_executor (manip_bt), que orquestra DockRobot,
      AlignToDock, UndockRobot e as actions de pick/place do braco.
 
-Este script NAO usa rclpy diretamente: ele apenas orquestra os processos via
-`ros2 run`, no mesmo espirito dos demais utilitarios do pacote. Ctrl+C e'
-repassado como SIGINT ao executor, que faz o halt limpo da BT (nunca SIGKILL).
+O que mudou por dentro: a logica dos 4 passos foi extraida para
+caramelo_mission_common.py e agora e' compartilhada com o mission_server (a
+action /caramelo/run_mission, usada pela GUI Qt e pelo painel web). Assim uma
+missao disparada pela interface percorre exatamente o mesmo caminho que a do
+terminal.
+
+O passo 4 e' delegado ao mission_server QUANDO ELE ESTIVER NO AR; se nao
+estiver, este script executa localmente como sempre fez. Isso e' proposital:
+nenhum fluxo de terminal existente quebra se o servidor nao subir.
+
+Os passos 1-3 ficam locais de proposito -- o plano e a confirmacao precisam
+acontecer antes de qualquer coisa se mover, e planejar e' barato. O plano ja
+gerado e' repassado ao servidor, que nao replaneja.
 
 Exemplos:
   ros2 run caramelo_navigation run_mission --map-name arena2_520 --task BMT.yaml --dry-run
   ros2 run caramelo_navigation run_mission --map-name arena2_520 --task BMT.yaml --simulate-nav --yes
 """
 import argparse
-import datetime
 import os
 import signal
-import subprocess
 import sys
-from pathlib import Path
-
-import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from caramelo_docking_common import (  # noqa: E402
-    docking_file, resolve_map_folder, service_areas_file,
-)
+import caramelo_mission_common as mc  # noqa: E402
 
-MISSIONS_DIR = Path.home() / ".ros" / "caramelo_missions"
+ACTION_NAME = "/caramelo/run_mission"
+# Quanto esperar o mission_server aparecer antes de cair no modo local. Curto de
+# proposito: se o servidor nao esta' no ar, o operador nao pode ficar parado.
+SERVER_WAIT = 3.0
 
 
 def _parse_args(argv):
@@ -58,198 +64,131 @@ def _parse_args(argv):
                    help='Dock final apos a missao (default: FINISH; "" desliga).')
     p.add_argument("--use-lidar-refine", action="store_true",
                    help="Repassa use_lidar_refine:=true ao executor (refino no /scan).")
-    p.add_argument("--preflight-timeout", type=float, default=120.0,
+    p.add_argument("--preflight-timeout", type=float, default=mc.DEFAULT_PREFLIGHT_TIMEOUT,
                    help="Segundos maximos aguardando os servidores da missao "
                         "(move_group, pick/place, nav) antes de abortar.")
+    p.add_argument("--local", action="store_true",
+                   help="Nao usa o mission_server; executa sempre localmente.")
     return p.parse_args(argv[1:])
 
 
-def _graph_actions() -> set:
-    """Snapshot dos action servers visiveis no grafo (barato, nunca pendura)."""
+def _executar_local(args, actions_yaml, map_folder, task_id) -> int:
+    """Caminho de sempre: pre-flight aqui e bt_yaml_executor como filho."""
+    ok, msg = mc.preflight(
+        args.simulate_nav, args.preflight_timeout, on_progress=print)
+    if not ok:
+        print(f"\n{msg}", file=sys.stderr)
+        return 1
+    cmd = mc.executor_cmd(
+        actions_yaml, map_folder,
+        dry_run=False, simulate_nav=args.simulate_nav,
+        finish_dock_id=args.finish, use_lidar_refine=args.use_lidar_refine,
+        task_id=task_id)
+    return mc.run_executor(cmd, on_progress=print)
+
+
+def _executar_no_servidor(args, actions_yaml, map_folder) -> int:
+    """Delega ao mission_server. Devolve None se o servidor nao estiver no ar."""
+    del map_folder  # o servidor reusa o actions_yaml; nao precisa da pasta
     try:
-        proc = subprocess.run(
-            ["ros2", "action", "list"], capture_output=True, text=True, timeout=10.0)
-    except subprocess.TimeoutExpired:
-        return set()
-    if proc.returncode != 0:
-        return set()
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+        import rclpy
+        from rclpy.action import ActionClient
+        from rclpy.executors import ExternalShutdownException
+        from rclpy.node import Node
+        from caramelo_msgs.action import RunMission
+    except ImportError as exc:
+        print(f"(sem suporte a action: {exc}; executando localmente)")
+        return None
 
+    ja_iniciado = rclpy.ok()
+    if not ja_iniciado:
+        rclpy.init()
+    node = Node("run_mission_client")
+    cliente = ActionClient(node, RunMission, ACTION_NAME)
 
-def _preflight(args) -> bool:
-    """Espera os servidores da missao aparecerem no grafo, com progresso.
-
-    Sem isso, o executor ficava pendurado EM SILENCIO esperando o move_group
-    (minutos com o MoveIt subindo; para sempre com o stack desligado).
-    IMPORTANTE: sonda so' o grafo (ros2 action list) — nunca `ros2 param get
-    /move_group ...`, que pendura igual quando o MoveIt esta ocupado.
-    """
-    import time as _time
-
-    exigidos = ["/move_action", "/pick_tag", "/place_tag"]
-    if not args.simulate_nav:
-        exigidos += ["/navigate_to_pose", "/dock_robot", "/undock_robot", "/align_to_dock"]
-
-    rotulos = {"/move_action": "move_group (MoveIt)"}
-    print("Verificando os servidores da missao (pre-flight)...")
-    inicio = _time.monotonic()
-    pendentes = list(exigidos)
-    ultimo_print = {}
-    while pendentes:
-        decorrido = _time.monotonic() - inicio
-        if decorrido > args.preflight_timeout:
-            faltam = ", ".join(rotulos.get(n, n) for n in pendentes)
-            print(f"\nPre-flight FALHOU apos {decorrido:.0f}s. Ainda faltam: {faltam}",
-                  file=sys.stderr)
-            print("O stack esta no ar? -> ros2 launch caramelo_bringup "
-                  "robot_manipulation.launch.py map_name:=...", file=sys.stderr)
-            return False
-        visiveis = _graph_actions()
-        for nome in list(pendentes):
-            if nome in visiveis:
-                pendentes.remove(nome)
-                print(f"  {rotulos.get(nome, nome)}... ok ({decorrido:.0f}s)")
-            else:
-                anterior = ultimo_print.get(nome, -10.0)
-                if decorrido - anterior >= 10.0:
-                    print(f"  aguardando {rotulos.get(nome, nome)}... ({decorrido:.0f}s)")
-                    ultimo_print[nome] = decorrido
-        if pendentes:
-            _time.sleep(1.0)
-    print("Pre-flight OK — todos os servidores no ar.\n")
-    return True
-
-
-def _resolve_task_yaml(task: str) -> Path:
-    """Resolve o YAML da competicao (CWD primeiro, depois o share de manip_bt)."""
-    path = Path(task).expanduser()
-    if path.exists():
-        return path.resolve()
-    if not path.is_absolute():
+    def _encerrar():
+        # O Ctrl-C tambem chega ao handler interno do rclpy, que derruba o
+        # contexto por conta propria e em paralelo -- checar rclpy.ok() antes nao
+        # basta, e' uma corrida. Sem estes guards o traceback do shutdown esconde
+        # o motivo real da saida.
         try:
-            from ament_index_python.packages import (
-                PackageNotFoundError, get_package_share_directory,
-            )
-        except ImportError:
-            raise FileNotFoundError(
-                f"YAML da tarefa '{task}' nao existe no CWD e ament_index_python "
-                "nao esta disponivel para procurar no share de manip_bt.")
+            node.destroy_node()
+        except Exception:  # noqa: BLE001
+            pass
+        if ja_iniciado:
+            return
         try:
-            share = Path(get_package_share_directory("manip_bt"))
-        except PackageNotFoundError:
-            raise FileNotFoundError(
-                f"YAML da tarefa '{task}' nao existe no CWD e o pacote manip_bt "
-                "nao foi encontrado (workspace buildado e com source feito?).")
-        candidate = share / "behavior_tree_manip" / task
-        if candidate.exists():
-            return candidate.resolve()
-        raise FileNotFoundError(
-            f"YAML da tarefa '{task}' nao encontrado nem no CWD nem em {candidate}.")
-    raise FileNotFoundError(f"YAML da tarefa nao encontrado: {path}")
+            rclpy.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
 
+    if not cliente.wait_for_server(timeout_sec=SERVER_WAIT):
+        _encerrar()
+        return None
 
-def _validate_map_folder(map_folder: Path) -> None:
-    """Garante que a pasta do mapa tem os 3 arquivos exigidos pela missao."""
-    faltando = []
-    if not docking_file(map_folder).exists():
-        faltando.append("docking.yaml (rode init_map_docking / save_dock_pose)")
-    if not service_areas_file(map_folder).exists():
-        faltando.append("service_areas.yaml (rode init_service_areas)")
-    if not (map_folder / "ws_table_mapping.yaml").exists():
-        faltando.append("ws_table_mapping.yaml (mapeamento WS -> Mesa/dock_id)")
-    if faltando:
-        itens = "\n  - ".join(faltando)
-        raise FileNotFoundError(
-            f"Pasta do mapa {map_folder} esta incompleta. Faltam:\n  - {itens}")
+    goal = RunMission.Goal()
+    goal.task_yaml = args.task
+    goal.map_name = args.map_name
+    goal.map_dir = args.map_dir or ""
+    goal.dry_run = False
+    goal.simulate_nav = args.simulate_nav
+    goal.use_lidar_refine = args.use_lidar_refine
+    goal.finish_dock_id = args.finish
+    goal.actions_yaml = str(actions_yaml)
+    goal.preflight_timeout = args.preflight_timeout
 
+    ultimo = {"linha": None}
 
-def _resolve_apriltag_cfg() -> Path:
-    """Config das tags AprilTag usada pelo task_planner (share do manip_bringup)."""
+    def _feedback(msg):
+        st = msg.feedback.status
+        if st.action_index >= 0:
+            linha = (f"[{st.action_index + 1}/{st.action_total}] "
+                     f"{st.action_kind} {st.action_target} — {st.stage}")
+        else:
+            linha = st.message
+        if linha and linha != ultimo["linha"]:
+            print(linha)
+            ultimo["linha"] = linha
+
+    print(f"Usando o mission_server em {ACTION_NAME}.")
+    envio = cliente.send_goal_async(goal, feedback_callback=_feedback)
+    rclpy.spin_until_future_complete(node, envio)
+    handle = envio.result()
+    if handle is None or not handle.accepted:
+        print("Goal recusado pelo mission_server (ja existe missao em andamento?).",
+              file=sys.stderr)
+        _encerrar()
+        return 1
+
+    # Ctrl-C vira cancelamento da action; o servidor manda SIGINT no executor,
+    # que faz o halt limpo da arvore. Mesmo contrato do modo local.
+    def _cancelar(signum, frame):  # noqa: ARG001
+        print("\nSIGINT recebido — cancelando a missao no servidor...")
+        handle.cancel_goal_async()
+
+    anterior = signal.signal(signal.SIGINT, _cancelar)
+    interrompido = False
+    resposta = None
     try:
-        from ament_index_python.packages import (
-            PackageNotFoundError, get_package_share_directory,
-        )
-    except ImportError:
-        raise FileNotFoundError(
-            "ament_index_python nao esta disponivel; nao consigo localizar o "
-            "config AprilTag do manip_bringup.")
-    try:
-        share = Path(get_package_share_directory("manip_bringup"))
-    except PackageNotFoundError:
-        raise FileNotFoundError(
-            "Pacote manip_bringup nao encontrado. Ele ainda nao foi buildado? "
-            "Rode o build do workspace de manipulacao e faca source do install.")
-    cfg = share / "config" / "tags_36h11.yaml"
-    if not cfg.exists():
-        raise FileNotFoundError(f"Config AprilTag nao encontrado: {cfg}")
-    return cfg
-
-
-def _generate_actions(task_yaml: Path, apriltag_cfg: Path, map_folder: Path) -> Path:
-    """Roda o task_planner e devolve o caminho do actions.yaml gerado."""
-    MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = MISSIONS_DIR / f"{stamp}_actions.yaml"
-    cmd = [
-        "ros2", "run", "manip_bt", "task_planner",
-        str(task_yaml), str(out), str(apriltag_cfg),
-        str(map_folder / "ws_table_mapping.yaml"),
-    ]
-    print(f"Gerando plano: {' '.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print("task_planner falhou:", file=sys.stderr)
-        print(proc.stderr, file=sys.stderr)
-        raise RuntimeError(f"task_planner retornou {proc.returncode}.")
-    if proc.stdout.strip():
-        print(proc.stdout.strip())
-    return out
-
-
-def _print_plan(actions_yaml: Path) -> None:
-    """Imprime o plano gerado (numero da acao, kind e demais campos)."""
-    with actions_yaml.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    actions = data.get("actions") or []
-    print(f"\n=== Plano da missao ({actions_yaml}) — {len(actions)} acoes ===")
-    for i, action in enumerate(actions, start=1):
-        kind = action.get("kind", "?")
-        campos = ", ".join(
-            f"{k}={v}" for k, v in action.items() if k != "kind")
-        print(f"  {i:2d}. {kind:<6} {campos}")
-    print()
-
-
-def _executor_cmd(actions_yaml: Path, map_folder: Path, args, dry_run: bool):
-    cmd = ["ros2", "run", "manip_bt", "bt_yaml_executor", str(actions_yaml)]
-    if dry_run:
-        cmd.append("--dry-run")
-    cmd += [
-        "--ros-args",
-        "-p", f"map_folder:={map_folder}",
-        "-p", f"simulate_navigation:={'true' if args.simulate_nav else 'false'}",
-        "-p", f"finish_dock_id:={args.finish}",
-    ]
-    if args.use_lidar_refine:
-        cmd += ["-p", "use_lidar_refine:=true"]
-    return cmd
-
-
-def _run_executor(cmd) -> int:
-    """Roda o executor repassando SIGINT (halt limpo da BT — nunca SIGKILL)."""
-    print(f"Executando: {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd)
-
-    def _forward_sigint(signum, frame):  # noqa: ARG001
-        if proc.poll() is None:
-            print("\nSIGINT recebido — repassando ao executor para halt limpo...")
-            proc.send_signal(signal.SIGINT)
-
-    previous = signal.signal(signal.SIGINT, _forward_sigint)
-    try:
-        return proc.wait()
+        futuro = handle.get_result_async()
+        rclpy.spin_until_future_complete(node, futuro)
+        resposta = futuro.result()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # O Ctrl-C tambem derruba o contexto por dentro do rclpy; o cancelamento
+        # ja' foi pedido no handler, entao aqui so' registramos a saida.
+        interrompido = True
     finally:
-        signal.signal(signal.SIGINT, previous)
+        signal.signal(signal.SIGINT, anterior)
+        _encerrar()
+
+    if interrompido:
+        print("Missao interrompida pelo operador.")
+        return 130
+    if resposta is None:
+        print("Sem resultado do mission_server.", file=sys.stderr)
+        return 1
+    print(resposta.result.message)
+    return 0 if resposta.result.success else 1
 
 
 def main(argv=None) -> int:
@@ -257,28 +196,30 @@ def main(argv=None) -> int:
     args = _parse_args(argv)
 
     try:
-        task_yaml = _resolve_task_yaml(args.task)
-        map_folder = resolve_map_folder(args.map_name, args.map_dir)
-        _validate_map_folder(map_folder)
-        apriltag_cfg = _resolve_apriltag_cfg()
-    except (FileNotFoundError, ValueError) as exc:
+        task_yaml, map_folder, actions_yaml, linhas = mc.prepare_mission(
+            task=args.task, map_name=args.map_name, map_dir=args.map_dir,
+            on_progress=print)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
 
     print(f"Mapa:    {map_folder}")
     print(f"Tarefa:  {task_yaml}")
-    print(f"AprilTag: {apriltag_cfg}")
 
-    try:
-        actions_yaml = _generate_actions(task_yaml, apriltag_cfg, map_folder)
-    except RuntimeError as exc:
-        print(f"Erro: {exc}", file=sys.stderr)
-        return 1
+    print(f"\n=== Plano da missao ({actions_yaml}) — {len(linhas)} acoes ===")
+    for linha in linhas:
+        print(linha)
+    print()
 
-    _print_plan(actions_yaml)
+    task_id = mc.task_id_of(task_yaml)
 
     if args.dry_run:
-        return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=True))
+        cmd = mc.executor_cmd(
+            actions_yaml, map_folder,
+            dry_run=True, simulate_nav=args.simulate_nav,
+            finish_dock_id=args.finish, use_lidar_refine=args.use_lidar_refine,
+            task_id=task_id)
+        return mc.run_executor(cmd, on_progress=print)
 
     if not args.yes:
         resposta = input("Executar a missao? [s/N] ").strip().lower()
@@ -286,10 +227,13 @@ def main(argv=None) -> int:
             print("Missao cancelada pelo operador.")
             return 0
 
-    if not _preflight(args):
-        return 1
+    if not args.local:
+        codigo = _executar_no_servidor(args, actions_yaml, map_folder)
+        if codigo is not None:
+            return codigo
+        print(f"mission_server nao encontrado em {ACTION_NAME}; executando localmente.")
 
-    return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=False))
+    return _executar_local(args, actions_yaml, map_folder, task_id)
 
 
 if __name__ == "__main__":

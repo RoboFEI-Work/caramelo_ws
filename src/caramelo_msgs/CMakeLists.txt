@@ -14,6 +14,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MissionStatus.msg"
   "action/AlignToDock.action"
+  "action/RunMission.action"
   "action/SaveServiceAreaPose.action"
   "srv/InitServiceAreas.srv"
   "srv/ListServiceAreas.srv"

@@ -35,6 +35,7 @@ def generate_launch_description():
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
     use_service_area_manager = LaunchConfiguration("use_service_area_manager")
     use_service_area_markers = LaunchConfiguration("use_service_area_markers")
+    use_mission_server = LaunchConfiguration("use_mission_server")
 
     nav_bringup_launch = os.path.join(
         get_package_share_directory("caramelo_navigation"),
@@ -46,6 +47,12 @@ def generate_launch_description():
         get_package_share_directory("manip_bringup"),
         "launch",
         "manip_stack.launch.py",
+    )
+
+    mission_server_launch = os.path.join(
+        get_package_share_directory("caramelo_navigation"),
+        "launch",
+        "mission_server.launch.py",
     )
 
     return LaunchDescription([
@@ -150,6 +157,11 @@ def generate_launch_description():
             default_value="true",
             description="Publica MarkerArray das service areas p/ RViz",
         ),
+        DeclareLaunchArgument(
+            "use_mission_server",
+            default_value="true",
+            description="Expoe a missao como action /caramelo/run_mission (GUI e web)",
+        ),
         # --- Navegacao (opcional) ---
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav_bringup_launch),
@@ -180,5 +192,15 @@ def generate_launch_description():
                 "use_audio": use_audio,
                 "use_rviz_manip": use_rviz_manip,
             }.items(),
+        ),
+        # --- Servidor de missao ---
+        # E' aqui que ele entra porque a missao precisa das duas metades: Nav2
+        # (dock/undock/navigate) e manipulacao (move_group, pick/place). Sem ele
+        # a GUI e o painel web nao conseguem disparar nem acompanhar uma missao;
+        # o run_mission continua funcionando no terminal de qualquer forma.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(mission_server_launch),
+            condition=IfCondition(use_mission_server),
+            launch_arguments={"use_sim_time": use_sim_time}.items(),
         ),
     ])

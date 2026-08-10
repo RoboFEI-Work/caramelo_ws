@@ -1,0 +1,30 @@
+# Executa a missao completa do Caramelo (navegacao + manipulacao).
+#
+# Existe para que GUI Qt e painel web possam DISPARAR e ACOMPANHAR uma missao
+# sem abrir terminal. Ate' aqui isso so' era possivel pelo run_mission.py, que
+# e' interativo (pergunta "[s/N]") e imprime em stdout.
+#
+# O servidor encadeia: task_planner -> plano -> pre-flight -> bt_yaml_executor,
+# exatamente como o run_mission sempre fez. O cancelamento manda SIGINT ao
+# executor, que faz o halt limpo da arvore (nunca SIGKILL).
+
+# --- Goal ---
+string task_yaml           # YAML da competicao (ex.: BMT.yaml); relativo procura no share do manip_bt
+string map_name            # pasta do mapa em caramelo_mapping/maps/
+string map_dir             # opcional: raiz alternativa dos mapas
+bool dry_run               # so' gera e devolve o plano; nao move o robo
+bool simulate_nav          # executor simula a navegacao (sem Nav2 no ar)
+bool use_lidar_refine      # repassa use_lidar_refine ao executor
+string finish_dock_id      # dock final; vazio desliga o epilogo
+bool skip_startup_home     # pula o prologo "braco em home" (default: falso, mantem o prologo)
+string actions_yaml        # opcional: reusa um plano ja gerado, em vez de replanejar
+float64 preflight_timeout  # segundos esperando os action servers (0 => default)
+---
+# --- Result ---
+bool success
+string message
+string actions_yaml        # caminho do plano usado (serve para reusar num goal seguinte)
+string[] plan_rows         # plano legivel, uma linha por passo
+---
+# --- Feedback ---
+MissionStatus status

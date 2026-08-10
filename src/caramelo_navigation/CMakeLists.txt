@@ -15,8 +15,15 @@ install(
 
 install(FILES
   scripts/caramelo_docking_common.py
+  scripts/caramelo_mission_common.py
   scripts/caramelo_service_area_common.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/mission_server.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mission_server
 )
 
 install(PROGRAMS
