@@ -54,8 +54,17 @@ BT::NodeStatus PlaceTagBT::onStart()
 		tag_frame.c_str(),
 		table_pose.c_str());
 
-	if (!action_client_->wait_for_action_server(10s)) {
-		RCLCPP_ERROR(rclcpp::get_logger("PlaceTagBT"), "Action server /place_tag not available");
+	// Item 3.5: mesmo tratamento do PickTagBT — timeout vem do blackboard.
+	double wait_timeout = 10.0;
+	if (config().blackboard) {
+		config().blackboard->get("server_wait_timeout", wait_timeout);
+	}
+	if (!action_client_->wait_for_action_server(
+			std::chrono::duration<double>(wait_timeout)))
+	{
+		RCLCPP_ERROR(
+			rclcpp::get_logger("PlaceTagBT"),
+			"Action server /place_tag not available after %.1fs", wait_timeout);
 		return BT::NodeStatus::FAILURE;
 	}
 

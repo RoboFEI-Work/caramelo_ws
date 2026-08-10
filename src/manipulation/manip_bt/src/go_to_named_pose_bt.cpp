@@ -182,66 +182,82 @@ BT::NodeStatus GoToNamedPoseBT::tick()
     "Moving arm to named pose: %s",
     pose_name.c_str());
 
-  arm_->setStartStateToCurrentState();
-  arm_->setNamedTarget(pose_name);
+  // Item 3.1 da auditoria: uma unica tentativa de plan/execute reprovava a
+  // pose por causas transitorias (estado do braco velho, colisao fantasma no
+  // primeiro plano). Agora sao ate 3 tentativas, com guarda de estado ANTES
+  // de cada uma — sem ela o replan reusa o mesmo start state podre e falha
+  // igual.
+  const auto try_named_pose =
+    [this](const std::string & name, int attempts) -> bool
+    {
+      for (int attempt = 1; attempt <= attempts; ++attempt) {
+        if (!arm_->getCurrentState(2.0)) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("GoToNamedPoseBT"),
+            "Sem estado atual do braco ao ir para '%s' (tentativa %d/%d)",
+            name.c_str(), attempt, attempts);
+          continue;
+        }
 
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  const auto plan_result = arm_->plan(plan);
-  if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
-    if (pose_name != "home") {
-      RCLCPP_WARN(
-        rclcpp::get_logger("GoToNamedPoseBT"),
-        "Planning failed for named pose: %s. Retrying from safe home fallback.",
-        pose_name.c_str());
+        arm_->setStartStateToCurrentState();
+        arm_->setNamedTarget(name);
 
-      arm_->setStartStateToCurrentState();
-      arm_->setNamedTarget("home");
-      const auto home_plan_result = arm_->plan(plan);
-      if (home_plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(
-          rclcpp::get_logger("GoToNamedPoseBT"),
-          "Planning failed for named pose: %s and fallback home also failed.",
-          pose_name.c_str());
-        return BT::NodeStatus::FAILURE;
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if (arm_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("GoToNamedPoseBT"),
+            "Planejamento falhou para '%s' (tentativa %d/%d)",
+            name.c_str(), attempt, attempts);
+          continue;
+        }
+
+        if (arm_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("GoToNamedPoseBT"),
+            "Execucao falhou para '%s' (tentativa %d/%d)",
+            name.c_str(), attempt, attempts);
+          continue;
+        }
+
+        return true;
       }
+      return false;
+    };
 
-      const auto home_exec_result = arm_->execute(plan);
-      if (home_exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(
-          rclcpp::get_logger("GoToNamedPoseBT"),
-          "Execution failed for fallback named pose: home");
-        return BT::NodeStatus::FAILURE;
-      }
-
-      RCLCPP_INFO(
-        rclcpp::get_logger("GoToNamedPoseBT"),
-        "Reached named pose: home via fallback recovery from %s",
-        pose_name.c_str());
-      return BT::NodeStatus::SUCCESS;
-    }
-
-    RCLCPP_ERROR(
+  if (try_named_pose(pose_name, 3)) {
+    RCLCPP_INFO(
       rclcpp::get_logger("GoToNamedPoseBT"),
-      "Planning failed for named pose: %s",
+      "Reached named pose: %s",
       pose_name.c_str());
-    return BT::NodeStatus::FAILURE;
+    return BT::NodeStatus::SUCCESS;
   }
 
-  const auto exec_result = arm_->execute(plan);
-  if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
-    RCLCPP_ERROR(
-      rclcpp::get_logger("GoToNamedPoseBT"),
-      "Execution failed for named pose: %s",
-      pose_name.c_str());
-    return BT::NodeStatus::FAILURE;
-  }
-
-  RCLCPP_INFO(
+  RCLCPP_ERROR(
     rclcpp::get_logger("GoToNamedPoseBT"),
-    "Reached named pose: %s",
+    "Pose '%s' falhou nas 3 tentativas.",
     pose_name.c_str());
 
-  return BT::NodeStatus::SUCCESS;
+  // Recolher para home e SEGURANCA, nao sucesso: o codigo antigo retornava
+  // SUCCESS aqui e a missao seguia acreditando que o braco estava na pose
+  // pedida (item 3.1 — nunca fingir sucesso). Quem chama decide o que fazer
+  // com a falha; o epilogo do task_planner segue para o FINISH mesmo assim.
+  if (pose_name != "home") {
+    if (try_named_pose("home", 2)) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("GoToNamedPoseBT"),
+        "Braco recolhido para home apos falhar em '%s' — reportando FAILURE "
+        "porque ele NAO esta na pose pedida.",
+        pose_name.c_str());
+    } else {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("GoToNamedPoseBT"),
+        "Nem '%s' nem home foram alcancados — braco em pose imprevisivel, "
+        "intervencao manual recomendada antes de seguir.",
+        pose_name.c_str());
+    }
+  }
+
+  return BT::NodeStatus::FAILURE;
 }
 
 }  // namespace manip_bt

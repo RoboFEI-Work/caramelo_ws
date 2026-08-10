@@ -19,6 +19,10 @@
   <exec_depend>manip_audio</exec_depend>
   <!-- manip_stack.launch.py roda o xacro do robo completo no modo mock -->
   <exec_depend>caramelo_description</exec_depend>
+  <!-- perception_gate_node.py -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

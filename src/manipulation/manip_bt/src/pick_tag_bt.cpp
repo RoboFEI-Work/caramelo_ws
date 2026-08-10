@@ -46,8 +46,19 @@ BT::NodeStatus PickTagBT::onStart()
 		"Sending PICK goal: tag_frame=%s",
 		tag_frame.c_str());
 
-	if (!action_client_->wait_for_action_server(10s)) {
-		RCLCPP_ERROR(rclcpp::get_logger("PickTagBT"), "Action server /pick_tag not available");
+	// Item 3.5: respeita o server_wait_timeout do blackboard (mesmo padrao do
+	// GoToWSBT) em vez de 10s cravados — o pick/place respawna com delay de
+	// 3s e uma missao pode querer esperar mais.
+	double wait_timeout = 10.0;
+	if (config().blackboard) {
+		config().blackboard->get("server_wait_timeout", wait_timeout);
+	}
+	if (!action_client_->wait_for_action_server(
+			std::chrono::duration<double>(wait_timeout)))
+	{
+		RCLCPP_ERROR(
+			rclcpp::get_logger("PickTagBT"),
+			"Action server /pick_tag not available after %.1fs", wait_timeout);
 		return BT::NodeStatus::FAILURE;
 	}
 

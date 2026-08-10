@@ -14,6 +14,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
@@ -309,6 +310,27 @@ public:
                 "/manip/pick_active",
                 rclcpp::QoS(1).transient_local().reliable());
 
+        // Item 3.10 (gate da percepcao): com a camera desligada fora do
+        // pick/place, o 1o frame demora ~2,6s a voltar e o estagio
+        // detecting_tag so espera 900ms — sem esta sonda toda pega comecaria
+        // gastando uma varredura a toa. Contador de camera_info (mensagem
+        // minuscula, mesma taxa do color) = "a camera esta entregando frame".
+        camera_info_topic_ = this->declare_parameter<std::string>(
+            "camera_info_topic", "/camera/camera/color/camera_info");
+        perception_warmup_timeout_ = this->declare_parameter<double>(
+            "perception_warmup_timeout", 6.0);
+        camera_info_subscription_ =
+            this->create_subscription<sensor_msgs::msg::CameraInfo>(
+                camera_info_topic_,
+                rclcpp::SensorDataQoS(),
+                [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr) {
+                    camera_info_count_.fetch_add(1, std::memory_order_relaxed);
+                    camera_info_last_ns_.store(
+                        std::chrono::steady_clock::now()
+                            .time_since_epoch().count(),
+                        std::memory_order_relaxed);
+                });
+
         verify_grasp_effort_ =
             this->declare_parameter<bool>("verify_grasp_effort", true);
         grasp_min_effort_nm_ =
@@ -438,13 +460,15 @@ public:
         fallback_ik_profile_.timeout = third_ik_profile_.timeout;
         skip_failed_pick_after_retries_ =
             this->declare_parameter<bool>("skip_failed_pick_after_retries", true);
-        use_camera_alignment_retry_ =
-            this->declare_parameter<bool>("use_camera_alignment_retry", true);
 
         effort_subscription_ =
             this->create_subscription<control_msgs::msg::DynamicJointState>(
                 "/dynamic_joint_states",
-                20,
+                // Item 3.3: SensorDataQoS (best-effort) — telemetria a 100Hz
+                // vinda da Pi por wifi nao deve criar backlog reliable no
+                // enlace critico; a verificacao de garra so quer a amostra
+                // MAIS NOVA. Casa com o QoS ja usado no place.
+                rclcpp::SensorDataQoS(),
                 std::bind(
                     &PickActionServer::onDynamicJointState,
                     this,
@@ -484,6 +508,12 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_publisher_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pick_active_publisher_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr
+        camera_info_subscription_;
+    std::atomic<std::uint64_t> camera_info_count_{0};
+    std::atomic<std::int64_t> camera_info_last_ns_{0};
+    std::string camera_info_topic_;
+    double perception_warmup_timeout_{6.0};
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -549,7 +579,6 @@ private:
         0.20,
         0.0015,
         0.5};
-    bool use_camera_alignment_retry_{true};
     bool skip_failed_pick_after_retries_{true};
     double active_goal_position_tolerance_{0.003};
     double active_goal_orientation_tolerance_{0.20};
@@ -1061,6 +1090,57 @@ private:
             tf2::durationFromSec(0.5));
     }
 
+    // Item 3.10 (gate da percepcao): espera a camera voltar a entregar frames.
+    // Custo ZERO quando ela ja esta streamando ou quando nao ha camera no
+    // grafo (mock / use_camera:=false). Nunca reprova o ciclo — no pior caso
+    // segue e deixa a deteccao (com varredura e retries) decidir.
+    void waitForCameraStream(const std::string & cycle_name)
+    {
+        if (perception_warmup_timeout_ <= 0.0 ||
+            this->count_publishers(camera_info_topic_) == 0)
+        {
+            return;
+        }
+
+        const auto now_ns =
+            std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto last_ns = camera_info_last_ns_.load(std::memory_order_relaxed);
+        constexpr std::int64_t kFreshNs = 500'000'000;  // 0,5 s
+        if (last_ns != 0 && (now_ns - last_ns) < kFreshNs) {
+            return;  // camera ja entregando: nada a esperar
+        }
+
+        const auto baseline = camera_info_count_.load(std::memory_order_relaxed);
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline =
+            start + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(perception_warmup_timeout_));
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (cancellationRequested()) {
+                return;
+            }
+            if (camera_info_count_.load(std::memory_order_relaxed) >= baseline + 2) {
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[%s] camera voltou a streamar em %.1fs",
+                    cycle_name.c_str(),
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - start).count());
+                return;
+            }
+            rclcpp::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[%s] camera nao entregou frame em %.1fs (%s) — seguindo assim "
+            "mesmo; a deteccao tem varredura e retries.",
+            cycle_name.c_str(),
+            perception_warmup_timeout_,
+            camera_info_topic_.c_str());
+    }
+
     bool waitForTagTransform(
         const std::string & reference_frame,
         const std::string & tag_frame,
@@ -1155,8 +1235,13 @@ private:
         RCLCPP_FATAL_STREAM(
             this->get_logger(),
             "DEADLINE de " << timeout_s << "s estourado em '" << label
-                << "' — chamada MoveIt pendurada (provavel perda DDS). "
-                   "Abortando; estouros repetidos => reiniciar o no.");
+                << "'. Olhe o log do move_group ANTES de culpar a rede: "
+                   "(a) 'Controller is taking too long to execute trajectory' "
+                   "= o braco pode ter CHEGADO e o joint_trajectory_controller "
+                   "nao declarou sucesso (tolerancia/goal_time do controlador "
+                   "na Pi) — acao saudavel cortada, ajuste as constraints; "
+                   "(b) silencio no move_group = chamada realmente pendurada "
+                   "(perda DDS), e estouros repetidos pedem reiniciar o no.");
         return false;
     }
 
@@ -1256,7 +1341,8 @@ private:
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & tag_frame,
         geometry_msgs::msg::TransformStamped & out_tf,
-        const std::string & cycle_name)
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
         const std::vector<double> offsets = {-0.30, 0.30, -0.60, 0.60};
         std::vector<double> joints = arm->getCurrentJointValues();
@@ -1269,10 +1355,19 @@ private:
         }
         const double center = joints[0];
         speak("Vou procurar a tag " + spokenTagName(tag_frame));
+        int step = 0;
         for (const double offset : offsets) {
             if (cancellationRequested()) {
                 return false;
             }
+            // Verificacao adversarial 2026-08-10: a varredura inteira rodava
+            // MUDA dentro do gap do estagio detecting_tag — o operador nao via
+            // nada acontecer e o watchdog de 120s do BT contava o tempo todo
+            // como "sem progresso". Cada passo agora publica.
+            publish_stage(
+                goal_handle,
+                "sweeping_for_tag_" + std::to_string(++step) + "_of_" +
+                std::to_string(static_cast<int>(offsets.size())));
             joints[0] = center + offset;
             arm->setJointValueTarget(joints);
             if (!planAndExecute(arm, cycle_name + " sweep")) {
@@ -1293,9 +1388,19 @@ private:
                 return true;
             }
         }
+        publish_stage(goal_handle, "sweep_returning_to_center");
         joints[0] = center;
         arm->setJointValueTarget(joints);
-        planAndExecute(arm, cycle_name + " sweep_return");
+        if (!planAndExecute(arm, cycle_name + " sweep_return")) {
+            // Verificacao adversarial 2026-08-10: a falha do retorno era
+            // descartada — a tentativa seguinte recomecava da pose GIRADA e
+            // varria o lado errado achando que estava no centro.
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] varredura nao conseguiu voltar ao centro — a proxima "
+                "tentativa comeca da pose girada.",
+                cycle_name.c_str());
+        }
         return false;
     }
 
@@ -1617,6 +1722,7 @@ private:
         retryable_failure = false;
         publish_stage(goal_handle, "detecting_tag");
         speak("Procurando a tag " + spokenTagName(tag_frame));
+        waitForCameraStream(cycle_name);
 
         geometry_msgs::msg::TransformStamped tag_tf;
         if (!waitForTagTransform(
@@ -1626,7 +1732,7 @@ private:
                 std::chrono::milliseconds(900),
                 std::chrono::milliseconds(100),
                 cycle_name + " detect_tag")
-            && !sweepForTag(arm, tag_frame, tag_tf, cycle_name))
+            && !sweepForTag(arm, tag_frame, tag_tf, cycle_name, goal_handle))
         {
             retryable_failure = true;
             speak("Falha: não encontrei a tag " + spokenTagName(tag_frame));

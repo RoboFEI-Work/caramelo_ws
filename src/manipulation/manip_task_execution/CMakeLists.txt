@@ -13,6 +13,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(my_robot_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -40,6 +41,7 @@ ament_target_dependencies(
   "control_msgs"
   "rclcpp"
   "rclcpp_action"
+  "sensor_msgs"
   "std_msgs"
   "tf2"
   "tf2_ros"
@@ -59,6 +61,7 @@ ament_target_dependencies(
   "my_robot_msgs"
   "rclcpp"
   "rclcpp_action"
+  "sensor_msgs"
   "std_msgs"
   "tf2"
   "tf2_ros"

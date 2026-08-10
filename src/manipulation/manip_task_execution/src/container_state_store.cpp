@@ -2,6 +2,9 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -12,6 +15,17 @@ namespace manip_task_execution
 
 namespace
 {
+
+bool fsyncPath(const std::string & path, bool is_directory)
+{
+  const int fd = ::open(path.c_str(), is_directory ? (O_RDONLY | O_DIRECTORY) : O_RDONLY);
+  if (fd < 0) {
+    return false;
+  }
+  const bool ok = ::fsync(fd) == 0;
+  ::close(fd);
+  return ok;
+}
 
 bool writeYamlAtomically(
   const YAML::Node & root,
@@ -36,20 +50,43 @@ bool writeYamlAtomically(
       return false;
     }
     ofs << out.c_str() << '\n';
-  }
-
-  std::error_code ec;
-  std::filesystem::rename(tmp_path, output_path, ec);
-  if (ec) {
-    std::filesystem::remove(output_path, ec);
-    ec.clear();
-    std::filesystem::rename(tmp_path, output_path, ec);
-    if (ec) {
+    ofs.flush();
+    if (!ofs) {
       if (error_msg) {
-        *error_msg = "failed to replace yaml file: " + ec.message();
+        *error_msg = "failed to write temporary yaml: " + tmp_path.string();
       }
       return false;
     }
+  }
+
+  // Item 3.2: fsync ANTES do rename. Sem isso o rename podia ganhar do
+  // flush do conteudo e uma queda de energia (robo desligado no tapa)
+  // deixava um yaml de tamanho certo cheio de zeros — pior que o arquivo
+  // velho, porque parece valido.
+  if (!fsyncPath(tmp_path.string(), false)) {
+    if (error_msg) {
+      *error_msg = "failed to fsync temporary yaml: " + tmp_path.string();
+    }
+    return false;
+  }
+
+  // rename(2) e atomico e SOBRESCREVE o destino: o remove+rename anterior
+  // abria uma janela em que o arquivo simplesmente nao existia — se o
+  // processo morresse ali, o estado dos containers sumia.
+  std::error_code ec;
+  std::filesystem::rename(tmp_path, output_path, ec);
+  if (ec) {
+    if (error_msg) {
+      *error_msg = "failed to replace yaml file: " + ec.message();
+    }
+    return false;
+  }
+
+  // Durabilidade do proprio rename: sem fsync no diretorio, a entrada nova
+  // pode nao ter chegado ao disco.
+  const auto parent = output_path.parent_path();
+  if (!parent.empty()) {
+    (void)fsyncPath(parent.string(), true);
   }
 
   return true;

@@ -372,8 +372,16 @@ std::string buildTreeXmlFromActions(
     blackboard->set(pose_name_key, std::string("home"));
     xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
         << "\"/>\n";
-    emitGoToWs(xml, blackboard, goto_index, finish_id, "", finish_id, false);
-    ctx.plan_rows.push_back("[fim] home + goto " + finish_id + " (epilogo automatico)");
+    // Item 3.9: o docking do FINISH era `false` cravado — se a arena definir
+    // o FINISH como estacao com dock, o epilogo chegava perto e parava sem
+    // encostar. Agora pergunta ao mapa, com o mesmo fallback do goto normal.
+    const bool finish_use_docking = ctx.map_config ?
+      ctx.map_config->useDocking(finish_id) :
+      (finish_id != "START" && finish_id != "FINISH");
+    emitGoToWs(xml, blackboard, goto_index, finish_id, "", finish_id, finish_use_docking);
+    ctx.plan_rows.push_back(
+      "[fim] home + goto " + finish_id + " (epilogo automatico)" +
+      (finish_use_docking ? "  (dock+align)" : "  (navegacao pura)"));
   }
 
   xml << "    </Sequence>\n";

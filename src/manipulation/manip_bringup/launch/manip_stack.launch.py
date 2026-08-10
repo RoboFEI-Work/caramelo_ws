@@ -19,7 +19,12 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -30,6 +35,7 @@ def generate_launch_description():
     use_mock_hardware = LaunchConfiguration("use_mock_hardware")
     use_camera = LaunchConfiguration("use_camera")
     use_apriltag = LaunchConfiguration("use_apriltag")
+    use_perception_gate = LaunchConfiguration("use_perception_gate")
     camera_profile = LaunchConfiguration("camera_profile")
     use_audio = LaunchConfiguration("use_audio")
     use_pick_place = LaunchConfiguration("use_pick_place")
@@ -77,6 +83,26 @@ def generate_launch_description():
             description="Inicia o apriltag_node na imagem colorida da RealSense",
         ),
         DeclareLaunchArgument(
+            "use_perception_gate",
+            # Default FALSE (decisao do operador, 2026-08-10): no 1o teste o
+            # liga-desliga travou o driver da RealSense. O motivo original do
+            # gate (banda do USB 2) sumiu com a camera no USB 3. Fica como
+            # opt-in — ver o docstring do perception_gate_node.py.
+            default_value="false",
+            description=(
+                "Camera streama SO durante pick/place (libera CPU/USB na "
+                "navegacao). EXPERIMENTAL: ja travou o driver uma vez."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "perception_off_delay",
+            default_value="20.0",
+            description=(
+                "Segundos de ociosidade antes de desligar os streams — cobre "
+                "a janela entre o pick e o place do mesmo objeto"
+            ),
+        ),
+        DeclareLaunchArgument(
             "use_audio",
             default_value="true",
             description="Inicia o speech_node (Piper, efeito dog)",
@@ -110,6 +136,14 @@ def generate_launch_description():
         DeclareLaunchArgument("grasp_min_effort_nm", default_value="0.15"),
         DeclareLaunchArgument("grasp_min_effort_increase_nm", default_value="0.05"),
         DeclareLaunchArgument("grasp_retry_attempts", default_value="2"),
+        # ATENCAO (auditoria item 2.7 + verificacao adversarial 2026-08-10):
+        # os args de SOLVER abaixo (attempt_*_ik_solver, fallback_ik_*) sao
+        # INERTES. Trocar o kinematics_solver por parametro em runtime nao
+        # afeta o plugin ja carregado e cacheado pelo move_group — a "escada
+        # de solvers" era placebo. O que age de verdade entre as tentativas:
+        # attempt_3_ik_position_threshold / _orientation_threshold e as
+        # tolerancias de goal. Ficam declarados so para nao quebrar linhas de
+        # comando salvas; nao perca tempo tunando-os.
         DeclareLaunchArgument("switch_ik_after_failed_grasp", default_value="true"),
         DeclareLaunchArgument("attempt_1_ik_solver", default_value="pick_ik/PickIkPlugin"),
         DeclareLaunchArgument(
@@ -125,7 +159,6 @@ def generate_launch_description():
         DeclareLaunchArgument("attempt_3_goal_orientation_tolerance", default_value="0.80"),
         DeclareLaunchArgument("skip_failed_pick_after_retries", default_value="true"),
         DeclareLaunchArgument("skip_missing_place_tag", default_value="true"),
-        DeclareLaunchArgument("use_camera_alignment_retry", default_value="true"),
         DeclareLaunchArgument("fallback_ik_solver", default_value="pick_ik/PickIkPlugin"),
         DeclareLaunchArgument("fallback_ik_mode", default_value="local"),
         DeclareLaunchArgument("fallback_ik_solve_type", default_value="Distance"),
@@ -141,6 +174,14 @@ def generate_launch_description():
     # Mesmo mecanismo do manip_pc.launch.xml: o launch gerado pelo
     # generate_move_group_launch declara o arg "capabilities" e o injeta como
     # parametro do move_group; basta repassar como launch argument.
+    #
+    # S7 (auditoria item 3.8) — o warning repetido
+    #   "Unable to transform object from frame 'tag_N' to planning frame"
+    # e BENIGNO: o PlanningSceneMonitor varre TODOS os frames do TF a cada
+    # request de plan, e os frames tag_N ficam stale porque o apriltag so
+    # publica com a tag visivel. Nao e bug e nao se corrige aqui — na pratica
+    # serve de termometro: warning sumindo/aparecendo em rajada = dropout da
+    # camera.
     move_group = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(moveit_config_share, "launch", "move_group_caramelo.launch.py")
@@ -148,12 +189,6 @@ def generate_launch_description():
         launch_arguments={
             "capabilities": "move_group/ExecuteTaskSolutionCapability",
         }.items(),
-    )
-
-    # --- Commander (sempre; exec "commmander" com tres m, como no pacote) ---
-    commander = Node(
-        package="manip_commander",
-        executable="commmander",
     )
 
     # --- Pick/Place MTC ---
@@ -187,6 +222,25 @@ def generate_launch_description():
         "r", encoding="utf-8",
     ) as srdf_file:
         robot_description_semantic_content = srdf_file.read()
+
+    # --- Commander (sempre; exec "commmander" com tres m, como no pacote) ---
+    # 2026-08-10: o commander MORRIA no boot ("Could not find parameter
+    # robot_description and did not receive ... within 10 seconds", exit -6) —
+    # ele corria contra o robot_state_publisher da Pi e perdia. Com o no morto,
+    # /go_to_named_target ficava SEM ASSINANTE e os comandos sumiam em silencio
+    # (o operador so via "o braco nao se move"). Mesmo tratamento dos nos MTC:
+    # URDF/SRDF locais como parametro, deterministico, sem corrida.
+    commander = Node(
+        package="manip_commander",
+        executable="commmander",
+        respawn=True,
+        respawn_delay=5.0,
+        parameters=[{
+            "robot_description": primitive_robot_description,
+            "robot_description_semantic": robot_description_semantic_content,
+        }],
+    )
+
 
     # respawn (2026-08-07, achado do teste mock): se o no de pick/place morrer
     # (ex.: SIGABRT interno do MoveIt), renasce sozinho em vez de deixar a
@@ -234,8 +288,6 @@ def generate_launch_description():
                 LaunchConfiguration("fallback_ik_position_only"), value_type=bool),
             "skip_failed_pick_after_retries": ParameterValue(
                 LaunchConfiguration("skip_failed_pick_after_retries"), value_type=bool),
-            "use_camera_alignment_retry": ParameterValue(
-                LaunchConfiguration("use_camera_alignment_retry"), value_type=bool),
             "container_state_file": container_state_file,
             "manipulator_lock_file": manipulator_lock_file,
             "robot_description": primitive_robot_description,
@@ -341,6 +393,10 @@ def generate_launch_description():
         executable="apriltag_node",
         prefix="nice -n 15",
         output="screen",
+        # Item 3.7: percepcao morta no meio de uma missao deixava o pick cego
+        # ate o fim da rodada.
+        respawn=True,
+        respawn_delay=3.0,
         condition=IfCondition(use_apriltag),
         remappings=[
             ("image_rect", "/camera/camera/color/image_raw"),
@@ -350,6 +406,33 @@ def generate_launch_description():
             {"qos_profile": "sensor_data"},
             apriltag_params_file,
         ],
+    )
+
+    # --- Gate da percepcao (adendo da auditoria 2026-08-07) ---
+    # A camera so streama durante pick/place. Desacoplado: sem este no, tudo
+    # se comporta como antes (camera sempre ligada). Ver o docstring do script.
+    perception_gate = Node(
+        package="manip_bringup",
+        executable="perception_gate_node.py",
+        name="perception_gate",
+        output="screen",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_perception_gate),
+        parameters=[{
+            "enabled": ParameterValue(
+                LaunchConfiguration("use_perception_gate"), value_type=bool),
+            "off_delay_s": ParameterValue(
+                LaunchConfiguration("perception_off_delay"), value_type=float),
+            # Assinantes "de fabrica" do image_raw: 1 quando o apriltag roda,
+            # 0 sem ele. Acima disso = alguem (RViz) quer ver a imagem, e o
+            # gate mantem a camera ligada.
+            "viewer_subscriber_baseline": ParameterValue(
+                PythonExpression(
+                    ["1 if '", LaunchConfiguration("use_apriltag"),
+                     "' == 'true' else 0"]),
+                value_type=int),
+        }],
     )
 
     # --- Audio (Piper com voz de cachorro) ---
@@ -448,13 +531,17 @@ def generate_launch_description():
 
     # A RealSense entra por IncludeLaunchDescription (sem como aplicar prefix):
     # renice apos o driver subir. Mesma justificativa do nice do apriltag.
+    # Item 3.7: era um one-shot de 12 s — o driver respawnado voltava com
+    # prioridade normal e roubava CPU do Nav2 sem ninguem perceber. Agora e um
+    # loop leve (uma varredura a cada 10 s; renice em pid ja nicado e no-op).
     renice_camera = TimerAction(
         period=12.0,
         actions=[
             ExecuteProcess(
                 cmd=[
                     "bash", "-c",
-                    "pgrep -f realsense2_camera_node | xargs -r renice +15 -p",
+                    "while true; do pgrep -f realsense2_camera_node "
+                    "| xargs -r renice +15 -p >/dev/null 2>&1; sleep 10; done",
                 ],
                 output="log",
                 condition=IfCondition(use_camera),
@@ -469,6 +556,7 @@ def generate_launch_description():
         pick_action,
         place_action,
         realsense,
+        perception_gate,
         renice_camera,
         apriltag,
         speech,

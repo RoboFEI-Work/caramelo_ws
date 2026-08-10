@@ -2,6 +2,8 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <control_msgs/msg/dynamic_joint_state.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -114,6 +116,30 @@ public:
         speech_publisher_ =
             this->create_publisher<std_msgs::msg::String>("/manip/speech", 10);
 
+        // Item 3.10 (gate da percepcao): espelho do /manip/pick_active — o
+        // gate liga a camera enquanto qualquer um dos dois estiver ativo.
+        place_active_publisher_ =
+            this->create_publisher<std_msgs::msg::Bool>(
+                "/manip/place_active",
+                rclcpp::QoS(1).transient_local().reliable());
+        publishPlaceActive(false);
+
+        camera_info_topic_ = this->declare_parameter<std::string>(
+            "camera_info_topic", "/camera/camera/color/camera_info");
+        perception_warmup_timeout_ = this->declare_parameter<double>(
+            "perception_warmup_timeout", 6.0);
+        camera_info_subscription_ =
+            this->create_subscription<sensor_msgs::msg::CameraInfo>(
+                camera_info_topic_,
+                rclcpp::SensorDataQoS(),
+                [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr) {
+                    camera_info_count_.fetch_add(1, std::memory_order_relaxed);
+                    camera_info_last_ns_.store(
+                        std::chrono::steady_clock::now()
+                            .time_since_epoch().count(),
+                        std::memory_order_relaxed);
+                });
+
         action_server_ =
             rclcpp_action::create_server<PlaceTag>(
                 this,
@@ -153,6 +179,13 @@ private:
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr place_active_publisher_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr
+        camera_info_subscription_;
+    std::atomic<std::uint64_t> camera_info_count_{0};
+    std::atomic<std::int64_t> camera_info_last_ns_{0};
+    std::string camera_info_topic_;
+    double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
     bool speech_enabled_{true};
@@ -259,9 +292,64 @@ private:
 
     void releaseExecutionResources()
     {
+        publishPlaceActive(false);
         clearActiveInterfaces();
         cancel_requested_.store(false);
         execution_lock_->release();
+    }
+
+    void publishPlaceActive(bool active)
+    {
+        std_msgs::msg::Bool message;
+        message.data = active;
+        place_active_publisher_->publish(message);
+    }
+
+    // Item 3.10: gemeo do waitForCameraStream do pick — ver comentario la.
+    void waitForCameraStream(const std::string & cycle_name)
+    {
+        if (perception_warmup_timeout_ <= 0.0 ||
+            this->count_publishers(camera_info_topic_) == 0)
+        {
+            return;
+        }
+
+        const auto now_ns =
+            std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto last_ns = camera_info_last_ns_.load(std::memory_order_relaxed);
+        constexpr std::int64_t kFreshNs = 500'000'000;  // 0,5 s
+        if (last_ns != 0 && (now_ns - last_ns) < kFreshNs) {
+            return;
+        }
+
+        const auto baseline = camera_info_count_.load(std::memory_order_relaxed);
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline =
+            start + std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(perception_warmup_timeout_));
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (cancellationRequested()) {
+                return;
+            }
+            if (camera_info_count_.load(std::memory_order_relaxed) >= baseline + 2) {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[%s] camera voltou a streamar em %.1fs",
+                    cycle_name.c_str(),
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - start).count());
+                return;
+            }
+            rclcpp::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        RCLCPP_WARN(
+            get_logger(),
+            "[%s] camera nao entregou frame em %.1fs (%s) — seguindo assim mesmo.",
+            cycle_name.c_str(),
+            perception_warmup_timeout_,
+            camera_info_topic_.c_str());
     }
 
     void stopActiveMotion()
@@ -513,8 +601,13 @@ private:
         RCLCPP_FATAL_STREAM(
             get_logger(),
             "DEADLINE de " << timeout_s << "s estourado em '" << label
-                << "' — chamada MoveIt pendurada (provavel perda DDS). "
-                   "Abortando; estouros repetidos => reiniciar o no.");
+                << "'. Olhe o log do move_group ANTES de culpar a rede: "
+                   "(a) 'Controller is taking too long to execute trajectory' "
+                   "= o braco pode ter CHEGADO e o joint_trajectory_controller "
+                   "nao declarou sucesso (tolerancia/goal_time do controlador "
+                   "na Pi) — acao saudavel cortada, ajuste as constraints; "
+                   "(b) silencio no move_group = chamada realmente pendurada "
+                   "(perda DDS), e estouros repetidos pedem reiniciar o no.");
         return false;
     }
 
@@ -794,6 +887,7 @@ private:
 
         publish_stage(goal_handle, "detecting_place_tag");
         speak("Procurando o alvo de entrega " + spokenTargetName(table_pose));
+        waitForCameraStream("PLACE");
 
         const std::string place_reference_frame = "base_footprint";
 
@@ -929,6 +1023,7 @@ private:
         const std::shared_ptr<GoalHandlePlaceTag> goal_handle)
     {
         ExecutionGuard execution_guard(*this);
+        publishPlaceActive(true);
         const auto goal = goal_handle->get_goal();
 
         auto result =
