@@ -8,15 +8,17 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/MissionStatus.msg"
   "action/AlignToDock.action"
   "action/SaveServiceAreaPose.action"
   "srv/InitServiceAreas.srv"
   "srv/ListServiceAreas.srv"
   "srv/ValidateServiceAreas.srv"
-  DEPENDENCIES action_msgs
+  DEPENDENCIES action_msgs std_msgs
 )
 
 if(BUILD_TESTING)

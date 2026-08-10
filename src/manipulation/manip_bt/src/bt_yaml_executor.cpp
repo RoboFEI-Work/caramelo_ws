@@ -1,5 +1,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp_v3/bt_factory.h>
+#include <behaviortree_cpp_v3/loggers/abstract_logger.h>
+#include <caramelo_msgs/msg/mission_status.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -8,9 +10,13 @@
 #include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <memory>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "manip_bt/go_to_named_pose_bt.hpp"
@@ -168,6 +174,29 @@ void setStringOnBlackboard(
   blackboard->set(actionBlackboardKey(action_index, field), value);
 }
 
+// Um passo da arvore gerada, na ordem em que sera' executado. Inclui o prologo
+// (braco em home) e o epilogo (home + FINISH), que o executor acrescenta
+// sozinho e que nao existem no actions.yaml -- por isso a contagem daqui e' a
+// unica que serve para uma barra de progresso.
+struct MissionStep
+{
+  std::string kind;    // goto | pick | place | home
+  std::string target;  // WS1 | tag_01 | Mesa15 | home
+  std::string label;   // texto legivel (mesmo do --dry-run)
+};
+
+// Nome do no no XML gerado. E' por ele que o logger de status reencontra o
+// passo correspondente quando a arvore muda de estado.
+std::string missionStepNodeName(const std::size_t step_index)
+{
+  return "mission_step_" + std::to_string(step_index);
+}
+
+std::string missionStepNameAttr(const std::size_t step_index)
+{
+  return " name=\"" + missionStepNodeName(step_index) + "\"";
+}
+
 struct MissionBuildContext
 {
   manip_bt::MissionMapConfigPtr map_config;
@@ -176,6 +205,7 @@ struct MissionBuildContext
   bool startup_home{true};
   std::string startup_pose_name{"home"};
   std::vector<std::string> plan_rows;  // tabela do --dry-run
+  std::vector<MissionStep> steps;      // mesma ordem das plan_rows
 };
 
 // Resolve WS da tarefa -> dock_id e valida contra o docking.yaml (fail-fast:
@@ -213,6 +243,7 @@ void emitGoToWs(
   std::ostringstream & xml,
   const BT::Blackboard::Ptr & blackboard,
   const std::size_t action_index,
+  const std::size_t step_index,
   const std::string & ws,
   const std::string & mesa,
   const std::string & dock_id,
@@ -227,7 +258,8 @@ void emitGoToWs(
   blackboard->set(dock_key, dock_id);
   blackboard->set(use_dock_key, use_docking);
 
-  xml << "      <GoToWS ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
+  xml << "      <GoToWS" << missionStepNameAttr(step_index)
+      << " ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
       << "\" mesa=\"" << escapeXmlAttr(blackboardPort(mesa_key))
       << "\" dock_id=\"" << escapeXmlAttr(blackboardPort(dock_key))
       << "\" use_docking=\"" << escapeXmlAttr(blackboardPort(use_dock_key))
@@ -259,9 +291,11 @@ std::string buildTreeXmlFromActions(
   // nunca colide com action_<i>_* nem com o epilogo (N/N+1).
   if (ctx.startup_home) {
     blackboard->set("prologue_pose_name", ctx.startup_pose_name);
-    xml << "      <GoToNamedPose pose_name=\""
+    xml << "      <GoToNamedPose" << missionStepNameAttr(ctx.steps.size())
+        << " pose_name=\""
         << escapeXmlAttr(blackboardPort("prologue_pose_name")) << "\"/>\n";
     ctx.plan_rows.push_back("[ini] " + ctx.startup_pose_name + " (prologo automatico)");
+    ctx.steps.push_back({"home", ctx.startup_pose_name, ctx.plan_rows.back()});
   }
 
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
@@ -274,10 +308,12 @@ std::string buildTreeXmlFromActions(
       const std::string pose_name_key = actionBlackboardKey(i, "pose_name");
       setStringOnBlackboard(blackboard, i, "pose_name", pose_name);
 
-      xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
+      xml << "      <GoToNamedPose" << missionStepNameAttr(ctx.steps.size())
+          << " pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
           << "\"/>\n";
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] home  pose=" + pose_name);
+      ctx.steps.push_back({"home", pose_name, ctx.plan_rows.back()});
       continue;
     }
 
@@ -295,11 +331,12 @@ std::string buildTreeXmlFromActions(
         ctx.map_config->useDocking(dock_id) :
         (dock_id != "START" && dock_id != "FINISH");
 
-      emitGoToWs(xml, blackboard, i, ws, mesa, dock_id, use_docking);
+      emitGoToWs(xml, blackboard, i, ctx.steps.size(), ws, mesa, dock_id, use_docking);
       current_station_dock = dock_id;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] goto  " + ws + " -> " + dock_id +
         (use_docking ? "  (dock+align)" : "  (navegacao pura)"));
+      ctx.steps.push_back({"goto", dock_id, ctx.plan_rows.back()});
       continue;
     }
 
@@ -320,10 +357,12 @@ std::string buildTreeXmlFromActions(
       const std::string tag_frame_key = actionBlackboardKey(i, "tag_frame");
       setStringOnBlackboard(blackboard, i, "tag_frame", tag_frame);
 
-      xml << "      <PickTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
+      xml << "      <PickTag" << missionStepNameAttr(ctx.steps.size())
+          << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\"/>\n";
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] pick  tag=" + tag_frame);
+      ctx.steps.push_back({"pick", tag_frame, ctx.plan_rows.back()});
       continue;
     }
 
@@ -339,10 +378,12 @@ std::string buildTreeXmlFromActions(
         setStringOnBlackboard(blackboard, i, "ws", action["ws"].as<std::string>());
       }
 
-      xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
+      xml << "      <PlaceTag" << missionStepNameAttr(ctx.steps.size())
+          << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose);
+      ctx.steps.push_back({"place", tag_frame, ctx.plan_rows.back()});
       continue;
     }
 
@@ -370,18 +411,23 @@ std::string buildTreeXmlFromActions(
     const std::size_t goto_index = actions.size() + 1;
     const std::string pose_name_key = actionBlackboardKey(home_index, "pose_name");
     blackboard->set(pose_name_key, std::string("home"));
-    xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
+    xml << "      <GoToNamedPose" << missionStepNameAttr(ctx.steps.size())
+        << " pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
         << "\"/>\n";
+    ctx.steps.push_back({"home", "home", "[fim] home (epilogo automatico)"});
     // Item 3.9: o docking do FINISH era `false` cravado — se a arena definir
     // o FINISH como estacao com dock, o epilogo chegava perto e parava sem
     // encostar. Agora pergunta ao mapa, com o mesmo fallback do goto normal.
     const bool finish_use_docking = ctx.map_config ?
       ctx.map_config->useDocking(finish_id) :
       (finish_id != "START" && finish_id != "FINISH");
-    emitGoToWs(xml, blackboard, goto_index, finish_id, "", finish_id, finish_use_docking);
+    emitGoToWs(
+      xml, blackboard, goto_index, ctx.steps.size(), finish_id, "", finish_id,
+      finish_use_docking);
     ctx.plan_rows.push_back(
       "[fim] home + goto " + finish_id + " (epilogo automatico)" +
       (finish_use_docking ? "  (dock+align)" : "  (navegacao pura)"));
+    ctx.steps.push_back({"goto", finish_id, ctx.plan_rows.back()});
   }
 
   xml << "    </Sequence>\n";
@@ -390,6 +436,170 @@ std::string buildTreeXmlFromActions(
 
   return xml.str();
 }
+
+// ---------------------------------------------------------------------------
+// Publicacao de MissionStatus.
+//
+// Ate' aqui uma missao so' podia ser acompanhada lendo o terminal: este executor
+// escreve apenas em stdout/rosout. Nenhuma interface (GUI Qt ou painel web)
+// conseguia saber em que passo a missao estava sem parsear terminal. O que vem
+// abaixo e' ADITIVO: nao muda a arvore, os exit codes nem a saida de terminal --
+// so' acrescenta um topico.
+// ---------------------------------------------------------------------------
+class MissionReporter
+{
+public:
+  MissionReporter(
+    rclcpp::Node::SharedPtr node,
+    std::string mission_id,
+    std::string task_id,
+    std::vector<MissionStep> steps)
+  : node_(std::move(node)),
+    mission_id_(std::move(mission_id)),
+    task_id_(std::move(task_id)),
+    steps_(std::move(steps)),
+    started_(std::chrono::steady_clock::now())
+  {
+    // transient_local com historico FUNDO, nao depth 1.
+    //
+    // O publicador nasce junto com a missao, entao todo assinante e' um late
+    // joiner: mesmo uma UI aberta ha' horas so' descobre este topico depois que o
+    // executor sobe. Medido no WSL (networkingMode=mirrored), o discovery levou
+    // ~11 s -- com depth 1 a interface perderia o inicio de TODA missao e so'
+    // pegaria o ultimo estado. Com depth 64 o late joiner recebe de uma vez toda
+    // a historia ate' ali e consegue desenhar a missao inteira.
+    rclcpp::QoS qos(64);
+    qos.transient_local().reliable();
+    pub_ = node_->create_publisher<caramelo_msgs::msg::MissionStatus>(
+      "/caramelo/mission/status", qos);
+  }
+
+  // Estado de missao sem passo associado (planejamento, fim, abort).
+  void publishState(const uint8_t state, const std::string & message)
+  {
+    auto msg = base();
+    msg.action_index = -1;
+    msg.state = state;
+    msg.message = message;
+    pub_->publish(msg);
+  }
+
+  // Idempotente. O GoToNamedPose e' SyncActionNode (bloqueia no MoveIt) e nunca
+  // passa por RUNNING, entao o inicio dele e' anunciado pelo fim do passo
+  // anterior; o guard evita anuncio duplicado quando o passo seguinte e'
+  // assincrono e emite RUNNING por conta propria.
+  void publishStepStarted(const std::size_t step_index)
+  {
+    if (step_index >= steps_.size() || started_steps_.count(step_index) != 0) {
+      return;
+    }
+    started_steps_.insert(step_index);
+    publishStep(step_index, "iniciado", steps_[step_index].label);
+  }
+
+  void publishStepFinished(const std::size_t step_index, const bool ok)
+  {
+    if (step_index >= steps_.size()) {
+      return;
+    }
+    publishStep(
+      step_index, ok ? "concluido" : "falhou",
+      steps_[step_index].label + (ok ? " — concluido" : " — FALHOU"));
+    if (ok) {
+      publishStepStarted(step_index + 1);
+    }
+  }
+
+private:
+  caramelo_msgs::msg::MissionStatus base() const
+  {
+    caramelo_msgs::msg::MissionStatus msg;
+    msg.header.stamp = node_->now();
+    msg.mission_id = mission_id_;
+    msg.task_id = task_id_;
+    msg.action_index = -1;
+    msg.action_total = static_cast<int32_t>(steps_.size());
+    msg.elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+    return msg;
+  }
+
+  void publishStep(
+    const std::size_t step_index, const std::string & stage, const std::string & message)
+  {
+    auto msg = base();
+    msg.action_index = static_cast<int32_t>(step_index);
+    msg.action_kind = steps_[step_index].kind;
+    msg.action_target = steps_[step_index].target;
+    msg.stage = stage;
+    msg.state = caramelo_msgs::msg::MissionStatus::STATE_RUNNING;
+    msg.message = message;
+    pub_->publish(msg);
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher<caramelo_msgs::msg::MissionStatus>::SharedPtr pub_;
+  std::string mission_id_;
+  std::string task_id_;
+  std::vector<MissionStep> steps_;
+  std::set<std::size_t> started_steps_;
+  std::chrono::steady_clock::time_point started_;
+};
+
+// Traduz transicoes de estado da arvore em MissionStatus. So' reage aos nos que o
+// gerador de XML batizou de mission_step_<k>; Sequence e decoradores nao
+// interessam.
+class MissionStatusLogger : public BT::StatusChangeLogger
+{
+public:
+  MissionStatusLogger(BT::TreeNode * root_node, std::shared_ptr<MissionReporter> reporter)
+  : BT::StatusChangeLogger(root_node), reporter_(std::move(reporter))
+  {
+  }
+
+  void callback(
+    BT::Duration /*timestamp*/,
+    const BT::TreeNode & node,
+    BT::NodeStatus /*prev_status*/,
+    BT::NodeStatus status) override
+  {
+    const auto step_index = stepIndexFromName(node.name());
+    if (!step_index.has_value()) {
+      return;
+    }
+    switch (status) {
+      case BT::NodeStatus::RUNNING:
+        reporter_->publishStepStarted(*step_index);
+        break;
+      case BT::NodeStatus::SUCCESS:
+        reporter_->publishStepFinished(*step_index, true);
+        break;
+      case BT::NodeStatus::FAILURE:
+        reporter_->publishStepFinished(*step_index, false);
+        break;
+      default:
+        break;
+    }
+  }
+
+  void flush() override {}
+
+private:
+  static std::optional<std::size_t> stepIndexFromName(const std::string & name)
+  {
+    static const std::string prefix = "mission_step_";
+    if (name.rfind(prefix, 0) != 0) {
+      return std::nullopt;
+    }
+    try {
+      return static_cast<std::size_t>(std::stoul(name.substr(prefix.size())));
+    } catch (const std::exception &) {
+      return std::nullopt;
+    }
+  }
+
+  std::shared_ptr<MissionReporter> reporter_;
+};
 
 }  // namespace
 
@@ -425,6 +635,8 @@ int main(int argc, char ** argv)
     const bool startup_home = node->declare_parameter<bool>("startup_home", true);
     const std::string startup_pose_name =
       node->declare_parameter<std::string>("startup_pose_name", "home");
+    // So' rotula o MissionStatus; quem sabe a tarefa e' o run_mission/mission_server.
+    const std::string task_id_param = node->declare_parameter<std::string>("task_id", "");
 
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
@@ -479,6 +691,24 @@ int main(int argc, char ** argv)
     const YAML::Node actions_root = YAML::LoadFile(yaml_path);
     const std::string tree_xml = buildTreeXmlFromActions(actions_root, blackboard, ctx);
 
+    // mission_id = nome do actions.yaml (o run_mission grava um por execucao, com
+    // timestamp), para uma UI distinguir duas missoes seguidas.
+    std::shared_ptr<MissionReporter> reporter;
+    if (!dry_run) {
+      std::string task_id = task_id_param;
+      if (task_id.empty() && actions_root["task_id"]) {
+        task_id = actions_root["task_id"].as<std::string>("");
+      }
+      reporter = std::make_shared<MissionReporter>(
+        node, std::filesystem::path(yaml_path).stem().string(), task_id, ctx.steps);
+      // A construcao da arvore conecta ao /move_group e pode levar minutos com o
+      // MoveIt subindo. Sem este aviso a UI ficaria muda justamente no trecho em
+      // que o operador mais se pergunta se travou.
+      reporter->publishState(
+        caramelo_msgs::msg::MissionStatus::STATE_PLANNING,
+        "Montando a arvore da missao (conectando ao move_group)...");
+    }
+
     BT::BehaviorTreeFactory factory;
     factory.registerNodeType<manip_bt::GoToNamedPoseBT>("GoToNamedPose");
     factory.registerNodeType<manip_bt::PickTagBT>("PickTag");
@@ -501,6 +731,8 @@ int main(int argc, char ** argv)
       std::chrono::duration<double>(std::chrono::steady_clock::now() - build_start).count());
 
     if (dry_run) {
+      // Sem publicar nada: o --dry-run nao e' uma missao, e um MissionStatus aqui
+      // faria uma UI acreditar que o robo esta' andando.
       std::cout << "=== Plano da missao (" << yaml_path << ") ===\n";
       for (const auto & row : ctx.plan_rows) {
         std::cout << "  " << row << "\n";
@@ -510,11 +742,18 @@ int main(int argc, char ** argv)
       return 0;
     }
 
+    MissionStatusLogger status_logger(tree.rootNode(), reporter);
+
     RCLCPP_INFO(
       rclcpp::get_logger("bt_yaml_executor"),
       "Running BT from actions yaml: %s (navegacao %s)",
       yaml_path.c_str(),
       simulate_navigation ? "SIMULADA" : "REAL");
+
+    // O primeiro passo e' quase sempre o prologo (GoToNamedPose, sincrono), que
+    // nunca emite RUNNING. Sem este anuncio a UI ficaria em branco durante todo o
+    // primeiro movimento do braco.
+    reporter->publishStepStarted(0);
 
     rclcpp::Rate loop_rate(10.0);
     BT::NodeStatus status = BT::NodeStatus::IDLE;
@@ -522,10 +761,14 @@ int main(int argc, char ** argv)
       status = tree.tickRoot();
       if (status == BT::NodeStatus::SUCCESS) {
         RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "Behavior tree finished with SUCCESS");
+        reporter->publishState(
+          caramelo_msgs::msg::MissionStatus::STATE_DONE, "Missao concluida com sucesso.");
         break;
       }
       if (status == BT::NodeStatus::FAILURE) {
         RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Behavior tree finished with FAILURE");
+        reporter->publishState(
+          caramelo_msgs::msg::MissionStatus::STATE_FAILED, "Missao falhou (ver /rosout).");
         exit_code = 1;
         break;
       }
@@ -533,6 +776,8 @@ int main(int argc, char ** argv)
     }
 
     if (g_interrupted) {
+      reporter->publishState(
+        caramelo_msgs::msg::MissionStatus::STATE_ABORTED, "Missao abortada pelo operador.");
       // Nota: se o no atual for o GoToNamedPose (SyncActionNode com MoveIt
       // bloqueante), o halt so acontece quando o tick dele retornar — os nos
       // assincronos (GoToWS/PickTag/PlaceTag) cancelam imediatamente.

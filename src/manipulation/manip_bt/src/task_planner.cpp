@@ -620,7 +620,6 @@ YAML::Node buildOutput(
   const std::string & apriltag_yaml_path,
   const std::map<std::string, std::string> & ws_to_table_pose)
 {
-  (void)competition_root;
   (void)apriltag_yaml_path;
 
   YAML::Node output;
@@ -649,6 +648,12 @@ YAML::Node buildOutput(
   }
 
 
+  // Carrega o task_id da tarefa para o actions.yaml. Assim o bt_yaml_executor
+  // consegue rotular o MissionStatus com a tarefa (BMT, ATT1, ...) sem depender
+  // de quem o chamou passar o parametro.
+  if (competition_root["task_id"]) {
+    output["task_id"] = competition_root["task_id"].as<std::string>("");
+  }
   output["actions"] = action_seq;
   return output;
 }
