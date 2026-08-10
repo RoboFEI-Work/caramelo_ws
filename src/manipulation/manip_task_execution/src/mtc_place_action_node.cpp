@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
+#include <control_msgs/msg/dynamic_joint_state.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -19,6 +20,8 @@
 #include <cmath>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -74,6 +77,30 @@ public:
             this->declare_parameter<double>("container_place_z_offset", 0.1);
         skip_missing_place_tag_ =
             this->declare_parameter<bool>("skip_missing_place_tag", true);
+        // Auditoria 2026-08-07, item 2.4: verificacao de objeto preso por
+        // esforco tambem no PLACE (garra fechando no vazio dentro do
+        // container retornava sucesso fantasma). Limiares iniciais = os do
+        // pick; CALIBRAR no robo real.
+        verify_grasp_effort_ =
+            this->declare_parameter<bool>("verify_grasp_effort", true);
+        grasp_min_effort_nm_ =
+            this->declare_parameter<double>("grasp_min_effort_nm", 0.15);
+        grasp_min_effort_increase_nm_ =
+            this->declare_parameter<double>(
+                "grasp_min_effort_increase_nm", 0.05);
+        grasp_effort_sample_duration_ =
+            this->declare_parameter<double>(
+                "grasp_effort_sample_duration", 0.8);
+        grasp_effort_max_age_ =
+            this->declare_parameter<double>("grasp_effort_max_age", 0.4);
+        dynamic_joint_state_subscription_ =
+            this->create_subscription<control_msgs::msg::DynamicJointState>(
+                "/dynamic_joint_states",
+                rclcpp::SensorDataQoS(),
+                std::bind(
+                    &PlaceActionServer::onDynamicJointState,
+                    this,
+                    std::placeholders::_1));
         container_state_store_ =
             std::make_unique<manip_task_execution::ContainerStateStore>(container_state_file_);
         declarePlanningDefaults();
@@ -130,6 +157,21 @@ private:
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
     bool speech_enabled_{true};
     bool skip_missing_place_tag_{true};
+    bool verify_grasp_effort_{true};
+    double grasp_min_effort_nm_{0.15};
+    double grasp_min_effort_increase_nm_{0.05};
+    double grasp_effort_sample_duration_{0.8};
+    double grasp_effort_max_age_{0.4};
+    rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
+        dynamic_joint_state_subscription_;
+    std::mutex effort_mutex_;
+    double motor6_effort_{0.0};
+    double motor7_effort_{0.0};
+    std::chrono::steady_clock::time_point effort_update_time_;
+    std::uint64_t effort_update_sequence_{0};
+    bool effort_available_{false};
+    // Item 2.5: causa da ultima falha (vira fail_reason no result).
+    std::string last_place_failure_reason_;
     std::atomic_bool cancel_requested_{false};
     std::mutex active_interfaces_mutex_;
     std::shared_ptr<MoveGroupInterface> active_arm_;
@@ -145,11 +187,24 @@ private:
 
         ~ExecutionGuard()
         {
-            server_.releaseExecutionResources();
+            release();
+        }
+
+        // Libera os recursos UMA unica vez por goal (verificacao adversarial
+        // 2026-08-10): a 2a chamada soltava o flock ja readquirido pelo goal
+        // seguinte (a flag do lock e compartilhada entre goals e entre os
+        // nos pick/place).
+        void release()
+        {
+            if (!released_) {
+                released_ = true;
+                server_.releaseExecutionResources();
+            }
         }
 
     private:
         PlaceActionServer & server_;
+        bool released_{false};
     };
 
     bool cancellationRequested() const
@@ -880,10 +935,11 @@ private:
             std::make_shared<PlaceTag::Result>();
 
         const auto finish_failure =
-            [this, &goal_handle, &result](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard](const std::string & message)
             {
                 result->success = false;
-                releaseExecutionResources();
+                result->fail_reason = last_place_failure_reason_;
+                execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Place canceled: " + message;
                     goal_handle->canceled(result);
@@ -893,13 +949,15 @@ private:
                 }
             };
         const auto finish_skip =
-            [this, &goal_handle, &result](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard](const std::string & message)
             {
                 result->success = true;
+                result->skipped = true;  // item 2.5: contrato explicito
+                result->fail_reason = "tag_nao_esta_em_container";
                 result->message = message;
                 publish_stage(goal_handle, "skipped_missing_container_tag");
                 speak("Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa");
-                releaseExecutionResources();
+                execution_guard.release();
                 goal_handle->succeed(result);
             };
 
@@ -908,6 +966,7 @@ private:
             return;
         }
 
+        last_place_failure_reason_.clear();
         speak(
             "Iniciando a rotina de entregar a " +
             spokenTargetName(goal->tag_frame));
@@ -963,11 +1022,15 @@ private:
                 goal->table_pose,
                 goal_handle);
 
-        if (cancellationRequested() || goal_handle->is_canceling()) {
-            finish_failure("canceled during place cycle");
-            return;
+        // Fallback do contrato 2.5: nenhuma falha sai sem causa nomeada —
+        // portas genericas de plan/execute viram "ik_ou_execucao_falhou".
+        if (!success && last_place_failure_reason_.empty()) {
+            last_place_failure_reason_ = "ik_ou_execucao_falhou";
         }
 
+        // Verificacao adversarial 2026-08-10: gravar o yaml ANTES de
+        // responder um cancel tardio — entrega concluida com cancel na saida
+        // deixava o container marcado 'occupied' com ele ja vazio.
         bool state_write_success = true;
         std::string state_write_error;
         if (success) {
@@ -982,20 +1045,41 @@ private:
             }
         }
 
-        result->success = success && state_write_success;
+        if (cancellationRequested() || goal_handle->is_canceling()) {
+            if (!success) {
+                finish_failure("canceled during place cycle");
+                return;
+            }
+            result->success = true;
+            result->message = "Place completed (cancel recebido apos a entrega)";
+            execution_guard.release();
+            goal_handle->canceled(result);
+            return;
+        }
 
-        result->message =
-            result->success ?
-            "Place completed" :
-            (!success ?
-            "Place failed" :
-            "Place completed but failed to update container state yaml: " + state_write_error);
+        // Item 2.9 (espelho do pick): sucesso FISICO manda — falha de I/O do
+        // yaml vira WARN + flag na mensagem, nunca aborta entrega feita.
+        result->success = success;
+        if (success && state_write_success) {
+            result->message = "Place completed";
+        } else if (success && !state_write_success) {
+            result->message =
+                "Place completed (AVISO: falha ao gravar container yaml: " +
+                state_write_error + ")";
+            RCLCPP_WARN(
+                get_logger(),
+                "Place fisicamente OK mas o yaml de containers nao gravou: %s",
+                state_write_error.c_str());
+        } else {
+            result->fail_reason = last_place_failure_reason_;
+            result->message = "Place failed (" + last_place_failure_reason_ + ")";
+        }
 
         if (result->success)
         {
             publish_stage(goal_handle, "done");
             speak("Entrega concluida com sucesso");
-            releaseExecutionResources();
+            execution_guard.release();
             goal_handle->succeed(result);
         }
         else
@@ -1003,6 +1087,135 @@ private:
             speak("Nao consegui entregar o bloco");
             finish_failure(result->message);
         }
+    }
+
+
+    void onDynamicJointState(
+        const control_msgs::msg::DynamicJointState::SharedPtr message)
+    {
+        std::optional<double> motor6_effort;
+        std::optional<double> motor7_effort;
+        for (size_t i = 0; i < message->joint_names.size(); ++i) {
+            if (i >= message->interface_values.size()) {
+                break;
+            }
+            const auto & joint_name = message->joint_names[i];
+            if (joint_name != "manip_joint6" && joint_name != "manip_joint7") {
+                continue;
+            }
+            const auto & interface_value = message->interface_values[i];
+            for (size_t j = 0; j < interface_value.interface_names.size(); ++j) {
+                if (j >= interface_value.values.size()) {
+                    break;
+                }
+                if (interface_value.interface_names[j] != "effort") {
+                    continue;
+                }
+                if (joint_name == "manip_joint6") {
+                    motor6_effort = interface_value.values[j];
+                } else {
+                    motor7_effort = interface_value.values[j];
+                }
+                break;
+            }
+        }
+        if (!motor6_effort || !motor7_effort) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(effort_mutex_);
+        motor6_effort_ = *motor6_effort;
+        motor7_effort_ = *motor7_effort;
+        effort_update_time_ = std::chrono::steady_clock::now();
+        ++effort_update_sequence_;
+        effort_available_ = true;
+    }
+
+    struct GripperEffortSample
+    {
+        double motor6{0.0};
+        double motor7{0.0};
+        std::uint64_t sequence{0};
+    };
+
+    std::optional<GripperEffortSample> getFreshGripperEffort()
+    {
+        std::lock_guard<std::mutex> lock(effort_mutex_);
+        if (!effort_available_) {
+            return std::nullopt;
+        }
+        const auto age = std::chrono::steady_clock::now() - effort_update_time_;
+        if (age > std::chrono::duration<double>(grasp_effort_max_age_)) {
+            return std::nullopt;
+        }
+        return GripperEffortSample{
+            std::abs(motor6_effort_),
+            std::abs(motor7_effort_),
+            effort_update_sequence_};
+    }
+
+    std::optional<GripperEffortSample> waitForFreshGripperEffort(
+        const std::chrono::milliseconds timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (cancellationRequested()) {
+                return std::nullopt;
+            }
+            const auto sample = getFreshGripperEffort();
+            if (sample) {
+                return sample;
+            }
+            rclcpp::sleep_for(std::chrono::milliseconds(20));
+        }
+        return std::nullopt;
+    }
+
+    bool verifyGraspByEffort(
+        const GripperEffortSample & baseline,
+        const std::string & cycle_name)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::duration<double>(grasp_effort_sample_duration_);
+        double motor6_sum = 0.0;
+        double motor7_sum = 0.0;
+        size_t sample_count = 0;
+        std::uint64_t last_sequence = baseline.sequence;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (cancellationRequested()) {
+                return false;
+            }
+            const auto sample = getFreshGripperEffort();
+            if (sample && sample->sequence != last_sequence) {
+                motor6_sum += sample->motor6;
+                motor7_sum += sample->motor7;
+                ++sample_count;
+                last_sequence = sample->sequence;
+            }
+            rclcpp::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (sample_count == 0) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[%s] verificacao de garra falhou: sem amostras de esforco",
+                cycle_name.c_str());
+            return false;
+        }
+        const double m6_avg = motor6_sum / static_cast<double>(sample_count);
+        const double m7_avg = motor7_sum / static_cast<double>(sample_count);
+        const bool m6_loaded =
+            m6_avg >= grasp_min_effort_nm_ &&
+            (m6_avg - baseline.motor6) >= grasp_min_effort_increase_nm_;
+        const bool m7_loaded =
+            m7_avg >= grasp_min_effort_nm_ &&
+            (m7_avg - baseline.motor7) >= grasp_min_effort_increase_nm_;
+        RCLCPP_INFO(
+            get_logger(),
+            "[%s] place grasp effort: M6 base=%.3f avg=%.3f; M7 base=%.3f "
+            "avg=%.3f; samples=%zu",
+            cycle_name.c_str(), baseline.motor6, m6_avg,
+            baseline.motor7, m7_avg, sample_count);
+        return m6_loaded && m7_loaded;
     }
 
     bool run_place_cycle(
@@ -1038,12 +1251,40 @@ private:
             return false;
         }
 
+        std::optional<GripperEffortSample> effort_before_close;
+        if (verify_grasp_effort_) {
+            effort_before_close = waitForFreshGripperEffort(
+                std::chrono::milliseconds(600));
+            if (!effort_before_close) {
+                last_place_failure_reason_ = "sem_telemetria_garra";
+                speak("Falha: sem telemetria de esforço da garra");
+                return false;
+            }
+        }
+
         publish_stage(goal_handle, "closing_gripper");
         //speak("Fechando a garra no bloco dentro do container");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_close");
         if (!planAndExecute(gripper, "close gripper")) {
+            last_place_failure_reason_ = "garra_nao_fechou";
             return false;
+        }
+
+        // Item 2.4: garra fechou no VAZIO dentro do container? Reabrir e
+        // falhar com causa distinta — sem sucesso fantasma e sem setEmpty.
+        if (verify_grasp_effort_) {
+            publish_stage(goal_handle, "verifying_grasp");
+            speak("Verificando o bloco pela forca da garra");
+            if (!verifyGraspByEffort(*effort_before_close, "PLACE")) {
+                last_place_failure_reason_ = "garra_vazia_no_container";
+                speak("Falha: a garra não encontrou o bloco no container");
+                gripper->setStartStateToCurrentState();
+                gripper->setNamedTarget("gripper_open");
+                (void)planAndExecute(gripper, "reopen after empty container grasp");
+                return false;
+            }
+            speak("A garra detectou o bloco");
         }
 
         publish_stage(goal_handle, "returning_pre_container");
@@ -1052,6 +1293,7 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
         if (!planAndExecute(arm, "return pre_container")) {
+            last_place_failure_reason_ = "falha_com_bloco_na_garra";
             return false;
         }
 
@@ -1061,6 +1303,7 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
         if (!planAndExecute(arm, "go pegar_obj")) {
+            last_place_failure_reason_ = "falha_com_bloco_na_garra";
             return false;
         }
 
@@ -1070,6 +1313,7 @@ private:
         publish_stage(goal_handle, "going_table");
         //speak("Levando o bloco para o destino");
         if (!moveToPlaceTarget(arm, table_pose, goal_handle)) {
+            last_place_failure_reason_ = "falha_com_bloco_na_garra";
             return false;
         }
         arm->setMaxAccelerationScalingFactor(1.0);
@@ -1080,6 +1324,7 @@ private:
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "open gripper final")) {
+            last_place_failure_reason_ = "garra_nao_abriu_no_destino";
             return false;
         }
 
@@ -1089,7 +1334,15 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
         if (!planAndExecute(arm, "return pegar_obj")) {
-            return false;
+            // Verificacao adversarial 2026-08-10: a entrega JA aconteceu (a
+            // garra abriu no destino) — reportar falha aqui corrompia o yaml
+            // (container ficava 'occupied' vazio). Conta como sucesso e so
+            // avisa que o braco pode ter ficado estendido.
+            RCLCPP_ERROR(
+                get_logger(),
+                "Entrega concluida mas o retorno a pegar_obj falhou — braco "
+                "pode estar estendido sobre a mesa.");
+            speak("Entreguei o bloco, mas nao consegui recolher o braco");
         }
 
         return true;

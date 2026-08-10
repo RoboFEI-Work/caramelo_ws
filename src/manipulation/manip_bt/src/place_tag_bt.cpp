@@ -145,7 +145,16 @@ BT::NodeStatus PlaceTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
-	RCLCPP_INFO(rclcpp::get_logger("PlaceTagBT"), "PLACE action completed successfully");
+	// Item 2.5 (auditoria 2026-08-07): skip explicito no contrato.
+	if (wrapped_result.result->skipped) {
+		RCLCPP_WARN(
+			rclcpp::get_logger("PlaceTagBT"),
+			"PLACE PULADO (causa: %s): %s — missao continua.",
+			wrapped_result.result->fail_reason.c_str(),
+			wrapped_result.result->message.c_str());
+	} else {
+		RCLCPP_INFO(rclcpp::get_logger("PlaceTagBT"), "PLACE action completed successfully");
+	}
 	return BT::NodeStatus::SUCCESS;
 }
 

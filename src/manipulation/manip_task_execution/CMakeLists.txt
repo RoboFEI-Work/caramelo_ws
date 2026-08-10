@@ -54,6 +54,7 @@ target_include_directories(mtc_place_action_node PUBLIC
 target_compile_features(mtc_place_action_node PUBLIC c_std_99 cxx_std_17)
 ament_target_dependencies(
   mtc_place_action_node
+  "control_msgs"
   "moveit_ros_planning_interface"
   "my_robot_msgs"
   "rclcpp"

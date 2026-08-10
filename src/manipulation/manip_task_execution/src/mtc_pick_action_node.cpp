@@ -557,6 +557,8 @@ private:
     std::unique_ptr<manip_task_execution::ContainerStateStore> container_state_store_;
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
     std::atomic_bool cancel_requested_{false};
+    // Item 2.5: causa da ultima falha do ciclo (vira fail_reason no result).
+    std::string last_pick_failure_reason_;
     std::mutex active_interfaces_mutex_;
     std::shared_ptr<MoveGroupInterface> active_arm_;
     std::shared_ptr<MoveGroupInterface> active_gripper_;
@@ -577,11 +579,24 @@ private:
 
         ~ExecutionGuard()
         {
-            server_.releaseExecutionResources();
+            release();
+        }
+
+        // Libera os recursos UMA unica vez por goal: a 2a chamada (destrutor
+        // depois de um finish explicito) soltava o flock ja readquirido pelo
+        // goal seguinte e apagava o cancel dele (verificacao adversarial
+        // 2026-08-10 — a flag do lock e compartilhada entre goals).
+        void release()
+        {
+            if (!released_) {
+                released_ = true;
+                server_.releaseExecutionResources();
+            }
         }
 
     private:
         PickActionServer & server_;
+        bool released_{false};
     };
 
     bool cancellationRequested() const
@@ -624,64 +639,60 @@ private:
 
     void applyIkProfile(const IkProfile & profile, const std::string & profile_name)
     {
+        // Auditoria 2026-08-07, item 2.7: a "troca de solver" entre tentativas
+        // era PLACEBO — o plugin de IK e cacheado no carregamento e o
+        // parametro kinematics_solver setado aqui nunca chega ao move_group
+        // (e o mode="Speed" do attempt_3 era invalido e ignorado em silencio).
+        // Ficou so o que AGE de verdade por tentativa: os parametros numericos
+        // dinamicos do pick_ik (valem no fallback local de IK aproximada) e as
+        // goal tolerances do MotionPlanRequest.
+        bool params_ok = true;
         const auto set_ik_params =
-            [this, &profile](const std::string & prefix)
+            [this, &profile, &params_ok](const std::string & prefix)
             {
-                this->set_parameter(
-                    rclcpp::Parameter(prefix + ".kinematics_solver", profile.solver));
-                this->set_parameter(
-                    rclcpp::Parameter(
-                        prefix + ".kinematics_solver_timeout",
-                        profile.timeout));
-                this->set_parameter(
-                    rclcpp::Parameter(prefix + ".mode", profile.mode));
-                this->set_parameter(
-                    rclcpp::Parameter(prefix + ".solve_type", profile.solve_type));
-                this->set_parameter(
-                    rclcpp::Parameter(prefix + ".position_only_ik", profile.position_only_ik));
-                this->set_parameter(
-                    rclcpp::Parameter(
-                        prefix + ".rotation_scale",
-                        profile.rotation_scale));
-                this->set_parameter(
-                    rclcpp::Parameter(
-                        prefix + ".position_threshold",
-                        profile.position_threshold));
-                this->set_parameter(
-                    rclcpp::Parameter(
-                        prefix + ".orientation_threshold",
-                        profile.orientation_threshold));
-                this->set_parameter(
-                    rclcpp::Parameter(
-                        prefix + ".minimal_displacement_weight",
-                        profile.minimal_displacement_weight));
-                this->set_parameter(
-                    rclcpp::Parameter(prefix + ".gd_step_size", profile.gd_step_size));
+                for (const auto & p : {
+                        rclcpp::Parameter(
+                            prefix + ".rotation_scale", profile.rotation_scale),
+                        rclcpp::Parameter(
+                            prefix + ".position_threshold",
+                            profile.position_threshold),
+                        rclcpp::Parameter(
+                            prefix + ".orientation_threshold",
+                            profile.orientation_threshold),
+                        rclcpp::Parameter(
+                            prefix + ".minimal_displacement_weight",
+                            profile.minimal_displacement_weight),
+                        rclcpp::Parameter(
+                            prefix + ".gd_step_size", profile.gd_step_size)})
+                {
+                    if (!this->set_parameter(p).successful) {
+                        params_ok = false;
+                    }
+                }
             };
 
         set_ik_params("robot_description_kinematics.arm");
         set_ik_params("arm");
+        if (!params_ok) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "applyIkProfile(%s): nem todos os parametros de IK aplicaram.",
+                profile_name.c_str());
+        }
 
         RCLCPP_WARN(
             this->get_logger(),
-            "Using %s IK profile: solver=%s mode=%s timeout=%.3f "
-            "solve_type=%s position_only_ik=%s "
-            "rotation_scale=%.3f position_threshold=%.3f orientation_threshold=%.3f "
-            "goal_position_tolerance=%.3f goal_orientation_tolerance=%.3f "
-            "minimal_displacement_weight=%.3f gd_step_size=%.4f",
+            "IK profile %s: rotation_scale=%.3f position_threshold=%.3f "
+            "orientation_threshold=%.3f minimal_displacement_weight=%.3f "
+            "gd_step_size=%.4f | goal tol pos=%.3f ori=%.3f",
             profile_name.c_str(),
-            profile.solver.c_str(),
-            profile.mode.c_str(),
-            profile.timeout,
-            profile.solve_type.c_str(),
-            profile.position_only_ik ? "true" : "false",
             profile.rotation_scale,
             profile.position_threshold,
             profile.orientation_threshold,
-            profile.goal_position_tolerance,
-            profile.goal_orientation_tolerance,
             profile.minimal_displacement_weight,
-            profile.gd_step_size);
+            profile.gd_step_size,
+            profile.goal_position_tolerance,
+            profile.goal_orientation_tolerance);
         active_goal_position_tolerance_ = profile.goal_position_tolerance;
         active_goal_orientation_tolerance_ = profile.goal_orientation_tolerance;
     }
@@ -947,7 +958,10 @@ private:
     void releaseExecutionResources()
     {
         publishPickActive(false);
-        clearActiveInterfaces();
+        // Auditoria 2026-08-07, item 2.6: NAO zerar active_arm_/gripper_ —
+        // manter um MGI vivo preserva o CurrentStateMonitor COMPARTILHADO
+        // aquecido (a subscription de joint_states nao esfria entre goals;
+        // era a causa do "Failed to fetch current robot state" no 1o uso).
         cancel_requested_.store(false);
         execution_lock_->release();
     }
@@ -1013,6 +1027,7 @@ private:
             this->get_logger(),
             "Received goal tag=%s",
             goal->tag_frame.c_str());
+        last_pick_failure_reason_.clear();
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
     }
 
@@ -1298,6 +1313,17 @@ private:
             return false;
         }
 
+        // Guarda de estado (auditoria 2026-08-07, item 2.8c): getCurrentPose
+        // abaixo devolve IDENTIDADE em silencio sem estado atual — melhor
+        // falhar explicito aqui do que planejar para um alvo corrompido.
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_ERROR_STREAM(
+                this->get_logger(),
+                "Sem estado atual do braco em moveToTarget (" << label
+                    << ") — abortando a tentativa.");
+            return false;
+        }
+
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink(eef_link);
 
@@ -1305,16 +1331,14 @@ private:
         const double y = tf.transform.translation.y;
         const double z = tf.transform.translation.z;
 
-        tf2::Quaternion tag_q(
-            tf.transform.rotation.x,
-            tf.transform.rotation.y,
-            tf.transform.rotation.z,
-            tf.transform.rotation.w);
-
-        double roll = 0.0;
-        double pitch = 0.0;
-        double yaw = 0.0;
-        tf2::Matrix3x3(tag_q).getRPY(roll, pitch, yaw);
+        // Yaw RADIAL: azimute do EIXO DA JUNTA 1 (x=+0.217 m do base_footprint,
+        // manip_mount_xyz do robot.urdf.xacro) ate o alvo. E o yaw natural
+        // deste braco de 5 juntas com pegada top-down (a junta 5 gira a garra
+        // livre em torno do eixo vertical). Decisao do operador 2026-08-07:
+        // a orientacao da TAG (ruidosa em 480p/USB2 e fonte de "unable to
+        // sample goal states") NAO entra na pose de grasp em NENHUM caminho.
+        constexpr double kJoint1AxisX = 0.217;
+        const double yaw_radial = std::atan2(y, x - kJoint1AxisX);
 
         geometry_msgs::msg::Pose target_pose;
         target_pose.position.x = x;
@@ -1324,13 +1348,6 @@ private:
         if (use_orientation_constraint) {
             tf2::Quaternion desired_q;
             if (enforce_pitch_pi) {
-                // 2026-08-07 (decisao do operador): a orientacao da TAG sai da
-                // conta — pegada top-down com yaw RADIAL (base->alvo), que e o
-                // yaw naturalmente alcancavel deste braco de 5 juntas (a junta
-                // 5 gira a garra em torno do eixo vertical). O yaw da tag em
-                // 480p/USB2 e ruidoso e gerava poses sem solucao de IK
-                // ("unable to sample goal states") de forma intermitente.
-                const double yaw_radial = std::atan2(y, x);
                 desired_q.setRPY(0.0, M_PI, yaw_radial);
             } else {
                 const auto current_pose = arm->getCurrentPose(eef_link).pose;
@@ -1344,7 +1361,8 @@ private:
                     current_pitch,
                     current_yaw);
                 (void)current_yaw;
-                desired_q.setRPY(current_roll, 0.0, yaw);
+                // Item 2.8b: aqui tambem o yaw vem do radial, nunca da tag.
+                desired_q.setRPY(current_roll, 0.0, yaw_radial);
             }
             desired_q.normalize();
             target_pose.orientation = tf2::toMsg(desired_q);
@@ -1425,7 +1443,13 @@ private:
     // result SEM timeout — resposta perdida no DDS = server "ocupado" para
     // sempre (raiz dos travamentos e do bug "server ocupado" de 04/08).
 
-    bool transferGraspedObjectToContainer(
+    // Auditoria 2026-08-07, item 2.2: o desfecho do transporte distingue
+    // falha COM o bloco ainda na garra (nunca pode virar skip "sucesso" — o
+    // gripper_open do proximo goal derrubaria o bloco no chassi) de falha
+    // DEPOIS de soltar (bloco JA no container = sucesso de fato).
+    enum class TransferOutcome { kOk, kFailHolding, kFailAfterRelease };
+
+    TransferOutcome transferGraspedObjectToContainer(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string & container_pose,
@@ -1438,7 +1462,7 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
         if (!planAndExecute(arm, cycle_name + " return pegar_obj")) {
-            return false;
+            return TransferOutcome::kFailHolding;
         }
 
         publish_stage(goal_handle, "going_pre_container");
@@ -1447,7 +1471,7 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
         if (!planAndExecute(arm, cycle_name + " pre_container")) {
-            return false;
+            return TransferOutcome::kFailHolding;
         }
 
         publish_stage(goal_handle, "going_container");
@@ -1455,7 +1479,7 @@ private:
         arm->setStartStateToCurrentState();
         arm->setNamedTarget(container_pose);
         if (!planAndExecute(arm, cycle_name + " " + container_pose)) {
-            return false;
+            return TransferOutcome::kFailHolding;
         }
 
         publish_stage(goal_handle, "opening_gripper");
@@ -1463,7 +1487,7 @@ private:
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, cycle_name + " open gripper")) {
-            return false;
+            return TransferOutcome::kFailHolding;
         }
 
         publish_stage(goal_handle, "going pre_container_final");
@@ -1471,7 +1495,46 @@ private:
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
-        return planAndExecute(arm, cycle_name + " pre_container final");
+        if (!planAndExecute(arm, cycle_name + " pre_container final")) {
+            return TransferOutcome::kFailAfterRelease;
+        }
+        return TransferOutcome::kOk;
+    }
+
+    bool runTransferWithRetry(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const std::string & container_pose,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        bool & object_still_grasped)
+    {
+        TransferOutcome transfer = transferGraspedObjectToContainer(
+            arm, gripper, container_pose, cycle_name, goal_handle);
+        if (transfer == TransferOutcome::kFailHolding) {
+            speak("Falha no transporte com o bloco na garra. Tentando o transporte de novo");
+            transfer = transferGraspedObjectToContainer(
+                arm, gripper, container_pose,
+                cycle_name + " transfer_retry", goal_handle);
+        }
+        if (transfer == TransferOutcome::kFailHolding) {
+            // Item 2.2b: NUNCA vira skip — o gripper_open do proximo goal
+            // derrubaria o bloco no chassi. Aborta o goal com causa explicita.
+            object_still_grasped = true;
+            speak("Falha: o bloco continua preso na garra");
+            last_pick_failure_reason_ = "object_still_grasped";
+            return false;
+        }
+        if (transfer == TransferOutcome::kFailAfterRelease) {
+            // Item 2.2a: bloco JA depositado no container — sucesso de fato
+            // (so a saida falhou); contabilizar ocupacao normalmente.
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] saida do container falhou, mas o bloco JA foi solto no "
+                "%s — contabilizando como sucesso.",
+                cycle_name.c_str(), container_pose.c_str());
+        }
+        return true;
     }
 
     bool alignCameraToTagXY(
@@ -1531,37 +1594,9 @@ private:
         return sleepInterruptibly(std::chrono::milliseconds(120));
     }
 
-    bool runCameraAlignmentRetry(
-        std::shared_ptr<MoveGroupInterface> & arm,
-        const std::shared_ptr<MoveGroupInterface> & gripper,
-        const std::string & tag_frame,
-        const std::string & container_pose,
-        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
-    {
-        if (!use_camera_alignment_retry_) {
-            return false;
-        }
-
-        publish_stage(goal_handle, "camera_alignment_retry");
-        speak("Vou realinhar a camera e tentar novamente com a primeira I K");
-
-        arm = createArmInterface(false);
-        if (!arm) {
-            return false;
-        }
-        setActiveInterfaces(arm, gripper);
-
-        bool failed_grasp_verification = false;
-        return run_pick_cycle(
-            arm,
-            gripper,
-            tag_frame,
-            container_pose,
-            "CAMERA_ALIGNMENT_RETRY",
-            goal_handle,
-            true,
-            failed_grasp_verification);
-    }
+    // runCameraAlignmentRetry REMOVIDO (auditoria 2026-08-07, item 3.4):
+    // era codigo morto — definido e nunca chamado; prometia um retry que
+    // nao existia (parametro use_camera_alignment_retry sem efeito).
 
     bool run_pick_cycle(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -1571,9 +1606,15 @@ private:
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
         bool enforce_pitch_pi,
-        bool & failed_grasp_verification)
+        bool & retryable_failure,
+        bool & object_still_grasped)
     {
-        failed_grasp_verification = false;
+        // Auditoria 2026-08-07, item 2.3: TODA falha PRE-grasp e retentavel
+        // (o ladder de 3 tentativas cobre o caso mais comum dos logs — falha
+        // de IK/plan — que antes pulava a tag na 1a). Cada porta de falha
+        // NOMEIA a causa em voz+log (pedido do operador). Falha pos-grasp
+        // (transfer com bloco na garra) NAO seta o flag.
+        retryable_failure = false;
         publish_stage(goal_handle, "detecting_tag");
         speak("Procurando a tag " + spokenTagName(tag_frame));
 
@@ -1587,7 +1628,9 @@ private:
                 cycle_name + " detect_tag")
             && !sweepForTag(arm, tag_frame, tag_tf, cycle_name))
         {
-            speak("Não encontrei a tag " + spokenTagName(tag_frame));
+            retryable_failure = true;
+            speak("Falha: não encontrei a tag " + spokenTagName(tag_frame));
+            last_pick_failure_reason_ = "tag_nao_encontrada";
             return false;
         }
 
@@ -1598,11 +1641,14 @@ private:
                 tag_frame,
                 goal_handle,
                 cycle_name + " pre_approach_xy")) {
+            retryable_failure = true;
+            speak("Falha: não consegui alinhar a câmera com a tag");
+            last_pick_failure_reason_ = "align_camera_falhou";
             return false;
         }
 
         if (!sleepInterruptibly(std::chrono::milliseconds(120))) {
-            return false;
+            return false;  // cancelamento: nao retentar
         }
 
         if (!waitForTagTransform(
@@ -1612,12 +1658,15 @@ private:
                 std::chrono::milliseconds(700),
                 std::chrono::milliseconds(100),
                 cycle_name + " final_approach")) {
+            retryable_failure = true;
+            speak("Falha: perdi a tag na aproximação");
+            last_pick_failure_reason_ = "tag_perdida_na_aproximacao";
             return false;
         }
 
         arm->setMaxVelocityScalingFactor(1.0);
         arm->setMaxAccelerationScalingFactor(0.8);
-        
+
         publish_stage(goal_handle, "final_approach");
         //speak("Fazendo a aproximacao final da tag");
         if (!moveToTarget(
@@ -1628,7 +1677,9 @@ private:
                 true,
                 enforce_pitch_pi,
                 "Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame),
-                "Não encontrei uma solução de I K para a tag " + spokenTagName(tag_frame))) {
+                "Falha: sem solução de I K para a tag " + spokenTagName(tag_frame))) {
+            retryable_failure = true;
+            last_pick_failure_reason_ = "ik_ou_execucao_falhou";
             return false;
         }
         arm->setMaxVelocityScalingFactor(1.0);
@@ -1642,7 +1693,9 @@ private:
                 RCLCPP_ERROR(
                     this->get_logger(),
                     "Cannot verify grasp: gripper effort telemetry is unavailable");
-                speak("Não consigo verificar o esforço da garra");
+                retryable_failure = true;
+                speak("Falha: sem telemetria de esforço da garra");
+            last_pick_failure_reason_ = "sem_telemetria_garra";
                 return false;
             }
         }
@@ -1652,6 +1705,16 @@ private:
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_close");
         if (!planAndExecute(gripper, cycle_name + " close gripper")) {
+            retryable_failure = true;
+            speak("Falha: não consegui fechar a garra");
+            last_pick_failure_reason_ = "garra_nao_fechou";
+            // Verificacao adversarial 2026-08-10: o close falha por tolerancia
+            // JUSTAMENTE quando o bloco esta entre os dedos — reabrir antes do
+            // retry, senao o braco sobe carregando o bloco pincado e o proximo
+            // gripper_open derruba o bloco no chassi.
+            gripper->setStartStateToCurrentState();
+            gripper->setNamedTarget("gripper_open");
+            (void)planAndExecute(gripper, cycle_name + " reopen after failed close");
             return false;
         }
 
@@ -1659,8 +1722,9 @@ private:
             publish_stage(goal_handle, "verifying_grasp");
             speak("Verificando o bloco pela forca da garra");
             if (!verifyGraspByEffort(*effort_before_close, cycle_name)) {
-                failed_grasp_verification = true;
-                speak("A garra não detectou o bloco");
+                retryable_failure = true;
+                speak("Falha: a garra não detectou o bloco");
+            last_pick_failure_reason_ = "garra_vazia";
                 RCLCPP_WARN(
                     this->get_logger(),
                     "[%s] opening gripper after failed grasp verification",
@@ -1675,12 +1739,13 @@ private:
             speak("A garra detectou o bloco");
         }
 
-        return transferGraspedObjectToContainer(
+        return runTransferWithRetry(
             arm,
             gripper,
             container_pose,
             cycle_name,
-            goal_handle);
+            goal_handle,
+            object_still_grasped);
     }
 
     void execute(const std::shared_ptr<GoalHandlePickTag> goal_handle)
@@ -1691,10 +1756,11 @@ private:
         auto result = std::make_shared<PickTag::Result>();
 
         const auto finish_failure =
-            [this, &goal_handle, &result](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard](const std::string & message)
             {
                 result->success = false;
-                releaseExecutionResources();
+                result->fail_reason = last_pick_failure_reason_;
+                execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Pick canceled: " + message;
                     goal_handle->canceled(result);
@@ -1731,6 +1797,14 @@ private:
             return;
         }
         setActiveInterfaces(arm, gripper);
+
+        // Item 2.6b: warmup UNICO do monitor de estado no inicio do goal —
+        // a 1a leitura paga a assinatura de joint_states; as demais sao quentes.
+        if (!arm->getCurrentState(5.0)) {
+            finish_failure(
+                "Pick failed: sem joint_states em 5s (bringup da Pi no ar?)");
+            return;
+        }
 
         gripper->setMaxVelocityScalingFactor(1.0);
         gripper->setMaxAccelerationScalingFactor(1.0);
@@ -1780,7 +1854,8 @@ private:
         const int max_pick_attempts =
             grasp_retry_attempts_ < 0 ? 1 : grasp_retry_attempts_ + 1;
         bool cycle_success = false;
-        bool failed_grasp_verification = false;
+        bool retryable_failure = false;
+        bool object_still_grasped = false;
 
         for (int attempt = 1; attempt <= max_pick_attempts; ++attempt) {
             const std::string cycle_name =
@@ -1788,11 +1863,11 @@ private:
                 "ACTION_CYCLE" :
                 "ACTION_CYCLE_ATTEMPT_" + std::to_string(attempt);
 
-            arm = createArmInterfaceForAttempt(attempt);
-            if (!arm) {
-                cycle_success = false;
-                break;  // move_group sumiu no meio: falha o goal (sem retry cego)
-            }
+            // Item 2.6c: REUTILIZA o MGI entre tentativas — a recriacao nao
+            // trocava solver (placebo do 2.7) e custava 1-2s + monitor frio.
+            // So os parametros dinamicos do perfil mudam por tentativa.
+            applyIkProfile(
+                ikProfileForAttempt(attempt), ikProfileNameForAttempt(attempt));
             setActiveInterfaces(arm, gripper);
 
             if (max_pick_attempts > 1) {
@@ -1807,30 +1882,35 @@ private:
                 cycle_name,
                 goal_handle,
                 attempt < 3,
-                failed_grasp_verification);
+                retryable_failure,
+                object_still_grasped);
 
             if (cycle_success) {
                 break;
+            }
+
+            if (object_still_grasped) {
+                break;  // bloco na garra: nunca retentar/pular — abortar
             }
 
             if (cancellationRequested() || goal_handle->is_canceling()) {
                 break;
             }
 
-            if (!failed_grasp_verification || attempt >= max_pick_attempts) {
+            if (!retryable_failure || attempt >= max_pick_attempts) {
                 break;
             }
 
             if (attempt < max_pick_attempts) {
                 publish_stage(goal_handle, "preparing_next_pick_attempt");
-                speak("Vou trocar o modelo de I K para a proxima tentativa");
+                speak("Vou relaxar as tolerancias para a proxima tentativa");
             }
 
             //speak("Vou abrir a garra e tentar pegar novamente");
             publish_stage(goal_handle, "retrying_grasp");
             RCLCPP_WARN(
                 this->get_logger(),
-                "Grasp verification failed on attempt %d/%d. Retrying pick.",
+                "Pick attempt %d/%d falhou (retentavel). Tentando de novo.",
                 attempt,
                 max_pick_attempts);
 
@@ -1848,18 +1928,23 @@ private:
             }
         }
 
-        if (cancellationRequested() || goal_handle->is_canceling()) {
-            finish_failure("canceled during pick cycle");
-            return;
-        }
-
-        if (cancellationRequested() || goal_handle->is_canceling()) {
-            finish_failure("canceled after pick retries");
+        // Item 2.2b (ANTES do cancel generico): bloco preso na garra e a
+        // informacao mais importante do desfecho — NAO recolher (estado
+        // fisico incerto), NAO pular: abortar com causa explicita para o
+        // operador intervir. finish_failure ja resolve canceled vs abort.
+        if (object_still_grasped) {
+            finish_failure(
+                "object_still_grasped: transporte falhou 2x com o bloco na "
+                "garra — intervencao manual necessaria.");
             return;
         }
 
         const bool success = cycle_success;
 
+        // Verificacao adversarial 2026-08-10: gravar o container ANTES de
+        // responder um cancel tardio — coleta concluida com cancel chegando
+        // na saida deixava o yaml 'empty' e o proximo pick soltava um 2o
+        // bloco no mesmo container.
         bool state_write_success = true;
         std::string state_write_error;
         if (success) {
@@ -1876,29 +1961,67 @@ private:
             }
         }
 
-        result->success = success && state_write_success;
-        if (result->success) {
+        if (cancellationRequested() || goal_handle->is_canceling()) {
+            if (!success) {
+                finish_failure("canceled during pick cycle");
+                return;
+            }
+            result->success = true;
+            result->message = "Pick completed (cancel recebido apos a coleta)";
+            execution_guard.release();
+            goal_handle->canceled(result);
+            return;
+        }
+
+        // Pedido do operador (2026-08-07): apos a falha FINAL, voltar o braco
+        // para a pose de transporte (melhor esforco) — a missao nunca segue
+        // com o braco em posicao imprevisivel — e anunciar o desfecho.
+        if (!cycle_success && arm) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "PICK de %s FALHOU em %d tentativa(s). Recolhendo o braco "
+                "para pegar_obj antes de seguir.",
+                goal->tag_frame.c_str(), max_pick_attempts);
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            (void)planAndExecute(arm, "recolher apos falha final do pick");
+        }
+
+        // Item 2.9: sucesso FISICO manda — falha de I/O do yaml vira WARN +
+        // flag na mensagem, nunca aborta uma coleta ja realizada.
+        result->success = success;
+        if (success && state_write_success) {
             result->message = "Pick completed";
-        } else if (!cycle_success) {
-            result->message = "Pick failed";
-        } else if (!state_write_success) {
+        } else if (success && !state_write_success) {
             result->message =
-                "Pick completed but failed to update container state yaml: " + state_write_error;
+                "Pick completed (AVISO: falha ao gravar container yaml: " +
+                state_write_error + ")";
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Pick fisicamente OK mas o yaml de containers nao gravou: %s",
+                state_write_error.c_str());
+        } else {
+            result->message = "Pick failed";
         }
 
         if (result->success) {
             publish_stage(goal_handle, "done");
             speak("Coleta concluida com sucesso");
-            releaseExecutionResources();
+            execution_guard.release();
             goal_handle->succeed(result);
         } else if (!cycle_success && skip_failed_pick_after_retries_) {
             publish_stage(goal_handle, "skipped_after_pick_retries");
             result->success = true;
-            result->message = "Pick skipped after all retry attempts failed";
+            result->skipped = true;  // item 2.5: contrato explicito
+            result->fail_reason = last_pick_failure_reason_;
+            result->message = "Pick skipped after all retry attempts failed (" +
+                last_pick_failure_reason_ + ")";
             speak("Nao consegui pegar o bloco. Vou seguir para o proximo objetivo");
-            releaseExecutionResources();
+            execution_guard.release();
             goal_handle->succeed(result);
         } else {
+            result->fail_reason = last_pick_failure_reason_;
             speak("Nao consegui pegar o bloco");
             finish_failure(result->message);
         }

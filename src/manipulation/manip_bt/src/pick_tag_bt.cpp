@@ -141,13 +141,13 @@ BT::NodeStatus PickTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
-	// O server pode devolver success=true com "Pick skipped..." (comportamento
-	// de competicao: pular objeto que falhou e seguir a missao) — deixar isso
-	// GRITANTE no log em vez de passar como sucesso silencioso.
-	if (wrapped_result.result->message.find("skipped") != std::string::npos) {
+	// Item 2.5 (auditoria 2026-08-07): skip agora e campo do contrato — sem
+	// matching de substring. A causa vem em fail_reason.
+	if (wrapped_result.result->skipped) {
 		RCLCPP_WARN(
 			rclcpp::get_logger("PickTagBT"),
-			"PICK PULADO apos falhas: %s — missao continua sem este objeto.",
+			"PICK PULADO (causa: %s): %s — missao continua sem este objeto.",
+			wrapped_result.result->fail_reason.c_str(),
 			wrapped_result.result->message.c_str());
 	} else {
 		RCLCPP_INFO(rclcpp::get_logger("PickTagBT"), "PICK action completed successfully");

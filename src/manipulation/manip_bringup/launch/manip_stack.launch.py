@@ -130,6 +130,10 @@ def generate_launch_description():
         DeclareLaunchArgument("fallback_ik_mode", default_value="local"),
         DeclareLaunchArgument("fallback_ik_solve_type", default_value="Distance"),
         DeclareLaunchArgument("fallback_ik_position_only", default_value="true"),
+        # Decisao do operador (2026-08-08): default TRUE — todo start de stack
+        # zera os containers (fluxo real: 1 launch por rodada). Num relaunch
+        # POS-CRASH no meio de missao com bloco a bordo, subir com
+        # reset_container_states:=false para preservar o estado.
         DeclareLaunchArgument("reset_container_states", default_value="true"),
     ]
 
@@ -195,8 +199,10 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(use_pick_place),
         parameters=[{
-            "reset_container_states_on_start": ParameterValue(
-                LaunchConfiguration("reset_container_states"), value_type=bool),
+            # reset_container_states_on_start NAO e mais passado ao no (fica
+            # no default false do codigo): com respawn=True, o reset por
+            # processo zerava o yaml com blocos fisicamente a bordo. O reset
+            # por rodada e o one-shot reset_container_states_once abaixo.
             "verify_grasp_effort": ParameterValue(
                 LaunchConfiguration("verify_grasp_effort"), value_type=bool),
             "grasp_min_effort_nm": ParameterValue(
@@ -237,6 +243,29 @@ def generate_launch_description():
         }],
     )
 
+    # Reset dos containers UMA vez por rodada (start do launch), nunca no
+    # (re)start de processo — verificacao adversarial 2026-08-10: o respawn
+    # do no de pick re-executava o reset e zerava o yaml com blocos a bordo.
+    reset_container_states_once = ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration("reset_container_states")),
+        name="reset_container_states_once",
+        cmd=[
+            "python3", "-c",
+            (
+                "import os\n"
+                "p = r'" + container_state_file + "'\n"
+                "os.makedirs(os.path.dirname(p), exist_ok=True)\n"
+                "linhas = ['containers:\\n']\n"
+                "for c in ('container1', 'container2', 'container3'):\n"
+                "    linhas += ['  %s:\\n' % c, '    occupied: false\\n',"
+                " '    tag_frame: \"\"\\n', '    status: empty\\n']\n"
+                "open(p, 'w').writelines(linhas)\n"
+                "print('containers resetados: ' + p)\n"
+            ),
+        ],
+        output="screen",
+    )
+
     place_action = Node(
         respawn=True,
         respawn_delay=3.0,
@@ -251,6 +280,15 @@ def generate_launch_description():
             "manipulator_lock_file": manipulator_lock_file,
             "robot_description": primitive_robot_description,
             "robot_description_semantic": robot_description_semantic_content,
+            # Verificacao adversarial 2026-08-10: os mesmos args de esforco do
+            # pick valem para o place — sem isso, ajustar o arg no launch so
+            # mudava o pick e o place ficava nos defaults do codigo.
+            "verify_grasp_effort": ParameterValue(
+                LaunchConfiguration("verify_grasp_effort"), value_type=bool),
+            "grasp_min_effort_nm": ParameterValue(
+                LaunchConfiguration("grasp_min_effort_nm"), value_type=float),
+            "grasp_min_effort_increase_nm": ParameterValue(
+                LaunchConfiguration("grasp_min_effort_increase_nm"), value_type=float),
         }],
     )
 
@@ -427,6 +465,7 @@ def generate_launch_description():
     return LaunchDescription(declared_args + [
         move_group,
         commander,
+        reset_container_states_once,
         pick_action,
         place_action,
         realsense,

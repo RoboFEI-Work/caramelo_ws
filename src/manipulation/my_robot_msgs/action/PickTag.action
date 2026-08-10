@@ -2,6 +2,10 @@ string tag_frame
 
 ---
 bool success
+# Auditoria 2026-08-07, item 2.5: skip explicito no contrato — o BT nao
+# precisa mais casar substring de message para saber que o objeto foi pulado.
+bool skipped
+string fail_reason
 string message
 
 ---
