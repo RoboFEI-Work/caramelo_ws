@@ -35,12 +35,18 @@ set(SOURCES
   src/main.cpp
   src/bridge/ros_bridge.cpp
   src/bridge/manual_localization.cpp
+  src/bridge/mission_bridge.cpp
+  src/bridge/robot_state.cpp
   src/bridge/waypoint_manager.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
   src/core/launch_runner.cpp
+  src/core/context_screen.cpp
+  src/core/icones.cpp
+  src/core/home_screen.cpp
   src/core/main_window.cpp
   src/modules/inicio/inicio_module.cpp
+  src/modules/competicao/competicao_module.cpp
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp
   src/modules/localizacao/localizacao_module.cpp

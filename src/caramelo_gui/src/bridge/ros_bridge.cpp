@@ -5,6 +5,8 @@
 #include <functional>
 
 #include "bridge/manual_localization.hpp"
+#include "bridge/mission_bridge.hpp"
+#include "bridge/robot_state.hpp"
 #include "bridge/waypoint_manager.hpp"
 
 RosBridge::RosBridge(QObject * parent)
@@ -53,6 +55,8 @@ RosBridge::RosBridge(QObject * parent)
 
   manual_loc_ = new ManualLocalization(node_, this);
   waypoints_ = new WaypointManager(node_, this);
+  mission_ = new MissionBridge(node_, this);
+  robot_state_ = new RobotState(this);
   follow_client_ = rclcpp_action::create_client<FollowWaypoints>(node_, "follow_waypoints");
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());

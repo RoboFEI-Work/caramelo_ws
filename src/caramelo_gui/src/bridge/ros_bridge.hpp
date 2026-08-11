@@ -40,6 +40,8 @@
 
 class ManualLocalization;
 class WaypointManager;
+class MissionBridge;
+class RobotState;
 
 class RosBridge : public QObject
 {
@@ -65,6 +67,15 @@ public:
   void publishInitialPose(double x, double y, double yaw);
   ManualLocalization * manualLocalization() {return manual_loc_;}
   WaypointManager * waypoints() {return waypoints_;}
+
+  // --- Missao (action /caramelo/run_mission) ---
+  // Dominio proprio, em arquivo proprio: ver bridge/mission_bridge.hpp.
+  MissionBridge * mission() {return mission_;}
+
+  // --- Estado persistente do robo (mapa ativo) ---
+  // Nao e' ROS, mas e' estado do robo, e a regra do projeto e' que os widgets
+  // falem com uma fachada so'. Ver bridge/robot_state.hpp.
+  RobotState * robotState() {return robot_state_;}
 
   // Melhor fixed frame disponivel: map (localizado) > odom > base_footprint.
   QString bestFixedFrame() const;
@@ -131,6 +142,8 @@ private:
 
   ManualLocalization * manual_loc_ = nullptr;
   WaypointManager * waypoints_ = nullptr;
+  MissionBridge * mission_ = nullptr;
+  RobotState * robot_state_ = nullptr;
   rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

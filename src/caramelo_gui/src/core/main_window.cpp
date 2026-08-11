@@ -1,180 +1,119 @@
 #include "core/main_window.hpp"
 
 #include <QCheckBox>
-#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
 #include <QPlainTextEdit>
-#include <QPropertyAnimation>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QStackedWidget>
-#include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include "bridge/manual_localization.hpp"
+#include "bridge/mission_bridge.hpp"
+#include "bridge/robot_state.hpp"
 #include "bridge/ros_bridge.hpp"
+#include "core/context_screen.hpp"
+#include "core/home_screen.hpp"
 #include "core/rviz_frame.hpp"
 #include "core/state_machine.hpp"
-#include "modules/inicio/inicio_module.hpp"
-#include "modules/navegacao/navegacao_module.hpp"
+#include "modules/competicao/competicao_module.hpp"
 #include "modules/docking/docking_module.hpp"
+#include "modules/editor_mapa/editor_mapa_module.hpp"
+#include "modules/inicio/inicio_module.hpp"
 #include "modules/localizacao/localizacao_module.hpp"
 #include "modules/mapas/mapas_module.hpp"
 #include "modules/mapeamento/mapeamento_module.hpp"
-#include "modules/teleop/teleop_module.hpp"
+#include "modules/navegacao/navegacao_module.hpp"
 #include "modules/service_areas/service_areas_module.hpp"
+#include "modules/teleop/teleop_module.hpp"
 #include "modules/waypoints/waypoints_module.hpp"
-#include "modules/editor_mapa/editor_mapa_module.hpp"
 
 MainWindow::MainWindow(QWidget * parent)
 : QMainWindow(parent)
 {
-  setWindowTitle("Caramelo — Interface de Operacao");
+  setWindowTitle("Caramelo");
   resize(1440, 860);
 
   bridge_ = new RosBridge(this);
   state_ = new StateMachine(this);
+  robot_state_ = bridge_->robotState();
 
-  // MAPA permanente no centro.
   rviz_ = new RVizFrame();
+  rviz_->hide();   // a tela inicial nao tem mapa
 
-  // Painel de funcoes (direita) — a sidebar troca somente ele.
-  painel_ = new QStackedWidget();
-  painel_->setFixedWidth(420);
+  telas_ = new QStackedWidget();
 
-  inicio_ = new InicioModule();
-  navegacao_ = new NavegacaoModule(bridge_);
-  docking_ = new DockingModule(bridge_);
-  localizacao_ = new LocalizacaoModule(bridge_);
-  mapas_ = new MapasModule(bridge_);
-  mapeamento_ = new MapeamentoModule(bridge_);
-  teleop_ = new TeleopModule();
-  service_areas_ = new ServiceAreasModule(bridge_);
-  waypoints_ = new WaypointsModule(bridge_);
-  editor_mapa_ = new EditorMapaModule(bridge_);
+  auto * corpo = new QWidget();
+  auto * corpoLayout = new QHBoxLayout(corpo);
+  corpoLayout->setContentsMargins(0, 0, 0, 0);
+  corpoLayout->setSpacing(0);
+  corpoLayout->addWidget(rviz_, 1);
+  corpoLayout->addWidget(telas_, 1);
 
-  // Modulos com muito conteudo ganham scroll no painel estreito.
-  auto scrollable = [](QWidget * w) {
-      auto * sc = new QScrollArea();
-      sc->setWidgetResizable(true);
-      sc->setFrameShape(QFrame::NoFrame);
-      sc->setWidget(w);
-      return sc;
-    };
-
-  painel_->addWidget(scrollable(inicio_));       // 0
-  painel_->addWidget(buildRoboPanel());          // 1
-  painel_->addWidget(scrollable(navegacao_));    // 2
-  painel_->addWidget(scrollable(docking_));      // 3
-  painel_->addWidget(scrollable(localizacao_));  // 4
-  painel_->addWidget(scrollable(mapas_));        // 5
-  painel_->addWidget(scrollable(mapeamento_));   // 6
-  painel_->addWidget(scrollable(teleop_));       // 7
-  painel_->addWidget(scrollable(service_areas_));// 8
-  painel_->addWidget(scrollable(waypoints_));    // 9
-  painel_->addWidget(editor_mapa_);              // 10 (tem canvas proprio)
-
-  auto * central = new QWidget();
-  auto * layout = new QHBoxLayout(central);
-  layout->setContentsMargins(0, 0, 0, 0);
-  layout->setSpacing(0);
-  layout->addWidget(buildSidebar());
-  layout->addWidget(rviz_, 1);        // mapa SEMPRE visivel
-  layout->addWidget(painel_);
-
-  // Painel de logs (oculto por padrao — /rosout dos nos originais).
   auto * logs = new QPlainTextEdit();
   logs->setObjectName("painelLogs");
   logs->setReadOnly(true);
   logs->setMaximumBlockCount(500);
   logs->setFixedHeight(180);
   logs->hide();
-  auto * centralComLogs = new QWidget();
-  auto * vlayout = new QVBoxLayout(centralComLogs);
-  vlayout->setContentsMargins(0, 0, 0, 0);
-  vlayout->setSpacing(0);
-  vlayout->addWidget(central, 1);
-  vlayout->addWidget(logs);
-  setCentralWidget(centralComLogs);
   connect(
     bridge_, &RosBridge::logLine, this,
     [logs](const QString & l) {logs->appendPlainText(l);});
 
-  // Barra de estado: estado + bateria + logs.
-  state_label_ = new QLabel(StateMachine::label(StateMachine::State::OFFLINE));
-  state_label_->setObjectName("estadoAtual");
-  statusBar()->addPermanentWidget(state_label_);
+  auto * central = new QWidget();
+  auto * layout = new QVBoxLayout(central);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->setSpacing(0);
+  layout->addWidget(construirFaixa());
+  layout->addWidget(corpo, 1);
+  layout->addWidget(logs);
+  setCentralWidget(central);
 
-  auto * bateria = new QLabel("Bateria: —");
-  bateria->setObjectName("bateriaLabel");
-  statusBar()->addPermanentWidget(bateria);
-  connect(
-    bridge_, &RosBridge::diagnosticsUpdated, this,
-    [bateria](const QVector<ComponentHealth> & health) {
-      for (const auto & c : health) {
-        if (c.name == "caramelo/bateria") {
-          const QString pct = c.values.value("percentual", "");
-          bateria->setText(pct.isEmpty() ? "Bateria: —" : "Bateria: " + pct + "%");
-        }
-      }
-    });
+  // O botao de logs mora na faixa, nao numa status bar: a faixa e' a unica
+  // regiao permanente da tela, e uma barra de status a mais so' rouba altura.
+  connect(logs_btn_, &QPushButton::toggled, this, [logs](bool on) {logs->setVisible(on);});
 
-  auto * logsBtn = new QPushButton("Logs");
-  logsBtn->setCheckable(true);
-  connect(logsBtn, &QPushButton::toggled, this, [logs](bool on) {logs->setVisible(on);});
-  statusBar()->addPermanentWidget(logsBtn);
+  construirContextos();
 
-  // Fade animado ao trocar o painel de funcoes (sem GL ali — seguro).
-  connect(
-    painel_, &QStackedWidget::currentChanged, this, [this](int) {
-      QWidget * w = painel_->currentWidget();
-      auto * eff = new QGraphicsOpacityEffect(w);
-      w->setGraphicsEffect(eff);
-      auto * anim = new QPropertyAnimation(eff, "opacity");
-      anim->setDuration(200);
-      anim->setStartValue(0.0);
-      anim->setEndValue(1.0);
-      connect(anim, &QPropertyAnimation::finished, w, [w]() {w->setGraphicsEffect(nullptr);});
-      anim->start(QAbstractAnimation::DeleteWhenStopped);
-    });
-
-  // Ligacoes ROS -> UI.
+  // --- ligacoes ROS -> UI ---
   connect(bridge_, &RosBridge::diagnosticsUpdated, inicio_, &InicioModule::onDiagnostics);
   connect(bridge_, &RosBridge::diagnosticsUpdated, state_, &StateMachine::updateFromHealth);
+  connect(bridge_, &RosBridge::diagnosticsUpdated, home_, &HomeScreen::onDiagnostics);
+  connect(
+    state_, &StateMachine::stateChanged, this,
+    [this](int, const QString & label) {state_label_->setText(label);});
 
-  // Modo fantasma: esconde o ROBO REAL e o SCAN REAL enquanto o operador
-  // arrasta o fantasma (ficavam sobrepostos e confundiam a localizacao
-  // manual); restaura ao confirmar/cancelar.
+  auto aplicarArena = [this](const QString & nome) {
+      arena_label_->setText(nome.isEmpty() ? "Arena: nenhuma" : "Arena: " + nome);
+      home_->setMapaAtivo(nome);
+    };
+  aplicarArena(robot_state_->mapName());
+  connect(robot_state_, &RobotState::mapNameChanged, this, aplicarArena);
+
+  // Modo fantasma: esconde o robo e o scan reais enquanto o operador arrasta o
+  // fantasma (ficavam sobrepostos e confundiam a localizacao manual).
   connect(
     bridge_->manualLocalization(), &ManualLocalization::activeChanged, this,
     [this](bool active) {
       rviz_->setLayerEnabled("Robo", !active);
       rviz_->setLayerEnabled("Laser", !active);
-      // Ferramenta Interact ativa: sem ela o clique so arrastava a CAMERA e
-      // era impossivel pegar o fantasma. Volta p/ mover-camera ao sair.
       rviz_->activateTool(active ? "interact" : "move");
     });
-  connect(
-    state_, &StateMachine::stateChanged, this,
-    [this](int, const QString & label) {
-      state_label_->setText("Estado: " + label);
-    });
 
-  // Fixed frame automatico: usa map quando existir (localizado/mapeando);
-  // senao cai para odom — assim o ROBO SEMPRE APARECE, mesmo sem mapa
-  // (a Raspberry/sim esta sempre publicando TF odom->base).
+  // Fixed frame automatico: usa map quando existir; senao cai para odom, para o
+  // robo aparecer mesmo sem mapa.
   auto * frameTimer = new QTimer(this);
   connect(
     frameTimer, &QTimer::timeout, this, [this]() {
       rviz_->setFixedFrame(bridge_->bestFixedFrame());
+      home_->setServidorMissao(bridge_->mission()->serverReady());
     });
   frameTimer->start(2000);
 
   bridge_->start();
+  irPara(0);
 }
 
 MainWindow::~MainWindow()
@@ -184,47 +123,61 @@ MainWindow::~MainWindow()
   }
 }
 
-QWidget * MainWindow::buildSidebar()
+QWidget * MainWindow::construirFaixa()
 {
-  sidebar_ = new QListWidget();
-  sidebar_->setObjectName("sidebar");
-  sidebar_->setFixedWidth(200);
+  auto * faixa = new QWidget();
+  faixa->setObjectName("faixaSuperior");
+  faixa->setFixedHeight(58);
+  auto * layout = new QHBoxLayout(faixa);
+  layout->setContentsMargins(12, 6, 12, 6);
 
-  addModule("Inicio", 0, true);
-  addModule("Mapa & Camadas", 1, true);
-  addModule("Navegacao", 2, true);
-  addModule("Docking", 3, true);
-  addModule("Localizacao", 4, true);
-  addModule("Mapas", 5, true);
-  addModule("Mapeamento", 6, true);
-  addModule("Teleop", 7, true);
-  addModule("Service Areas", 8, true);
-  addModule("Waypoints", 9, true);
-  addModule("Editor de Mapa", 10, true);
-  addModule("Testes", -1, false);
-  addModule("Simulacao", -1, false);
+  voltar_ = new QPushButton("< Menu");
+  voltar_->setObjectName("botaoVoltar");
+  voltar_->setFixedWidth(110);
+  connect(voltar_, &QPushButton::clicked, this, [this]() {irPara(0);});
+  layout->addWidget(voltar_);
 
-  connect(
-    sidebar_, &QListWidget::currentItemChanged, this,
-    [this](QListWidgetItem * current, QListWidgetItem *) {
-      if (!current) {
-        return;
-      }
-      const int panel = current->data(Qt::UserRole).toInt();
-      if (panel >= 0) {
-        painel_->setCurrentIndex(panel);
-      }
-    });
+  titulo_ = new QLabel("Caramelo");
+  titulo_->setObjectName("tituloFaixa");
+  layout->addWidget(titulo_);
+  layout->addStretch();
 
-  sidebar_->setCurrentRow(0);
-  return sidebar_;
+  // Arena e estado ficam SEMPRE visiveis: sao as duas perguntas que o operador
+  // faz a cada dois minutos ("qual mapa?" e "da para andar?").
+  arena_label_ = new QLabel("Arena: —");
+  arena_label_->setObjectName("infoFaixa");
+  layout->addWidget(arena_label_);
+
+  state_label_ = new QLabel(StateMachine::label(StateMachine::State::OFFLINE));
+  state_label_->setObjectName("estadoFaixa");
+  layout->addWidget(state_label_);
+
+  logs_btn_ = new QPushButton("Logs");
+  logs_btn_->setCheckable(true);
+  logs_btn_->setFixedWidth(80);
+  layout->addWidget(logs_btn_);
+
+  return faixa;
 }
 
-QWidget * MainWindow::buildRoboPanel()
+QWidget * MainWindow::construirPainelDoMapa()
 {
   auto * side = new QWidget();
   auto * sideLayout = new QVBoxLayout(side);
 
+  auto * toolsTitle = new QLabel("Ferramentas");
+  toolsTitle->setObjectName("tituloModulo");
+  sideLayout->addWidget(toolsTitle);
+  auto addToolBtn = [this, sideLayout](const QString & text, const QString & key) {
+      auto * b = new QPushButton(text);
+      connect(b, &QPushButton::clicked, this, [this, key]() {rviz_->activateTool(key);});
+      sideLayout->addWidget(b);
+    };
+  addToolBtn("Definir destino no mapa", "goal");
+  addToolBtn("Mover camera", "move");
+  addToolBtn("Interagir (arrastar itens)", "interact");
+
+  sideLayout->addSpacing(12);
   auto * layersTitle = new QLabel("Camadas");
   layersTitle->setObjectName("tituloModulo");
   sideLayout->addWidget(layersTitle);
@@ -242,62 +195,109 @@ QWidget * MainWindow::buildRoboPanel()
       }
     });
 
-  sideLayout->addSpacing(12);
-  auto * toolsTitle = new QLabel("Ferramentas");
-  toolsTitle->setObjectName("tituloModulo");
-  sideLayout->addWidget(toolsTitle);
-  auto addToolBtn = [this, sideLayout](const QString & text, const QString & key) {
-      auto * b = new QPushButton(text);
-      connect(b, &QPushButton::clicked, this, [this, key]() {rviz_->activateTool(key);});
-      sideLayout->addWidget(b);
-    };
-  addToolBtn("Interagir (arrastar itens)", "interact");
-  addToolBtn("Mover camera", "move");
-  addToolBtn("Definir Goal", "goal");
-
-  // Localizacao rapida na tela do mapa: posicionar -> arrastar -> confirmar.
-  sideLayout->addSpacing(12);
-  auto * locTitle = new QLabel("Localizacao");
-  locTitle->setObjectName("tituloModulo");
-  sideLayout->addWidget(locTitle);
-  auto * ml = bridge_->manualLocalization();
-  auto * locIniciar = new QPushButton("Posicionar robo");
-  connect(
-    locIniciar, &QPushButton::clicked, this, [this, ml]() {
-      ml->start();
-      rviz_->activateTool("interact");
-    });
-  sideLayout->addWidget(locIniciar);
-  auto * locConfirmar = new QPushButton("Confirmar pose");
-  locConfirmar->setObjectName("acaoPrimaria");
-  connect(
-    locConfirmar, &QPushButton::clicked, this, [this, ml]() {
-      ml->confirm();
-      rviz_->activateTool("move");
-    });
-  sideLayout->addWidget(locConfirmar);
-  auto * locCancelar = new QPushButton("Cancelar");
-  connect(
-    locCancelar, &QPushButton::clicked, this, [this, ml]() {
-      ml->cancel();
-      rviz_->activateTool("move");
-    });
-  sideLayout->addWidget(locCancelar);
   sideLayout->addStretch();
-
-  auto * sc = new QScrollArea();
-  sc->setWidgetResizable(true);
-  sc->setFrameShape(QFrame::NoFrame);
-  sc->setWidget(side);
-  return sc;
+  return side;
 }
 
-void MainWindow::addModule(const QString & nome, int panelIndex, bool enabled)
+void MainWindow::construirContextos()
 {
-  auto * item = new QListWidgetItem(nome, sidebar_);
-  item->setData(Qt::UserRole, panelIndex);
-  item->setSizeHint(QSize(0, 44));
-  if (!enabled) {
-    item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+  home_ = new HomeScreen();
+  connect(home_, &HomeScreen::abrirContexto, this, &MainWindow::irPara);
+  // "Parar o robo" da barra inferior: cancela a navegacao em voo e aborta a
+  // missao. Nao e' E-stop -- o robo nao tem um -- e por isso o rotulo nao
+  // promete parada de emergencia.
+  connect(
+    home_, &HomeScreen::pararRobo, this, [this]() {
+      bridge_->cancelNav();
+      bridge_->mission()->abort();
+    });
+  telas_->addWidget(home_);   // 0
+
+  inicio_ = new InicioModule();
+  competicao_ = new CompeticaoModule(bridge_);
+  navegacao_ = new NavegacaoModule(bridge_);
+  docking_ = new DockingModule(bridge_);
+  localizacao_ = new LocalizacaoModule(bridge_);
+  mapas_ = new MapasModule(bridge_);
+  mapeamento_ = new MapeamentoModule(bridge_);
+  teleop_ = new TeleopModule();
+  service_areas_ = new ServiceAreasModule(bridge_);
+  waypoints_ = new WaypointsModule(bridge_);
+  editor_mapa_ = new EditorMapaModule(bridge_);
+
+  // 1 — Operacao: tudo que se faz com o robo ja' mapeado e localizado.
+  auto * operacao = new ContextScreen("Operacao", true);
+  operacao->addSecao("Mapa", construirPainelDoMapa());
+  operacao->addSecao("Navegar", navegacao_);
+  operacao->addSecao("Docking", docking_);
+  operacao->addSecao("Localizacao", localizacao_);
+  operacao->addSecao("Teleop", teleop_);
+  telas_->addWidget(operacao);
+
+  // 2 — Competicao: o mapa nao ajuda aqui; o que importa e' o passo da missao.
+  auto * competicao = new ContextScreen("Competicao", false);
+  competicao->addSecao("Missao", competicao_);
+  telas_->addWidget(competicao);
+
+  // 3 — Mapas: escolher a arena. O preview proprio (waypoints, docks, camadas)
+  // entra aqui na proxima etapa; por isso ainda nao pede o RViz.
+  auto * mapasCtx = new ContextScreen("Mapas", false);
+  mapasCtx->addSecao("Arenas", mapas_);
+  telas_->addWidget(mapasCtx);
+
+  // 4 — Mapeamento: criar o mapa e tudo que vive dentro dele. Waypoints, service
+  // areas e o editor sao sub-funcoes do mapeamento, nao modulos soltos.
+  auto * mapeamentoCtx = new ContextScreen("Mapeamento", true);
+  mapeamentoCtx->addSecao("Criar mapa", mapeamento_);
+  mapeamentoCtx->addSecao("Waypoints", waypoints_);
+  mapeamentoCtx->addSecao("Service Areas", service_areas_);
+  mapeamentoCtx->addSecao("Editor", editor_mapa_);
+  telas_->addWidget(mapeamentoCtx);
+
+  // 5 — Modo Avancado: e' para ca' que foi o painel tecnico que ocupava a tela
+  // inicial. Sensores ao vivo entram aqui na proxima etapa.
+  auto * avancado = new ContextScreen("Modo Avancado", true);
+  avancado->addSecao("Estado do robo", inicio_);
+  telas_->addWidget(avancado);
+}
+
+void MainWindow::irPara(int indice)
+{
+  if (indice < 0 || indice >= telas_->count()) {
+    return;
   }
+  telas_->setCurrentIndex(indice);
+
+  auto * ctx = qobject_cast<ContextScreen *>(telas_->currentWidget());
+  const bool ehHome = (indice == 0);
+
+  voltar_->setVisible(!ehHome);
+  titulo_->setText(ctx ? ctx->titulo() : "Caramelo");
+
+  // Mostrar/esconder em vez de criar/destruir: ver o comentario do cabecalho.
+  rviz_->setVisible(ctx && ctx->precisaDoMapa());
+  ajustarLarguraDoPainel();
+}
+
+void MainWindow::ajustarLarguraDoPainel()
+{
+  auto * ctx = qobject_cast<ContextScreen *>(telas_->currentWidget());
+  if (!ctx || !ctx->precisaDoMapa()) {
+    telas_->setMinimumWidth(0);
+    telas_->setMaximumWidth(QWIDGETSIZE_MAX);
+    return;
+  }
+  // Largura proporcional, com piso: um painel fixo de 460 px cortava os botoes
+  // dos modulos em telas grandes e nao respirava em telas pequenas. O piso vem
+  // do proprio contexto (abas + largura util da ferramenta).
+  const int piso = ctx->larguraComMapa();
+  const int proporcional = static_cast<int>(width() * 0.34);
+  const int largura = std::min(std::max(piso, proporcional), 760);
+  telas_->setFixedWidth(largura);
+}
+
+void MainWindow::resizeEvent(QResizeEvent * e)
+{
+  QMainWindow::resizeEvent(e);
+  ajustarLarguraDoPainel();
 }

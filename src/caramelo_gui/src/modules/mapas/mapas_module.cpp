@@ -14,6 +14,7 @@
 #include <QVBoxLayout>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
+#include "bridge/robot_state.hpp"
 
 #include "bridge/ros_bridge.hpp"
 
@@ -92,10 +93,21 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
     };
 
   addBtn(
-    "Usar", [this]() {
+    "Usar esta arena", [this]() {
       const QString nome = selectedMap();
       if (nome.isEmpty()) {return;}
+      // Carrega agora E grava a escolha no robo. Sem gravar, o mapa voltaria ao
+      // anterior no proximo boot e alguem teria que lembrar de passar o nome
+      // certo num terminal -- exatamente o que esta interface existe para
+      // eliminar.
       bridge_->loadMap(mapsDir() + "/" + nome + "/map.yaml");
+      QString erro;
+      if (!bridge_->robotState()->setMapName(nome, &erro)) {
+        QMessageBox::warning(
+          this, "Arena",
+          "O mapa foi carregado agora, mas nao consegui gravar a escolha no robo:\n" +
+          erro + "\n\nAo reiniciar, ele voltara a arena anterior.");
+      }
     })->setObjectName("acaoPrimaria");
 
   addBtn(
