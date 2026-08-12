@@ -28,11 +28,10 @@ class NavegacaoModule;
 class DockingModule;
 class LocalizacaoModule;
 class MapasModule;
-class MapeamentoModule;
+class FerramentaMapeamento;
 class TeleopModule;
 class ServiceAreasModule;
 class WaypointsModule;
-class EditorMapaModule;
 
 class QLabel;
 class QPushButton;
@@ -70,11 +69,10 @@ private:
   DockingModule * docking_ = nullptr;
   LocalizacaoModule * localizacao_ = nullptr;
   MapasModule * mapas_ = nullptr;
-  MapeamentoModule * mapeamento_ = nullptr;
+  FerramentaMapeamento * ferramenta_mapa_ = nullptr;
   TeleopModule * teleop_ = nullptr;
   ServiceAreasModule * service_areas_ = nullptr;
   WaypointsModule * waypoints_ = nullptr;
-  EditorMapaModule * editor_mapa_ = nullptr;
 
   QPushButton * voltar_ = nullptr;
   QPushButton * logs_btn_ = nullptr;

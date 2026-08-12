@@ -20,11 +20,10 @@
 #include "core/state_machine.hpp"
 #include "modules/competicao/competicao_module.hpp"
 #include "modules/docking/docking_module.hpp"
-#include "modules/editor_mapa/editor_mapa_module.hpp"
 #include "modules/inicio/inicio_module.hpp"
 #include "modules/localizacao/localizacao_module.hpp"
 #include "modules/mapas/mapas_module.hpp"
-#include "modules/mapeamento/mapeamento_module.hpp"
+#include "modules/mapeamento/ferramenta_mapeamento.hpp"
 #include "modules/navegacao/navegacao_module.hpp"
 #include "modules/service_areas/service_areas_module.hpp"
 #include "modules/teleop/teleop_module.hpp"
@@ -219,16 +218,19 @@ void MainWindow::construirContextos()
   docking_ = new DockingModule(bridge_);
   localizacao_ = new LocalizacaoModule(bridge_);
   mapas_ = new MapasModule(bridge_);
-  mapeamento_ = new MapeamentoModule(bridge_);
   teleop_ = new TeleopModule();
   service_areas_ = new ServiceAreasModule(bridge_);
   waypoints_ = new WaypointsModule(bridge_);
-  editor_mapa_ = new EditorMapaModule(bridge_);
+  // MapeamentoModule e EditorMapaModule sairam daqui: viraram passos da
+  // FerramentaMapeamento, que os cria por dentro.
 
   // 1 — Operacao: tudo que se faz com o robo ja' mapeado e localizado.
+  // Waypoints entram aqui, e nao no Mapeamento: CRIAR um waypoint e' mapeamento,
+  // mas mandar o robo seguir a lista e' operacao.
   auto * operacao = new ContextScreen("Operacao", true);
   operacao->addSecao("Mapa", construirPainelDoMapa());
   operacao->addSecao("Navegar", navegacao_);
+  operacao->addSecao("Waypoints", waypoints_);
   operacao->addSecao("Docking", docking_);
   operacao->addSecao("Localizacao", localizacao_);
   operacao->addSecao("Teleop", teleop_);
@@ -245,19 +247,33 @@ void MainWindow::construirContextos()
   mapasCtx->addSecao("Arenas", mapas_, /*larguraTotal=*/true);
   telas_->addWidget(mapasCtx);
 
-  // 4 — Mapeamento: criar o mapa e tudo que vive dentro dele. Waypoints, service
-  // areas e o editor sao sub-funcoes do mapeamento, nao modulos soltos.
+  // 4 — Mapeamento: UMA ferramenta com o fluxo inteiro (criar o mapa, marcar
+  // pontos, paredes virtuais, conferir). Waypoints, service areas, docking e o
+  // editor de bitmap deixaram de ser modulos soltos: sao passos dela.
   auto * mapeamentoCtx = new ContextScreen("Mapeamento", true);
-  mapeamentoCtx->addSecao("Criar mapa", mapeamento_);
-  mapeamentoCtx->addSecao("Waypoints", waypoints_);
-  mapeamentoCtx->addSecao("Service Areas", service_areas_);
-  mapeamentoCtx->addSecao("Editor", editor_mapa_);
+  ferramenta_mapa_ = new FerramentaMapeamento(bridge_);
+  mapeamentoCtx->addSecao("Mapeamento", ferramenta_mapa_, /*larguraTotal=*/true);
   telas_->addWidget(mapeamentoCtx);
+  // O mapa ao vivo so' faz sentido nos passos em que o robo se move; no passo de
+  // conferencia quem manda e' o preview do arquivo salvo.
+  connect(
+    ferramenta_mapa_, &FerramentaMapeamento::querMapaAoVivo, this,
+    [this, mapeamentoCtx](bool querer) {
+      mapeamentoCtx->setPrecisaDoMapa(querer);
+      if (telas_->currentWidget() == mapeamentoCtx) {
+        rviz_->setVisible(querer);
+        ajustarLarguraDoPainel();
+      }
+    });
 
   // 5 — Modo Avancado: e' para ca' que foi o painel tecnico que ocupava a tela
   // inicial. Sensores ao vivo entram aqui na proxima etapa.
   auto * avancado = new ContextScreen("Modo Avancado", true);
   avancado->addSecao("Estado do robo", inicio_);
+  // Listar e validar service areas e' conferencia, nao criacao — a criacao vive
+  // no Mapeamento. Aqui serve para responder "por que a missao recusou esta
+  // arena?".
+  avancado->addSecao("Service areas", service_areas_);
   telas_->addWidget(avancado);
 }
 

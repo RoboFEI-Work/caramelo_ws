@@ -35,6 +35,10 @@ public:
   QString titulo() const {return titulo_;}
   bool precisaDoMapa() const {return precisa_do_mapa_;}
 
+  // Alguns contextos alternam: a ferramenta de mapeamento usa o mapa ao vivo
+  // enquanto se dirige o robo e o preview do arquivo na conferencia.
+  void setPrecisaDoMapa(bool precisa) {precisa_do_mapa_ = precisa;}
+
   // Largura minima do painel quando o mapa divide a tela com este contexto.
   // Inclui a lista de abas: esquecer isso foi o que cortou os botoes dos
   // modulos na primeira versao.

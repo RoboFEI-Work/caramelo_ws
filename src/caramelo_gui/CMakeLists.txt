@@ -53,6 +53,7 @@ set(SOURCES
   src/modules/localizacao/localizacao_module.cpp
   src/modules/mapas/mapas_module.cpp
   src/modules/mapeamento/mapeamento_module.cpp
+  src/modules/mapeamento/ferramenta_mapeamento.cpp
   src/modules/teleop/teleop_module.cpp
   src/modules/service_areas/service_areas_module.cpp
   src/modules/waypoints/waypoints_module.cpp
