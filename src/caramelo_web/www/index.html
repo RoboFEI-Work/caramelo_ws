@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caramelo — painel de engenharia</title>
+<!--
+  Pagina unica, sem build e sem dependencia externa.
+  Nao ha' internet em competicao: nenhum CDN, nenhuma fonte remota, nenhum
+  'npm install' no caminho. O canvas e' desenhado a mao — uma biblioteca de
+  mapas traria megabytes para fazer menos do que estas 200 linhas.
+-->
+<style>
+  :root{
+    --fundo:#0b1626; --painel:#101e35; --borda:#1b3457; --texto:#e6f1ff;
+    --fraco:#7d9cc4; --ciano:#35c3f0; --verde:#27ae60; --ambar:#f2994a;
+    --vermelho:#eb5757;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--fundo);color:var(--texto);
+       font-family:"Noto Sans",system-ui,sans-serif;font-size:14px}
+  header{display:flex;align-items:center;gap:18px;padding:12px 20px;
+         background:#081120;border-bottom:1px solid #14294a}
+  header h1{font-size:19px;margin:0;font-weight:800}
+  .chip{padding:4px 12px;border-radius:10px;font-weight:700;font-size:12px;
+        background:#7f93b0;color:#06121f}
+  .chip.ok{background:var(--verde)} .chip.aviso{background:var(--ambar)}
+  .chip.erro{background:var(--vermelho);color:#fff}
+  main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px;
+       height:calc(100vh - 58px)}
+  @media (max-width:900px){main{grid-template-columns:1fr;height:auto}}
+  .cartao{background:var(--painel);border:1px solid var(--borda);
+          border-radius:16px;padding:14px;overflow:auto}
+  .cartao h2{font-size:15px;margin:0 0 10px;color:#fff}
+  #mapa{width:100%;height:100%;display:block;border-radius:12px;background:#050d18;
+        cursor:crosshair}
+  .linha{display:flex;justify-content:space-between;gap:10px;padding:4px 0;
+         border-bottom:1px solid #16294a}
+  .linha:last-child{border-bottom:none}
+  .rotulo{color:var(--fraco)} .valor{font-weight:700}
+  .aviso{color:#ffd28f;font-size:13px;margin:4px 0}
+  select,button{background:#0e1c31;color:var(--texto);border:1px solid #1f3a5f;
+                border-radius:10px;padding:8px 10px;font-weight:600;width:100%}
+  button{cursor:pointer;margin-top:8px}
+  button:hover{border-color:var(--ciano)}
+  .dica{color:var(--fraco);font-size:12px;margin-top:8px;line-height:1.45}
+</style>
+</head>
+<body>
+<header>
+  <h1>Caramelo</h1>
+  <span id="chipRos" class="chip">conectando…</span>
+  <span id="chipArena" class="chip">arena —</span>
+  <span id="chipNav" class="chip">navegação —</span>
+  <span id="chipMissao" class="chip">missão parada</span>
+</header>
+
+<main>
+  <div class="cartao" style="padding:8px">
+    <canvas id="mapa"></canvas>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px;overflow:auto">
+    <div class="cartao">
+      <h2>Arena</h2>
+      <select id="seletorArena"></select>
+      <div id="resumoArena"></div>
+      <div id="avisosArena"></div>
+    </div>
+
+    <div class="cartao">
+      <h2>Robô</h2>
+      <div class="linha"><span class="rotulo">Posição</span><span class="valor" id="vPose">—</span></div>
+      <div class="linha"><span class="rotulo">Direção</span><span class="valor" id="vYaw">—</span></div>
+      <div class="linha"><span class="rotulo">LiDAR</span><span class="valor" id="vScan">—</span></div>
+      <div class="dica">Clique no mapa para mandar o robô até lá.
+        A direção final fica a critério do Nav2.</div>
+    </div>
+
+    <div class="cartao">
+      <h2>Missão</h2>
+      <div id="missao">Nenhuma missão em andamento.</div>
+    </div>
+
+    <div class="cartao">
+      <h2>Saúde</h2>
+      <div id="saude"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const cv = document.getElementById("mapa");
+const ctx = cv.getContext("2d");
+
+let meta = null;         // metadados da arena (resolução, origem, pontos)
+let imagemMapa = null;   // Image() do PNG
+let estado = {};         // último instantâneo do robô
+let vista = {escala: 1, dx: 0, dy: 0};
+
+const $ = (id) => document.getElementById(id);
+const chip = (el, texto, classe) => { el.textContent = texto; el.className = "chip " + (classe||""); };
+
+// ---------------------------------------------------------------- geometria
+// map.yaml: origin é a pose do pixel INFERIOR esquerdo, e a imagem cresce para
+// baixo. Errar este sinal espelha todos os marcadores.
+function paraTela(x, y) {
+  const px = (x - meta.origem[0]) / meta.resolucao;
+  const py = meta.altura_px - (y - meta.origem[1]) / meta.resolucao;
+  return [vista.dx + px * vista.escala, vista.dy + py * vista.escala];
+}
+function paraMundo(cx, cy) {
+  const px = (cx - vista.dx) / vista.escala;
+  const py = (cy - vista.dy) / vista.escala;
+  return [
+    px * meta.resolucao + meta.origem[0],
+    (meta.altura_px - py) * meta.resolucao + meta.origem[1],
+  ];
+}
+function enquadrar() {
+  if (!meta || !meta.largura_px) return;
+  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  vista.escala = Math.min(cv.width / meta.largura_px, cv.height / meta.altura_px) * 0.95;
+  vista.dx = (cv.width - meta.largura_px * vista.escala) / 2;
+  vista.dy = (cv.height - meta.altura_px * vista.escala) / 2;
+}
+
+// ---------------------------------------------------------------- desenho
+function marcador(x, y, yaw, cor, rotulo, semPose) {
+  const [cx, cy] = paraTela(x, y);
+  ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+  ctx.fillStyle = semPose ? "#eb5757" : cor; ctx.fill();
+  ctx.strokeStyle = "#06121f"; ctx.lineWidth = 2; ctx.stroke();
+  if (!semPose && yaw !== undefined) {
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(yaw) * 18, cy - Math.sin(yaw) * 18);
+    ctx.strokeStyle = cor; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  if (rotulo) {
+    ctx.font = "bold 11px sans-serif";
+    ctx.fillStyle = semPose ? "#ff9d9d" : "#cfe4fb";
+    ctx.fillText(semPose ? rotulo + " (sem pose)" : rotulo, cx + 9, cy - 8);
+  }
+}
+
+function desenhar() {
+  if (!meta || !imagemMapa) return;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.imageSmoothingEnabled = vista.escala < 3;
+  ctx.drawImage(imagemMapa, vista.dx, vista.dy,
+                meta.largura_px * vista.escala, meta.altura_px * vista.escala);
+
+  (meta.areas || []).forEach(a => marcador(a.x, a.y, a.yaw, "#56ccf2", "", a.sem_pose));
+  (meta.docks || []).forEach(d => {
+    const cor = d.id === "START" ? "#27ae60" : (d.id === "FINISH" ? "#9b51e0" : "#f2994a");
+    marcador(d.x, d.y, d.yaw, cor, d.id, d.sem_pose);
+  });
+  (meta.waypoints || []).forEach(w => marcador(w.x, w.y, w.yaw, "#35c3f0", w.id, false));
+
+  // LiDAR, no referencial do robô.
+  const pose = estado.pose, scan = estado.scan;
+  if (pose && scan && scan.ranges) {
+    ctx.fillStyle = "rgba(53,195,240,0.85)";
+    // O incremento dobra porque o servidor já decimou 1:2.
+    const passo = scan.angle_increment * 2;
+    scan.ranges.forEach((r, i) => {
+      if (r === null) return;
+      const ang = pose.yaw + scan.angle_min + i * passo;
+      const [px, py] = paraTela(pose.x + Math.cos(ang) * r, pose.y + Math.sin(ang) * r);
+      ctx.fillRect(px - 1, py - 1, 2, 2);
+    });
+  }
+
+  if (pose) {
+    const [rx, ry] = paraTela(pose.x, pose.y);
+    ctx.save(); ctx.translate(rx, ry); ctx.rotate(-pose.yaw);
+    ctx.beginPath(); ctx.moveTo(13, 0); ctx.lineTo(-8, -8); ctx.lineTo(-8, 8);
+    ctx.closePath();
+    // Dado velho aparece apagado: uma tela congelada não pode parecer um robô
+    // parado.
+    ctx.fillStyle = pose.velho ? "#7f93b0" : "#ff9a2e"; ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ---------------------------------------------------------------- dados
+async function carregarArena(nome) {
+  meta = await (await fetch(`/api/arenas/${nome}/meta`)).json();
+  $("resumoArena").innerHTML =
+    `<div class="linha"><span class="rotulo">Docks</span><span class="valor">${meta.docks.length}</span></div>` +
+    `<div class="linha"><span class="rotulo">Service areas</span><span class="valor">${meta.areas.length}</span></div>` +
+    `<div class="linha"><span class="rotulo">Waypoints</span><span class="valor">${meta.waypoints.length}</span></div>` +
+    `<div class="linha"><span class="rotulo">Paredes virtuais</span><span class="valor">${meta.tem_keepout ? "sim" : "não"}</span></div>`;
+  $("avisosArena").innerHTML =
+    (meta.avisos || []).map(a => `<div class="aviso">• ${a}</div>`).join("");
+
+  imagemMapa = new Image();
+  imagemMapa.onload = () => { enquadrar(); desenhar(); };
+  imagemMapa.src = `/api/arenas/${nome}/mapa.png?t=${Date.now()}`;
+}
+
+async function iniciar() {
+  const r = await (await fetch("/api/arenas")).json();
+  const sel = $("seletorArena");
+  sel.innerHTML = r.arenas.map(a =>
+    `<option value="${a}" ${a === r.ativa ? "selected" : ""}>${a}${a === r.ativa ? "  (ativa)" : ""}</option>`).join("");
+  sel.onchange = () => carregarArena(sel.value);
+  if (r.arenas.length) await carregarArena(sel.value || r.arenas[0]);
+
+  setInterval(async () => {
+    try {
+      const s = await (await fetch("/api/saude")).json();
+      chip($("chipRos"), `ROS: ${s.quantidade_nos} nós`, s.ros ? "ok" : "erro");
+      chip($("chipArena"), `arena ${s.arena || "—"}`, s.arena ? "ok" : "aviso");
+      chip($("chipNav"), s.navegacao_pronta ? "navegação pronta" : "navegação fora do ar",
+           s.navegacao_pronta ? "ok" : "erro");
+    } catch { chip($("chipRos"), "servidor fora do ar", "erro"); }
+  }, 3000);
+
+  const ws = new WebSocket(`ws://${location.host}/ws/estado`);
+  ws.onmessage = (ev) => {
+    estado = JSON.parse(ev.data);
+    const p = estado.pose;
+    $("vPose").textContent = p ? `${p.x.toFixed(2)} , ${p.y.toFixed(2)} m` : "não localizado";
+    $("vYaw").textContent = p ? `${(p.yaw * 180 / Math.PI).toFixed(0)}°` : "—";
+    $("vScan").textContent = estado.scan
+      ? `${estado.scan.ranges.filter(r => r !== null).length} pontos`
+      : "sem dados";
+
+    const m = estado.missao;
+    chip($("chipMissao"), m ? `missão ${m.estado}` : "missão parada",
+         m && m.estado === "executando" ? "ok" : "");
+    $("missao").innerHTML = m
+      ? `<div class="linha"><span class="rotulo">Tarefa</span><span class="valor">${m.task_id || "—"}</span></div>
+         <div class="linha"><span class="rotulo">Passo</span><span class="valor">${m.passo + 1} / ${m.total}</span></div>
+         <div class="linha"><span class="rotulo">Ação</span><span class="valor">${m.tipo} ${m.alvo}</span></div>
+         <div class="linha"><span class="rotulo">Tempo</span><span class="valor">${m.decorrido.toFixed(0)} s</span></div>
+         <div class="dica">${m.mensagem || ""}</div>`
+      : "Nenhuma missão em andamento.";
+
+    const d = estado.diagnostico || {};
+    $("saude").innerHTML = Object.keys(d).sort().map(k => {
+      const nivel = d[k].level;
+      const cor = nivel === 0 ? "var(--verde)" : nivel === 1 ? "var(--ambar)" : "var(--vermelho)";
+      return `<div class="linha"><span class="rotulo">${k.replace("caramelo/", "")}</span>
+              <span class="valor" style="color:${cor}">${d[k].message || "—"}</span></div>`;
+    }).join("") || '<div class="dica">Sem diagnóstico publicado.</div>';
+
+    desenhar();
+  };
+
+  cv.onclick = async (ev) => {
+    if (!meta) return;
+    const r = cv.getBoundingClientRect();
+    const [x, y] = paraMundo(ev.clientX - r.left, ev.clientY - r.top);
+    const resp = await (await fetch("/api/meta", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({x, y, yaw: 0}),
+    })).json();
+    $("vPose").textContent = resp.mensagem;
+  };
+
+  window.onresize = () => { enquadrar(); desenhar(); };
+}
+iniciar();
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>caramelo_web</name>
+  <version>0.1.0</version>
+  <description>
+    Painel web de engenharia do Caramelo: acompanhar e depurar o robo de outro
+    computador da rede, sem instalar nada no cliente. Nao substitui a GUI Qt
+    embarcada -- as duas coexistem sobre o mesmo contrato ROS.
+  </description>
+  <maintainer email="victoroliveiraayres@gmail.com">RoboFEI@Work</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>caramelo_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>caramelo_mapping</exec_depend>
+
+  <!-- Transporte generico de topicos/services/actions para o navegador. -->
+  <exec_depend>rosbridge_server</exec_depend>
+  <!-- MJPEG da camera, sob demanda. -->
+  <exec_depend>web_video_server</exec_depend>
+
+  <!--
+    fastapi e uvicorn nao tem chave de rosdep no Ubuntu 24.04. Estao instalados
+    no usuario, em ~/.local, sem sudo, via pip com as flags "user" e
+    "break-system-packages". O python3 do sistema enxerga esse diretorio por
+    padrao, entao o no encontra os dois sem ajuste de ambiente.
+
+    (Sem sinais de menos repetidos nesta explicacao de proposito: hifen duplo e'
+    proibido dentro de comentario XML. Com ele o package.xml deixa de ser XML
+    valido, o colcon para de reconhecer o pacote como ROS, cai para "python
+    puro" e nao cria o hook do AMENT_PREFIX_PATH. O sintoma final e' um
+    "Package not found" que nao menciona XML em lugar nenhum.)
+  -->
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
