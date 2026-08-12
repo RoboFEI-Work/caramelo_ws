@@ -113,6 +113,7 @@ def generate_launch_description():
     use_nav = LaunchConfiguration("use_nav")
     use_mission_server = LaunchConfiguration("use_mission_server")
     map_name = LaunchConfiguration("map_name")
+    navigation_start_delay = LaunchConfiguration("navigation_start_delay")
 
     acoes = [
         DeclareLaunchArgument(
@@ -123,6 +124,11 @@ def generate_launch_description():
         DeclareLaunchArgument("use_gui", default_value="true"),
         DeclareLaunchArgument("use_nav", default_value="true"),
         DeclareLaunchArgument("use_mission_server", default_value="true"),
+        DeclareLaunchArgument(
+            "navigation_start_delay", default_value="5.0",
+            description="Segundos antes de subir o Nav2. Em simulacao vale mais: "
+                        "o Gazebo precisa spawnar o robo e ativar os controllers "
+                        "antes, senao o Nav2 sobe cego e reclama de extrapolacao."),
     ]
     if aviso:
         acoes.append(LogInfo(msg=aviso))
@@ -139,6 +145,7 @@ def generate_launch_description():
                 "map_name": map_name,
                 "use_sim_time": use_sim_time,
                 "use_rviz": "false",   # a GUI tem o mapa embutido
+                "navigation_start_delay": navigation_start_delay,
             }.items(),
         ),
         IncludeLaunchDescription(
