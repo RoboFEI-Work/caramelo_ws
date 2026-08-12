@@ -19,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "widgets/seletor_arena.hpp"
 #include "modules/mapas/mapas_module.hpp"
 
 // ============================== MapCanvas ==================================
@@ -140,7 +141,7 @@ EditorMapaModule::EditorMapaModule(RosBridge * bridge, QWidget * parent)
 
   // Linha 1: mapa + carregar/salvar.
   auto * topo = new QHBoxLayout();
-  map_name_ = new QLineEdit("arena2_520");
+  map_name_ = new SeletorArena(bridge);
   topo->addWidget(new QLabel("Mapa:"));
   topo->addWidget(map_name_);
 
@@ -252,7 +253,7 @@ EditorMapaModule::EditorMapaModule(RosBridge * bridge, QWidget * parent)
 
 QString EditorMapaModule::mapDir() const
 {
-  return MapasModule::mapsDir() + "/" + map_name_->text().trimmed();
+  return MapasModule::mapsDir() + "/" + map_name_->arena().trimmed();
 }
 
 void EditorMapaModule::loadOrigin()

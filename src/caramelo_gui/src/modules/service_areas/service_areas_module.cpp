@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "widgets/seletor_arena.hpp"
 
 ServiceAreasModule::ServiceAreasModule(RosBridge * bridge, QWidget * parent)
 : QWidget(parent), bridge_(bridge)
@@ -28,7 +29,7 @@ ServiceAreasModule::ServiceAreasModule(RosBridge * bridge, QWidget * parent)
   layout->addWidget(dica);
 
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("arena2_520");
+  map_name_ = new SeletorArena(bridge);
   area_id_ = new QLineEdit("WS1");
   tipo_ = new QComboBox();
   // Tipos como strings de configuracao (R6) — nomenclatura do rulebook.
@@ -45,7 +46,7 @@ ServiceAreasModule::ServiceAreasModule(RosBridge * bridge, QWidget * parent)
   connect(
     salvar, &QPushButton::clicked, this, [this]() {
       bridge_->saveServiceAreaPose(
-        map_name_->text().trimmed(), area_id_->text().trimmed(),
+        map_name_->arena().trimmed(), area_id_->text().trimmed(),
         tipo_->currentText());
     });
   layout->addWidget(salvar);
@@ -54,13 +55,13 @@ ServiceAreasModule::ServiceAreasModule(RosBridge * bridge, QWidget * parent)
   auto * atualizar = new QPushButton("Listar areas");
   connect(
     atualizar, &QPushButton::clicked, this,
-    [this]() {bridge_->listServiceAreas(map_name_->text().trimmed());});
+    [this]() {bridge_->listServiceAreas(map_name_->arena().trimmed());});
   botoes->addWidget(atualizar);
 
   auto * validar = new QPushButton("Validar (+sync docking)");
   connect(
     validar, &QPushButton::clicked, this,
-    [this]() {bridge_->validateServiceAreas(map_name_->text().trimmed());});
+    [this]() {bridge_->validateServiceAreas(map_name_->arena().trimmed());});
   botoes->addWidget(validar);
   layout->addLayout(botoes);
 

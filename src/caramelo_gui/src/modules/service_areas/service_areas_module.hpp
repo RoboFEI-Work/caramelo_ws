@@ -7,6 +7,7 @@
 #include <QWidget>
 
 class RosBridge;
+class SeletorArena;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -21,7 +22,7 @@ public:
 
 private:
   RosBridge * bridge_;
-  QLineEdit * map_name_ = nullptr;
+  SeletorArena * map_name_ = nullptr;
   QLineEdit * area_id_ = nullptr;
   QComboBox * tipo_ = nullptr;
   QListWidget * lista_ = nullptr;

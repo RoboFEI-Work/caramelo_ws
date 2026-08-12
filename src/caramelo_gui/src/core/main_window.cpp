@@ -102,6 +102,40 @@ MainWindow::MainWindow(QWidget * parent)
       rviz_->activateTool(active ? "interact" : "move");
     });
 
+  // Guarda a pose confirmada pelo operador.
+  connect(
+    bridge_->manualLocalization(), &ManualLocalization::poseConfirmada, this,
+    [this](double x, double y, double yaw) {
+      robot_state_->setPoseInicial(x, y, yaw);
+    });
+
+  // Restaura a ultima posicao conhecida assim que o AMCL aparecer.
+  //
+  // Sem isto, "o robo subiu" e "o robo esta pronto" sao coisas diferentes: os
+  // nos todos no ar, mas nenhuma meta funciona ate' alguem posicionar o
+  // fantasma na mao. Publicar cedo demais tambem nao adianta -- o AMCL precisa
+  // existir para receber. Por isso o relogio espera ele aparecer, tenta UMA vez
+  // e avisa na tela, nunca em silencio: se o robo foi movido enquanto estava
+  // desligado, o operador precisa saber que a pose veio da sessao anterior.
+  if (robot_state_->temPoseInicial()) {
+    auto * restaurar = new QTimer(this);
+    restaurar->setInterval(1500);
+    connect(
+      restaurar, &QTimer::timeout, this, [this, restaurar]() {
+        if (!bridge_->noAtivo("amcl")) {
+          return;
+        }
+        restaurar->stop();
+        bridge_->publishInitialPose(
+          robot_state_->poseX(), robot_state_->poseY(), robot_state_->poseYaw());
+        state_label_->setText("Pose restaurada");
+        arena_label_->setToolTip(
+          "A posicao veio da ultima sessao. Se o robo foi movido enquanto estava "
+          "desligado, refaca a localizacao em Operacao.");
+      });
+    restaurar->start();
+  }
+
   // Fixed frame automatico: usa map quando existir; senao cai para odom, para o
   // robo aparecer mesmo sem mapa.
   auto * frameTimer = new QTimer(this);

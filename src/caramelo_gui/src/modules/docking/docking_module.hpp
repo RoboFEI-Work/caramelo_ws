@@ -8,6 +8,7 @@
 #include <QWidget>
 
 class RosBridge;
+class SeletorArena;
 class QLabel;
 class QLineEdit;
 class QCheckBox;
@@ -22,7 +23,7 @@ public:
 private:
   RosBridge * bridge_;
   QLineEdit * dock_id_ = nullptr;
-  QLineEdit * map_name_ = nullptr;
+  SeletorArena * map_name_ = nullptr;
   QCheckBox * refine_ = nullptr;
   QLabel * status_ = nullptr;
 };

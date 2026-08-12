@@ -82,6 +82,11 @@ public:
   // Assinaturas sob demanda: ver bridge/sensor_bridge.hpp.
   SensorBridge * sensores() {return sensores_;}
 
+  // Um no existe no grafo agora? Serve para a UI parar de oferecer algo que
+  // ja' esta rodando -- ligar um segundo Nav2 poe dois controladores
+  // disputando a mesma base.
+  bool noAtivo(const QString & nome) const;
+
   // Melhor fixed frame disponivel: map (localizado) > odom > base_footprint.
   QString bestFixedFrame() const;
 

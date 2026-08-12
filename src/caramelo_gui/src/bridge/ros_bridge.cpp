@@ -85,6 +85,19 @@ RosBridge::RosBridge(QObject * parent)
     });
 }
 
+bool RosBridge::noAtivo(const QString & nome) const
+{
+  const std::string alvo = nome.startsWith('/') ?
+    nome.mid(1).toStdString() : nome.toStdString();
+  for (const auto & n : node_->get_node_names()) {
+    // get_node_names devolve com barra e, as vezes, com namespace.
+    if (n == alvo || n == "/" + alvo || n.rfind("/" + alvo, 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 QString RosBridge::bestFixedFrame() const
 {
   if (tf_buffer_ && tf_buffer_->_frameExists("map")) {

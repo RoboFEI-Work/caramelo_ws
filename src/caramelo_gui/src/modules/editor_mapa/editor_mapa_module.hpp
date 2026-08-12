@@ -11,6 +11,7 @@
 #include <QWidget>
 
 class RosBridge;
+class SeletorArena;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -71,7 +72,7 @@ private:
   RosBridge * bridge_;
   MapCanvas * canvas_ = nullptr;
   QScrollArea * scroll_ = nullptr;
-  QLineEdit * map_name_ = nullptr;
+  SeletorArena * map_name_ = nullptr;
   QComboBox * ferramenta_ = nullptr;
   QSlider * tamanho_ = nullptr;
   QDoubleSpinBox * origem_x_ = nullptr;

@@ -7,6 +7,7 @@
 #include <QWidget>
 
 class RosBridge;
+class SeletorArena;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -22,7 +23,7 @@ private:
   QString mapDir() const;
 
   RosBridge * bridge_;
-  QLineEdit * map_name_ = nullptr;
+  SeletorArena * map_name_ = nullptr;
   QLineEdit * nome_ = nullptr;
   QListWidget * lista_ = nullptr;
   QLabel * status_ = nullptr;

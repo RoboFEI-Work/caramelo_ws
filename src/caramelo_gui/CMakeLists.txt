@@ -47,6 +47,7 @@ set(SOURCES
   src/core/home_screen.cpp
   src/core/main_window.cpp
   src/widgets/map_preview.cpp
+  src/widgets/seletor_arena.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/avancado/sensores_module.cpp
   src/modules/competicao/competicao_module.cpp

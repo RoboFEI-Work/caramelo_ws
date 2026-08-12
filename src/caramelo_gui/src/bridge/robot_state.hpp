@@ -35,6 +35,16 @@ public:
   // proximo boot.
   bool setMapName(const QString & name, QString * erro = nullptr);
 
+  // Ultima posicao conhecida do robo no mapa, gravada quando o operador
+  // confirma a localizacao. Sem isso o robo liga sem saber onde esta: o AMCL
+  // sobe, mas nenhuma meta funciona ate' alguem posicionar o fantasma na mao.
+  // E' o que separa "os nos subiram" de "o robo esta pronto para uso".
+  bool temPoseInicial() const {return tem_pose_;}
+  double poseX() const {return pose_x_;}
+  double poseY() const {return pose_y_;}
+  double poseYaw() const {return pose_yaw_;}
+  bool setPoseInicial(double x, double y, double yaw, QString * erro = nullptr);
+
   static QString filePath();
 
 signals:
@@ -44,4 +54,8 @@ private:
   void load();
 
   QString map_name_;
+  bool tem_pose_ = false;
+  double pose_x_ = 0.0;
+  double pose_y_ = 0.0;
+  double pose_yaw_ = 0.0;
 };

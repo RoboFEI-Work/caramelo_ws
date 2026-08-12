@@ -275,6 +275,7 @@ void ManualLocalization::confirm()
   clearPreview();
   emit activeChanged(false);
   emit stateChanged("Pose confirmada — AMCL relocalizando.");
+  emit poseConfirmada(gx, gy, gyaw);
 }
 
 void ManualLocalization::cancel()

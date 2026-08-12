@@ -9,6 +9,7 @@
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "widgets/seletor_arena.hpp"
 #include "bridge/waypoint_manager.hpp"
 #include "modules/mapas/mapas_module.hpp"
 
@@ -22,7 +23,7 @@ WaypointsModule::WaypointsModule(RosBridge * bridge, QWidget * parent)
   layout->addWidget(title);
 
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("arena2_520");
+  map_name_ = new SeletorArena(bridge);
   nome_ = new QLineEdit("WP1");
   form->addRow("Mapa:", map_name_);
   form->addRow("Nome do waypoint:", nome_);
@@ -94,5 +95,5 @@ WaypointsModule::WaypointsModule(RosBridge * bridge, QWidget * parent)
 
 QString WaypointsModule::mapDir() const
 {
-  return MapasModule::mapsDir() + "/" + map_name_->text().trimmed();
+  return MapasModule::mapsDir() + "/" + map_name_->arena().trimmed();
 }

@@ -8,6 +8,7 @@
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "widgets/seletor_arena.hpp"
 
 DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
 : QWidget(parent), bridge_(bridge)
@@ -20,7 +21,7 @@ DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
 
   auto * form = new QFormLayout();
   dock_id_ = new QLineEdit("WS1");
-  map_name_ = new QLineEdit("arena2_520");
+  map_name_ = new SeletorArena(bridge);
   refine_ = new QCheckBox("Refinar alinhamento com LiDAR");
   // Default LIGADO (2026-08-03): politica unica com o bt_yaml_executor —
   // alinhar sem refino herda o offset do AMCL na hora critica.
@@ -40,7 +41,7 @@ DockingModule::DockingModule(RosBridge * bridge, QWidget * parent)
   connect(
     alignBtn, &QPushButton::clicked, this,
     [this]() {
-      bridge_->sendAlign(dock_id_->text(), map_name_->text(), refine_->isChecked());
+      bridge_->sendAlign(dock_id_->text(), map_name_->arena(), refine_->isChecked());
     });
   layout->addWidget(alignBtn);
 
