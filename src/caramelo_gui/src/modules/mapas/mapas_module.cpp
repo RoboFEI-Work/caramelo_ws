@@ -14,11 +14,13 @@
 #include <QProcessEnvironment>
 #include <QPushButton>
 #include <QCheckBox>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "bridge/robot_state.hpp"
 #include "bridge/ros_bridge.hpp"
+#include "modules/editor_mapa/editor_mapa_module.hpp"
 
 namespace
 {
@@ -83,8 +85,15 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
 
   layout->addWidget(construirListaEAcoes(), 0);
 
+  // O centro alterna entre VER a arena e EDITAR a arena. Sao os dois motivos de
+  // alguem abrir esta tela, e trocar de tela para editar obrigaria a reencontrar
+  // o mapa selecionado.
+  centro_ = new QStackedWidget();
   preview_ = new MapPreview();
-  layout->addWidget(preview_, 1);
+  editor_ = new EditorMapaModule(bridge_);
+  centro_->addWidget(preview_);
+  centro_->addWidget(editor_);
+  layout->addWidget(centro_, 1);
 
   layout->addWidget(construirDetalhes(), 0);
 
@@ -198,6 +207,11 @@ QWidget * MapasModule::construirListaEAcoes()
       refresh();
     });
 
+  botao_editar_ = addBtn(
+    "Editar esta arena", [this]() {
+      alternarEdicao(centro_->currentIndex() == 0);
+    });
+
   addBtn("Atualizar lista", [this]() {refresh();});
 
   status_ = new QLabel();
@@ -282,6 +296,21 @@ void MapasModule::mostrarResumo(const MapaCarregado & mapa)
 
   avisos_->setText(
     mapa.avisos.isEmpty() ? "Nada a apontar nesta arena." : "• " + mapa.avisos.join("\n• "));
+}
+
+void MapasModule::alternarEdicao(bool editando)
+{
+  centro_->setCurrentIndex(editando ? 1 : 0);
+  botao_editar_->setText(editando ? "Voltar para a visao da arena" : "Editar esta arena");
+  if (!editando) {
+    // Ao sair da edicao, recarrega o preview: o editor pode ter mudado o
+    // bitmap, e mostrar o desenho antigo faria o operador achar que a edicao
+    // nao pegou.
+    const QString nome = selectedMap();
+    if (!nome.isEmpty()) {
+      preview_->carregar(mapsDir() + "/" + nome);
+    }
+  }
 }
 
 QString MapasModule::selectedMap() const

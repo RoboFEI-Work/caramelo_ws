@@ -61,7 +61,8 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   auto * form = new QFormLayout(grupoTarefa);
   tarefa_ = new QComboBox();
   mapa_ = new QComboBox();
-  mapa_->setEditable(true);   // arena nova ainda nao listada
+  // Lista FIXA das arenas que existem. Campo livre so' servia para digitar um
+  // nome que nao existe e descobrir o erro com o robo ja' andando.
   form->addRow("Task:", tarefa_);
   form->addRow("Mapa:", mapa_);
   layout->addWidget(grupoTarefa);

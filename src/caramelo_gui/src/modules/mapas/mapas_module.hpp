@@ -17,8 +17,11 @@
 #include "widgets/map_preview.hpp"
 
 class RosBridge;
+class EditorMapaModule;
 class QLabel;
 class QListWidget;
+class QPushButton;
+class QStackedWidget;
 
 class MapasModule : public QWidget
 {
@@ -37,9 +40,14 @@ private:
   QString selectedMap() const;
   void mostrarResumo(const MapaCarregado & mapa);
 
+  void alternarEdicao(bool editando);
+
   RosBridge * bridge_;
   QListWidget * lista_ = nullptr;
   MapPreview * preview_ = nullptr;
+  EditorMapaModule * editor_ = nullptr;
+  QStackedWidget * centro_ = nullptr;
+  QPushButton * botao_editar_ = nullptr;
   QLabel * status_ = nullptr;
   QLabel * resumo_ = nullptr;
   QLabel * avisos_ = nullptr;

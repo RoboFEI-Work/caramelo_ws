@@ -168,14 +168,47 @@ QWidget * MainWindow::construirPainelDoMapa()
   auto * toolsTitle = new QLabel("Ferramentas");
   toolsTitle->setObjectName("tituloModulo");
   sideLayout->addWidget(toolsTitle);
-  auto addToolBtn = [this, sideLayout](const QString & text, const QString & key) {
+
+  // A instrucao existe porque um botao que apenas ARMA uma ferramenta nao
+  // parece ter feito nada: o operador clicava em "Definir destino", nada
+  // acontecia na tela, e a conclusao natural era que o botao estava quebrado.
+  auto * instrucao = new QLabel(
+    "Escolha uma ferramenta e depois use o mapa ao lado.");
+  instrucao->setWordWrap(true);
+  instrucao->setObjectName("msgCartao");
+
+  auto addToolBtn =
+    [this, sideLayout, instrucao](
+    const QString & text, const QString & key, const QString & comoUsar) {
       auto * b = new QPushButton(text);
-      connect(b, &QPushButton::clicked, this, [this, key]() {rviz_->activateTool(key);});
+      connect(
+        b, &QPushButton::clicked, this, [this, key, comoUsar, instrucao]() {
+          rviz_->activateTool(key);
+          instrucao->setText(comoUsar);
+        });
       sideLayout->addWidget(b);
     };
-  addToolBtn("Definir destino no mapa", "goal");
-  addToolBtn("Mover camera", "move");
-  addToolBtn("Interagir (arrastar itens)", "interact");
+  addToolBtn(
+    "Definir destino no mapa", "goal",
+    "Clique no mapa onde o robo deve chegar e ARRASTE para escolher a direcao "
+    "em que ele deve parar. Solte para enviar.");
+  addToolBtn("Mover camera", "move", "Arraste o mapa para deslocar a vista.");
+  addToolBtn(
+    "Interagir (arrastar itens)", "interact",
+    "Arraste marcadores do mapa, como o robo-fantasma da localizacao.");
+  sideLayout->addWidget(instrucao);
+
+  // O que aconteceu com a meta aparece AQUI, ao lado do botao que a disparou.
+  // Antes so' existia na secao Navegar: quem mandava a meta pelo mapa nao via
+  // nem "meta aceita" nem "servidor indisponivel".
+  auto * retorno = new QLabel("—");
+  retorno->setWordWrap(true);
+  retorno->setObjectName("estadoAtual");
+  connect(bridge_, &RosBridge::navStatus, retorno, &QLabel::setText);
+  connect(
+    bridge_, &RosBridge::navResult, retorno,
+    [retorno](bool ok, const QString & m) {retorno->setText((ok ? "" : "Falha: ") + m);});
+  sideLayout->addWidget(retorno);
 
   sideLayout->addSpacing(12);
   auto * layersTitle = new QLabel("Camadas");

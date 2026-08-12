@@ -33,19 +33,67 @@ ROBOT_STATE = os.path.join(
 MAPA_FALLBACK = "arena3_520"
 
 
+def pasta_dos_mapas() -> str:
+    """Arvore FONTE dos mapas, a mesma que a GUI usa (nao o share instalado)."""
+    try:
+        share = get_package_share_directory("caramelo_mapping")
+    except Exception:  # noqa: BLE001
+        return os.path.join(os.path.expanduser("~"), "caramelo_ws", "src",
+                            "caramelo_mapping", "maps")
+    idx = share.find("/install/")
+    if idx > 0:
+        fonte = os.path.join(share[:idx], "src", "caramelo_mapping", "maps")
+        if os.path.isdir(fonte):
+            return fonte
+    return os.path.join(share, "maps")
+
+
+def arenas_disponiveis() -> list:
+    raiz = pasta_dos_mapas()
+    if not os.path.isdir(raiz):
+        return []
+    return sorted(
+        nome for nome in os.listdir(raiz)
+        if not nome.startswith(".") and os.path.isfile(os.path.join(raiz, nome, "map.yaml")))
+
+
 def mapa_persistido() -> tuple:
-    """Devolve (nome_do_mapa, aviso). aviso vazio quando veio do arquivo."""
+    """Devolve (nome_do_mapa, aviso). aviso vazio quando esta tudo certo.
+
+    Confere se a arena EXISTE neste workspace. O nome fica gravado em
+    ~/.config/caramelo (global), mas os mapas vivem dentro de cada workspace --
+    o mapa 'warehouse', por exemplo, so' existe no de simulacao. Sem esta
+    checagem, o map_server nao consegue configurar, o lifecycle_manager aborta a
+    subida inteira e a unica pista e' um erro de transicao de estado que nao diz
+    nada sobre mapa. Foi exatamente assim que a navegacao "nao subiu".
+    """
+    disponiveis = arenas_disponiveis()
+    nome = ""
     try:
         with open(ROBOT_STATE, "r", encoding="utf-8") as handle:
             nome = str((yaml.safe_load(handle) or {}).get("map_name", "") or "")
-        if nome:
-            return nome, ""
     except FileNotFoundError:
         pass
     except Exception as exc:  # noqa: BLE001
-        return MAPA_FALLBACK, f"{ROBOT_STATE} ilegivel ({exc}); usando {MAPA_FALLBACK}."
-    return MAPA_FALLBACK, (
-        f"Nenhum mapa gravado em {ROBOT_STATE}; subindo com {MAPA_FALLBACK}. "
+        nome = ""
+        aviso_leitura = f"{ROBOT_STATE} ilegivel ({exc})."
+        if disponiveis:
+            return disponiveis[0], f"{aviso_leitura} Subindo com {disponiveis[0]}."
+        return MAPA_FALLBACK, aviso_leitura
+
+    if nome and nome in disponiveis:
+        return nome, ""
+
+    if nome:
+        escolhido = disponiveis[0] if disponiveis else MAPA_FALLBACK
+        return escolhido, (
+            f"A arena gravada no robo ('{nome}') NAO existe em {pasta_dos_mapas()}. "
+            f"Arenas disponiveis: {', '.join(disponiveis) or 'nenhuma'}. "
+            f"Subindo com '{escolhido}'. Escolha a arena certa na tela Mapas.")
+
+    escolhido = disponiveis[0] if disponiveis else MAPA_FALLBACK
+    return escolhido, (
+        f"Nenhuma arena gravada em {ROBOT_STATE}; subindo com '{escolhido}'. "
         "Escolha a arena na tela Mapas para gravar a escolha no robo.")
 
 
