@@ -23,6 +23,7 @@ class HomeScreen;
 class ContextScreen;
 
 class InicioModule;
+class SensoresModule;
 class CompeticaoModule;
 class NavegacaoModule;
 class DockingModule;
@@ -64,6 +65,7 @@ private:
   QStackedWidget * telas_ = nullptr;
 
   InicioModule * inicio_ = nullptr;
+  SensoresModule * sensores_ = nullptr;
   CompeticaoModule * competicao_ = nullptr;
   NavegacaoModule * navegacao_ = nullptr;
   DockingModule * docking_ = nullptr;

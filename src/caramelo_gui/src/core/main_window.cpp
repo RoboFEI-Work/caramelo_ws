@@ -20,6 +20,7 @@
 #include "core/state_machine.hpp"
 #include "modules/competicao/competicao_module.hpp"
 #include "modules/docking/docking_module.hpp"
+#include "modules/avancado/sensores_module.hpp"
 #include "modules/inicio/inicio_module.hpp"
 #include "modules/localizacao/localizacao_module.hpp"
 #include "modules/mapas/mapas_module.hpp"
@@ -270,6 +271,8 @@ void MainWindow::construirContextos()
   // inicial. Sensores ao vivo entram aqui na proxima etapa.
   auto * avancado = new ContextScreen("Modo Avancado", true);
   avancado->addSecao("Estado do robo", inicio_);
+  sensores_ = new SensoresModule(bridge_);
+  avancado->addSecao("Sensores", sensores_, /*larguraTotal=*/true);
   // Listar e validar service areas e' conferencia, nao criacao — a criacao vive
   // no Mapeamento. Aqui serve para responder "por que a missao recusou esta
   // arena?".

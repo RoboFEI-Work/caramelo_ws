@@ -37,6 +37,7 @@ set(SOURCES
   src/bridge/manual_localization.cpp
   src/bridge/mission_bridge.cpp
   src/bridge/robot_state.cpp
+  src/bridge/sensor_bridge.cpp
   src/bridge/waypoint_manager.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
@@ -47,6 +48,7 @@ set(SOURCES
   src/core/main_window.cpp
   src/widgets/map_preview.cpp
   src/modules/inicio/inicio_module.cpp
+  src/modules/avancado/sensores_module.cpp
   src/modules/competicao/competicao_module.cpp
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp

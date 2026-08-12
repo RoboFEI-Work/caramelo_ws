@@ -42,6 +42,7 @@ class ManualLocalization;
 class WaypointManager;
 class MissionBridge;
 class RobotState;
+class SensorBridge;
 
 class RosBridge : public QObject
 {
@@ -76,6 +77,10 @@ public:
   // Nao e' ROS, mas e' estado do robo, e a regra do projeto e' que os widgets
   // falem com uma fachada so'. Ver bridge/robot_state.hpp.
   RobotState * robotState() {return robot_state_;}
+
+  // --- Sensores brutos (Modo Avancado) ---
+  // Assinaturas sob demanda: ver bridge/sensor_bridge.hpp.
+  SensorBridge * sensores() {return sensores_;}
 
   // Melhor fixed frame disponivel: map (localizado) > odom > base_footprint.
   QString bestFixedFrame() const;
@@ -144,6 +149,7 @@ private:
   WaypointManager * waypoints_ = nullptr;
   MissionBridge * mission_ = nullptr;
   RobotState * robot_state_ = nullptr;
+  SensorBridge * sensores_ = nullptr;
   rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr rosout_sub_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
