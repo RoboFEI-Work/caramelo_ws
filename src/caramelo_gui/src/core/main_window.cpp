@@ -242,7 +242,7 @@ void MainWindow::construirContextos()
   // 3 — Mapas: escolher a arena. O preview proprio (waypoints, docks, camadas)
   // entra aqui na proxima etapa; por isso ainda nao pede o RViz.
   auto * mapasCtx = new ContextScreen("Mapas", false);
-  mapasCtx->addSecao("Arenas", mapas_);
+  mapasCtx->addSecao("Arenas", mapas_, /*larguraTotal=*/true);
   telas_->addWidget(mapasCtx);
 
   // 4 — Mapeamento: criar o mapa e tudo que vive dentro dele. Waypoints, service

@@ -50,8 +50,19 @@ int ContextScreen::larguraComMapa() const
   return abas + kLarguraMinimaConteudo + 24;
 }
 
-void ContextScreen::addSecao(const QString & nome, QWidget * conteudo)
+void ContextScreen::addSecao(const QString & nome, QWidget * conteudo, bool larguraTotal)
 {
+  if (larguraTotal) {
+    pilha_->addWidget(conteudo);
+    auto * itemCheio = new QListWidgetItem(nome, abas_);
+    itemCheio->setSizeHint(QSize(0, 48));
+    if (pilha_->count() == 1) {
+      abas_->setCurrentRow(0);
+    }
+    abas_->setVisible(pilha_->count() > 1);
+    return;
+  }
+
   conteudo->setMinimumWidth(kLarguraMinimaConteudo);
 
   // Coluna centralizada: em tela cheia o formulario nao estica pela largura

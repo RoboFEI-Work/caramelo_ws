@@ -45,6 +45,7 @@ set(SOURCES
   src/core/icones.cpp
   src/core/home_screen.cpp
   src/core/main_window.cpp
+  src/widgets/map_preview.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/competicao/competicao_module.cpp
   src/modules/navegacao/navegacao_module.cpp

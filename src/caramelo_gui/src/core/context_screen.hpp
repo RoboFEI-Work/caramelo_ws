@@ -26,7 +26,11 @@ public:
 
   // Acrescenta uma ferramenta ao contexto. Com uma so' secao, a lista lateral
   // nem aparece -- nada de menu de um item.
-  void addSecao(const QString & nome, QWidget * conteudo);
+  //
+  // larguraTotal: a secao ocupa toda a area, sem coluna centralizada nem
+  // rolagem. E' o que uma tela de mapa precisa -- limitar a largura de um
+  // preview so' desperdicaria tela.
+  void addSecao(const QString & nome, QWidget * conteudo, bool larguraTotal = false);
 
   QString titulo() const {return titulo_;}
   bool precisaDoMapa() const {return precisa_do_mapa_;}

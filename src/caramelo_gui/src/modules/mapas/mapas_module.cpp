@@ -2,6 +2,8 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QFrame>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
@@ -11,11 +13,11 @@
 #include <QPixmap>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QVBoxLayout>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "bridge/robot_state.hpp"
-
 #include "bridge/ros_bridge.hpp"
 
 namespace
@@ -74,21 +76,64 @@ QString MapasModule::mapsDir()
 MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
 : QWidget(parent), bridge_(bridge)
 {
-  auto * layout = new QVBoxLayout(this);
+  // Tres colunas: arenas | o mapa como ele foi salvo | o que ha' dentro dele.
+  auto * layout = new QHBoxLayout(this);
+  layout->setContentsMargins(12, 12, 12, 12);
+  layout->setSpacing(14);
 
-  auto * title = new QLabel("Mapas");
+  layout->addWidget(construirListaEAcoes(), 0);
+
+  preview_ = new MapPreview();
+  layout->addWidget(preview_, 1);
+
+  layout->addWidget(construirDetalhes(), 0);
+
+  connect(
+    lista_, &QListWidget::currentItemChanged, this,
+    [this](QListWidgetItem * atual, QListWidgetItem *) {
+      if (atual) {
+        preview_->carregar(mapsDir() + "/" + atual->text());
+      }
+    });
+  connect(preview_, &MapPreview::carregado, this, &MapasModule::mostrarResumo);
+
+  connect(
+    bridge_, &RosBridge::mapStatus, this,
+    [this](bool ok, const QString & m) {
+      status_->setText((ok ? "" : "Falha: ") + m);
+    });
+  connect(
+    bridge_->robotState(), &RobotState::mapNameChanged, this,
+    [this](const QString & nome) {
+      arena_ativa_->setText("Arena ativa no robo: " + nome);
+    });
+
+  refresh();
+}
+
+QWidget * MapasModule::construirListaEAcoes()
+{
+  auto * col = new QWidget();
+  col->setFixedWidth(250);
+  auto * layout = new QVBoxLayout(col);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  auto * title = new QLabel("Arenas");
   title->setObjectName("tituloModulo");
   layout->addWidget(title);
 
+  arena_ativa_ = new QLabel("Arena ativa no robo: —");
+  arena_ativa_->setObjectName("msgCartao");
+  arena_ativa_->setWordWrap(true);
+  layout->addWidget(arena_ativa_);
+
   lista_ = new QListWidget();
-  lista_->setIconSize(QSize(96, 96));
   layout->addWidget(lista_, 1);
 
-  auto * botoes = new QHBoxLayout();
-  auto addBtn = [this, botoes](const QString & texto, auto slot) {
+  auto addBtn = [this, layout](const QString & texto, auto slot) {
       auto * b = new QPushButton(texto);
       connect(b, &QPushButton::clicked, this, slot);
-      botoes->addWidget(b);
+      layout->addWidget(b);
       return b;
     };
 
@@ -98,8 +143,7 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
       if (nome.isEmpty()) {return;}
       // Carrega agora E grava a escolha no robo. Sem gravar, o mapa voltaria ao
       // anterior no proximo boot e alguem teria que lembrar de passar o nome
-      // certo num terminal -- exatamente o que esta interface existe para
-      // eliminar.
+      // certo num terminal — exatamente o que esta interface elimina.
       bridge_->loadMap(mapsDir() + "/" + nome + "/map.yaml");
       QString erro;
       if (!bridge_->robotState()->setMapName(nome, &erro)) {
@@ -116,7 +160,7 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
       if (nome.isEmpty()) {return;}
       bool ok = false;
       const QString novo = QInputDialog::getText(
-        this, "Renomear mapa", "Novo nome:", QLineEdit::Normal, nome, &ok).trimmed();
+        this, "Renomear arena", "Novo nome:", QLineEdit::Normal, nome, &ok).trimmed();
       if (!ok || novo.isEmpty() || novo == nome) {return;}
       if (!QDir(mapsDir()).rename(nome, novo)) {
         QMessageBox::warning(this, "Renomear", "Nao foi possivel renomear.");
@@ -140,8 +184,8 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
       const QString nome = selectedMap();
       if (nome.isEmpty()) {return;}
       const auto resp = QMessageBox::question(
-        this, "Excluir mapa",
-        QString("Mover o mapa '%1' para a lixeira?").arg(nome));
+        this, "Excluir arena",
+        QString("Mover a arena '%1' para a lixeira?").arg(nome));
       if (resp != QMessageBox::Yes) {return;}
       // Nunca apaga direto: move para maps/.lixeira/<nome>_<data>.
       const QString lixeira = mapsDir() + "/.lixeira";
@@ -154,33 +198,90 @@ MapasModule::MapasModule(RosBridge * bridge, QWidget * parent)
       refresh();
     });
 
-  addBtn(
-    "Salvar mapa atual...", [this]() {
-      bool ok = false;
-      const QString nome = QInputDialog::getText(
-        this, "Salvar mapa do SLAM", "Nome do novo mapa:",
-        QLineEdit::Normal, "novo_mapa", &ok).trimmed();
-      if (!ok || nome.isEmpty()) {return;}
-      QDir().mkpath(mapsDir() + "/" + nome);
-      bridge_->saveMap(mapsDir(), nome);
-      refresh();
-    });
+  addBtn("Atualizar lista", [this]() {refresh();});
 
-  addBtn("Atualizar", [this]() {refresh();});
-  layout->addLayout(botoes);
-
-  status_ = new QLabel(QString("Pasta: %1").arg(mapsDir()));
+  status_ = new QLabel();
   status_->setObjectName("msgCartao");
   status_->setWordWrap(true);
   layout->addWidget(status_);
 
-  connect(
-    bridge_, &RosBridge::mapStatus, this,
-    [this](bool ok, const QString & m) {
-      status_->setText((ok ? "" : "Falha: ") + m);
-    });
+  return col;
+}
 
-  refresh();
+QWidget * MapasModule::construirDetalhes()
+{
+  auto * col = new QWidget();
+  col->setFixedWidth(300);
+  auto * layout = new QVBoxLayout(col);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  auto * grupoCamadas = new QGroupBox("Camadas");
+  auto * camadasLayout = new QVBoxLayout(grupoCamadas);
+  for (const QString & camada : MapPreview::camadasDisponiveis()) {
+    auto * cb = new QCheckBox(camada);
+    cb->setChecked(true);
+    connect(
+      cb, &QCheckBox::toggled, this,
+      [this, camada](bool on) {preview_->setCamada(camada, on);});
+    camadasLayout->addWidget(cb);
+  }
+  auto * enquadrar = new QPushButton("Enquadrar arena");
+  connect(enquadrar, &QPushButton::clicked, this, [this]() {preview_->enquadrar();});
+  camadasLayout->addWidget(enquadrar);
+  layout->addWidget(grupoCamadas);
+
+  auto * grupoResumo = new QGroupBox("O que esta salvo");
+  auto * resumoLayout = new QVBoxLayout(grupoResumo);
+  resumo_ = new QLabel("Selecione uma arena.");
+  resumo_->setWordWrap(true);
+  resumoLayout->addWidget(resumo_);
+  layout->addWidget(grupoResumo);
+
+  auto * grupoAvisos = new QGroupBox("Atencao");
+  auto * avisosLayout = new QVBoxLayout(grupoAvisos);
+  avisos_ = new QLabel();
+  avisos_->setObjectName("motivoCartao");
+  avisos_->setWordWrap(true);
+  avisosLayout->addWidget(avisos_);
+  layout->addWidget(grupoAvisos);
+
+  layout->addStretch();
+  return col;
+}
+
+void MapasModule::mostrarResumo(const MapaCarregado & mapa)
+{
+  if (!mapa.valido) {
+    resumo_->setText(mapa.erro.isEmpty() ? "Selecione uma arena." : mapa.erro);
+    avisos_->setText(QString());
+    return;
+  }
+
+  int docksComPose = 0;
+  for (const auto & d : mapa.docks) {
+    if (!d.placeholder) {
+      ++docksComPose;
+    }
+  }
+  const double largura = mapa.ocupacao.width() * mapa.resolucao;
+  const double altura = mapa.ocupacao.height() * mapa.resolucao;
+
+  resumo_->setText(
+    QString(
+      "Tamanho: %1 x %2 m  (%3 cm/pixel)\n"
+      "Docks: %4 (%5 com posicao gravada)\n"
+      "Service areas: %6\n"
+      "Waypoints: %7\n"
+      "Paredes virtuais: %8")
+    .arg(largura, 0, 'f', 1).arg(altura, 0, 'f', 1)
+    .arg(mapa.resolucao * 100.0, 0, 'f', 1)
+    .arg(mapa.docks.size()).arg(docksComPose)
+    .arg(mapa.areas.size())
+    .arg(mapa.waypoints.size())
+    .arg(mapa.keepout.isNull() ? "nao" : "sim"));
+
+  avisos_->setText(
+    mapa.avisos.isEmpty() ? "Nada a apontar nesta arena." : "• " + mapa.avisos.join("\n• "));
 }
 
 QString MapasModule::selectedMap() const
@@ -191,6 +292,7 @@ QString MapasModule::selectedMap() const
 
 void MapasModule::refresh()
 {
+  const QString selecionada = selectedMap();
   lista_->clear();
   QDir dir(mapsDir());
   for (const QString & nome :
@@ -203,11 +305,24 @@ void MapasModule::refresh()
       continue;
     }
     auto * item = new QListWidgetItem(nome);
-    // Miniatura direto do map.pgm (Qt le PGM nativamente).
     QPixmap pm(dir.filePath(nome + "/map.pgm"));
     if (!pm.isNull()) {
-      item->setIcon(QIcon(pm.scaled(96, 96, Qt::KeepAspectRatio)));
+      item->setIcon(QIcon(pm.scaled(48, 48, Qt::KeepAspectRatio)));
     }
     lista_->addItem(item);
+  }
+
+  arena_ativa_->setText(
+    "Arena ativa no robo: " +
+    (bridge_->robotState()->mapName().isEmpty() ?
+    QString("nenhuma") : bridge_->robotState()->mapName()));
+
+  // Abre na arena que o robo esta usando; e' quase sempre a que interessa.
+  const QString alvo = selecionada.isEmpty() ? bridge_->robotState()->mapName() : selecionada;
+  const auto encontrados = lista_->findItems(alvo, Qt::MatchExactly);
+  if (!encontrados.isEmpty()) {
+    lista_->setCurrentItem(encontrados.first());
+  } else if (lista_->count() > 0) {
+    lista_->setCurrentRow(0);
   }
 }
