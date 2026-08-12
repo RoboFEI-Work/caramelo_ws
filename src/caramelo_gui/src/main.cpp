@@ -1,3 +1,7 @@
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 #include <QApplication>
 #include <QFile>
 #include <QTextStream>
@@ -61,6 +65,25 @@ int main(int argc, char ** argv)
   ros_watchdog.start(100);
 
   const int ret = app.exec();
+
+  // Cronometro de saida.
+  //
+  // Daqui para baixo so' resta desmontar: a janela, a arvore de widgets e o
+  // RViz embutido (OGRE). Sozinha, a GUI faz isso em ~1 s. Junto do stack
+  // completo, com o RViz carregado de mapa, costmaps e laser e o Gazebo morrendo
+  // ao mesmo tempo, a desmontagem passava dos 5 s de tolerancia do ros2 launch,
+  // que escalava para SIGTERM e depois SIGKILL -- e o operador via o Ctrl-C
+  // "nao terminar".
+  //
+  // O contexto ROS ja' foi encerrado, entao nao ha' nada a salvar nem a
+  // publicar: o que sobra e' devolver memoria, e disso o SO da conta. Este
+  // cronometro deixa a desmontagem normal acontecer quando ela e' rapida e corta
+  // o processo antes do prazo do launch quando nao e'.
+  std::thread(
+    []() {
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+      std::_Exit(0);
+    }).detach();
 
   if (rclcpp::ok()) {
     rclcpp::shutdown();
