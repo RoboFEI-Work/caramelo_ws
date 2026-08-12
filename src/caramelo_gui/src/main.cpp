@@ -38,8 +38,19 @@ int main(int argc, char ** argv)
   window.show();
 
   // SIGINT/SIGTERM (Ctrl+C ou ros2 launch encerrando) derrubam o contexto ROS;
-  // o Qt nao sabe disso sozinho e a janela ficava viva ate o SIGKILL. Este
-  // timer encerra o app assim que o ROS morrer.
+  // o Qt nao sabe disso sozinho e a janela ficaria viva ate o SIGKILL.
+  //
+  // Dois caminhos, de proposito. O on_shutdown reage na hora -- o rclcpp chama
+  // esses callbacks numa thread propria, entao dar um quit enfileirado no Qt e'
+  // seguro. O timer fica de rede: se o app estiver ocupado (RViz sob carga, por
+  // exemplo) e perder o callback, ele ainda sai. Antes so' havia o timer de
+  // 200 ms, e com a maquina saturada a GUI passava dos 5 s de tolerancia do
+  // ros2 launch e era escalada para SIGTERM.
+  rclcpp::on_shutdown(
+    [&app]() {
+      QMetaObject::invokeMethod(&app, "quit", Qt::QueuedConnection);
+    });
+
   QTimer ros_watchdog;
   QObject::connect(
     &ros_watchdog, &QTimer::timeout, &app, [&app]() {
@@ -47,7 +58,7 @@ int main(int argc, char ** argv)
         app.quit();
       }
     });
-  ros_watchdog.start(200);
+  ros_watchdog.start(100);
 
   const int ret = app.exec();
 

@@ -1,6 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -9,12 +11,21 @@ def generate_launch_description():
         get_package_share_directory("caramelo_diagnostics"),
         "config", "diagnostics.yaml",
     )
+    use_sim_time = LaunchConfiguration("use_sim_time")
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="false",
+            description="true em simulacao. O monitor mede FREQUENCIA de topicos: "
+                        "com o relogio errado ele reporta Hz errado e acusa "
+                        "sensor parado que na verdade esta publicando.",
+        ),
         Node(
             package="caramelo_diagnostics",
             executable="health_aggregator",
             name="caramelo_health_monitor",
             output="screen",
-            parameters=[config],
+            parameters=[config, {"use_sim_time": use_sim_time}],
         ),
     ])

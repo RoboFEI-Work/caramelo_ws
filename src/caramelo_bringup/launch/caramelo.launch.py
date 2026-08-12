@@ -101,6 +101,10 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(gui),
             condition=IfCondition(use_gui),
+            # Repassar use_sim_time aqui nao e' detalhe: sem isto a GUI roda em
+            # tempo de parede e o resto do sistema em tempo de simulacao. Ver o
+            # comentario em caramelo_gui/launch/caramelo_gui.launch.py.
+            launch_arguments={"use_sim_time": use_sim_time}.items(),
         ),
     ]
 

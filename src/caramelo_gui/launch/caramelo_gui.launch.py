@@ -12,6 +12,7 @@ def generate_launch_description():
     # Sobe o agregador de saude (/diagnostics) e a GUI. O diagnostico e' um node
     # separado (usavel headless tambem — R4); a GUI so' o consome.
     use_diagnostics = LaunchConfiguration("use_diagnostics")
+    use_sim_time = LaunchConfiguration("use_sim_time")
 
     diagnostics = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -21,6 +22,7 @@ def generate_launch_description():
             )
         ),
         condition=IfCondition(use_diagnostics),
+        launch_arguments={"use_sim_time": use_sim_time}.items(),
     )
 
     # Sem "name=": o processo tem 3 nos internos (bridge, rviz, markers) e o
@@ -29,6 +31,18 @@ def generate_launch_description():
         package="caramelo_gui",
         executable="caramelo_gui",
         output="screen",
+        # use_sim_time e' OBRIGATORIO em simulacao e vale para os tres nos do
+        # processo (bridge, rviz, markers) porque o launch grava o override sob
+        # o curinga /**.
+        #
+        # Sem isso a GUI roda em tempo de PAREDE enquanto o resto do sistema roda
+        # em tempo de SIMULACAO. O sintoma nao parece de relogio: o filtro de TF
+        # do RViz nunca casa, loga "Message Filter dropping message ... queue is
+        # full" em rajada, o processo satura a CPU, o EKF passa a perder deadline
+        # e o lifecycle_manager derruba o map_server por bond timeout. Um sistema
+        # nesse estado tambem nao responde ao SIGINT a tempo, e o ros2 launch
+        # precisa escalar para SIGTERM/SIGKILL no encerramento.
+        parameters=[{"use_sim_time": use_sim_time}],
         # Silencia o DEBUG do RViz embutido: antes de localizar (sem TF
         # map->base) ele logava "Unable to transform marker message" por
         # marcador POR FRAME e inundava o terminal. E benigno e some ao
@@ -46,6 +60,11 @@ def generate_launch_description():
             "use_diagnostics",
             default_value="true",
             description="Sobe o caramelo_diagnostics junto com a GUI",
+        ),
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="false",
+            description="true em simulacao: a GUI precisa do MESMO relogio do resto",
         ),
         diagnostics,
         gui,
