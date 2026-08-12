@@ -202,20 +202,12 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
-    - Class: rviz_default_plugins/Image
-      Enabled: true
-      Max Value: 1
-      Median window: 5
-      Min Value: 0
-      Name: Camera D455
-      Normalize Range: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /camera/camera/color/image_raw
-      Value: true
+    # NAO adicionar display de Image aqui (2026-08-10): o painel de imagem
+    # cria uma SEGUNDA superficie OpenGL e nesta maquina o RViz morre na
+    # abertura com "failed to create drawable" + segfault (a janela abre e
+    # fecha na hora). Testado A/B: sem este bloco o RViz fica de pe normal.
+    # Para ver a camera, use uma janela separada:
+    #   ros2 run rqt_image_view rqt_image_view /camera/camera/color/image_raw
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Marker Topic:

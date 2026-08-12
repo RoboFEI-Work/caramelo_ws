@@ -315,6 +315,11 @@ public:
         // detecting_tag so espera 900ms — sem esta sonda toda pega comecaria
         // gastando uma varredura a toa. Contador de camera_info (mensagem
         // minuscula, mesma taxa do color) = "a camera esta entregando frame".
+        // Erro maximo aceito entre a pose pedida e onde a ponta realmente
+        // parou (ver a verificacao em moveToTarget). 0 desliga a checagem.
+        max_pose_error_m_ = this->declare_parameter<double>(
+            "max_pose_error_m", 0.025);
+
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
         perception_warmup_timeout_ = this->declare_parameter<double>(
@@ -514,6 +519,7 @@ private:
     std::atomic<std::int64_t> camera_info_last_ns_{0};
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
+    double max_pose_error_m_{0.025};
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -1485,6 +1491,7 @@ private:
         arm->setPoseTarget(target_pose, eef_link);
 
         bool success = planWithDeadline(arm, plan, label + " setPoseTarget");
+        bool used_approximate_ik = false;
 
         if (!success) {
             RCLCPP_WARN_STREAM(
@@ -1509,6 +1516,7 @@ private:
             arm->setApproximateJointValueTarget(target_pose, eef_link);
 
             success = planWithDeadline(arm, plan, label + " IK aproximada");
+            used_approximate_ik = true;
         }
 
         if (!success) {
@@ -1536,6 +1544,54 @@ private:
                 this->get_logger(),
                 "Execution failed: " << label);
             return false;
+        }
+
+        // 2026-08-10 — VERIFICACAO DE CHEGADA (bug observado no robo: "so
+        // fechou a garra, nao se aproximou do bloco"). Quando setPoseTarget
+        // falha, o fallback setApproximateJointValueTarget devolve a solucao
+        // alcancavel MAIS PROXIMA — que pode estar a dezenas de cm do alvo.
+        // O codigo executava isso, retornava true, e o ciclo fechava a garra
+        // NO VAZIO. Agora conferimos ONDE a ponta parou; longe demais = falha
+        // retentavel, nao pega fantasma. Tambem cobre erro de rastreio do
+        // controlador (tolerancia de 0.10 rad por junta vira cm na ponta).
+        if (max_pose_error_m_ > 0.0) {
+            geometry_msgs::msg::PoseStamped achieved;
+            try {
+                achieved = arm->getCurrentPose(eef_link);
+            } catch (const std::exception & ex) {
+                RCLCPP_WARN_STREAM(
+                    this->get_logger(),
+                    "Nao consegui ler a pose atingida em " << label << " ("
+                        << ex.what() << ") — seguindo sem verificar.");
+                return true;
+            }
+
+            const double dx = achieved.pose.position.x - target_pose.position.x;
+            const double dy = achieved.pose.position.y - target_pose.position.y;
+            const double dz = achieved.pose.position.z - target_pose.position.z;
+            const double err = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+            if (err > max_pose_error_m_) {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[%s] o braco PAROU A %.1f cm do alvo (limite %.1f cm)%s. "
+                    "Alvo [%.3f %.3f %.3f], atingido [%.3f %.3f %.3f]. "
+                    "Falhando em vez de fechar a garra no vazio.",
+                    label.c_str(), err * 100.0, max_pose_error_m_ * 100.0,
+                    used_approximate_ik ? " [via IK APROXIMADA]" : "",
+                    target_pose.position.x, target_pose.position.y,
+                    target_pose.position.z,
+                    achieved.pose.position.x, achieved.pose.position.y,
+                    achieved.pose.position.z);
+                speak("Falha: o braco nao chegou na pose de pega");
+                return false;
+            }
+
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[%s] chegou a %.1f cm do alvo%s.",
+                label.c_str(), err * 100.0,
+                used_approximate_ik ? " (via IK aproximada)" : "");
         }
 
         return true;

@@ -133,6 +133,10 @@ def generate_launch_description():
         DeclareLaunchArgument("speech_player_executable", default_value="auto"),
         # --- IK/grasp (defaults identicos ao manip_pc.launch.xml) ---
         DeclareLaunchArgument("verify_grasp_effort", default_value="true"),
+        # Erro maximo (m) entre a pose pedida e onde a ponta parou. 0.0 DESLIGA
+        # a checagem — util para rodar missao demo aceitando falha silenciosa,
+        # que era o comportamento historico antes de 2026-08-10.
+        DeclareLaunchArgument("max_pose_error_m", default_value="0.025"),
         DeclareLaunchArgument("grasp_min_effort_nm", default_value="0.15"),
         DeclareLaunchArgument("grasp_min_effort_increase_nm", default_value="0.05"),
         DeclareLaunchArgument("grasp_retry_attempts", default_value="2"),
@@ -259,6 +263,8 @@ def generate_launch_description():
             # por rodada e o one-shot reset_container_states_once abaixo.
             "verify_grasp_effort": ParameterValue(
                 LaunchConfiguration("verify_grasp_effort"), value_type=bool),
+            "max_pose_error_m": ParameterValue(
+                LaunchConfiguration("max_pose_error_m"), value_type=float),
             "grasp_min_effort_nm": ParameterValue(
                 LaunchConfiguration("grasp_min_effort_nm"), value_type=float),
             "grasp_min_effort_increase_nm": ParameterValue(

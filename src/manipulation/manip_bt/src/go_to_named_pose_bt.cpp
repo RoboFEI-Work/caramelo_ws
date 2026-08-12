@@ -183,21 +183,23 @@ BT::NodeStatus GoToNamedPoseBT::tick()
     pose_name.c_str());
 
   // Item 3.1 da auditoria: uma unica tentativa de plan/execute reprovava a
-  // pose por causas transitorias (estado do braco velho, colisao fantasma no
-  // primeiro plano). Agora sao ate 3 tentativas, com guarda de estado ANTES
-  // de cada uma — sem ela o replan reusa o mesmo start state podre e falha
-  // igual.
+  // pose por causas transitorias (colisao fantasma no primeiro plano, plano
+  // que nao converge). Sao ate 3 tentativas, e a falha final e HONESTA — o
+  // codigo antigo devolvia SUCCESS pelo fallback de home sem ter chegado.
+  //
+  // ATENCAO — NAO chamar arm_->getCurrentState() aqui (2026-08-10): este no
+  // do BT cria o MoveGroupInterface mas NINGUEM faz spin no node_, entao o
+  // CurrentStateMonitor assina /joint_states e nunca processa callback. O
+  // sintoma e "latest received state has time 0.000000" para sempre, com o
+  // topico publicando a 100 Hz — e a missao morre na 1a acao. Eu adicionei
+  // essa guarda na Fase 3 e ela quebrou a missao inteira ate ser removida.
+  // Aqui nao precisa: setStartStateToCurrentState() e resolvido no SERVIDOR
+  // (move_group), que tem o estado fresco. A guarda de estado faz sentido
+  // nos nos MTC de pick/place, que fazem rclcpp::spin do proprio no.
   const auto try_named_pose =
     [this](const std::string & name, int attempts) -> bool
     {
       for (int attempt = 1; attempt <= attempts; ++attempt) {
-        if (!arm_->getCurrentState(2.0)) {
-          RCLCPP_WARN(
-            rclcpp::get_logger("GoToNamedPoseBT"),
-            "Sem estado atual do braco ao ir para '%s' (tentativa %d/%d)",
-            name.c_str(), attempt, attempts);
-          continue;
-        }
 
         arm_->setStartStateToCurrentState();
         arm_->setNamedTarget(name);

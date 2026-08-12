@@ -69,6 +69,32 @@ def generate_launch_description():
             default_value="true",
             description="Inicia a RealSense no stack de manipulacao",
         ),
+        # Repasses para o manip_stack (2026-08-10): sem eles nao dava para
+        # ajustar camera nem as verificacoes de pega pela missao completa.
+        DeclareLaunchArgument(
+            "camera_profile",
+            default_value="640x480x5",
+            description=(
+                "Perfil WxHxFPS da RealSense. 640x480x5 e o unico estavel em "
+                "USB 2; com a camera em USB 3 use 640x480x15."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "verify_grasp_effort",
+            default_value="true",
+            description=(
+                "Confere pelo esforco se a garra realmente pegou o bloco. "
+                "false = comportamento historico (segue mesmo pegando nada)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "max_pose_error_m",
+            default_value="0.025",
+            description=(
+                "Erro maximo entre a pose pedida e onde a ponta parou. "
+                "0.0 desliga a checagem (aceita falha silenciosa)."
+            ),
+        ),
         DeclareLaunchArgument(
             "use_apriltag",
             default_value="true",
@@ -179,6 +205,9 @@ def generate_launch_description():
                 "use_apriltag": use_apriltag,
                 "use_audio": use_audio,
                 "use_rviz_manip": use_rviz_manip,
+                "camera_profile": LaunchConfiguration("camera_profile"),
+                "verify_grasp_effort": LaunchConfiguration("verify_grasp_effort"),
+                "max_pose_error_m": LaunchConfiguration("max_pose_error_m"),
             }.items(),
         ),
     ])
