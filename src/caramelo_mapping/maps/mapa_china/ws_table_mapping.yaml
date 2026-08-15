@@ -1,0 +1,23 @@
+# Mapeamento centralizado da arena (1 arquivo POR MAPA):
+#  - ws_to_table_pose: WS da tarefa -> group_state do braco (lido pelo task_planner)
+#  - ws_to_dock_id:    WS da tarefa -> dock_id do docking.yaml (lido pelo executor de missao)
+ws_to_table_pose:
+  WS_1: Mesa15
+  WS_2: Mesa15  # 2026-08-07: mesa da WS2 trocada para 15cm (era Mesa10)
+  WS_3: Mesa15
+  WS_4: Mesa15
+  WS_5: Mesa15
+  WS_6: Mesa5
+  WS_7: Mesa10
+  WS_8: Mesa15
+  # 2026-08-12: SH = prateleira. MesaSh dispara a sequencia propria
+  # (pick em 2 fases com IK custom; place passando pelo `pirocao`).
+  SH_1: MesaSh
+  SH_2: MesaSh
+ws_to_dock_id:
+  WS_1: WS1
+  WS_2: WS2
+  WS_3: WS3
+  WS_4: WS4
+  WS_5: WS5
+  SH_1: SH1
