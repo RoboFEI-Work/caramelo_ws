@@ -180,6 +180,10 @@ bool solveIk(
   const IkOptions & options)
 {
   const Eigen::Vector3d axis_desired = desiredToolAxis(tcp_target_in_arm_base, direction);
+  const double target_azimuth =
+    std::atan2(tcp_target_in_arm_base.y(), tcp_target_in_arm_base.x());
+  const double target_radius =
+    std::hypot(tcp_target_in_arm_base.x(), tcp_target_in_arm_base.y());
 
   bool found = false;
   double best_orientation_error = 0.0;
@@ -201,6 +205,17 @@ bool solveIk(
 
     if ((tcp_target_in_arm_base - position).norm() > options.accept_position_error) {
       continue;
+    }
+
+    // Familia frontal apenas (ver IkOptions::require_forward). O azimute so e
+    // bem definido com o alvo afastado do eixo da junta 1.
+    if (options.require_forward && target_radius > 0.05) {
+      double dq1 = q[0] - target_azimuth;
+      while (dq1 > M_PI) {dq1 -= 2.0 * M_PI;}
+      while (dq1 < -M_PI) {dq1 += 2.0 * M_PI;}
+      if (std::abs(dq1) > M_PI / 2.0 || q[2] < 0.0) {
+        continue;
+      }
     }
 
     // Criterio de escolha igual ao do Python: primeiro quem aponta melhor na

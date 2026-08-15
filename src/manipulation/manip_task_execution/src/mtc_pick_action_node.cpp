@@ -1567,7 +1567,23 @@ private:
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setJointValueTarget(std::vector<double>(q.begin(), q.end()));
-        return planAndExecute(arm, label);
+        if (planAndExecute(arm, label)) {
+            return true;
+        }
+
+        // 2026-08-13: as fases da prateleira morriam com GOAL_TOLERANCE_
+        // VIOLATED e o log do PC nao dizia QUAL junta ficou fora. Loga o erro
+        // por junta para o proximo teste apontar o culpado na hora.
+        const std::vector<double> atual = arm->getCurrentJointValues();
+        for (std::size_t i = 0; i < q.size() && i < atual.size(); ++i) {
+            const double erro = atual[i] - q[i];
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[%s] j%zu alvo=%.4f atual=%.4f erro=%+.4f rad%s",
+                label.c_str(), i + 1, q[i], atual[i], erro,
+                std::abs(erro) > 0.10 ? "  <-- FORA da tolerancia 0.10" : "");
+        }
+        return false;
     }
 
     /// Sequencia de aproximacao da prateleira (fases 1 e 2).

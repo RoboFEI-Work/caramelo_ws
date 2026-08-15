@@ -65,6 +65,12 @@ struct IkOptions
   double damping{1e-2};
   double orientation_weight{0.4};
   double accept_position_error{5e-4};  ///< erro maximo aceito na solucao (m)
+  /// 2026-08-15: no teste real a grade de seeds as vezes elegia a solucao "de
+  /// costas" (q1 = azimute-180, q3 negativo) e o braco girava para o lado
+  /// errado da prateleira. true = so aceita a familia frontal: q1 a menos de
+  /// 90 graus do azimute do alvo E q3 >= 0 (cotovelo para cima, como todas as
+  /// poses ensinadas do braco).
+  bool require_forward{true};
 };
 
 /// Cinematica direta: devolve a posicao do TCP e a rotacao dele, no frame da

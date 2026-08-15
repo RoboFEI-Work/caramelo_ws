@@ -275,6 +275,13 @@
     <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
     <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
+    <!-- 2026-08-15: as malhas de colisao acusam contato link2 x link4 com o
+         braco ESTICADO (pirocao, todas as juntas em 0) — impossivel no braco
+         real (link3 de 0.185+0.205 m entre eles). Esse falso positivo fazia o
+         MoveIt rejeitar QUALQUER plano para pirocao ("Insufficient states in
+         sampleable goal region", teste 2026-08-13). A dobra real e limitada
+         pelo proprio limite de j3 (2.6 rad, validado no robo). -->
+    <disable_collisions link1="link2" link2="link4" reason="Never"/>
     <disable_collisions link1="link3" link2="link5" reason="Never"/>
     <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
     <!--Chassi (base_link) x braco: apenas manip_base_link (Adjacent via manipulator_mount_joint) e link1 (nunca alcanca o chassi).
