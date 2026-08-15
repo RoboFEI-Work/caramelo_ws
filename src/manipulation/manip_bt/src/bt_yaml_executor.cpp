@@ -320,10 +320,22 @@ std::string buildTreeXmlFromActions(
       const std::string tag_frame_key = actionBlackboardKey(i, "tag_frame");
       setStringOnBlackboard(blackboard, i, "tag_frame", tag_frame);
 
+      // 2026-08-12: repassa a mesa tambem no pick — a prateleira (MesaSh) tem
+      // sequencia propria de movimentos. Opcional de proposito: actions.yaml
+      // antigo (sem table_pose no pick) continua valendo e cai no
+      // comportamento de mesa comum.
+      std::string table_pose;
+      if (action["table_pose"]) {
+        table_pose = action["table_pose"].as<std::string>();
+      }
+      const std::string table_pose_key = actionBlackboardKey(i, "table_pose");
+      setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
+
       xml << "      <PickTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
-          << "\"/>\n";
+          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
       ctx.plan_rows.push_back(
-        "[" + std::to_string(i) + "] pick  tag=" + tag_frame);
+        "[" + std::to_string(i) + "] pick  tag=" + tag_frame +
+        (table_pose.empty() ? "" : " mesa=" + table_pose));
       continue;
     }
 

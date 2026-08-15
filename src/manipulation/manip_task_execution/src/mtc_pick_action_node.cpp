@@ -18,6 +18,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <atomic>
 #include <cmath>
@@ -38,6 +39,7 @@
 #endif
 
 #include "manip_task_execution/container_state_store.hpp"
+#include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
 #include "my_robot_msgs/action/pick_tag.hpp"
 
@@ -320,6 +322,16 @@ public:
         max_pose_error_m_ = this->declare_parameter<double>(
             "max_pose_error_m", 0.025);
 
+        // Prateleira: quais table_pose disparam a sequencia de shelf. Fica em
+        // parametro para nao espalhar string magica pelo codigo e para dar
+        // conta de mais de uma altura de prateleira no futuro.
+        shelf_table_poses_ = this->declare_parameter<std::vector<std::string>>(
+            "shelf_table_poses", std::vector<std::string>{"MesaSh"});
+        // Frame da base do braco — a IK propria trabalha nele, e entre ele e o
+        // base_footprint ha translacao E um yaw de -1.57.
+        shelf_ik_reference_frame_ = this->declare_parameter<std::string>(
+            "shelf_ik_reference_frame", "manip_base_link");
+
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
         perception_warmup_timeout_ = this->declare_parameter<double>(
@@ -520,6 +532,13 @@ private:
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
     double max_pose_error_m_{0.025};
+
+    // Prateleira (2026-08-12). `shelf_table_poses_` e o GATILHO: se o
+    // table_pose do goal estiver nesta lista, o ciclo usa a sequencia de
+    // shelf em vez da aproximacao cartesiana de mesa comum.
+    static constexpr const char * kShelfStartPose = "pegar_obj_sh";
+    std::vector<std::string> shelf_table_poses_;
+    std::string shelf_ik_reference_frame_;
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -1410,6 +1429,200 @@ private:
         return false;
     }
 
+    // Confere ONDE a ponta realmente parou depois de executar. Extraido de
+    // moveToTarget (2026-08-12) para o ramo de prateleira usar a mesma
+    // protecao: sem isto o ciclo fecha a garra em qualquer lugar que o braco
+    // tenha alcancado. `note` so enriquece a mensagem de erro.
+    bool verifyTcpArrival(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & eef_link,
+        const geometry_msgs::msg::Point & target_position,
+        const std::string & label,
+        const std::string & note = "")
+    {
+        if (max_pose_error_m_ <= 0.0) {
+            return true;
+        }
+
+        geometry_msgs::msg::PoseStamped achieved;
+        try {
+            achieved = arm->getCurrentPose(eef_link);
+        } catch (const std::exception & ex) {
+            RCLCPP_WARN_STREAM(
+                this->get_logger(),
+                "Nao consegui ler a pose atingida em " << label << " ("
+                    << ex.what() << ") — seguindo sem verificar.");
+            return true;
+        }
+
+        const double dx = achieved.pose.position.x - target_position.x;
+        const double dy = achieved.pose.position.y - target_position.y;
+        const double dz = achieved.pose.position.z - target_position.z;
+        const double err = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (err > max_pose_error_m_) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[%s] o braco PAROU A %.1f cm do alvo (limite %.1f cm)%s. "
+                "Alvo [%.3f %.3f %.3f], atingido [%.3f %.3f %.3f]. "
+                "Falhando em vez de fechar a garra no vazio.",
+                label.c_str(), err * 100.0, max_pose_error_m_ * 100.0,
+                note.c_str(),
+                target_position.x, target_position.y, target_position.z,
+                achieved.pose.position.x, achieved.pose.position.y,
+                achieved.pose.position.z);
+            speak("Falha: o braco nao chegou na pose de pega");
+            return false;
+        }
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[%s] chegou a %.1f cm do alvo%s.",
+            label.c_str(), err * 100.0, note.c_str());
+        return true;
+    }
+
+    // ---------------------------------------------------------------------
+    // PRATELEIRA (shelf) — 2026-08-12
+    //
+    // Alcancar uma tag numa prateleira nao e a mesma coisa que numa mesa: o
+    // braco precisa subir "por fora" antes de estender, senao bate. Por isso
+    // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
+    // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
+    // operador:
+    //   fase 1 — j1/j4 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j5 = +1.5708
+    //   fase 2 — j1..j4 da IK, j5 continua +1.5708
+    // O retorno faz o caminho inverso.
+    static constexpr double kShelfPhase1Joint3 = 2.3038;
+    static constexpr double kShelfWristJoint5 = 1.5708;
+
+    /// Resolve a tag pela IK propria. `q_out` sai em ordem j1..j5.
+    /// O alvo e convertido para o frame da BASE DO BRACO — nao basta subtrair
+    /// o X do mount: ha tambem um yaw de -1.57 (manip_mount_rpy).
+    bool solveShelfIk(
+        const std::string & tag_frame,
+        const std::string & cycle_name,
+        std::array<double, 5> & q_out)
+    {
+        geometry_msgs::msg::TransformStamped tf_arm;
+        try {
+            tf_arm = tf_buffer_->lookupTransform(
+                shelf_ik_reference_frame_, tag_frame,
+                tf2::TimePointZero, tf2::durationFromSec(0.5));
+        } catch (const tf2::TransformException & ex) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[%s] shelf: sem TF %s <- %s (%s)",
+                cycle_name.c_str(), shelf_ik_reference_frame_.c_str(),
+                tag_frame.c_str(), ex.what());
+            return false;
+        }
+
+        const Eigen::Vector3d target(
+            tf_arm.transform.translation.x,
+            tf_arm.transform.translation.y,
+            tf_arm.transform.translation.z);
+
+        if (!manip_task_execution::solveIk(
+                target,
+                manip_task_execution::ToolDirection::kMiddle,
+                kShelfWristJoint5,
+                q_out))
+        {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[%s] shelf: IK propria nao achou solucao para [%.3f %.3f %.3f] "
+                "em %s.",
+                cycle_name.c_str(), target.x(), target.y(), target.z(),
+                shelf_ik_reference_frame_.c_str());
+            return false;
+        }
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[%s] shelf IK: alvo [%.3f %.3f %.3f] -> j "
+            "[%.4f %.4f %.4f %.4f %.4f]",
+            cycle_name.c_str(), target.x(), target.y(), target.z(),
+            q_out[0], q_out[1], q_out[2], q_out[3], q_out[4]);
+        return true;
+    }
+
+    /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
+    /// pelo MoveIt — mantem checagem de colisao, deadlines e retries.
+    bool moveToJointTarget(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (cancellationRequested()) {
+            return false;
+        }
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Sem estado atual do braco antes de '%s'.", label.c_str());
+            return false;
+        }
+
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setJointValueTarget(std::vector<double>(q.begin(), q.end()));
+        return planAndExecute(arm, label);
+    }
+
+    /// Sequencia de aproximacao da prateleira (fases 1 e 2).
+    bool approachShelfTarget(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & tag_frame,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        std::array<double, 5> & q_ik_out)
+    {
+        if (!solveShelfIk(tag_frame, cycle_name, q_ik_out)) {
+            return false;
+        }
+
+        // Decisao do operador 2026-08-15: a tag e lida UMA unica vez (na IK
+        // acima). A partir do momento em que o braco COMECA a se mover
+        // (fase 1), nao ha mais NENHUMA releitura de tag/camera nem
+        // verificacao de chegada — os alvos sao juntas exatas da nossa IK
+        // (nao ha IK aproximada aqui) e a protecao contra "pegar o vazio"
+        // fica com a verificacao de esforco da garra, que ja roda depois.
+        publish_stage(goal_handle, "shelf_phase1");
+        const std::array<double, 5> phase1{
+            q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
+        if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
+            return false;
+        }
+
+        publish_stage(goal_handle, "shelf_phase2");
+        const std::array<double, 5> phase2{
+            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfWristJoint5};
+        return moveToJointTarget(arm, phase2, cycle_name + " shelf fase2");
+    }
+
+    /// Caminho inverso: desfaz a fase 2, depois a fase 1, e volta a pose de
+    /// partida da prateleira — com o bloco na garra.
+    bool retreatFromShelf(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q_ik,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
+    {
+        publish_stage(goal_handle, "shelf_retreat");
+
+        const std::array<double, 5> phase1{
+            q_ik[0], 0.0, kShelfPhase1Joint3, q_ik[3], kShelfWristJoint5};
+        if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
+            return false;
+        }
+
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget(kShelfStartPose);
+        return planAndExecute(arm, cycle_name + " shelf retorno " + kShelfStartPose);
+    }
+
     bool moveToTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const geometry_msgs::msg::TransformStamped & tf,
@@ -1554,47 +1767,9 @@ private:
         // NO VAZIO. Agora conferimos ONDE a ponta parou; longe demais = falha
         // retentavel, nao pega fantasma. Tambem cobre erro de rastreio do
         // controlador (tolerancia de 0.10 rad por junta vira cm na ponta).
-        if (max_pose_error_m_ > 0.0) {
-            geometry_msgs::msg::PoseStamped achieved;
-            try {
-                achieved = arm->getCurrentPose(eef_link);
-            } catch (const std::exception & ex) {
-                RCLCPP_WARN_STREAM(
-                    this->get_logger(),
-                    "Nao consegui ler a pose atingida em " << label << " ("
-                        << ex.what() << ") — seguindo sem verificar.");
-                return true;
-            }
-
-            const double dx = achieved.pose.position.x - target_pose.position.x;
-            const double dy = achieved.pose.position.y - target_pose.position.y;
-            const double dz = achieved.pose.position.z - target_pose.position.z;
-            const double err = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-            if (err > max_pose_error_m_) {
-                RCLCPP_ERROR(
-                    this->get_logger(),
-                    "[%s] o braco PAROU A %.1f cm do alvo (limite %.1f cm)%s. "
-                    "Alvo [%.3f %.3f %.3f], atingido [%.3f %.3f %.3f]. "
-                    "Falhando em vez de fechar a garra no vazio.",
-                    label.c_str(), err * 100.0, max_pose_error_m_ * 100.0,
-                    used_approximate_ik ? " [via IK APROXIMADA]" : "",
-                    target_pose.position.x, target_pose.position.y,
-                    target_pose.position.z,
-                    achieved.pose.position.x, achieved.pose.position.y,
-                    achieved.pose.position.z);
-                speak("Falha: o braco nao chegou na pose de pega");
-                return false;
-            }
-
-            RCLCPP_INFO(
-                this->get_logger(),
-                "[%s] chegou a %.1f cm do alvo%s.",
-                label.c_str(), err * 100.0,
-                used_approximate_ik ? " (via IK aproximada)" : "");
-        }
-
-        return true;
+        return verifyTcpArrival(
+            arm, eef_link, target_pose.position, label,
+            used_approximate_ik ? " [via IK APROXIMADA]" : "");
     }
 
     // createApproachTask/executeTask REMOVIDOS (auditoria 2026-08-07, item
@@ -1767,6 +1942,7 @@ private:
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
         bool enforce_pitch_pi,
+        bool is_shelf,
         bool & retryable_failure,
         bool & object_still_grasped)
     {
@@ -1829,23 +2005,47 @@ private:
         arm->setMaxVelocityScalingFactor(1.0);
         arm->setMaxAccelerationScalingFactor(0.8);
 
-        publish_stage(goal_handle, "final_approach");
-        //speak("Fazendo a aproximacao final da tag");
-        if (!moveToTarget(
-                arm,
-                tag_tf,
-                "tcp",
-                cycle_name + " tcp final",
-                true,
-                enforce_pitch_pi,
-                "Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame),
-                "Falha: sem solução de I K para a tag " + spokenTagName(tag_frame))) {
-            retryable_failure = true;
-            last_pick_failure_reason_ = "ik_ou_execucao_falhou";
-            return false;
+        // PRATELEIRA: sequencia propria em espaco de juntas, com a IK custom.
+        // MESA COMUM: caminho cartesiano de sempre, intocado.
+        std::array<double, 5> shelf_q{};
+        if (is_shelf) {
+            if (!approachShelfTarget(arm, tag_frame, cycle_name, goal_handle, shelf_q)) {
+                retryable_failure = true;
+                speak("Falha: nao consegui alcancar a tag na prateleira");
+                last_pick_failure_reason_ = "shelf_ik_ou_execucao_falhou";
+                arm->setMaxVelocityScalingFactor(1.0);
+                arm->setMaxAccelerationScalingFactor(1.0);
+                return false;
+            }
+        } else {
+            publish_stage(goal_handle, "final_approach");
+            //speak("Fazendo a aproximacao final da tag");
+            if (!moveToTarget(
+                    arm,
+                    tag_tf,
+                    "tcp",
+                    cycle_name + " tcp final",
+                    true,
+                    enforce_pitch_pi,
+                    "Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame),
+                    "Falha: sem solução de I K para a tag " + spokenTagName(tag_frame))) {
+                retryable_failure = true;
+                last_pick_failure_reason_ = "ik_ou_execucao_falhou";
+                return false;
+            }
         }
         arm->setMaxVelocityScalingFactor(1.0);
         arm->setMaxAccelerationScalingFactor(1.0);
+
+        // Depois da fase 2 a ponta esta DENTRO do vao da prateleira. Qualquer
+        // saida daqui para frente — falha ou sucesso — tem que desfazer o
+        // caminho primeiro: planejar de dentro do vao direto para uma pose
+        // nomeada (retry, home, pre_container) arrasta o braco pela estante.
+        const auto leave_shelf_if_needed = [&]() {
+            if (is_shelf) {
+                (void)retreatFromShelf(arm, shelf_q, cycle_name, goal_handle);
+            }
+        };
 
         std::optional<GripperEffortSample> effort_before_close;
         if (verify_grasp_effort_) {
@@ -1858,6 +2058,7 @@ private:
                 retryable_failure = true;
                 speak("Falha: sem telemetria de esforço da garra");
             last_pick_failure_reason_ = "sem_telemetria_garra";
+                leave_shelf_if_needed();
                 return false;
             }
         }
@@ -1877,6 +2078,7 @@ private:
             gripper->setStartStateToCurrentState();
             gripper->setNamedTarget("gripper_open");
             (void)planAndExecute(gripper, cycle_name + " reopen after failed close");
+            leave_shelf_if_needed();
             return false;
         }
 
@@ -1896,9 +2098,23 @@ private:
                 (void)planAndExecute(
                     gripper,
                     cycle_name + " reopen after failed grasp");
+                leave_shelf_if_needed();
                 return false;
             }
             speak("A garra detectou o bloco");
+        }
+
+        // Caminho inverso com o bloco na garra: fase 1 -> pegar_obj_sh.
+        if (is_shelf &&
+            !retreatFromShelf(arm, shelf_q, cycle_name, goal_handle))
+        {
+            // O bloco JA esta na garra: nao pode virar retry (o proximo ciclo
+            // abriria a garra em cima da prateleira) nem skip.
+            object_still_grasped = true;
+            retryable_failure = false;
+            speak("Falha: nao consegui sair da prateleira com o bloco");
+            last_pick_failure_reason_ = "shelf_retorno_falhou";
+            return false;
         }
 
         return runTransferWithRetry(
@@ -1980,28 +2196,44 @@ private:
             return;
         }
 
+        // 2026-08-12: a prateleira parte de uma pose propria e roda a
+        // sequencia de duas fases com a IK custom. Mesa comum = caminho
+        // validado de sempre, sem nenhum desvio.
+        const bool is_shelf = std::find(
+            shelf_table_poses_.begin(), shelf_table_poses_.end(),
+            goal->table_pose) != shelf_table_poses_.end();
+        const std::string start_pose = is_shelf ? kShelfStartPose : "pegar_obj";
+        RCLCPP_INFO(
+            this->get_logger(),
+            "PICK de %s: table_pose='%s' -> %s (pose de partida: %s)",
+            goal->tag_frame.c_str(),
+            goal->table_pose.empty() ? "<vazio>" : goal->table_pose.c_str(),
+            is_shelf ? "PRATELEIRA" : "mesa comum",
+            start_pose.c_str());
+
         publish_stage(goal_handle, "going_pegar_obj");
         //speak("Indo para a pose inicial de pegar");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pegar_obj");
-        if (!planAndExecute(arm, "pegar_obj initial")) {
+        arm->setNamedTarget(start_pose);
+        if (!planAndExecute(arm, start_pose + " initial")) {
             RCLCPP_WARN(
                 this->get_logger(),
-                "Initial pegar_obj move failed. Retrying from home to avoid residual state between sequential picks.");
+                "Initial %s move failed. Retrying from home to avoid residual state between sequential picks.",
+                start_pose.c_str());
 
             arm->setStartStateToCurrentState();
             arm->setNamedTarget("home");
-            if (!planAndExecute(arm, "home recovery before pegar_obj")) {
-                finish_failure("Pick failed while recovering to home before pegar_obj");
+            if (!planAndExecute(arm, "home recovery before " + start_pose)) {
+                finish_failure("Pick failed while recovering to home before " + start_pose);
                 return;
             }
 
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
-            if (!planAndExecute(arm, "pegar_obj initial after home recovery")) {
-                finish_failure("Pick failed while moving to pegar_obj after home recovery");
+            arm->setNamedTarget(start_pose);
+            if (!planAndExecute(arm, start_pose + " initial after home recovery")) {
+                finish_failure("Pick failed while moving to " + start_pose + " after home recovery");
                 return;
             }
         }
@@ -2044,6 +2276,7 @@ private:
                 cycle_name,
                 goal_handle,
                 attempt < 3,
+                is_shelf,
                 retryable_failure,
                 object_still_grasped);
 
@@ -2078,8 +2311,8 @@ private:
 
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
-            if (!planAndExecute(arm, "return pegar_obj before grasp retry")) {
+            arm->setNamedTarget(start_pose);
+            if (!planAndExecute(arm, "return " + start_pose + " before grasp retry")) {
                 finish_failure("Pick failed while preparing grasp retry");
                 return;
             }
@@ -2142,11 +2375,11 @@ private:
             RCLCPP_ERROR(
                 this->get_logger(),
                 "PICK de %s FALHOU em %d tentativa(s). Recolhendo o braco "
-                "para pegar_obj antes de seguir.",
-                goal->tag_frame.c_str(), max_pick_attempts);
+                "para %s antes de seguir.",
+                goal->tag_frame.c_str(), max_pick_attempts, start_pose.c_str());
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
+            arm->setNamedTarget(start_pose);
             (void)planAndExecute(arm, "recolher apos falha final do pick");
         }
 

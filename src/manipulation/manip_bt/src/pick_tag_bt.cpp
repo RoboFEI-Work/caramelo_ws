@@ -28,7 +28,10 @@ PickTagBT::PickTagBT(
 BT::PortsList PickTagBT::providedPorts()
 {
 	return {
-		BT::InputPort<std::string>("tag_frame")
+		BT::InputPort<std::string>("tag_frame"),
+		// Opcional: mesa da estacao ("Mesa15", "MesaSh"...). Vazio = mesa
+		// comum. A prateleira tem sequencia propria no no de pick.
+		BT::InputPort<std::string>("table_pose")
 	};
 }
 
@@ -41,10 +44,14 @@ BT::NodeStatus PickTagBT::onStart()
 		return BT::NodeStatus::FAILURE;
 	}
 
+	std::string table_pose;
+	getInput("table_pose", table_pose);   // opcional: ausente = mesa comum
+
 	RCLCPP_INFO(
 		rclcpp::get_logger("PickTagBT"),
-		"Sending PICK goal: tag_frame=%s",
-		tag_frame.c_str());
+		"Sending PICK goal: tag_frame=%s table_pose=%s",
+		tag_frame.c_str(),
+		table_pose.empty() ? "<mesa comum>" : table_pose.c_str());
 
 	// Item 3.5: respeita o server_wait_timeout do blackboard (mesmo padrao do
 	// GoToWSBT) em vez de 10s cravados — o pick/place respawna com delay de
@@ -64,6 +71,7 @@ BT::NodeStatus PickTagBT::onStart()
 
 	PickTag::Goal goal_msg;
 	goal_msg.tag_frame = tag_frame;
+	goal_msg.table_pose = table_pose;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
 	// stage. Acao saudavel publica stage o tempo todo — nunca e cancelada.

@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(moveit_task_constructor_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
@@ -28,6 +29,21 @@ target_include_directories(container_state_store PUBLIC
 target_compile_features(container_state_store PUBLIC cxx_std_17)
 target_link_libraries(container_state_store yaml-cpp)
 
+# IK propria do braco (5 GDL), usada hoje so no caminho de PRATELEIRA do pick.
+# Ver o cabecalho de include/manip_task_execution/custom_ik.hpp para o porque.
+add_library(custom_ik src/custom_ik.cpp)
+target_include_directories(custom_ik PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+  ${EIGEN3_INCLUDE_DIRS})
+target_compile_features(custom_ik PUBLIC cxx_std_17)
+
+# Executavel de conferencia: compara o solver C++ com o script Python do
+# operador numa grade de alvos (pega erro de transcricao).
+add_executable(custom_ik_check src/custom_ik_check.cpp)
+target_compile_features(custom_ik_check PUBLIC cxx_std_17)
+target_link_libraries(custom_ik_check custom_ik)
+
 add_executable(mtc_pick_action_node src/mtc_pick_action_node.cpp)
 target_include_directories(mtc_pick_action_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -47,7 +63,7 @@ ament_target_dependencies(
   "tf2_ros"
   "tf2_geometry_msgs"
 )
-target_link_libraries(mtc_pick_action_node container_state_store)
+target_link_libraries(mtc_pick_action_node container_state_store custom_ik)
 
 add_executable(mtc_place_action_node src/mtc_place_action_node.cpp)
 target_include_directories(mtc_place_action_node PUBLIC
@@ -67,11 +83,13 @@ ament_target_dependencies(
   "tf2_ros"
   "tf2_geometry_msgs"
 )
-target_link_libraries(mtc_place_action_node container_state_store)
+target_link_libraries(mtc_place_action_node container_state_store custom_ik)
 
 install(
   TARGETS
     container_state_store
+    custom_ik
+    custom_ik_check
     mtc_pick_action_node
     mtc_place_action_node
   DESTINATION lib/${PROJECT_NAME}

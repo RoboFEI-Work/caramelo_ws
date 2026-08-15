@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <algorithm>
 #include <vector>
 
 #if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
@@ -124,6 +125,12 @@ public:
                 rclcpp::QoS(1).transient_local().reliable());
         publishPlaceActive(false);
 
+        // 2026-08-12: entregar na prateleira exige um waypoint obrigatorio
+        // (`pirocao`) antes e depois da pose de mesa — sem ele o braco bate
+        // na estante. Mesmo vocabulario/parametro usados no no de pick.
+        shelf_table_poses_ = this->declare_parameter<std::vector<std::string>>(
+            "shelf_table_poses", std::vector<std::string>{"MesaSh"});
+
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
         perception_warmup_timeout_ = this->declare_parameter<double>(
@@ -184,6 +191,7 @@ private:
         camera_info_subscription_;
     std::atomic<std::uint64_t> camera_info_count_{0};
     std::atomic<std::int64_t> camera_info_last_ns_{0};
+    std::vector<std::string> shelf_table_poses_;
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
@@ -716,6 +724,28 @@ private:
         return isContainerTarget(target) || isTagTarget(target);
     }
 
+    /// Pose de mesa que fica numa prateleira (entrega com waypoint).
+    bool isShelfPlaceTarget(const std::string & target) const
+    {
+        return std::find(
+            shelf_table_poses_.begin(), shelf_table_poses_.end(),
+            target) != shelf_table_poses_.end();
+    }
+
+    /// Waypoint obrigatorio da prateleira. Falhar aqui e falhar a entrega:
+    /// seguir direto para a pose de mesa bate na estante.
+    bool goToShelfWaypoint(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & label)
+    {
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget(kShelfWaypointPose);
+        return planAndExecute(arm, label);
+    }
+
+    static constexpr const char * kShelfWaypointPose = "pirocao";
+
     geometry_msgs::msg::TransformStamped getTagTransform(
         const std::string & reference_frame,
         const std::string & tag_frame) const
@@ -878,6 +908,18 @@ private:
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
         if (!isTfPlaceTarget(table_pose)) {
+            if (isShelfPlaceTarget(table_pose)) {
+                publish_stage(goal_handle, "shelf_waypoint");
+                speak("Passando pela pose intermediaria da prateleira");
+                if (!goToShelfWaypoint(arm, "place shelf waypoint before " + table_pose)) {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "[PLACE] nao cheguei ao waypoint %s — abortando antes "
+                        "de %s para nao bater na prateleira.",
+                        kShelfWaypointPose, table_pose.c_str());
+                    return false;
+                }
+            }
             speak("Indo para a pose de entrega " + spokenTargetName(table_pose));
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
@@ -1425,6 +1467,11 @@ private:
 
         publish_stage(goal_handle, "returning_pegar_obj_final");
         //speak("Voltando para a pose segura depois da entrega");
+        // Caminho inverso na prateleira: sair pelo mesmo waypoint. Melhor
+        // esforco — o bloco ja foi entregue, nada aqui reprova a entrega.
+        if (isShelfPlaceTarget(table_pose)) {
+            (void)goToShelfWaypoint(arm, "place shelf waypoint after " + table_pose);
+        }
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");

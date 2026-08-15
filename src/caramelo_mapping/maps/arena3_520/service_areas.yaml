@@ -3,47 +3,41 @@ service_areas:
     type: start
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 0.5122
+      y: 0.0534
+      yaw: -0.039049
     docking:
-      approach_offset: 0.0
-      linear_tolerance: 0.05
-      angular_tolerance: 0.05
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
       use_docking: false
     manipulation_enabled: false
     notes: START - pose inicial do robo.
-    kind: START
-    dock_id: START
-    approach: front
   FINISH:
     type: finish
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 2.1699
+      y: -6.3892
+      yaw: 1.957582
     docking:
-      approach_offset: 0.0
-      linear_tolerance: 0.05
-      angular_tolerance: 0.05
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
       use_docking: false
     manipulation_enabled: false
     notes: FINISH - pose final do robo.
-    kind: FINISH
-    dock_id: FINISH
-    approach: front
   WS1:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 0.8952
+      y: -3.0456
+      yaw: -3.135866
     table:
       width: 0.8
       depth: 0.5
-      height: 0.1
+      height: 0.15
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
@@ -51,20 +45,17 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS1 - pose final do robo em frente a mesa
-    kind: WS
-    dock_id: WS1
-    approach: front
   WS2:
     type: workstation
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 1.9786
+      y: -1.914
+      yaw: -0.030454
     table:
       width: 0.8
       depth: 0.5
-      height: 0.1
+      height: 0.15
     docking:
       approach_offset: 0.45
       linear_tolerance: 0.03
@@ -72,9 +63,6 @@ service_areas:
       use_docking: true
     manipulation_enabled: true
     notes: WS2 - pose final do robo em frente a mesa
-    kind: WS
-    dock_id: WS2
-    approach: front
   WS3:
     type: workstation
     frame_id: map
@@ -115,9 +103,9 @@ service_areas:
     type: shelf
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 1.6888
+      y: -0.9314
+      yaw: 3.137016
     table:
       width: 0.8
       depth: 0.5

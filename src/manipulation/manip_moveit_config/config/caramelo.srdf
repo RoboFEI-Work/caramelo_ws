@@ -76,6 +76,18 @@
         <joint name="manip_joint4" value="1.9373"/>
         <joint name="manip_joint5" value="-1.4486"/>
     </group_state>
+    <!-- Pose de partida do pick em PRATELEIRA (shelf), 2026-08-12.
+         Graus: j1 90, j2 -56, j3 134, j4 80, j5 -90.
+         Separada do pegar_obj de proposito: aquela e usada pelas mesas comuns,
+         que ja estao validadas, e nao deve mudar. O ramo de shelf do
+         mtc_pick_action_node usa esta aqui como pose de partida e de retorno. -->
+    <group_state name="pegar_obj_sh" group="arm">
+        <joint name="manip_joint1" value="1.570796"/>
+        <joint name="manip_joint2" value="-0.977384"/>
+        <joint name="manip_joint3" value="2.1642"/>
+        <joint name="manip_joint4" value="1.4137"/>
+        <joint name="manip_joint5" value="-1.570796"/>
+    </group_state>
     <group_state name="tag_cima" group="arm">
         <joint name="manip_joint1" value="1.5708"/>
         <joint name="manip_joint2" value="0.628319"/>

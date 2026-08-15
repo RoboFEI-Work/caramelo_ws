@@ -591,7 +591,8 @@ void appendPicksAtWs(
   YAML::Node & action_seq,
   const std::vector<TransferItem> & transfers,
   PlannerState & state,
-  const std::string & ws)
+  const std::string & ws,
+  const std::map<std::string, std::string> & ws_to_table_pose)
 {
   for (const auto & t : transfers) {
     if (state.inventory.size() >= 3) {
@@ -605,6 +606,14 @@ void appendPicksAtWs(
     pick["kind"] = "pick";
     pick["tag_frame"] = t.tag_frame;
     pick["ws"] = t.from_ws;
+    // 2026-08-12: o pick tambem precisa saber o tipo de mesa — a prateleira
+    // (MesaSh) exige uma sequencia de movimentos propria. Ate aqui so o place
+    // recebia table_pose, e o pick era cego ao tipo de estacao.
+    const auto ws_it = ws_to_table_pose.find(t.from_ws);
+    if (ws_it == ws_to_table_pose.end()) {
+      throw std::runtime_error("Missing WS->Mesa mapping for source workspace: " + t.from_ws);
+    }
+    pick["table_pose"] = ws_it->second;
     action_seq.push_back(pick);
 
     state.picked.insert(t.obj_id);
@@ -645,7 +654,7 @@ YAML::Node buildOutput(
 
     appendGotoIfNeeded(action_seq, state, next_ws, ws_to_table_pose);
     appendPlacesAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
-    appendPicksAtWs(action_seq, transfers, state, next_ws);
+    appendPicksAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
   }
 
 

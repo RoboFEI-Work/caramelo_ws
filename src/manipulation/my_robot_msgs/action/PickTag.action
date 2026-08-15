@@ -1,4 +1,9 @@
 string tag_frame
+# Pose de mesa da estacao onde a coleta acontece (mesmo vocabulario do
+# PlaceTag: "Mesa15", "MesaSh", ...). 2026-08-12: o pick era CEGO ao tipo de
+# estacao, e a prateleira exige uma sequencia de movimentos propria. Vazio =
+# comportamento de mesa comum (retrocompativel).
+string table_pose
 
 ---
 bool success

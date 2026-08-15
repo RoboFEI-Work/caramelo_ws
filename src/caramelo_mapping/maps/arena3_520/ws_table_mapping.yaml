@@ -10,8 +10,10 @@ ws_to_table_pose:
   WS_6: Mesa5
   WS_7: Mesa10
   WS_8: Mesa15
-  SH_1: Mesa0
-  SH_2: Mesa5
+  # 2026-08-12: SH = prateleira. MesaSh dispara a sequencia propria
+  # (pick em 2 fases com IK custom; place passando pelo `pirocao`).
+  SH_1: MesaSh
+  SH_2: MesaSh
 ws_to_dock_id:
   WS_1: WS1
   WS_2: WS2

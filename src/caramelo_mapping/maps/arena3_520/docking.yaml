@@ -1,28 +1,68 @@
 dock_plugins:
-  caramelo_front_dock:
-    plugin: opennav_docking::SimpleNonChargingDock
-    docking_threshold: 0.05
-    staging_x_offset: -0.25
-    staging_yaw_offset: 0.0
-    dock_direction: forward
-    rotate_to_dock: false
-    use_external_detection_pose: false
-    use_battery_status: false
-    use_stall_detection: false
-  caramelo_precision_front_dock:
+  caramelo_ws1_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.8
+    staging_x_offset: -0.45
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
     use_external_detection_pose: false
     use_battery_status: false
     use_stall_detection: false
-  caramelo_shelf_front_dock:
+  caramelo_ws2_dock:
     plugin: opennav_docking::SimpleNonChargingDock
-    docking_threshold: 0.06
-    staging_x_offset: -0.9
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws3_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws4_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_sh1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.5
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_pp1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.025
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_rt1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -31,74 +71,75 @@ dock_plugins:
     use_stall_detection: false
 docks:
   WS1:
-    type: caramelo_front_dock
+    type: caramelo_ws1_dock
     frame: map
     pose:
-    - 0.9098
-    - -2.9753
-    - 3.067689
+      - 0.8952
+      - -3.0456
+      - -3.135866
     id: WS1
   WS2:
-    type: caramelo_front_dock
+    type: caramelo_ws2_dock
     frame: map
     pose:
-    - 1.6911
-    - -0.9945
-    - 3.123942
+      - 1.9786
+      - -1.914
+      - -0.030454
     id: WS2
   WS3:
-    type: caramelo_front_dock
+    type: caramelo_ws3_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
     id: WS3
   WS4:
-    type: caramelo_front_dock
+    type: caramelo_ws4_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
     id: WS4
   SH1:
-    type: caramelo_shelf_front_dock
+    type: caramelo_sh1_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+      - 1.6888
+      - -0.9314
+      - 3.137016
     id: SH1
   PP1:
-    type: caramelo_precision_front_dock
+    type: caramelo_pp1_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
     id: PP1
   RT1:
-    type: caramelo_precision_front_dock
+    type: caramelo_rt1_dock
     frame: map
     pose:
-    - 0.0
-    - 0.0
-    - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
     id: RT1
+  FINISH:
+      type: caramelo_front_dock
+      frame: map
+      pose:
+        - 2.170
+        - -6.389
+        - 1.958
+      id: FINISH
+
   START:
     type: caramelo_front_dock
     frame: map
     pose:
-    - 0.2386
-    - -0.002
-    - -0.032673
+      - 0.512
+      - 0.053
+      - -0.039
     id: START
-  FINISH:
-    type: caramelo_front_dock
-    frame: map
-    pose:
-    - 1.8809
-    - -6.4502
-    - -1.270149
-    id: FINISH
