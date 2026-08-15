@@ -1989,16 +1989,22 @@ private:
         }
 
         speak("Identifiquei a tag " + spokenTagName(tag_frame));
-        publish_stage(goal_handle, "pre_approach");
-        if (!alignCameraToTagXY(
-                arm,
-                tag_frame,
-                goal_handle,
-                cycle_name + " pre_approach_xy")) {
-            retryable_failure = true;
-            speak("Falha: não consegui alinhar a câmera com a tag");
-            last_pick_failure_reason_ = "align_camera_falhou";
-            return false;
+        // Pedido do operador 2026-08-15: na PRATELEIRA nao ha pre-aproximacao
+        // — o alinhamento XY da camera foi pensado para a vista de cima da
+        // mesa; em frente a estante ele so move o braco a toa perto da
+        // estrutura. Deteccao e varredura continuam valendo nos dois casos.
+        if (!is_shelf) {
+            publish_stage(goal_handle, "pre_approach");
+            if (!alignCameraToTagXY(
+                    arm,
+                    tag_frame,
+                    goal_handle,
+                    cycle_name + " pre_approach_xy")) {
+                retryable_failure = true;
+                speak("Falha: não consegui alinhar a câmera com a tag");
+                last_pick_failure_reason_ = "align_camera_falhou";
+                return false;
+            }
         }
 
         if (!sleepInterruptibly(std::chrono::milliseconds(120))) {

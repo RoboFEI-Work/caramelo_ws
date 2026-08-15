@@ -1434,14 +1434,20 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "going_pegar_obj");
-        //speak("Indo para a pose de transporte");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pegar_obj");
-        if (!planAndExecute(arm, "go pegar_obj")) {
-            last_place_failure_reason_ = "falha_com_bloco_na_garra";
-            return false;
+        // Pedido do operador 2026-08-15: na PRATELEIRA o pegar_obj entre o
+        // pre_container e o pirocao e desnecessario — vai direto
+        // pre_container -> pirocao -> MesaSh. Mesa comum mantem o caminho
+        // validado com pegar_obj.
+        if (!isShelfPlaceTarget(table_pose)) {
+            publish_stage(goal_handle, "going_pegar_obj");
+            //speak("Indo para a pose de transporte");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (!planAndExecute(arm, "go pegar_obj")) {
+                last_place_failure_reason_ = "falha_com_bloco_na_garra";
+                return false;
+            }
         }
 
 
