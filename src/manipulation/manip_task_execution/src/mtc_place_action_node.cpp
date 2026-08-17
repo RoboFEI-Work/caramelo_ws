@@ -1471,13 +1471,27 @@ private:
             return false;
         }
 
+        // Caminho inverso na prateleira (pedido do operador 2026-08-17):
+        // sair pelo waypoint pirocao e PARAR nele — sem voltar a pegar_obj.
+        // O proximo movimento da task (home/pre_container) parte do waypoint.
+        // Melhor esforco — o bloco ja foi entregue, nada aqui reprova a
+        // entrega.
+        if (isShelfPlaceTarget(table_pose)) {
+            publish_stage(goal_handle, "returning_shelf_waypoint_final");
+            if (!goToShelfWaypoint(
+                    arm, "place shelf waypoint after " + table_pose)) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "Entrega concluida mas o retorno ao waypoint %s falhou — "
+                    "braco pode estar estendido sobre a prateleira.",
+                    kShelfWaypointPose);
+                speak("Entreguei o bloco, mas nao consegui recolher o braco");
+            }
+            return true;
+        }
+
         publish_stage(goal_handle, "returning_pegar_obj_final");
         //speak("Voltando para a pose segura depois da entrega");
-        // Caminho inverso na prateleira: sair pelo mesmo waypoint. Melhor
-        // esforco — o bloco ja foi entregue, nada aqui reprova a entrega.
-        if (isShelfPlaceTarget(table_pose)) {
-            (void)goToShelfWaypoint(arm, "place shelf waypoint after " + table_pose);
-        }
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");

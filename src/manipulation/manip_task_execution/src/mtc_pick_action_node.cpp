@@ -1806,15 +1806,21 @@ private:
         const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string & container_pose,
         const std::string & cycle_name,
-        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        bool is_shelf)
     {
-        publish_stage(goal_handle, "returning_to_pegar_obj");
-        speak("Bloco seguro. Voltando para a pose de transporte");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pegar_obj");
-        if (!planAndExecute(arm, cycle_name + " return pegar_obj")) {
-            return TransferOutcome::kFailHolding;
+        // Prateleira (pedido 2026-08-17): NUNCA passar por pegar_obj com o
+        // bloco vindo da estante — o retorno ja deixou o braco em
+        // pegar_obj_sh; segue direto ao pre_container.
+        if (!is_shelf) {
+            publish_stage(goal_handle, "returning_to_pegar_obj");
+            speak("Bloco seguro. Voltando para a pose de transporte");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (!planAndExecute(arm, cycle_name + " return pegar_obj")) {
+                return TransferOutcome::kFailHolding;
+            }
         }
 
         publish_stage(goal_handle, "going_pre_container");
@@ -1859,15 +1865,16 @@ private:
         const std::string & container_pose,
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        bool is_shelf,
         bool & object_still_grasped)
     {
         TransferOutcome transfer = transferGraspedObjectToContainer(
-            arm, gripper, container_pose, cycle_name, goal_handle);
+            arm, gripper, container_pose, cycle_name, goal_handle, is_shelf);
         if (transfer == TransferOutcome::kFailHolding) {
             speak("Falha no transporte com o bloco na garra. Tentando o transporte de novo");
             transfer = transferGraspedObjectToContainer(
                 arm, gripper, container_pose,
-                cycle_name + " transfer_retry", goal_handle);
+                cycle_name + " transfer_retry", goal_handle, is_shelf);
         }
         if (transfer == TransferOutcome::kFailHolding) {
             // Item 2.2b: NUNCA vira skip — o gripper_open do proximo goal
@@ -1911,7 +1918,7 @@ private:
         }
 
         constexpr double kTagXNearZero = 0.1;
-        constexpr double kTagYNearZero = 0.4;
+        constexpr double kTagYNearZero = 0.7;
         const double tag_x = tag_tf.transform.translation.x;
         const double tag_y = tag_tf.transform.translation.y;
 
@@ -2145,6 +2152,7 @@ private:
             container_pose,
             cycle_name,
             goal_handle,
+            is_shelf,
             object_still_grasped);
     }
 
