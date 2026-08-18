@@ -727,7 +727,20 @@ def _salvar_pgm(imagem, caminho: Path) -> None:
     cabecalho P5 com largura, altura e 255, seguido dos bytes crus -- o mesmo
     que o map_saver gera e que o init_keepout_mask.py escreve na mao.
     """
-    imagem.convert("L").save(str(caminho), format="PPM")
+    # Grava AO LADO e troca no fim. Gravar por cima do arquivo bom deixa uma
+    # janela em que ele esta pela metade: um erro no meio da escrita, disco
+    # cheio ou o processo morto ali levam o mapa junto. Com a troca no fim, o
+    # arquivo e o antigo inteiro ou o novo inteiro, nunca um pedaco dos dois.
+    #
+    # O gemeo disto na GUI (MapCanvas::savePgm) ja destruiu um mapa de verdade:
+    # 724 KB da arena warehouse viraram 0 byte.
+    parcial = caminho.with_suffix(caminho.suffix + ".parcial")
+    try:
+        imagem.convert("L").save(str(parcial), format="PPM")
+        os.replace(parcial, caminho)   # atomico no mesmo sistema de arquivos
+    finally:
+        if parcial.exists():
+            parcial.unlink()
 
 
 # -------------------------------------------------------- limpeza de ruido

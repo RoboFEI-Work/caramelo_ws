@@ -50,15 +50,51 @@ bool MapCanvas::loadPgm(const QString & path)
 bool MapCanvas::savePgm(const QString & path) const
 {
   // Qt nao ESCREVE PGM; gravamos P5 na mao (mesma geometria/valores do nav2).
-  std::ofstream out(path.toStdString(), std::ios::binary);
-  if (!out || img_.isNull()) {
+  //
+  // DUAS REGRAS AQUI, e as duas nasceram de um mapa destruido de verdade.
+  //
+  // 1) CONFERIR ANTES DE ABRIR. A versao anterior abria o ofstream e SO'
+  //    DEPOIS testava img_.isNull(). Abrir para escrita ja' trunca o arquivo:
+  //    sem imagem carregada, o map.pgm virava 0 byte e a funcao devolvia
+  //    false -- a tela dizia "nao consegui salvar (a pasta esta protegida?)"
+  //    com o mapa ja' apagado. Aconteceu com o map.pgm da arena warehouse:
+  //    724 KB viraram zero, e so' o backup ao lado salvou.
+  //
+  // 2) ESCREVER AO LADO E TROCAR NO FIM. Mesmo com a imagem valida, gravar
+  //    por cima do arquivo bom deixa uma janela em que ele esta' pela metade.
+  //    Um travamento, disco cheio ou a GUI fechada nessa janela levam o mapa
+  //    junto. Gravando num temporario e renomeando, o map.pgm ou e' o antigo
+  //    inteiro ou e' o novo inteiro -- nunca um pedaco dos dois.
+  if (img_.isNull()) {
     return false;
   }
-  out << "P5\n" << img_.width() << " " << img_.height() << "\n255\n";
-  for (int y = 0; y < img_.height(); ++y) {
-    out.write(reinterpret_cast<const char *>(img_.constScanLine(y)), img_.width());
+
+  const QString temporario = path + ".parcial";
+  {
+    std::ofstream out(temporario.toStdString(), std::ios::binary);
+    if (!out) {
+      return false;
+    }
+    out << "P5\n" << img_.width() << " " << img_.height() << "\n255\n";
+    for (int y = 0; y < img_.height(); ++y) {
+      out.write(reinterpret_cast<const char *>(img_.constScanLine(y)), img_.width());
+    }
+    out.flush();
+    if (!out) {
+      out.close();
+      QFile::remove(temporario);
+      return false;
+    }
   }
-  return static_cast<bool>(out);
+
+  // QFile::rename nao substitui destino existente; remover primeiro. O mapa
+  // bom ainda esta' inteiro no temporario, entao esta janela e' recuperavel.
+  QFile::remove(path);
+  if (!QFile::rename(temporario, path)) {
+    QFile::remove(temporario);
+    return false;
+  }
+  return true;
 }
 
 void MapCanvas::setImagemDeFundo(const QImage & fundo)
