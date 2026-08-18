@@ -3,11 +3,12 @@
 #include <iterator>
 
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -20,8 +21,11 @@
 #include "bridge/ros_bridge.hpp"
 #include "bridge/waypoint_manager.hpp"
 #include "core/launch_runner.hpp"
-#include "modules/editor_mapa/editor_mapa_module.hpp"
+#include "modules/editor_mapa/editor_keepout.hpp"
 #include "modules/mapas/mapas_module.hpp"
+#include "modules/mapeamento/scripts_do_mapa.hpp"
+#include "widgets/seletor_tipo_area.hpp"
+#include "widgets/validador_id_ponto.hpp"
 
 namespace
 {
@@ -47,8 +51,41 @@ const TipoDePonto kTipos[] = {
     "E' daqui que o braco alcanca os objetos."},
 };
 
-const char * kTiposDeArea[] = {"workstation", "shelf", "precision_placement",
-  "rotating_table", "start", "finish"};
+// A lista dos seis tipos de service area vivia aqui em copia, escrita a mao.
+// Ela agora e' unica, no SeletorTipoArea -- duas copias de uma lista sao duas
+// chances de divergir, e quem pagava era o operador, que gravava uma area com
+// um tipo que o executor da missao nao reconhecia e so' descobria na prova.
+
+// Pergunta o tipo da service area num dialogo com o seletor oficial. Devolve
+// vazio se o operador desistir.
+QString perguntarTipoDeArea(QWidget * pai, const QString & nome)
+{
+  QDialog dialogo(pai);
+  dialogo.setWindowTitle("Que tipo de estacao e' esta?");
+
+  auto * layout = new QVBoxLayout(&dialogo);
+  auto * explica = new QLabel(
+    "O tipo decide como o robo trabalha em \"" + nome + "\": a que distancia "
+    "ele para e em que altura o braco procura os objetos.");
+  explica->setWordWrap(true);
+  layout->addWidget(explica);
+
+  auto * seletor = new SeletorTipoArea(&dialogo);
+  layout->addWidget(seletor);
+
+  auto * botoes = new QDialogButtonBox(
+    QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialogo);
+  botoes->button(QDialogButtonBox::Ok)->setText("Gravar");
+  botoes->button(QDialogButtonBox::Cancel)->setText("Cancelar");
+  layout->addWidget(botoes);
+  QObject::connect(botoes, &QDialogButtonBox::accepted, &dialogo, &QDialog::accept);
+  QObject::connect(botoes, &QDialogButtonBox::rejected, &dialogo, &QDialog::reject);
+
+  if (dialogo.exec() != QDialog::Accepted) {
+    return QString();
+  }
+  return seletor->tipo();
+}
 
 }  // namespace
 
@@ -57,6 +94,7 @@ FerramentaMapeamento::FerramentaMapeamento(RosBridge * bridge, QWidget * parent)
 {
   slam_ = new LaunchRunner(this);
   teleop_ = new LaunchRunner(this);
+  scripts_ = new ScriptsDoMapa(this);
 
   auto * layout = new QHBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -291,11 +329,28 @@ QWidget * FerramentaMapeamento::construirPassoPontos()
 
 void FerramentaMapeamento::gravarPonto()
 {
-  const QString nome = nome_do_ponto_->text().trimmed();
-  if (nome.isEmpty()) {
-    status_ponto_->setText("De um nome ao ponto antes de gravar.");
+  const int tipo = tipo_do_ponto_->currentIndex();
+
+  // Waypoint e' "um lugar qualquer" e aceita nome livre. Dock e service area,
+  // nao: o id vai para docking.yaml/service_areas.yaml e o executor da missao
+  // compara o nome inteiro contra o padrao do regulamento. Sintoma de antes:
+  // "ws 1" era gravado (ou o save abortava calado) e a estacao simplesmente
+  // nao existia na hora da prova.
+  QString nome = nome_do_ponto_->text().trimmed();
+  if (tipo == 0) {
+    if (nome.isEmpty()) {
+      status_ponto_->setText("De um nome ao ponto antes de gravar.");
+      return;
+    }
+  } else if (idDePontoAceitavel(nome)) {
+    // "ws1" e' aceito e corrigido para "WS1". Recusar so' pela caixa seria
+    // implicancia com quem esta' digitando de pe', no meio da arena.
+    nome = idDePontoNormalizado(nome);
+  } else {
+    status_ponto_->setText(erroDeIdDePonto(nome));
     return;
   }
+
   const QString mapa = mapaAlvo();
   if (mapa.isEmpty()) {
     status_ponto_->setText(
@@ -303,7 +358,6 @@ void FerramentaMapeamento::gravarPonto()
     return;
   }
 
-  const int tipo = tipo_do_ponto_->currentIndex();
   switch (tipo) {
     case 0: {   // waypoint
         auto * wm = bridge_->waypoints();
@@ -320,17 +374,11 @@ void FerramentaMapeamento::gravarPonto()
     default: {  // service area
         // O tipo da area decide o comportamento do robo na missao; perguntar
         // aqui evita um YAML editado a mao depois.
-        bool ok = false;
-        QStringList opcoes;
-        for (const char * t : kTiposDeArea) {
-          opcoes << t;
-        }
-        const QString tipoArea = QInputDialog::getItem(
-          this, "Tipo da service area",
-          "O que e' este ponto?", opcoes, 0, false, &ok);
-        if (!ok) {return;}
+        const QString tipoArea = perguntarTipoDeArea(this, nome);
+        if (tipoArea.isEmpty()) {return;}
         bridge_->saveServiceAreaPose(mapa, nome, tipoArea);
-        pontos_->addItem("Service area  " + nome + "  (" + tipoArea + ")");
+        pontos_->addItem(
+          "Service area  " + nome + "  (" + rotuloDeTipoDeArea(tipoArea) + ")");
         break;
       }
   }
@@ -348,18 +396,12 @@ QWidget * FerramentaMapeamento::construirPassoParedes()
   titulo->setObjectName("tituloModulo");
   layout->addWidget(titulo);
 
-  auto * explica = new QLabel(
-    "O LiDAR nao enxerga fita no chao, degrau baixo nem vidro. Onde o robo nao "
-    "pode entrar mas nada aparece no mapa, pinte de PAREDE. Onde o mapa marcou "
-    "obstaculo que nao existe (uma pessoa que passou durante o mapeamento), "
-    "pinte de LIVRE.");
-  explica->setWordWrap(true);
-  explica->setObjectName("msgCartao");
-  layout->addWidget(explica);
-
-  // O editor de bitmap era um modulo solto na sidebar. E' exatamente esta a
-  // ferramenta de parede virtual — vive aqui dentro, no passo em que se usa.
-  layout->addWidget(new EditorMapaModule(bridge_), 1);
+  // Aqui ficava o EditorMapaModule, que pinta o map.pgm. O passo fazia o
+  // CONTRARIO do que o rotulo promete: preto no map.pgm vira parede FISICA, o
+  // AMCL passa a procurar essa parede com o LiDAR e a localizacao piora. Parede
+  // virtual mora na mascara (keepout_mask.pgm), que so' o planejador le'.
+  paredes_ = new EditorKeepout(scripts_);
+  layout->addWidget(paredes_, 1);
   return pagina;
 }
 
@@ -400,6 +442,14 @@ QWidget * FerramentaMapeamento::construirPassoConferir()
 void FerramentaMapeamento::irParaPasso(int passo)
 {
   paginas_->setCurrentIndex(passo);
+
+  // A arena so' e' conhecida depois do passo 1 (ou vem da que o robo ja' usa),
+  // entao o editor de paredes precisa ser reapontado toda vez que o passo
+  // aparece -- se ficar com a arena de quando a tela nasceu, o operador pinta
+  // a mascara do mapa errado.
+  if (passo == 2) {
+    paredes_->setArena(mapaAlvo());
+  }
 
   // Passos 1 e 2 usam o mapa AO VIVO (o robo se movendo). O passo 4 mostra o
   // arquivo salvo, que e' outra coisa: e' onde se descobre que um dock ficou

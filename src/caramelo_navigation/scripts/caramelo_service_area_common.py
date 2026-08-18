@@ -15,7 +15,9 @@ except ImportError:  # pragma: no cover - mantem compatibilidade em PCs sem ruam
     import yaml as pyyaml
 
 from caramelo_docking_common import (
+    DEFAULT_DOCK_PLUGINS,
     backup_file,
+    default_dock_type,
     normalize_dock_id,
     resolve_map_folder,
     service_areas_file,
@@ -263,22 +265,17 @@ def _docking_from_entry(entry: dict, area_type: str) -> dict:
 
 
 def dock_type_for_area(area_id: str) -> str:
-    return f"caramelo_{normalize_dock_id(area_id).lower()}_dock"
+    """Plugin de dock da area, pela convencao dos 3 plugins compartilhados.
 
-
-def dock_plugin_for_area(area_id: str, area: dict) -> dict:
-    docking = area["docking"]
-    return {
-        "plugin": "opennav_docking::SimpleNonChargingDock",
-        "docking_threshold": float(docking["linear_tolerance"]),
-        "staging_x_offset": -float(docking["approach_offset"]),
-        "staging_yaw_offset": 0.0,
-        "dock_direction": "forward",
-        "rotate_to_dock": False,
-        "use_external_detection_pose": False,
-        "use_battery_status": False,
-        "use_stall_detection": False,
-    }
+    Delega para caramelo_docking_common.default_dock_type porque aquela e a
+    UNICA fonte da convencao -- ela e espelhada em C++ no
+    manip_bt/mission_map_config.cpp (defaultDockType). Antes esta funcao
+    inventava um plugin por area ("caramelo_ws1_dock"): o docking.yaml gravado
+    apontava para um plugin que so existia ali, divergindo dos arquivos reais e
+    do lado C++, e o dock_plugin_for_area que o acompanhava sumiu junto por ser
+    a segunda fonte da mesma regra.
+    """
+    return default_dock_type(normalize_dock_id(area_id))
 
 
 def default_service_area(area_id: str, area_type: Optional[str] = None, pose: Optional[dict] = None) -> dict:
@@ -421,28 +418,94 @@ def validate_service_areas_data(data: dict) -> Tuple[List[str], List[str]]:
     return errors, warnings
 
 
+def _pose_zerada(pose) -> bool:
+    """A pose e' o zero absoluto, ou seja: nunca foi gravada de verdade.
+
+    Nao e' tolerancia de medida -- e' o valor literal que o template das 8
+    areas do regulamento nasce tendo. Uma pose gravada com o robo no lugar
+    nunca da' exatamente 0,0,0 nos tres eixos.
+    """
+    try:
+        return all(abs(float(v)) == 0.0 for v in pose) and len(list(pose)) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
 def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False) -> Tuple[Path, Optional[Path], int]:
+    """Atualiza docking.yaml a partir das service areas, POR MERGE.
+
+    Bug corrigido (perda de dados): a versao anterior montava o docking.yaml do
+    ZERO e ainda pulava toda area com docking.use_docking == false. START e
+    FINISH sao use_docking: false por definicao, entao sumiam do arquivo a cada
+    save de qualquer area. Sintoma: o epilogo da missao (bt_yaml_executor faz
+    "goto FINISH") passava a falhar com "FINISH nao existe no docking.yaml",
+    e docks gravados na mao ou pelo save_dock_pose.py eram apagados junto.
+
+    Duas regras, portanto:
+      - merge: o que ja estava no docking.yaml e nao vem das service areas
+        sobrevive intacto (docks e dock_plugins);
+      - START/FINISH entram no arquivo mesmo sem docking, porque continuam
+        sendo POSES ALVO da navegacao pura -- use_docking so decide se o
+        docking_server e acionado ao chegar, nao se a pose existe.
+    """
     service_data = load_service_areas(map_folder)
     frame_id = service_data.get("frame_id", "map")
-    docks = {}
-    dock_plugins = {}
+    path = docking_path(map_folder)
+
+    data = load_yaml(path)
+    dock_plugins = data.get("dock_plugins")
+    if not isinstance(dock_plugins, dict):
+        dock_plugins = {}
+    docks = data.get("docks")
+    if not isinstance(docks, dict):
+        docks = {}
+
+    # Os 3 plugins compartilhados precisam existir para o docking_server
+    # carregar. Os que ja estao no arquivo NAO sao tocados: podem ter sido
+    # ajustados na arena (staging_x_offset, threshold) e reescrever aqui
+    # jogaria fora a calibracao feita em prova.
+    for plugin_name, plugin_spec in DEFAULT_DOCK_PLUGINS.items():
+        if plugin_name not in dock_plugins:
+            dock_plugins[plugin_name] = copy.deepcopy(plugin_spec)
+
     for area_id, entry in service_data["service_areas"].items():
+        area_id = normalize_dock_id(area_id)
         normalized = normalized_service_area(area_id, entry, frame_id)
-        if not normalized["docking"]["use_docking"]:
-            continue
-        dock_type = dock_type_for_area(area_id)
-        dock_plugins[dock_type] = dock_plugin_for_area(area_id, normalized)
+        pose_da_area = pose_to_list(normalized["final_robot_pose"])
+        dock_antigo = docks.get(area_id) if isinstance(docks.get(area_id), dict) else {}
+        pose_do_dock = dock_antigo.get("pose")
+
+        # POSE ZERADA NAO SOBRESCREVE POSE GRAVADA.
+        #
+        # Uma area cuja pose e' [0,0,0] nunca foi gravada de verdade: e' o
+        # template que init_map_docking.py cria com as 8 areas do regulamento.
+        # O docking.yaml, por outro lado, pode ter a pose REAL, gravada com o
+        # robo no lugar (save_dock_pose.py, ou o arrasto do marcador na GUI).
+        #
+        # Sem esta guarda, qualquer save de qualquer area copiava o zero do
+        # template por cima de todas as poses reais do arquivo. Medido na
+        # arena3_520: service_areas.yaml inteiro em 0,0,0 e docking.yaml com
+        # START, FINISH, WS1 e WS2 gravados -- um unico save apagava os quatro.
+        #
+        # E o modo de falha e' o pior possivel. O bug ANTIGO (que apagava a
+        # chave) fazia a missao parar dizendo que FINISH nao existe: alto e
+        # claro. Este faz o FINISH existir com pose [0,0,0], entao o robo
+        # ACEITA a ordem e atravessa a arena rumo a origem do mapa.
+        if _pose_zerada(pose_da_area) and pose_do_dock and \
+                not _pose_zerada(pose_do_dock):
+            pose_final = pose_do_dock
+        else:
+            pose_final = pose_da_area
+
         docks[area_id] = {
-            "type": dock_type,
+            "type": dock_antigo.get("type") or dock_type_for_area(area_id),
             "frame": normalized["frame_id"],
-            "pose": pose_to_list(normalized["final_robot_pose"]),
+            "pose": pose_final,
             "id": area_id,
         }
-    data = {
-        "dock_plugins": dock_plugins,
-        "docks": docks,
-    }
-    path = docking_path(map_folder)
+
+    data["dock_plugins"] = dock_plugins
+    data["docks"] = docks
     backup = write_yaml(path, data, make_backup=make_backup)
     return path, backup, len(docks)
 

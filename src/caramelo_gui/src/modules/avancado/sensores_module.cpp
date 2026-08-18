@@ -16,6 +16,23 @@ namespace
 {
 constexpr double kRad2Deg = 180.0 / M_PI;
 
+// O LiDAR esta montado de cabeca para baixo e virado: no URDF
+// (base_tophat.xacro) rpy = (pi, 0, pi), que da a matriz diag(-1, +1, -1).
+// No plano XY isso nao e rotacao, e ESPELHO -- x troca de sinal, y nao:
+//
+//     angulo_no_robo = pi - angulo_no_laser
+//
+// Este desenho somava o angulo do laser como se fosse angulo do robo. Como
+// espelho nao e rotacao, o erro nao era um giro que ninguem notaria: o que
+// esta na FRENTE aparecia ATRAS, e o setor cego era pintado do lado errado.
+// Com o /scan recortado em [1.5708, 4.7124] rad no laser (scan_normalizer),
+// no robo isso vira [-pi/2, +pi/2]: o Caramelo ENXERGA A FRENTE, e quem fica
+// sem leitura e a TRASEIRA.
+inline double anguloNoRobo(double angulo_no_laser)
+{
+  return M_PI - angulo_no_laser;
+}
+
 // Topicos do robo real. Na simulacao a IMU sai em /imu; no robo, em
 // /imu/data_raw. O modulo tenta os dois.
 const char * kTopicoLidar = "/scan";
@@ -65,16 +82,18 @@ void VisorLidar::paintEvent(QPaintEvent *)
     p.drawEllipse(centro, r, r);
   }
 
-  // Setor CEGO em destaque. O Caramelo recorta o LiDAR para os 180 graus
-  // traseiros; desenhar um circulo completo daria a impressao de cobertura
-  // total, que e' exatamente o engano que provoca colisao frontal.
+  // Setor CEGO em destaque. O Caramelo recorta o LiDAR para os 180 graus da
+  // FRENTE; desenhar um circulo completo daria a impressao de cobertura total,
+  // que e' exatamente o engano que provoca colisao ao dar re'.
   const double abertura = leitura_.angulo_max - leitura_.angulo_min;
   if (abertura < 2.0 * M_PI - 0.05) {
     QPainterPath cego;
     cego.moveTo(centro);
     // Qt mede angulos em 1/16 de grau, no sentido anti-horario; o setor cego e'
     // o complemento do coberto.
-    const double inicioCego = leitura_.angulo_max * kRad2Deg;
+    // O espelho INVERTE os extremos: o angulo_max do laser e' o MENOR
+    // angulo no robo. E' esta troca que poe o setor cego atras.
+    const double inicioCego = anguloNoRobo(leitura_.angulo_min) * kRad2Deg;
     const double extensaoCego = (2.0 * M_PI - abertura) * kRad2Deg;
     cego.arcTo(
       QRectF(centro.x() - raio, centro.y() - raio, raio * 2, raio * 2),
@@ -83,9 +102,11 @@ void VisorLidar::paintEvent(QPaintEvent *)
     p.fillPath(cego, QColor(235, 87, 87, 45));
 
     p.setPen(QColor("#ff9d9d"));
+    // O rotulo fica embaixo, junto do setor: em cima ele apontava para o lado
+    // coberto e dizia o contrario do que o desenho mostra.
     p.drawText(
-      QRectF(centro.x() - 90, centro.y() - raio - 20, 180, 18),
-      Qt::AlignCenter, "sem visao aqui");
+      QRectF(centro.x() - 90, centro.y() + raio + 4, 180, 18),
+      Qt::AlignCenter, "traseira sem visao");
   }
 
   // Pontos do scan.
@@ -96,7 +117,7 @@ void VisorLidar::paintEvent(QPaintEvent *)
     if (!std::isfinite(d) || d < leitura_.alcance_min || d > leitura_.alcance_max) {
       continue;
     }
-    const double ang = leitura_.angulo_min + i * leitura_.incremento;
+    const double ang = anguloNoRobo(leitura_.angulo_min + i * leitura_.incremento);
     const double r = raio * (d / alcance);
     // Y da tela cresce para baixo: o seno entra negativo.
     p.drawEllipse(

@@ -279,3 +279,176 @@ QScrollBar::handle:vertical {
 }
 QScrollBar::handle:vertical:hover { background: #35c3f0; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+
+/* ==========================================================================
+   FERRAMENTA DE MAPEAMENTO — trilho de etapas, controle segmentado e o
+   arranjo "mapa no centro, controles a direita".
+
+   Por que trilho e nao abas: mapear tem ordem obrigatoria (mapear, limpar
+   ruido, marcar pontos, paredes virtuais). Abas sao todas iguais entre si e
+   nao contam nada sobre ordem -- quem nunca usou o robo clicava na terceira
+   antes da primeira e nao entendia por que nao funcionava. O trilho mostra
+   tres estados diferentes (feita, atual, travada) e a travada explica o
+   motivo em texto, no lugar de so' ficar cinza.
+   ========================================================================== */
+
+QFrame#trilhoEtapas {
+  background: #081120;
+  border-right: 1px solid #14294a;
+  min-width: 250px;
+  max-width: 250px;
+}
+
+/* Uma etapa e' um botao (clicavel quando ja' foi feita, para voltar), e o
+   estado vem de uma propriedade Qt -- setProperty("estado", "feita") e um
+   unpolish/polish para reaplicar. Assim o widget nao precisa saber cor
+   nenhuma: ele so' diz em que estado esta'. */
+QPushButton#etapaTrilho {
+  background: transparent;
+  border: none;
+  border-left: 3px solid transparent;
+  text-align: left;
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #7d9cc4;
+}
+QPushButton#etapaTrilho[estado="feita"] {
+  color: #a9c6e8;
+  border-left-color: #27ae60;
+}
+QPushButton#etapaTrilho[estado="feita"]:hover {
+  background: #0e1c31;
+}
+QPushButton#etapaTrilho[estado="atual"] {
+  color: #ffffff;
+  background: #101e35;
+  border-left-color: #35c3f0;
+}
+QPushButton#etapaTrilho[estado="travada"] {
+  color: #40597d;
+}
+
+/* O numero da etapa, no circulo a esquerda do nome. */
+QLabel#numeroEtapa {
+  min-width: 26px; max-width: 26px;
+  min-height: 26px; max-height: 26px;
+  border-radius: 13px;
+  font-size: 13px;
+  font-weight: 800;
+  qproperty-alignment: AlignCenter;
+  background: #16294a;
+  color: #7d9cc4;
+}
+QLabel#numeroEtapa[estado="feita"]   { background: #27ae60; color: #04180c; }
+QLabel#numeroEtapa[estado="atual"]   { background: #35c3f0; color: #04121c; }
+QLabel#numeroEtapa[estado="travada"] { background: #16294a; color: #40597d; }
+
+/* A frase que explica por que a etapa esta' travada. Nunca deixar so' o
+   cinza do disabled: cinza sem motivo lê como "quebrado". */
+QLabel#motivoEtapa {
+  color: #ffd28f;
+  font-size: 12px;
+  padding: 0 16px 12px 45px;
+}
+
+/* ---------- Controle segmentado (as duas formas de marcar um ponto) ------ */
+/* Duas opcoes lado a lado, sempre as DUAS visiveis. Um combo esconderia a
+   segunda atras de um clique, e a escolha entre "marcar no mapa" e "levar o
+   robo ate la'" e' justamente o que o operador precisa enxergar de uma vez. */
+QFrame#segmentado {
+  background: #0e1c31;
+  border: 1px solid #1f3a5f;
+  border-radius: 12px;
+}
+QPushButton#segmento {
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #7d9cc4;
+  margin: 3px;
+}
+QPushButton#segmento:hover   { color: #dcecff; }
+QPushButton#segmento:checked {
+  background: #123a56;
+  color: #dff0ff;
+}
+
+/* ---------- Mapa no centro, controles a direita ---------- */
+/* O mapa e' o objeto de trabalho: ganha o espaco. O painel tem largura fixa
+   porque campo de formulario que estica fica ridiculo em tela cheia. */
+QFrame#molduraMapa {
+  background: #101e35;
+  border: 1px solid #1b3457;
+  border-radius: 16px;
+}
+QFrame#painelControle {
+  background: #101e35;
+  border: 1px solid #1b3457;
+  border-radius: 16px;
+  min-width: 330px;
+  max-width: 330px;
+}
+QLabel#tituloPainel {
+  color: #7d9cc4;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  padding-bottom: 6px;
+}
+
+/* Dica de gesto, embaixo do mapa: "clique e arraste para dizer a direcao". */
+QLabel#dicaGesto {
+  color: #7d9cc4;
+  font-size: 12px;
+  padding: 6px 4px;
+}
+
+/* ---------- Acao primaria e destrutiva ---------- */
+/* Laranja Caramelo so' na acao que faz a etapa avancar; uma por tela. */
+QPushButton#acaoPrimaria {
+  background: #ff9a2e;
+  color: #2b1600;
+  border: none;
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 800;
+}
+QPushButton#acaoPrimaria:hover    { background: #f07f0e; }
+QPushButton#acaoPrimaria:disabled { background: #3a2e1c; color: #7a6a52; }
+
+QPushButton#acaoDestrutiva {
+  background: #3a1420;
+  color: #ffd7de;
+  border: 1px solid #7d2440;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-weight: 700;
+}
+QPushButton#acaoDestrutiva:hover { background: #4d1a2a; }
+
+/* ---------- Listas de opcoes validas (o fim dos campos de texto livre) --- */
+QComboBox {
+  background: #0e1c31;
+  border: 1px solid #1f3a5f;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  min-height: 20px;
+}
+QComboBox:hover    { border-color: #35c3f0; }
+QComboBox:disabled { color: #40597d; background: #0a1424; }
+QComboBox::drop-down { border: none; width: 26px; }
+QComboBox QAbstractItemView {
+  background: #101e35;
+  border: 1px solid #1f3a5f;
+  border-radius: 10px;
+  selection-background-color: #123a56;
+  outline: none;
+  padding: 4px;
+}

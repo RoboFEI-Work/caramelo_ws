@@ -18,6 +18,12 @@ def _parse_args(argv):
     parser.add_argument("--dock-type", default=None, help="Tipo de dock. Ex: caramelo_front_dock.")
     parser.add_argument("--map-dir", default=None, help="Diretorio raiz dos mapas ou pasta do mapa.")
     parser.add_argument("--frame", default="map", help="Frame global da pose salva.")
+    parser.add_argument(
+        "--pose", nargs=3, default=None, metavar=("X", "Y", "YAW"),
+        help="Grava ESTA pose em vez de perguntar ao robo onde ele esta. "
+             "X e Y em metros, YAW em RADIANOS, no frame do mapa (\"map\"). "
+             "E o caminho usado para posicionar um ponto clicando no mapa, sem "
+             "levar o robo ate la. Sem a flag nada muda: a pose vem do robo.")
     parser.add_argument("--base-frame", default="base_link", help="Frame base preferencial do robo.")
     parser.add_argument("--timeout", type=float, default=3.0, help="Tempo maximo esperando TF.")
     parser.add_argument("--update-service-area", action="store_true", help="Atualiza tambem service_areas.yaml.")
@@ -29,6 +35,25 @@ def _parse_args(argv):
     parser.add_argument("--precision", default=None, help="normal ou high.")
     parser.add_argument("--notes", default=None, help="Observacoes semanticas.")
     return parser.parse_args(remove_ros_args(args=argv)[1:])
+
+
+def _pose_informada(valores):
+    """--pose X Y YAW -> [x, y, yaw]; None quando a flag nao foi passada.
+
+    Valida aqui (e nao com type=float do argparse) para o erro sair em
+    portugues e dizer QUAL dos tres valores nao e numero -- quem chama e a
+    interface grafica por QProcess, e o texto do stderr vira a mensagem de tela.
+    """
+    if not valores:
+        return None
+    numeros = []
+    for rotulo, bruto in zip(("X", "Y", "YAW"), valores):
+        try:
+            numeros.append(float(bruto))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"--pose espera 3 numeros (X Y YAW); '{bruto}' nao e um numero valido ({rotulo}).")
+    return numeros
 
 
 def _lookup_pose(node: Node, buffer: Buffer, frame: str, base_frame: str, timeout: float):
@@ -54,18 +79,26 @@ def main(argv=None) -> int:
     try:
         dock_id = normalize_dock_id(args.dock_id)
         map_folder = resolve_map_folder(args.map_name, args.map_dir)
+        pose_manual = _pose_informada(args.pose)
     except Exception as exc:
         print(f"Erro nos argumentos: {exc}", file=sys.stderr)
         return 1
-    rclpy.init(args=argv)
-    node = Node("save_dock_pose")
-    buffer = Buffer()
-    listener = TransformListener(buffer, node)
+
+    node = None
     try:
-        end_time = node.get_clock().now() + Duration(seconds=args.timeout)
-        while rclpy.ok() and node.get_clock().now() < end_time:
-            rclpy.spin_once(node, timeout_sec=0.1)
-        source_frame, pose = _lookup_pose(node, buffer, args.frame, args.base_frame, args.timeout)
+        if pose_manual is not None:
+            # Com --pose NAO subimos no nem esperamos TF de proposito: marcar um
+            # ponto no mapa nao pode depender do robo estar ligado e localizado.
+            source_frame, pose = "--pose (sem TF)", pose_manual
+        else:
+            rclpy.init(args=argv)
+            node = Node("save_dock_pose")
+            buffer = Buffer()
+            listener = TransformListener(buffer, node)  # noqa: F841 - mantem o listener vivo
+            end_time = node.get_clock().now() + Duration(seconds=args.timeout)
+            while rclpy.ok() and node.get_clock().now() < end_time:
+                rclpy.spin_once(node, timeout_sec=0.1)
+            source_frame, pose = _lookup_pose(node, buffer, args.frame, args.base_frame, args.timeout)
         dock_path, dock_backup, service_path, service_backup = update_dock_pose(
             map_folder=map_folder,
             dock_id=dock_id,
@@ -76,12 +109,16 @@ def main(argv=None) -> int:
             service_fields=service_fields_from_args(args),
         )
     except Exception as exc:
-        node.get_logger().error(str(exc))
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            node.get_logger().error(str(exc))
+        else:
+            print(f"Erro ao salvar o dock: {exc}", file=sys.stderr)
         return 1
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        if node is not None:
+            node.destroy_node()
+            rclpy.shutdown()
+
     print("Dock salvo com sucesso:")
     print(f"  map_name: {args.map_name}")
     print(f"  file: {dock_path}")

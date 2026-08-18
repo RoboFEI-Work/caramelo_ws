@@ -25,11 +25,18 @@ class SeletorArena : public QComboBox
 public:
   explicit SeletorArena(RosBridge * bridge, QWidget * parent = nullptr);
 
-  // Nome da arena selecionada, sem o sufixo "(ativa)".
+  // Nome da arena selecionada, sem o sufixo "(ativa)". Vazio quando o robo nao
+  // tem nenhuma arena gravada -- quem usa PRECISA testar, senao monta caminhos
+  // como ".../maps/" e grava fora de qualquer arena.
   QString arena() const;
+
+  // Nenhuma arena existe no robo. A tela deve desligar os botoes de acao e
+  // mandar o operador para Mapeamento em vez de deixar clicar em nada.
+  bool vazio() const {return vazio_;}
 
   void recarregar();
 
 private:
   RosBridge * bridge_ = nullptr;
+  bool vazio_ = true;
 };

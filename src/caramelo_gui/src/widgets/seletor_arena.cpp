@@ -6,10 +6,15 @@
 #include "bridge/robot_state.hpp"
 #include "bridge/ros_bridge.hpp"
 #include "modules/mapas/mapas_module.hpp"
+#include "widgets/combo_aviso.hpp"
 
 namespace
 {
 const char * kSufixoAtiva = "   (ativa)";
+// Lista vazia era um combo em branco: o operador escolhia "nada", arena()
+// devolvia "" e a tela seguia montando ".../maps/" -- gravando fora de qualquer
+// arena, sem erro na tela. Agora a lista diz o que aconteceu.
+const char * kNenhuma = "nenhuma arena encontrada";
 }  // namespace
 
 SeletorArena::SeletorArena(RosBridge * bridge, QWidget * parent)
@@ -28,11 +33,9 @@ SeletorArena::SeletorArena(RosBridge * bridge, QWidget * parent)
 
 QString SeletorArena::arena() const
 {
-  QString nome = currentText();
-  if (nome.endsWith(kSufixoAtiva)) {
-    nome.chop(static_cast<int>(qstrlen(kSufixoAtiva)));
-  }
-  return nome;
+  // O nome puro vive no itemData; o texto pode carregar o sufixo "(ativa)" ou
+  // ser o aviso de lista vazia, e nenhum dos dois e' nome de pasta.
+  return itemData(currentIndex()).toString();
 }
 
 void SeletorArena::recarregar()
@@ -55,6 +58,14 @@ void SeletorArena::recarregar()
 
   for (const QString & nome : arenas) {
     addItem(nome == ativa ? nome + kSufixoAtiva : nome, nome);
+  }
+
+  vazio_ = arenas.isEmpty();
+  if (vazio_) {
+    adicionarAvisoDeListaVazia(this, kNenhuma);
+    setToolTip("Nenhum mapa salvo no robo. Crie um em Mapeamento.");
+  } else {
+    setToolTip(QString());
   }
 
   // Preferencia: manter o que ja estava escolhido; senao, a arena do robo.

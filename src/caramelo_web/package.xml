@@ -32,6 +32,14 @@
     "break-system-packages". O python3 do sistema enxerga esse diretorio por
     padrao, entao o no encontra os dois sem ajuste de ambiente.
 
+    O mesmo vale para o mss, que tira as fotos da tela para o espelho: instale
+    pelo pip do usuario, com as MESMAS duas flags acima. O comando exato esta'
+    no README deste pacote (aqui ele nao cabe: as flags tem sinal de menos
+    repetido, e isso quebra comentario XML, como diz o paragrafo abaixo).
+
+    O painel sobe sem o mss; so' a rota do espelho responde com uma frase
+    explicando que o recurso nao esta instalado, em vez de estourar.
+
     (Sem sinais de menos repetidos nesta explicacao de proposito: hifen duplo e'
     proibido dentro de comentario XML. Com ele o package.xml deixa de ser XML
     valido, o colcon para de reconhecer o pacote como ROS, cai para "python

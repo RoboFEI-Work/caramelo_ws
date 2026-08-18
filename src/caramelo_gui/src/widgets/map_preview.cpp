@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QList>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -20,6 +21,20 @@ const char * kDocks = "Docks";
 const char * kAreas = "Service areas";
 const char * kWaypoints = "Waypoints";
 const char * kRotulos = "Nomes";
+const char * kEdicao = "Ponto sendo editado";
+
+// Tipos de marcador usados nos sinais. Sao strings e nao enum porque atravessam
+// o limite do widget e caem em telas que gravam arquivos diferentes.
+const char * kTipoDock = "dock";
+const char * kTipoArea = "area";
+const char * kTipoWaypoint = "waypoint";
+
+// Raio de tolerancia do toque, em pixels. Dedo em tela de robo nao acerta 7 px.
+const double kToleranciaCorpo = 12.0;
+const double kToleranciaSeta = 10.0;
+const double kComprimentoSeta = 22.0;
+// Abaixo disso o arrasto e' tremor de mao, nao intencao de mover.
+const double kLimiarArrasto = 3.0;
 
 // Uma pose que ninguem gravou ainda. O docking.yaml e o service_areas.yaml
 // nascem assim, e o executor da missao recusa esses valores em modo real -- por
@@ -53,13 +68,126 @@ PoseMapa lerPoseMapa(const YAML::Node & node)
   return p;
 }
 
+double distancia(const QPointF & a, const QPointF & b)
+{
+  const double dx = a.x() - b.x();
+  const double dy = a.y() - b.y();
+  return std::sqrt(dx * dx + dy * dy);
+}
+
 }  // namespace
+
+QMap<QString, PoseMapa> lerDocksDaArena(const QString & pastaDoMapa, QString * erro)
+{
+  QMap<QString, PoseMapa> docks;
+  if (erro) {
+    erro->clear();
+  }
+  const QString caminho = pastaDoMapa + "/docking.yaml";
+  if (!QFileInfo::exists(caminho)) {
+    if (erro) {
+      *erro = "Esta arena nao tem docking.yaml — nao da para dockar nem rodar missao.";
+    }
+    return docks;
+  }
+  try {
+    const YAML::Node raiz = YAML::LoadFile(caminho.toStdString());
+    for (const auto & kv : raiz["docks"]) {
+      docks.insert(
+        QString::fromStdString(kv.first.as<std::string>()),
+        lerPoseLista(kv.second["pose"]));
+    }
+  } catch (const std::exception & ex) {
+    if (erro) {
+      *erro = QString("docking.yaml ilegivel (%1).").arg(ex.what());
+    }
+  }
+  return docks;
+}
+
+QMap<QString, AreaDeServico> lerAreasDaArena(const QString & pastaDoMapa, QString * erro)
+{
+  QMap<QString, AreaDeServico> areas;
+  if (erro) {
+    erro->clear();
+  }
+  const QString caminho = pastaDoMapa + "/service_areas.yaml";
+  if (!QFileInfo::exists(caminho)) {
+    return areas;   // arena sem service areas e' situacao normal (ainda em mapeamento)
+  }
+  try {
+    const YAML::Node raiz = YAML::LoadFile(caminho.toStdString());
+    for (const auto & kv : raiz["service_areas"]) {
+      AreaDeServico a;
+      a.pose = lerPoseMapa(kv.second["final_robot_pose"]);
+      a.tipo = QString::fromStdString(kv.second["type"].as<std::string>(""));
+      a.manipulacao = kv.second["manipulation_enabled"].as<bool>(true);
+      areas.insert(QString::fromStdString(kv.first.as<std::string>()), a);
+    }
+  } catch (const std::exception & ex) {
+    if (erro) {
+      *erro = QString("service_areas.yaml ilegivel (%1).").arg(ex.what());
+    }
+  }
+  return areas;
+}
+
+QMap<QString, PoseMapa> lerWaypointsDaArena(const QString & pastaDoMapa, QString * erro)
+{
+  QMap<QString, PoseMapa> waypoints;
+  if (erro) {
+    erro->clear();
+  }
+  const QString caminho = pastaDoMapa + "/waypoints.yaml";
+  if (!QFileInfo::exists(caminho)) {
+    return waypoints;
+  }
+  try {
+    const YAML::Node raiz = YAML::LoadFile(caminho.toStdString());
+    for (const auto & kv : raiz["waypoints"]) {
+      waypoints.insert(
+        QString::fromStdString(kv.first.as<std::string>()), lerPoseMapa(kv.second));
+    }
+  } catch (const std::exception & ex) {
+    if (erro) {
+      *erro = QString("waypoints.yaml ilegivel (%1).").arg(ex.what());
+    }
+  }
+  return waypoints;
+}
+
+QStringList lerTiposDeDockDaArena(const QString & pastaDoMapa)
+{
+  // Fallback: os plugins que o robo sempre tem. Uma arena recem-criada pode
+  // ainda nao ter docking.yaml, e deixar a tela sem opcao nenhuma seria pior
+  // que oferecer os tres padroes.
+  const QStringList padrao = {
+    "caramelo_front_dock", "caramelo_shelf_front_dock", "caramelo_precision_front_dock"};
+
+  const QString caminho = pastaDoMapa + "/docking.yaml";
+  if (!QFileInfo::exists(caminho)) {
+    return padrao;
+  }
+  QStringList tipos;
+  try {
+    const YAML::Node raiz = YAML::LoadFile(caminho.toStdString());
+    for (const auto & kv : raiz["dock_plugins"]) {
+      tipos << QString::fromStdString(kv.first.as<std::string>());
+    }
+  } catch (const std::exception &) {
+    return padrao;
+  }
+  return tipos.isEmpty() ? padrao : tipos;
+}
 
 MapPreview::MapPreview(QWidget * parent)
 : QWidget(parent)
 {
   setMinimumSize(360, 300);
-  setMouseTracking(false);
+  // Tracking ligado: no modo de edicao o cursor precisa mudar ao passar por
+  // cima de um ponto, senao nao ha' como o operador descobrir que da' para
+  // pegar o marcador.
+  setMouseTracking(true);
   for (const QString & c : camadasDisponiveis()) {
     camadas_.insert(c, true);
   }
@@ -67,7 +195,12 @@ MapPreview::MapPreview(QWidget * parent)
 
 QStringList MapPreview::camadasDisponiveis()
 {
-  return {kGrade, kKeepout, kDocks, kAreas, kWaypoints, kRotulos};
+  return {kGrade, kKeepout, kDocks, kAreas, kWaypoints, kRotulos, kEdicao};
+}
+
+QString MapPreview::camadaDeEdicao()
+{
+  return kEdicao;
 }
 
 void MapPreview::setCamada(const QString & camada, bool ligada)
@@ -86,6 +219,7 @@ void MapPreview::carregar(const QString & pastaDoMapa)
   mapa_ = MapaCarregado();
   mapa_.pasta = pastaDoMapa;
   mapa_.nome = QFileInfo(pastaDoMapa).fileName();
+  limparEdicao();
 
   const QString mapYaml = pastaDoMapa + "/map.yaml";
   if (!QFileInfo::exists(mapYaml)) {
@@ -124,60 +258,37 @@ void MapPreview::carregar(const QString & pastaDoMapa)
     mapa_.keepout.load(keepoutPgm);
   }
 
-  // --- docks ---
-  const QString dockingYaml = pastaDoMapa + "/docking.yaml";
+  // --- docks / service areas / waypoints ---
+  // O parser vive nas funcoes livres acima porque os seletores de tela precisam
+  // da mesma lista; aqui so' sobra a contagem do que esta zerado.
+  QString erroDocks;
+  mapa_.docks = lerDocksDaArena(pastaDoMapa, &erroDocks);
+  if (!erroDocks.isEmpty()) {
+    mapa_.avisos << erroDocks;
+  }
   int docksPlaceholder = 0;
-  if (QFileInfo::exists(dockingYaml)) {
-    try {
-      const YAML::Node raiz = YAML::LoadFile(dockingYaml.toStdString());
-      for (const auto & kv : raiz["docks"]) {
-        const QString id = QString::fromStdString(kv.first.as<std::string>());
-        const PoseMapa pose = lerPoseLista(kv.second["pose"]);
-        mapa_.docks.insert(id, pose);
-        if (pose.placeholder) {
-          ++docksPlaceholder;
-        }
-      }
-    } catch (const std::exception & ex) {
-      mapa_.avisos << QString("docking.yaml ilegivel (%1).").arg(ex.what());
+  for (auto it = mapa_.docks.constBegin(); it != mapa_.docks.constEnd(); ++it) {
+    if (it.value().placeholder) {
+      ++docksPlaceholder;
     }
-  } else {
-    mapa_.avisos << "Esta arena nao tem docking.yaml — nao da para dockar nem rodar missao.";
   }
 
-  // --- service areas ---
-  const QString areasYaml = pastaDoMapa + "/service_areas.yaml";
+  QString erroAreas;
+  mapa_.areas = lerAreasDaArena(pastaDoMapa, &erroAreas);
+  if (!erroAreas.isEmpty()) {
+    mapa_.avisos << erroAreas;
+  }
   int areasPlaceholder = 0;
-  if (QFileInfo::exists(areasYaml)) {
-    try {
-      const YAML::Node raiz = YAML::LoadFile(areasYaml.toStdString());
-      for (const auto & kv : raiz["service_areas"]) {
-        AreaDeServico a;
-        a.pose = lerPoseMapa(kv.second["final_robot_pose"]);
-        a.tipo = QString::fromStdString(kv.second["type"].as<std::string>(""));
-        a.manipulacao = kv.second["manipulation_enabled"].as<bool>(true);
-        mapa_.areas.insert(QString::fromStdString(kv.first.as<std::string>()), a);
-        if (a.pose.placeholder) {
-          ++areasPlaceholder;
-        }
-      }
-    } catch (const std::exception & ex) {
-      mapa_.avisos << QString("service_areas.yaml ilegivel (%1).").arg(ex.what());
+  for (auto it = mapa_.areas.constBegin(); it != mapa_.areas.constEnd(); ++it) {
+    if (it.value().pose.placeholder) {
+      ++areasPlaceholder;
     }
   }
 
-  // --- waypoints ---
-  const QString wpYaml = pastaDoMapa + "/waypoints.yaml";
-  if (QFileInfo::exists(wpYaml)) {
-    try {
-      const YAML::Node raiz = YAML::LoadFile(wpYaml.toStdString());
-      for (const auto & kv : raiz["waypoints"]) {
-        mapa_.waypoints.insert(
-          QString::fromStdString(kv.first.as<std::string>()), lerPoseMapa(kv.second));
-      }
-    } catch (const std::exception & ex) {
-      mapa_.avisos << QString("waypoints.yaml ilegivel (%1).").arg(ex.what());
-    }
+  QString erroWaypoints;
+  mapa_.waypoints = lerWaypointsDaArena(pastaDoMapa, &erroWaypoints);
+  if (!erroWaypoints.isEmpty()) {
+    mapa_.avisos << erroWaypoints;
   }
 
   // Avisos em linguagem de operador: dizem o que fazer, nao so' o que ha' de
@@ -230,6 +341,177 @@ QPointF MapPreview::paraTela(double x, double y) const
   return deslocamento_ + QPointF(px * escala_, py * escala_);
 }
 
+QPointF MapPreview::paraMapa(const QPointF & tela) const
+{
+  // Inversa exata de paraTela: mesma inversao de Y, mesma origem no pixel
+  // inferior esquerdo. Sem ela nao existe clique-no-mapa, so' desenho.
+  if (mapa_.ocupacao.isNull() || escala_ <= 0.0) {
+    return QPointF();
+  }
+  const double u = (tela.x() - deslocamento_.x()) / escala_;
+  const double v = (tela.y() - deslocamento_.y()) / escala_;
+  return QPointF(
+    u * mapa_.resolucao + mapa_.origem_x,
+    (mapa_.ocupacao.height() - v) * mapa_.resolucao + mapa_.origem_y);
+}
+
+double MapPreview::yawDoArrasto(const QPointF & origem, const QPointF & destino)
+{
+  // O eixo Y da tela aponta para baixo e o do mapa para cima: sem o sinal
+  // trocado aqui, arrastar para cima gravava o robo virado para baixo.
+  return std::atan2(-(destino.y() - origem.y()), destino.x() - origem.x());
+}
+
+void MapPreview::setModo(Modo modo)
+{
+  if (modo_ == modo) {
+    return;
+  }
+  modo_ = modo;
+  gesto_ = Gesto::Nenhum;
+  arrastando_ = false;
+  if (modo_ == Modo::Navegar) {
+    tem_pose_provisoria_ = false;
+    unsetCursor();
+  } else {
+    setCursor(Qt::CrossCursor);
+  }
+  update();
+}
+
+void MapPreview::destacar(const QString & tipo, const QString & id)
+{
+  destaque_tipo_ = tipo;
+  destaque_id_ = id;
+  update();
+}
+
+void MapPreview::limparEdicao()
+{
+  destaque_tipo_.clear();
+  destaque_id_.clear();
+  alvo_tipo_.clear();
+  alvo_id_.clear();
+  gesto_ = Gesto::Nenhum;
+  tem_pose_provisoria_ = false;
+  update();
+}
+
+bool MapPreview::poseDoMarcador(
+  const QString & tipo, const QString & id, PoseMapa * pose) const
+{
+  if (id.isEmpty()) {
+    return false;
+  }
+  if (tipo == kTipoDock && mapa_.docks.contains(id)) {
+    *pose = mapa_.docks.value(id);
+    return true;
+  }
+  if (tipo == kTipoArea && mapa_.areas.contains(id)) {
+    *pose = mapa_.areas.value(id).pose;
+    return true;
+  }
+  if (tipo == kTipoWaypoint && mapa_.waypoints.contains(id)) {
+    *pose = mapa_.waypoints.value(id);
+    return true;
+  }
+  return false;
+}
+
+MarcadorNoMapa MapPreview::marcadorEm(const QPointF & tela) const
+{
+  bool naSeta = false;
+  return buscarMarcador(tela, &naSeta);
+}
+
+MarcadorNoMapa MapPreview::buscarMarcador(const QPointF & tela, bool * naSeta) const
+{
+  MarcadorNoMapa achado;
+  if (naSeta) {
+    *naSeta = false;
+  }
+  if (!mapa_.valido) {
+    return achado;
+  }
+
+  // Candidatos: so' o que esta visivel. Pegar um ponto de uma camada desligada
+  // pareceria ao operador que o widget mexeu sozinho em algo que ele nao ve.
+  // Na MESMA ordem em que sao pintados (area, dock, waypoint): assim o ultimo
+  // da lista e' o que aparece por cima, e o desempate do toque segue o que o
+  // operador esta vendo.
+  QList<MarcadorNoMapa> candidatos;
+  if (camadaLigada(kAreas)) {
+    for (auto it = mapa_.areas.constBegin(); it != mapa_.areas.constEnd(); ++it) {
+      candidatos << MarcadorNoMapa{true, kTipoArea, it.key(), it.value().pose};
+    }
+  }
+  if (camadaLigada(kDocks)) {
+    for (auto it = mapa_.docks.constBegin(); it != mapa_.docks.constEnd(); ++it) {
+      candidatos << MarcadorNoMapa{true, kTipoDock, it.key(), it.value()};
+    }
+  }
+  if (camadaLigada(kWaypoints)) {
+    for (auto it = mapa_.waypoints.constBegin(); it != mapa_.waypoints.constEnd(); ++it) {
+      candidatos << MarcadorNoMapa{true, kTipoWaypoint, it.key(), it.value()};
+    }
+  }
+
+  // 1) corpo do marcador (mover). Vence a seta: o circulo e' o alvo obvio.
+  // Empate: ganha o ultimo da lista, que e' o desenhado por cima. Acontece com
+  // varios pontos ainda em [0,0,0], todos empilhados na origem do mapa -- o
+  // operador tira um de la' por vez.
+  double melhor = kToleranciaCorpo;
+  for (const MarcadorNoMapa & c : candidatos) {
+    const double d = distancia(tela, paraTela(c.pose.x, c.pose.y));
+    if (d <= melhor) {
+      melhor = d;
+      achado = c;
+    }
+  }
+  if (achado.valido) {
+    return achado;
+  }
+
+  // 2) ponta da seta (girar) -- so' das setas que estao desenhadas.
+  melhor = kToleranciaSeta;
+  for (const MarcadorNoMapa & c : candidatos) {
+    const bool destacado = (c.tipo == destaque_tipo_ && c.id == destaque_id_);
+    const bool temSeta = destacado ||
+      (!c.pose.placeholder && c.tipo != QString(kTipoArea));
+    if (!temSeta) {
+      continue;
+    }
+    const QPointF centro = paraTela(c.pose.x, c.pose.y);
+    const QPointF ponta = centro + QPointF(
+      std::cos(c.pose.yaw) * kComprimentoSeta, -std::sin(c.pose.yaw) * kComprimentoSeta);
+    const double d = distancia(tela, ponta);
+    if (d <= melhor) {
+      melhor = d;
+      achado = c;
+      if (naSeta) {
+        *naSeta = true;
+      }
+    }
+  }
+  return achado;
+}
+
+void MapPreview::atualizarCursor(const QPointF & tela)
+{
+  if (modo_ != Modo::PosicionarPose) {
+    return;
+  }
+  bool naSeta = false;
+  const MarcadorNoMapa sob = buscarMarcador(tela, &naSeta);
+  if (!sob.valido) {
+    setCursor(Qt::CrossCursor);          // clicar aqui cria uma pose nova
+  } else if (naSeta) {
+    setCursor(Qt::PointingHandCursor);   // arrastar a ponta gira o ponto
+  } else {
+    setCursor(Qt::SizeAllCursor);        // arrastar o circulo move o ponto
+  }
+}
+
 void MapPreview::resizeEvent(QResizeEvent * e)
 {
   QWidget::resizeEvent(e);
@@ -251,11 +533,54 @@ void MapPreview::wheelEvent(QWheelEvent * e)
 
 void MapPreview::mousePressEvent(QMouseEvent * e)
 {
-  if (e->button() == Qt::LeftButton) {
+  if (modo_ == Modo::Navegar) {
+    if (e->button() == Qt::LeftButton) {
+      arrastando_ = true;
+      ultimo_arrasto_ = e->localPos();
+      setCursor(Qt::ClosedHandCursor);
+    }
+    return;
+  }
+
+  // Modo edicao: o botao do meio continua sendo o pan, senao o operador fica
+  // preso no enquadramento em que estava ao entrar na edicao.
+  if (e->button() == Qt::MiddleButton) {
     arrastando_ = true;
     ultimo_arrasto_ = e->localPos();
     setCursor(Qt::ClosedHandCursor);
+    return;
   }
+  if (e->button() != Qt::LeftButton || !mapa_.valido) {
+    return;
+  }
+
+  gesto_inicio_ = e->localPos();
+  gesto_moveu_ = false;
+
+  bool naSeta = false;
+  const MarcadorNoMapa sob = buscarMarcador(gesto_inicio_, &naSeta);
+  if (sob.valido) {
+    alvo_tipo_ = sob.tipo;
+    alvo_id_ = sob.id;
+    gesto_pose_ = sob.pose;
+    gesto_ = naSeta ? Gesto::GirarMarcador : Gesto::MoverMarcador;
+    destaque_tipo_ = sob.tipo;
+    destaque_id_ = sob.id;
+    tem_pose_provisoria_ = true;
+    emit marcadorClicado(sob.tipo, sob.id);
+  } else {
+    // Gesto do "2D Goal": o press ja' define a posicao; o yaw so' existe depois
+    // de arrastar, por isso comeca em zero.
+    alvo_tipo_.clear();
+    alvo_id_.clear();
+    const QPointF metros = paraMapa(gesto_inicio_);
+    gesto_pose_ = PoseMapa();
+    gesto_pose_.x = metros.x();
+    gesto_pose_.y = metros.y();
+    gesto_ = Gesto::NovaPose;
+    tem_pose_provisoria_ = true;
+  }
+  update();
 }
 
 void MapPreview::mouseMoveEvent(QMouseEvent * e)
@@ -264,15 +589,71 @@ void MapPreview::mouseMoveEvent(QMouseEvent * e)
     deslocamento_ += e->localPos() - ultimo_arrasto_;
     ultimo_arrasto_ = e->localPos();
     update();
+    return;
   }
+
+  if (gesto_ == Gesto::Nenhum) {
+    atualizarCursor(e->localPos());
+    return;
+  }
+
+  if (distancia(e->localPos(), gesto_inicio_) > kLimiarArrasto) {
+    gesto_moveu_ = true;
+  }
+
+  switch (gesto_) {
+    case Gesto::NovaPose:
+      if (gesto_moveu_) {
+        gesto_pose_.yaw = yawDoArrasto(gesto_inicio_, e->localPos());
+      }
+      break;
+    case Gesto::MoverMarcador: {
+        const QPointF metros = paraMapa(e->localPos());
+        gesto_pose_.x = metros.x();
+        gesto_pose_.y = metros.y();
+        break;
+      }
+    case Gesto::GirarMarcador:
+      gesto_pose_.yaw = yawDoArrasto(paraTela(gesto_pose_.x, gesto_pose_.y), e->localPos());
+      break;
+    case Gesto::Nenhum:
+      break;
+  }
+  update();
 }
 
 void MapPreview::mouseReleaseEvent(QMouseEvent * e)
 {
-  if (e->button() == Qt::LeftButton) {
-    arrastando_ = false;
-    unsetCursor();
+  if (modo_ == Modo::Navegar) {
+    if (e->button() == Qt::LeftButton) {
+      arrastando_ = false;
+      unsetCursor();
+    }
+    return;
   }
+
+  if (e->button() == Qt::MiddleButton) {
+    arrastando_ = false;
+    atualizarCursor(e->localPos());
+    return;
+  }
+  if (e->button() != Qt::LeftButton || gesto_ == Gesto::Nenhum) {
+    return;
+  }
+
+  const Gesto encerrado = gesto_;
+  gesto_ = Gesto::Nenhum;
+
+  if (encerrado == Gesto::NovaPose) {
+    emit poseEscolhida(gesto_pose_.x, gesto_pose_.y, gesto_pose_.yaw);
+  } else if (gesto_moveu_) {
+    // Clique curto num ponto ja' salvo e' selecao (marcadorClicado, no press);
+    // so' vira alteracao quando o operador de fato arrastou.
+    emit marcadorArrastado(
+      alvo_tipo_, alvo_id_, gesto_pose_.x, gesto_pose_.y, gesto_pose_.yaw);
+  }
+  atualizarCursor(e->localPos());
+  update();
 }
 
 void MapPreview::paintEvent(QPaintEvent *)
@@ -309,6 +690,11 @@ void MapPreview::paintEvent(QPaintEvent *)
   }
   if (camadaLigada(kWaypoints)) {
     desenharWaypoints(p);
+  }
+  // Sempre por cima: o ponto em edicao nao pode ficar escondido atras de um
+  // vizinho justamente na hora em que o operador esta mexendo nele.
+  if (camadaLigada(kEdicao)) {
+    desenharEdicao(p);
   }
 }
 
@@ -371,7 +757,7 @@ void MapPreview::desenharMarcador(
   p.drawEllipse(centro, raio, raio);
 
   if (comSeta && !pose.placeholder) {
-    const double comprimento = 22.0;
+    const double comprimento = kComprimentoSeta;
     // O eixo Y da tela aponta para baixo: o seno entra negativo.
     const QPointF ponta = centro + QPointF(
       std::cos(pose.yaw) * comprimento, -std::sin(pose.yaw) * comprimento);
@@ -394,6 +780,77 @@ void MapPreview::desenharMarcador(
     p.setPen(usada.lighter(140));
     p.drawText(caixa, Qt::AlignLeft | Qt::AlignVCenter, texto);
   }
+}
+
+void MapPreview::desenharSeta(
+  QPainter & p, const QPointF & centro, double yaw, double comprimento,
+  const QColor & cor) const
+{
+  // Mesma convencao de desenharMarcador: seno negativo por causa do Y da tela.
+  const QPointF direcao(std::cos(yaw), -std::sin(yaw));
+  const QPointF ponta = centro + direcao * comprimento;
+  p.setPen(QPen(cor, 3));
+  p.setBrush(Qt::NoBrush);
+  p.drawLine(centro, ponta);
+
+  const QPointF lado(-direcao.y(), direcao.x());
+  QPainterPath cabeca;
+  cabeca.moveTo(ponta);
+  cabeca.lineTo(ponta - direcao * 9.0 + lado * 5.0);
+  cabeca.lineTo(ponta - direcao * 9.0 - lado * 5.0);
+  cabeca.closeSubpath();
+  p.setPen(Qt::NoPen);
+  p.setBrush(cor);
+  p.drawPath(cabeca);
+}
+
+void MapPreview::desenharEdicao(QPainter & p) const
+{
+  const QColor cor("#f2c94c");
+
+  // Halo do ponto destacado: sobrevive ao fim do gesto, para o operador nao
+  // perder de vista qual ponto a tela esta editando.
+  PoseMapa destacada;
+  if (poseDoMarcador(destaque_tipo_, destaque_id_, &destacada)) {
+    const QPointF centro = paraTela(destacada.x, destacada.y);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(242, 201, 76, 120), 2, Qt::DashLine));
+    p.drawEllipse(centro, 16.0, 16.0);
+    if (!tem_pose_provisoria_) {
+      // A seta do ponto destacado e' a alca de giro: se ela nao aparecesse, o
+      // operador estaria arrastando um ponto invisivel da tela.
+      desenharSeta(p, centro, destacada.yaw, kComprimentoSeta, QColor(242, 201, 76, 200));
+    }
+  }
+
+  if (!tem_pose_provisoria_) {
+    return;
+  }
+
+  const QPointF centro = paraTela(gesto_pose_.x, gesto_pose_.y);
+  p.setPen(QPen(QColor("#06121f"), 2));
+  p.setBrush(cor);
+  p.drawEllipse(centro, 8.0, 8.0);
+  desenharSeta(p, centro, gesto_pose_.yaw, kComprimentoSeta + 6.0, cor);
+
+  // Numeros do que esta sendo escolhido: o operador confere o valor antes de
+  // soltar, em vez de salvar e conferir depois no YAML.
+  const QString texto = QString("x %1 m   y %2 m   giro %3 graus")
+    .arg(gesto_pose_.x, 0, 'f', 2)
+    .arg(gesto_pose_.y, 0, 'f', 2)
+    .arg(gesto_pose_.yaw * 180.0 / M_PI, 0, 'f', 0);
+  QFont f = p.font();
+  f.setPointSizeF(9.0);
+  f.setBold(true);
+  p.setFont(f);
+  const QRectF caixa(centro.x() + 12, centro.y() + 12, 240, 16);
+  const QRectF fundo = p.boundingRect(caixa, Qt::AlignLeft | Qt::AlignVCenter, texto)
+    .adjusted(-4, -2, 4, 2);
+  p.setPen(Qt::NoPen);
+  p.setBrush(QColor(6, 18, 31, 200));
+  p.drawRoundedRect(fundo, 4, 4);
+  p.setPen(cor.lighter(130));
+  p.drawText(caixa, Qt::AlignLeft | Qt::AlignVCenter, texto);
 }
 
 void MapPreview::desenharDocks(QPainter & p) const

@@ -13,20 +13,66 @@ import os
 import sys
 
 
+def _resolvedor_compartilhado():
+    """caramelo_docking_common.resolve_map_folder, ou None se nao der para importar.
+
+    O modulo mora ao lado deste arquivo (install(FILES) no mesmo lib/), mas com
+    colcon --symlink-install o script executado e um LINK: dependendo de como
+    foi invocado, o diretorio que entra no sys.path pode ser o do link ou o do
+    alvo. Por isso os dois entram.
+    """
+    for pasta in (
+        os.path.dirname(os.path.realpath(__file__)),
+        os.path.dirname(os.path.abspath(__file__)),
+    ):
+        if pasta not in sys.path:
+            sys.path.insert(0, pasta)
+    try:
+        from caramelo_docking_common import resolve_map_folder
+    except Exception:  # noqa: BLE001 - rodando solto, sem o pacote ao lado
+        return None
+    return resolve_map_folder
+
+
 def _resolve_map_folder(map_name, map_dir):
-    """Retorna a pasta do mapa contendo map.yaml."""
+    """Retorna a pasta do mapa contendo map.yaml.
+
+    Usa a MESMA regra do resto do sistema (caramelo_docking_common):
+    --map-dir, depois $CARAMELO_MAPS_DIR, depois a arvore FONTE deduzida do
+    workspace, e so' entao o share instalado. A interface grafica chama este
+    script de QUALQUER diretorio, entao a busca nao pode depender do cwd.
+    Antes daqui a lista era caseira e terminava num '~/caramelo_ws' cravado:
+    em qualquer usuario/workspace com outro nome o script falhava com
+    "nao encontrei a pasta do mapa" mesmo com o mapa ali, e $CARAMELO_MAPS_DIR
+    era ignorado.
+
+    O bloco local continua como ultimo recurso, para o caso do arquivo rodando
+    solto (copiado para fora do pacote), sem caramelo_docking_common ao lado.
+    """
+    resolve_map_folder = _resolvedor_compartilhado()
+    if resolve_map_folder is not None:
+        try:
+            return str(resolve_map_folder(map_name, map_dir))
+        except FileNotFoundError:
+            pass  # cai no fallback, que ainda testa caminhos relativos ao arquivo
+
     candidates = []
     if map_dir:
+        map_dir = os.path.expanduser(map_dir)
         candidates.append(os.path.join(map_dir, map_name))
         candidates.append(map_dir)  # o proprio map_dir ja pode ser a pasta do mapa
-    # Locais padrao (arvore de fonte e instalada).
-    here = os.path.dirname(os.path.abspath(__file__))
-    for root in (
-        os.path.join(here, "..", "..", "caramelo_mapping", "maps"),
-        os.path.join(here, "..", "..", "..", "src", "caramelo_mapping", "maps"),
-        os.path.expanduser("~/caramelo_ws/src/caramelo_mapping/maps"),
-    ):
-        candidates.append(os.path.join(root, map_name))
+    env_dir = os.environ.get("CARAMELO_MAPS_DIR")
+    if env_dir:
+        candidates.append(os.path.join(os.path.expanduser(env_dir), map_name))
+    # realpath: com --symlink-install o arquivo em install/ aponta para o src,
+    # e so' o realpath leva de volta a arvore fonte do workspace.
+    for here in (os.path.dirname(os.path.realpath(__file__)),
+                 os.path.dirname(os.path.abspath(__file__))):
+        for root in (
+            os.path.join(here, "..", "..", "caramelo_mapping", "maps"),
+            os.path.join(here, "..", "..", "..", "src", "caramelo_mapping", "maps"),
+        ):
+            candidates.append(os.path.join(root, map_name))
     for candidate in candidates:
         if os.path.isfile(os.path.join(candidate, "map.yaml")):
             return os.path.abspath(candidate)

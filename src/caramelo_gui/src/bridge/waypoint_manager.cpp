@@ -3,6 +3,9 @@
 #include <cmath>
 #include <fstream>
 
+#include <QDateTime>
+#include <QFile>
+
 #include <yaml-cpp/yaml.h>
 
 #include "visualization_msgs/msg/interactive_marker.hpp"
@@ -110,6 +113,11 @@ void WaypointManager::add(const QString & name)
     yaw = yawFromQuat(q.z, q.w, q.x, q.y);
   } catch (...) {
   }
+  add(name, x, y, yaw);
+}
+
+void WaypointManager::add(const QString & name, double x, double y, double yaw)
+{
   {
     std::lock_guard<std::mutex> lk(mtx_);
     points_[name.toStdString()] = {x, y, yaw};
@@ -165,8 +173,17 @@ bool WaypointManager::pose(const QString & name, double & x, double & y, double 
   return true;
 }
 
+void WaypointManager::recarregar()
+{
+  if (map_dir_.isEmpty()) {
+    return;
+  }
+  load(map_dir_);
+}
+
 void WaypointManager::load(const QString & map_dir)
 {
+  map_dir_ = map_dir;
   server_->clear();
   std::map<std::string, std::array<double, 3>> novos;
   const std::string path = (map_dir + "/waypoints.yaml").toStdString();
@@ -180,12 +197,27 @@ void WaypointManager::load(const QString & map_dir)
         kv.second["yaw"].as<double>(0.0)};
     }
   } catch (...) {
-    // Sem arquivo ainda: lista vazia (normal em mapa novo).
+    // Duas coisas MUITO diferentes caiam aqui, e tratar as duas como "lista
+    // vazia" e' o que transformava um erro de digitacao no YAML num arquivo
+    // apagado: o load engolia o erro, e o proximo save gravava a lista vazia
+    // por cima. Agora so' "o arquivo ainda nao existe" vira lista vazia; se o
+    // arquivo esta' la' e nao deu para interpretar, a lista fica marcada como
+    // NAO CONFIAVEL e o save recusa.
+    if (QFile::exists(QString::fromStdString(path))) {
+      leitura_falhou_ = true;
+      emit status(
+        "Nao consegui ler os pontos ja' salvos desta arena (o arquivo esta' "
+        "com defeito). Para nao apagar o que existe, gravar novos pontos "
+        "esta' bloqueado ate' o arquivo ser corrigido.");
+      return;
+    }
   }
   {
     std::lock_guard<std::mutex> lk(mtx_);
     points_ = novos;
   }
+  leitura_falhou_ = false;
+  carregado_de_ = map_dir;
   for (const auto & kv : novos) {
     insertMarker(kv.first, kv.second[0], kv.second[1], kv.second[2]);
   }
@@ -196,6 +228,40 @@ void WaypointManager::load(const QString & map_dir)
 
 void WaypointManager::save(const QString & map_dir)
 {
+  // TRES GUARDAS, e nenhuma e' paranoia: as tres correspondem a um jeito real
+  // de perder os waypoints de uma arena inteira sem nenhum aviso na tela.
+  const QString caminho = map_dir + "/waypoints.yaml";
+
+  // (a) O arquivo estava ilegivel na leitura. Gravar agora troca um arquivo
+  //     com erro de digitacao por um arquivo vazio.
+  if (leitura_falhou_) {
+    emit status(
+      "Nao da para gravar: os pontos desta arena nao puderam ser lidos, e "
+      "gravar agora apagaria os que ja existem.");
+    return;
+  }
+
+  // (b) A lista em memoria veio de OUTRA pasta -- ou de pasta nenhuma. Este
+  //     era o caminho do estrago: a ferramenta de mapeamento chamava add() e
+  //     save() sem nunca ter chamado load(), entao points_ estava vazio e o
+  //     save reescrevia o waypoints.yaml da arena contendo apenas os pontos
+  //     criados naquela sessao. Todos os anteriores sumiam, e a tela dizia
+  //     "waypoints.yaml salvo".
+  if (carregado_de_ != map_dir && QFile::exists(caminho)) {
+    emit status(
+      "Nao gravei: esta arena ja tem pontos salvos que ainda nao foram "
+      "carregados. Abra os pontos dela primeiro, assim nada e perdido.");
+    return;
+  }
+
+  // (c) Copia de seguranca datada, como os outros tres arquivos da arena ja'
+  //     fazem (mapas_module e editor_keepout). Este era o unico sem.
+  if (QFile::exists(caminho)) {
+    const QString copia = caminho + "." +
+      QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".bkp";
+    QFile::copy(caminho, copia);
+  }
+
   YAML::Emitter out;
   out << YAML::BeginMap << YAML::Key << "waypoints" << YAML::Value << YAML::BeginMap;
   {
@@ -210,11 +276,12 @@ void WaypointManager::save(const QString & map_dir)
   }
   out << YAML::EndMap << YAML::EndMap;
 
-  std::ofstream file((map_dir + "/waypoints.yaml").toStdString());
+  std::ofstream file(caminho.toStdString());
   if (!file) {
     emit status("Falha ao salvar waypoints.yaml");
     return;
   }
   file << out.c_str() << "\n";
-  emit status("waypoints.yaml salvo");
+  carregado_de_ = map_dir;
+  emit status(QString("%1 ponto(s) salvo(s).").arg(points_.size()));
 }

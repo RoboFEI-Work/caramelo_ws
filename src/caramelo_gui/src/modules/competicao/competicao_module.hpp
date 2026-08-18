@@ -17,6 +17,7 @@
 
 class RosBridge;
 class MissionBridge;
+class SeletorArena;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -33,8 +34,12 @@ public:
 
 private:
   void recarregarTarefas();
-  void recarregarMapas();
   void verificarServidores();
+
+  // Liga/desliga o que depende de ter tarefa E mapa, e escreve na tela o
+  // motivo quando algo fica desligado. Botao cinza sem explicacao le' como
+  // "quebrado" -- o operador reinicia a interface achando que e' defeito.
+  void atualizarDisponibilidade();
   void aoProgresso(const MissionProgress & p);
   void aoMudarOcupado(bool ocupado);
   void prepararChecklist(int total);
@@ -47,7 +52,8 @@ private:
   MissionBridge * mission_ = nullptr;
 
   QComboBox * tarefa_ = nullptr;
-  QComboBox * mapa_ = nullptr;
+  SeletorArena * mapa_ = nullptr;
+  QLabel * motivo_ = nullptr;
   QCheckBox * simular_nav_ = nullptr;
   QCheckBox * refino_lidar_ = nullptr;
   QCheckBox * ir_ao_finish_ = nullptr;

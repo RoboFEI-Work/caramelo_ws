@@ -17,7 +17,7 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "bridge/mission_bridge.hpp"
 #include "bridge/ros_bridge.hpp"
-#include "modules/mapas/mapas_module.hpp"
+#include "widgets/seletor_arena.hpp"
 
 namespace
 {
@@ -60,11 +60,19 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   auto * grupoTarefa = new QGroupBox("1. Tarefa");
   auto * form = new QFormLayout(grupoTarefa);
   tarefa_ = new QComboBox();
-  mapa_ = new QComboBox();
-  // Lista FIXA das arenas que existem. Campo livre so' servia para digitar um
-  // nome que nao existe e descobrir o erro com o robo ja' andando.
+  // Lista FIXA das arenas que existem, do mesmo seletor das outras telas.
+  // Sintoma que isto conserta: a lista era montada aqui e mostrava QUALQUER
+  // subpasta de maps/ (inclusive .lixeira e pastas sem map.yaml), e ainda
+  // selecionava "arena3_520" cravado no codigo -- com outra arena carregada no
+  // robo, a missao subia com o mapa errado e ninguem via a troca.
+  mapa_ = new SeletorArena(bridge);
   form->addRow("Task:", tarefa_);
   form->addRow("Mapa:", mapa_);
+
+  motivo_ = new QLabel();
+  motivo_->setObjectName("motivoCartao");
+  motivo_->setWordWrap(true);
+  form->addRow("", motivo_);
   layout->addWidget(grupoTarefa);
 
   auto * grupoOpcoes = new QGroupBox("Opcoes");
@@ -139,8 +147,8 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   layout->addStretch();
 
   recarregarTarefas();
-  recarregarMapas();
   verificarServidores();
+  atualizarDisponibilidade();
 
   // --- ligacoes ---
   connect(
@@ -150,12 +158,18 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
           "nem em missions/.");
         return;
       }
+      if (mapa_->vazio() || mapa_->arena().isEmpty()) {
+        titulo_lista_->setText(
+          "Escolha o mapa da prova. Este robo ainda nao tem nenhum mapa salvo: "
+          "crie um em Mapeamento antes de planejar a missao.");
+        return;
+      }
       lista_->clear();
       actions_yaml_.clear();
       titulo_lista_->setText("Gerando plano...");
       MissionBridge::Options o;
       o.taskYaml = tarefa_->currentData().toString();
-      o.mapName = mapa_->currentText();
+      o.mapName = mapa_->arena();
       o.simulateNav = simular_nav_->isChecked();
       o.useLidarRefine = refino_lidar_->isChecked();
       o.finishDockId = ir_ao_finish_->isChecked() ? "FINISH" : "";
@@ -171,9 +185,13 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
         estado_->setText("Estado: sem task selecionada.");
         return;
       }
+      if (mapa_->vazio() || mapa_->arena().isEmpty()) {
+        estado_->setText("Estado: sem mapa escolhido — a missao nao pode comecar.");
+        return;
+      }
       MissionBridge::Options o;
       o.taskYaml = tarefa_->currentData().toString();
-      o.mapName = mapa_->currentText();
+      o.mapName = mapa_->arena();
       o.simulateNav = simular_nav_->isChecked();
       o.useLidarRefine = refino_lidar_->isChecked();
       o.finishDockId = ir_ao_finish_->isChecked() ? "FINISH" : "";
@@ -251,21 +269,29 @@ void CompeticaoModule::recarregarTarefas()
   }
 }
 
-void CompeticaoModule::recarregarMapas()
+void CompeticaoModule::atualizarDisponibilidade()
 {
-  mapa_->clear();
-  QDir dir(MapasModule::mapsDir());
-  if (dir.exists()) {
-    for (const QString & nome : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-      if (!nome.startsWith('.')) {
-        mapa_->addItem(nome);
-      }
-    }
+  const bool temTarefa = tarefa_->count() > 0;
+  const bool temMapa = !mapa_->vazio() && !mapa_->arena().isEmpty();
+  const bool ocupado = abortar_->isEnabled();
+
+  ver_plano_->setEnabled(temTarefa && temMapa && !ocupado);
+  executar_->setEnabled(temTarefa && temMapa && !ocupado);
+
+  QStringList faltas;
+  if (!temTarefa) {
+    // O caminho tecnico de onde as tarefas sao lidas continua na mensagem do
+    // painel do plano; aqui embaixo do formulario quem le' quer saber o que
+    // fazer, nao em que pasta procurar.
+    faltas << "nenhuma tarefa de prova foi encontrada neste robo";
   }
-  const int idx = mapa_->findText("arena3_520");
-  if (idx >= 0) {
-    mapa_->setCurrentIndex(idx);
+  if (!temMapa) {
+    faltas << "este robo ainda nao tem nenhum mapa salvo — crie um em Mapeamento";
   }
+  motivo_->setText(
+    faltas.isEmpty() ?
+    QString() :
+    "Planejar e executar estao desligados porque " + faltas.join("; e ") + ".");
 }
 
 void CompeticaoModule::verificarServidores()
@@ -355,9 +381,10 @@ void CompeticaoModule::aoProgresso(const MissionProgress & p)
 
 void CompeticaoModule::aoMudarOcupado(bool ocupado)
 {
-  executar_->setEnabled(!ocupado);
-  ver_plano_->setEnabled(!ocupado);
   abortar_->setEnabled(ocupado);
   tarefa_->setEnabled(!ocupado);
   mapa_->setEnabled(!ocupado);
+  // atualizarDisponibilidade le' o estado de abortar_ para saber se a missao
+  // esta' em voo, entao ele precisa ser ajustado ANTES desta chamada.
+  atualizarDisponibilidade();
 }

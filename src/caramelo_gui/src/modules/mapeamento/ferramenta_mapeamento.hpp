@@ -24,6 +24,8 @@
 
 class RosBridge;
 class LaunchRunner;
+class EditorKeepout;
+class ScriptsDoMapa;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -57,6 +59,7 @@ private:
   RosBridge * bridge_ = nullptr;
   LaunchRunner * slam_ = nullptr;
   LaunchRunner * teleop_ = nullptr;
+  ScriptsDoMapa * scripts_ = nullptr;
 
   QListWidget * passos_ = nullptr;
   QStackedWidget * paginas_ = nullptr;
@@ -73,6 +76,9 @@ private:
   QLabel * ajuda_do_tipo_ = nullptr;
   QLabel * status_ponto_ = nullptr;
   QListWidget * pontos_ = nullptr;
+
+  // Passo 3
+  EditorKeepout * paredes_ = nullptr;
 
   // Passo 4
   MapPreview * preview_ = nullptr;

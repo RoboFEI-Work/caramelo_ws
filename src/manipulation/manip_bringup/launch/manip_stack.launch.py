@@ -58,6 +58,14 @@ def generate_launch_description():
 
     declared_args = [
         # --- Composicao ---
+        # O RELOGIO. Sem declarar isto, todo no criado aqui roda em tempo de
+        # PAREDE enquanto o resto do sistema roda em tempo de SIMULACAO. O
+        # sintoma nunca aponta para o relogio: os filtros de TF nunca casam, a
+        # fila enche, a CPU satura e o que aparece na tela e' "deadline
+        # perdido" em nos que nao tem nada a ver com isso.
+        DeclareLaunchArgument(
+            "use_sim_time", default_value="false",
+            description="true quando o Gazebo esta no ar."),
         DeclareLaunchArgument(
             "use_mock_hardware",
             default_value="false",
@@ -236,6 +244,8 @@ def generate_launch_description():
         respawn=True,
         respawn_delay=5.0,
         parameters=[{
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"), value_type=bool),
             "robot_description": primitive_robot_description,
             "robot_description_semantic": robot_description_semantic_content,
         }],
@@ -253,6 +263,8 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(use_pick_place),
         parameters=[{
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"), value_type=bool),
             # reset_container_states_on_start NAO e mais passado ao no (fica
             # no default false do codigo): com respawn=True, o reset por
             # processo zerava o yaml com blocos fisicamente a bordo. O reset
@@ -326,6 +338,8 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(use_pick_place),
         parameters=[{
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"), value_type=bool),
             "skip_missing_place_tag": ParameterValue(
                 LaunchConfiguration("skip_missing_place_tag"), value_type=bool),
             "container_state_file": container_state_file,
@@ -420,6 +434,8 @@ def generate_launch_description():
         respawn_delay=5.0,
         condition=IfCondition(use_perception_gate),
         parameters=[{
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"), value_type=bool),
             "enabled": ParameterValue(
                 LaunchConfiguration("use_perception_gate"), value_type=bool),
             "off_delay_s": ParameterValue(
@@ -442,6 +458,8 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(use_audio),
         parameters=[{
+            "use_sim_time": ParameterValue(
+                LaunchConfiguration("use_sim_time"), value_type=bool),
             "backend": "piper",
             "piper_executable": LaunchConfiguration("piper_executable"),
             "piper_model": LaunchConfiguration("piper_model"),

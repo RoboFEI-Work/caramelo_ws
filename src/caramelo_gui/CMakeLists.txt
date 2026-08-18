@@ -48,6 +48,10 @@ set(SOURCES
   src/core/main_window.cpp
   src/widgets/map_preview.cpp
   src/widgets/seletor_arena.cpp
+  src/widgets/seletor_dock.cpp
+  src/widgets/seletor_service_area.cpp
+  src/widgets/seletor_tipo_area.cpp
+  src/widgets/seletor_tipo_dock.cpp
   src/modules/inicio/inicio_module.cpp
   src/modules/avancado/sensores_module.cpp
   src/modules/competicao/competicao_module.cpp
@@ -57,10 +61,13 @@ set(SOURCES
   src/modules/mapas/mapas_module.cpp
   src/modules/mapeamento/mapeamento_module.cpp
   src/modules/mapeamento/ferramenta_mapeamento.cpp
+  src/modules/mapeamento/scripts_do_mapa.cpp
+  src/modules/mapeamento/trilho_de_etapas.cpp
   src/modules/teleop/teleop_module.cpp
   src/modules/service_areas/service_areas_module.cpp
   src/modules/waypoints/waypoints_module.cpp
   src/modules/editor_mapa/editor_mapa_module.cpp
+  src/modules/editor_mapa/editor_keepout.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})
