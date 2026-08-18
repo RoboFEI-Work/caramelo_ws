@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -101,6 +102,10 @@ def service_area_path(map_folder: Path) -> Path:
 
 def docking_path(map_folder: Path) -> Path:
     return map_folder / "docking.yaml"
+
+
+def ws_table_mapping_path(map_folder: Path) -> Path:
+    return map_folder / "ws_table_mapping.yaml"
 
 
 def pose_dict(x: float = 0.0, y: float = 0.0, yaw: float = 0.0) -> Dict[str, float]:
@@ -421,6 +426,76 @@ def validate_service_areas_data(data: dict) -> Tuple[List[str], List[str]]:
     return errors, warnings
 
 
+WS_TABLE_MAPPING_HEADER = """\
+# Mapeamento centralizado da arena (1 arquivo POR MAPA):
+#  - ws_to_table_pose: WS da tarefa -> group_state do braco (lido pelo task_planner)
+#  - ws_to_dock_id:    WS da tarefa -> dock_id do docking.yaml (lido pelo executor de missao)
+# GERADO a partir do service_areas.yaml (altura da mesa -> Mesa0/5/10/15;
+# shelf -> MesaSh). Pode editar a vontade: o sync so ADICIONA chaves que
+# faltam, nunca sobrescreve valores existentes.
+"""
+
+
+def task_name_for_area(area_id: str) -> Optional[str]:
+    """WS1 -> WS_1, SH1 -> SH_1 (vocabulario dos YAMLs de tarefa). START/FINISH -> None."""
+    match = re.match(r"^([A-Z]+)([0-9]+)$", normalize_dock_id(area_id))
+    if not match:
+        return None
+    return f"{match.group(1)}_{match.group(2)}"
+
+
+def table_pose_for_area(area_type: str, height: float) -> str:
+    """group_state do braco para a area: shelf -> MesaSh; demais pela altura."""
+    if normalize_area_type(area_type) == "shelf":
+        return "MesaSh"
+    return f"Mesa{int(round(float(height) * 100.0))}"
+
+
+def sync_ws_table_mapping_from_service_areas(
+    map_folder: Path, make_backup: bool = False
+) -> Tuple[Path, Optional[Path], int]:
+    """Cria/completa o ws_table_mapping.yaml do mapa (2026-08-17).
+
+    O run_mission exige o arquivo e o task_planner aborta sem a entrada da WS
+    ("Missing WS->Mesa mapping") — antes ele era feito A MAO e mapa novo
+    nascia sem ele. Regra conservadora: entradas existentes NUNCA sao
+    sobrescritas (mapas antigos tem ajustes manuais validados); so entram as
+    chaves que faltam, derivadas do service_areas.yaml.
+    """
+    service_data = load_service_areas(map_folder)
+    frame_id = service_data.get("frame_id", "map")
+    path = ws_table_mapping_path(map_folder)
+    creating = not path.exists()
+    data = load_yaml(path)
+    table_pose_map = data.setdefault("ws_to_table_pose", {})
+    dock_id_map = data.setdefault("ws_to_dock_id", {})
+
+    added = 0
+    for area_id, entry in service_data["service_areas"].items():
+        normalized = normalized_service_area(area_id, entry, frame_id)
+        if normalized["type"] in ("start", "finish"):
+            continue
+        task_name = task_name_for_area(area_id)
+        if task_name is None:
+            continue
+        if task_name not in table_pose_map:
+            table_pose_map[task_name] = table_pose_for_area(
+                normalized["type"], normalized["table"]["height"])
+            added += 1
+        if task_name not in dock_id_map:
+            dock_id_map[task_name] = normalize_dock_id(area_id)
+            added += 1
+
+    if not creating and added == 0:
+        return path, None, 0
+
+    backup = write_yaml(path, data, make_backup=make_backup)
+    if creating:
+        path.write_text(WS_TABLE_MAPPING_HEADER + path.read_text(encoding="utf-8"),
+                        encoding="utf-8")
+    return path, backup, added
+
+
 def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False) -> Tuple[Path, Optional[Path], int]:
     service_data = load_service_areas(map_folder)
     frame_id = service_data.get("frame_id", "map")
@@ -428,8 +503,12 @@ def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False)
     dock_plugins = {}
     for area_id, entry in service_data["service_areas"].items():
         normalized = normalized_service_area(area_id, entry, frame_id)
-        if not normalized["docking"]["use_docking"]:
-            continue
+        # TODAS as areas entram no docking.yaml — inclusive START/FINISH
+        # (use_docking: false). O GoToWS navega ate elas SEM dockar, mas le a
+        # pose do docking.yaml ("pose nao encontrada no docking.yaml" era o
+        # erro quando o sync as pulava, corrigido 2026-08-17). use_docking
+        # decide o COMPORTAMENTO (dock vs navegacao pura) no service_areas
+        # .yaml, nao a presenca da pose aqui.
         dock_type = dock_type_for_area(area_id)
         dock_plugins[dock_type] = dock_plugin_for_area(area_id, normalized)
         docks[area_id] = {
@@ -444,6 +523,10 @@ def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False)
     }
     path = docking_path(map_folder)
     backup = write_yaml(path, data, make_backup=make_backup)
+    # Carona proposital (2026-08-17): TODO caller que sincroniza o docking
+    # (save CLI, GUI save_pose, init) tambem ganha o ws_table_mapping.yaml —
+    # e o gancho unico que garante mapa novo completo para o run_mission.
+    sync_ws_table_mapping_from_service_areas(map_folder, make_backup=make_backup)
     return path, backup, len(docks)
 
 

@@ -139,15 +139,19 @@ def generate_launch_description():
         DeclareLaunchArgument("max_pose_error_m", default_value="0.025"),
         DeclareLaunchArgument("grasp_min_effort_nm", default_value="0.15"),
         DeclareLaunchArgument("grasp_min_effort_increase_nm", default_value="0.05"),
+        # >= 2 e OBRIGATORIO para o ladder da mesa ter os 3 degraus
+        # (2026-08-17): tentativa 1 = IK custom bottom, 2 = IK custom frente,
+        # 3 = MoveIt/pick_ik (ultimo recurso).
         DeclareLaunchArgument("grasp_retry_attempts", default_value="2"),
         # ATENCAO (auditoria item 2.7 + verificacao adversarial 2026-08-10):
         # os args de SOLVER abaixo (attempt_*_ik_solver, fallback_ik_*) sao
         # INERTES. Trocar o kinematics_solver por parametro em runtime nao
         # afeta o plugin ja carregado e cacheado pelo move_group — a "escada
-        # de solvers" era placebo. O que age de verdade entre as tentativas:
-        # attempt_3_ik_position_threshold / _orientation_threshold e as
-        # tolerancias de goal. Ficam declarados so para nao quebrar linhas de
-        # comando salvas; nao perca tempo tunando-os.
+        # de solvers" era placebo. Desde 2026-08-17 os attempt_1_*/attempt_2_*
+        # ficaram DUPLAMENTE inertes: as tentativas 1-2 usam a IK custom e nem
+        # chamam a IK do MoveIt. O que age de verdade: os attempt_3_* (degrau
+        # MoveIt). Ficam declarados so para nao quebrar linhas de comando
+        # salvas; nao perca tempo tunando os demais.
         DeclareLaunchArgument("switch_ik_after_failed_grasp", default_value="true"),
         DeclareLaunchArgument("attempt_1_ik_solver", default_value="pick_ik/PickIkPlugin"),
         DeclareLaunchArgument(

@@ -328,9 +328,17 @@ public:
         shelf_table_poses_ = this->declare_parameter<std::vector<std::string>>(
             "shelf_table_poses", std::vector<std::string>{"MesaSh"});
         // Frame da base do braco — a IK propria trabalha nele, e entre ele e o
-        // base_footprint ha translacao E um yaw de -1.57.
+        // base_footprint ha translacao E um yaw de -1.57. Desde 2026-08-17 a
+        // MESA COMUM tambem usa este frame (tentativas 1-2 do ladder custom);
+        // o nome ficou por compatibilidade com launches salvos.
         shelf_ik_reference_frame_ = this->declare_parameter<std::string>(
             "shelf_ik_reference_frame", "manip_base_link");
+
+        // Depuracao de campo do ladder da mesa: 0 = automatico (1 down,
+        // 2 frente, 3+ MoveIt); 1/2/3 forca o mesmo degrau em TODAS as
+        // tentativas (torna o teste do degrau 2/3 deterministico).
+        force_table_ik_strategy_ = this->declare_parameter<int>(
+            "force_table_ik_strategy", 0);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -539,6 +547,7 @@ private:
     static constexpr const char * kShelfStartPose = "pegar_obj_sh";
     std::vector<std::string> shelf_table_poses_;
     std::string shelf_ik_reference_frame_;
+    int force_table_ik_strategy_{0};
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -765,6 +774,30 @@ private:
     std::string ikProfileNameForAttempt(int attempt) const
     {
         return "attempt_" + std::to_string(attempt);
+    }
+
+    // 2026-08-17 — ladder de IK da MESA COMUM (pedido do operador): tentativa
+    // 1 = IK custom com a ferramenta para BAIXO (j5 alinhado ao yaw da tag),
+    // tentativa 2 = IK custom pela FRENTE (j5 fixo), tentativa 3+ = caminho
+    // antigo do MoveIt/pick_ik, que ja funciona, como ultimo recurso.
+    enum class TableIkStrategy
+    {
+        kCustomDown,
+        kCustomForward,
+        kMoveItPose,
+    };
+
+    TableIkStrategy tableStrategyForAttempt(int attempt) const
+    {
+        const int effective =
+            force_table_ik_strategy_ > 0 ? force_table_ik_strategy_ : attempt;
+        if (effective <= 1) {
+            return TableIkStrategy::kCustomDown;
+        }
+        if (effective == 2) {
+            return TableIkStrategy::kCustomForward;
+        }
+        return TableIkStrategy::kMoveItPose;
     }
 
     void configureArmInterface(const std::shared_ptr<MoveGroupInterface> & arm)
@@ -1495,14 +1528,25 @@ private:
     // O retorno faz o caminho inverso.
     static constexpr double kShelfPhase1Joint3 = 2.3038;
     static constexpr double kShelfWristJoint5 = 1.5708;
+    // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17.
+    static constexpr double kTableForwardWristJoint5 = 1.5708;
 
-    /// Resolve a tag pela IK propria. `q_out` sai em ordem j1..j5.
-    /// O alvo e convertido para o frame da BASE DO BRACO — nao basta subtrair
-    /// o X do mount: ha tambem um yaw de -1.57 (manip_mount_rpy).
-    bool solveShelfIk(
+    enum class CustomIkOutcome { kOk, kNoTransform, kNoSolution };
+
+    /// Resolve uma tag pela IK propria (generico: shelf E mesa). `q_out` sai
+    /// em ordem j1..j5. O alvo e convertido para o frame da BASE DO BRACO —
+    /// nao basta subtrair o X do mount: ha tambem um yaw de -1.57
+    /// (manip_mount_rpy). `label` so muda os logs ("shelf"/"mesa").
+    /// `target_yaw_out` (opcional): yaw do eixo X do frame alvo projetado no
+    /// plano XY da base do braco — usado para alinhar o j5 aos dedos.
+    CustomIkOutcome solveCustomIkForTag(
         const std::string & tag_frame,
+        manip_task_execution::ToolDirection direction,
+        double q5_fixed,
+        const char * label,
         const std::string & cycle_name,
-        std::array<double, 5> & q_out)
+        std::array<double, 5> & q_out,
+        double * target_yaw_out = nullptr)
     {
         geometry_msgs::msg::TransformStamped tf_arm;
         try {
@@ -1512,10 +1556,10 @@ private:
         } catch (const tf2::TransformException & ex) {
             RCLCPP_ERROR(
                 this->get_logger(),
-                "[%s] shelf: sem TF %s <- %s (%s)",
-                cycle_name.c_str(), shelf_ik_reference_frame_.c_str(),
+                "[%s] %s: sem TF %s <- %s (%s)",
+                cycle_name.c_str(), label, shelf_ik_reference_frame_.c_str(),
                 tag_frame.c_str(), ex.what());
-            return false;
+            return CustomIkOutcome::kNoTransform;
         }
 
         const Eigen::Vector3d target(
@@ -1525,26 +1569,51 @@ private:
 
         if (!manip_task_execution::solveIk(
                 target,
-                manip_task_execution::ToolDirection::kMiddle,
-                kShelfWristJoint5,
+                direction,
+                q5_fixed,
                 q_out))
         {
             RCLCPP_ERROR(
                 this->get_logger(),
-                "[%s] shelf: IK propria nao achou solucao para [%.3f %.3f %.3f] "
+                "[%s] %s: IK propria nao achou solucao para [%.3f %.3f %.3f] "
                 "em %s.",
-                cycle_name.c_str(), target.x(), target.y(), target.z(),
+                cycle_name.c_str(), label, target.x(), target.y(), target.z(),
                 shelf_ik_reference_frame_.c_str());
-            return false;
+            return CustomIkOutcome::kNoSolution;
+        }
+
+        if (target_yaw_out) {
+            *target_yaw_out = manip_task_execution::projectedFrameYaw(
+                Eigen::Quaterniond(
+                    tf_arm.transform.rotation.w,
+                    tf_arm.transform.rotation.x,
+                    tf_arm.transform.rotation.y,
+                    tf_arm.transform.rotation.z).toRotationMatrix());
         }
 
         RCLCPP_INFO(
             this->get_logger(),
-            "[%s] shelf IK: alvo [%.3f %.3f %.3f] -> j "
+            "[%s] %s IK: alvo [%.3f %.3f %.3f] -> j "
             "[%.4f %.4f %.4f %.4f %.4f]",
-            cycle_name.c_str(), target.x(), target.y(), target.z(),
+            cycle_name.c_str(), label, target.x(), target.y(), target.z(),
             q_out[0], q_out[1], q_out[2], q_out[3], q_out[4]);
-        return true;
+        return CustomIkOutcome::kOk;
+    }
+
+    /// Wrapper da shelf — comportamento identico ao historico (kMiddle,
+    /// punho +1.5708, logs "shelf").
+    bool solveShelfIk(
+        const std::string & tag_frame,
+        const std::string & cycle_name,
+        std::array<double, 5> & q_out)
+    {
+        return solveCustomIkForTag(
+            tag_frame,
+            manip_task_execution::ToolDirection::kMiddle,
+            kShelfWristJoint5,
+            "shelf",
+            cycle_name,
+            q_out) == CustomIkOutcome::kOk;
     }
 
     /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
@@ -1637,6 +1706,61 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(kShelfStartPose);
         return planAndExecute(arm, cycle_name + " shelf retorno " + kShelfStartPose);
+    }
+
+    // -----------------------------------------------------------------------
+    // MESA COMUM pela IK custom (2026-08-17) — tentativas 1 (kDown, j5 pelo
+    // yaw da tag) e 2 (kForward, j5 fixo). Mesmo contrato da shelf: a tag e
+    // lida UMA vez (no lookup da IK), sem releitura nem verifyTcpArrival
+    // depois que o braco comeca a se mover — as juntas sao exatas e a
+    // protecao contra "pegar o vazio" e a verificacao de esforco da garra.
+    bool approachTableTargetCustomIk(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & tag_frame,
+        TableIkStrategy strategy,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
+    {
+        const bool down = strategy == TableIkStrategy::kCustomDown;
+        publish_stage(
+            goal_handle,
+            down ? "final_approach_custom_down" : "final_approach_custom_forward");
+
+        std::array<double, 5> q{};
+        double tag_yaw = 0.0;
+        const CustomIkOutcome outcome = solveCustomIkForTag(
+            tag_frame,
+            down ? manip_task_execution::ToolDirection::kDown
+                 : manip_task_execution::ToolDirection::kForward,
+            down ? 0.0 : kTableForwardWristJoint5,
+            "mesa",
+            cycle_name,
+            q,
+            down ? &tag_yaw : nullptr);
+
+        if (outcome == CustomIkOutcome::kNoTransform) {
+            speak("Falha: perdi a tag na aproximação");
+            return false;
+        }
+        if (outcome == CustomIkOutcome::kNoSolution) {
+            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            return false;
+        }
+
+        if (down) {
+            // O TCP fica no eixo do joint5: trocar q5 pos-solve nao move a
+            // ponta, so gira a linha dos dedos para o yaw da tag.
+            q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0]);
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[%s] mesa: j5 pela orientacao da tag: yaw=%.4f -> q5=%.4f",
+                cycle_name.c_str(), tag_yaw, q[4]);
+        }
+
+        speak("Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame));
+        return moveToJointTarget(
+            arm, q,
+            cycle_name + (down ? " mesa custom down" : " mesa custom forward"));
     }
 
     bool moveToTarget(
@@ -1964,7 +2088,7 @@ private:
         const std::string & container_pose,
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
-        bool enforce_pitch_pi,
+        int attempt,
         bool is_shelf,
         bool & retryable_failure,
         bool & object_still_grasped)
@@ -2047,19 +2171,32 @@ private:
                 return false;
             }
         } else {
-            publish_stage(goal_handle, "final_approach");
-            //speak("Fazendo a aproximacao final da tag");
-            if (!moveToTarget(
-                    arm,
-                    tag_tf,
-                    "tcp",
-                    cycle_name + " tcp final",
-                    true,
-                    enforce_pitch_pi,
-                    "Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame),
-                    "Falha: sem solução de I K para a tag " + spokenTagName(tag_frame))) {
+            const TableIkStrategy strategy = tableStrategyForAttempt(attempt);
+            if (strategy == TableIkStrategy::kMoveItPose) {
+                // Degrau 3+: caminho antigo do MoveIt/pick_ik, identico ao
+                // attempt 3 historico (enforce_pitch_pi era attempt < 3).
+                publish_stage(goal_handle, "final_approach");
+                //speak("Fazendo a aproximacao final da tag");
+                if (!moveToTarget(
+                        arm,
+                        tag_tf,
+                        "tcp",
+                        cycle_name + " tcp final",
+                        true,
+                        false,
+                        "Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame),
+                        "Falha: sem solução de I K para a tag " + spokenTagName(tag_frame))) {
+                    retryable_failure = true;
+                    last_pick_failure_reason_ = "ik_ou_execucao_falhou";
+                    return false;
+                }
+            } else if (!approachTableTargetCustomIk(
+                    arm, tag_frame, strategy, cycle_name, goal_handle))
+            {
                 retryable_failure = true;
-                last_pick_failure_reason_ = "ik_ou_execucao_falhou";
+                last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
+                arm->setMaxVelocityScalingFactor(1.0);
+                arm->setMaxAccelerationScalingFactor(1.0);
                 return false;
             }
         }
@@ -2305,7 +2442,7 @@ private:
                 container_pose,
                 cycle_name,
                 goal_handle,
-                attempt < 3,
+                attempt,
                 is_shelf,
                 retryable_failure,
                 object_still_grasped);
@@ -2328,7 +2465,17 @@ private:
 
             if (attempt < max_pick_attempts) {
                 publish_stage(goal_handle, "preparing_next_pick_attempt");
-                speak("Vou relaxar as tolerancias para a proxima tentativa");
+                // Mesa: 1->2 troca a ESTRATEGIA (down -> frente), nao as
+                // tolerancias; a frase antiga so vale entrando no degrau
+                // MoveIt (3+). Shelf mantem a frase historica.
+                if (!is_shelf &&
+                    tableStrategyForAttempt(attempt + 1) !=
+                        TableIkStrategy::kMoveItPose)
+                {
+                    speak("Vou tentar de outro jeito na próxima tentativa");
+                } else {
+                    speak("Vou relaxar as tolerancias para a proxima tentativa");
+                }
             }
 
             //speak("Vou abrir a garra e tentar pegar novamente");

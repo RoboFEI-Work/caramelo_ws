@@ -37,6 +37,7 @@
 #endif
 
 #include "manip_task_execution/container_state_store.hpp"
+#include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
 #include "my_robot_msgs/action/place_tag.hpp"
 
@@ -131,6 +132,12 @@ public:
         shelf_table_poses_ = this->declare_parameter<std::vector<std::string>>(
             "shelf_table_poses", std::vector<std::string>{"MesaSh"});
 
+        // Frame da base do braco — a IK custom trabalha nele (2026-08-17,
+        // entrega em alvo TF pela IK propria). Espelho do
+        // shelf_ik_reference_frame do no de pick.
+        ik_reference_frame_ = this->declare_parameter<std::string>(
+            "ik_reference_frame", "manip_base_link");
+
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
         perception_warmup_timeout_ = this->declare_parameter<double>(
@@ -192,6 +199,7 @@ private:
     std::atomic<std::uint64_t> camera_info_count_{0};
     std::atomic<std::int64_t> camera_info_last_ns_{0};
     std::vector<std::string> shelf_table_poses_;
+    std::string ik_reference_frame_;
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
@@ -699,6 +707,45 @@ private:
         return true;
     }
 
+    /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
+    /// pelo MoveIt — mantem checagem de colisao, deadlines e retries.
+    /// Espelho do moveToJointTarget validado no no de pick (2026-08-17).
+    bool moveToJointTarget(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (cancellationRequested()) {
+            return false;
+        }
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Sem estado atual do braco antes de '%s'.", label.c_str());
+            return false;
+        }
+
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setJointValueTarget(std::vector<double>(q.begin(), q.end()));
+        if (planAndExecute(arm, label)) {
+            return true;
+        }
+
+        // Loga o erro por junta para o teste apontar o culpado na hora
+        // (mesma telemetria do pick, 2026-08-13).
+        const std::vector<double> atual = arm->getCurrentJointValues();
+        for (std::size_t i = 0; i < q.size() && i < atual.size(); ++i) {
+            const double erro = atual[i] - q[i];
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "[%s] j%zu alvo=%.4f atual=%.4f erro=%+.4f rad%s",
+                label.c_str(), i + 1, q[i], atual[i], erro,
+                std::abs(erro) > 0.10 ? "  <-- FORA da tolerancia 0.10" : "");
+        }
+        return false;
+    }
+
     static bool isContainerTarget(const std::string & target)
     {
         if (target.size() <= 2 || target[0] != 'c' || target[1] != 't') {
@@ -815,91 +862,62 @@ private:
 
     double max_tag_age_sec_{1.0};
 
-    bool moveToTarget(
+    // moveToTarget (setPoseTarget + fallback setApproximateJointValueTarget)
+    // REMOVIDO em 2026-08-17: o fallback aproximado e o anti-padrao que ja
+    // fechou garra no vazio no pick. A entrega em alvo TF agora usa a IK
+    // custom abaixo — pedido do operador ("todas as IKs viram a custom").
+
+    /// Aproximacao final da entrega em alvo TF (ct*/tag_*) pela IK custom
+    /// (kDown, j5 alinhado ao yaw do frame alvo). Tentativa UNICA, sem
+    /// fallback para o MoveIt: falhou, o goal falha com o bloco na garra
+    /// (contrato falha_com_bloco_na_garra do chamador).
+    /// `target_tf` PRECISA estar no frame da base do braco
+    /// (ik_reference_frame_) e ja vir com o container_place_z_offset_ somado.
+    bool approachPlaceTargetCustomIk(
         const std::shared_ptr<MoveGroupInterface> & arm,
-        const geometry_msgs::msg::TransformStamped & tf,
-        const std::string & eef_link,
-        const std::string & label,
-        bool use_orientation_constraint)
+        const geometry_msgs::msg::TransformStamped & target_tf,
+        const std::string & label)
     {
-        if (cancellationRequested()) {
-            return false;
-        }
+        const Eigen::Vector3d target(
+            target_tf.transform.translation.x,
+            target_tf.transform.translation.y,
+            target_tf.transform.translation.z);
 
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink(eef_link);
-
-        tf2::Quaternion tag_q(
-            tf.transform.rotation.x,
-            tf.transform.rotation.y,
-            tf.transform.rotation.z,
-            tf.transform.rotation.w);
-
-
-        geometry_msgs::msg::Pose target_pose;
-        target_pose.position.x = tf.transform.translation.x;
-        target_pose.position.y = tf.transform.translation.y;
-        target_pose.position.z = tf.transform.translation.z;
-
-        if (use_orientation_constraint) {
-            tf2::Quaternion desired_q;
-            desired_q.setRPY(0.0, M_PI, 1.57);
-            desired_q.normalize();
-            target_pose.orientation = tf2::toMsg(desired_q);
-        } else {
-            target_pose.orientation = arm->getCurrentPose(eef_link).pose.orientation;
-        }
-
-        MoveGroupInterface::Plan plan;
-
-        arm->setGoalPositionTolerance(0.0003);
-        arm->setGoalOrientationTolerance(use_orientation_constraint ? 0.05 : M_PI);
-        arm->clearPoseTargets();
-        arm->setPoseTarget(target_pose, eef_link);
-
-        bool success = planWithDeadline(arm, plan, label + " setPoseTarget");
-
-        if (!success) {
-            RCLCPP_WARN_STREAM(
+        std::array<double, 5> q{};
+        if (!manip_task_execution::solveIk(
+                target,
+                manip_task_execution::ToolDirection::kDown,
+                0.0,
+                q))
+        {
+            RCLCPP_ERROR(
                 get_logger(),
-                "Plan failed with setPoseTarget for " << label
-                    << ". Trying approximate IK.");
-
-            // Guarda anti-travamento (auditoria 2026-08-07, item 1.4 —
-            // espelho da guarda validada no pick): a IK aproximada precisa do
-            // estado atual; sem ele o fluxo pendurava indefinidamente.
-            if (!arm->getCurrentState(2.0)) {
-                RCLCPP_ERROR_STREAM(
-                    get_logger(),
-                    "Sem estado atual do braco para IK aproximada em " << label
-                        << " — abortando a tentativa.");
-                return false;
-            }
-
-            arm->clearPoseTargets();
-            arm->setApproximateJointValueTarget(target_pose, eef_link);
-            success = planWithDeadline(arm, plan, label + " IK aproximada");
-        }
-
-        if (!success) {
-            RCLCPP_ERROR_STREAM(get_logger(), "Planning failed: " << label);
+                "[PLACE] IK propria nao achou solucao para [%.3f %.3f %.3f] "
+                "em %s (%s).",
+                target.x(), target.y(), target.z(),
+                ik_reference_frame_.c_str(), label.c_str());
+            speak("Não consegui posicionar o braço para a entrega");
             return false;
         }
 
-        if (cancellationRequested()) {
-            return false;
-        }
+        // O TCP esta no eixo do joint5: trocar q5 pos-solve nao move a
+        // ponta, so alinha a linha dos dedos ao yaw do alvo.
+        const double target_yaw = manip_task_execution::projectedFrameYaw(
+            Eigen::Quaterniond(
+                target_tf.transform.rotation.w,
+                target_tf.transform.rotation.x,
+                target_tf.transform.rotation.y,
+                target_tf.transform.rotation.z).toRotationMatrix());
+        q[4] = manip_task_execution::computeWristForTagYaw(target_yaw, q[0]);
 
-        const bool exec_ok = executeWithDeadline(arm, plan, label);
-        if (cancellationRequested()) {
-            return false;
-        }
-        if (!exec_ok) {
-            RCLCPP_ERROR_STREAM(get_logger(), "Execution failed: " << label);
-            return false;
-        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[PLACE] IK custom: alvo [%.3f %.3f %.3f] yaw=%.4f -> j "
+            "[%.4f %.4f %.4f %.4f %.4f]",
+            target.x(), target.y(), target.z(), target_yaw,
+            q[0], q[1], q[2], q[3], q[4]);
 
-        return true;
+        return moveToJointTarget(arm, q, label);
     }
 
     bool moveToPlaceTarget(
@@ -931,11 +949,13 @@ private:
         speak("Procurando o alvo de entrega " + spokenTargetName(table_pose));
         waitForCameraStream("PLACE");
 
-        const std::string place_reference_frame = "base_footprint";
-
+        // 2026-08-17: TODO o fluxo TF do place roda no frame da base do
+        // braco (ik_reference_frame_) — e o frame da IK custom, e o lookup
+        // inicial ja era feito nele (o log antigo dizia base_footprint por
+        // engano).
         geometry_msgs::msg::TransformStamped target_tf;
         if (!waitForTagTransform(
-                "manip_base_link",
+                ik_reference_frame_,
                 table_pose,
                 target_tf,
                 std::chrono::milliseconds(5000),
@@ -954,7 +974,7 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "[PLACE] initial TF %s <- %s: x=%.4f y=%.4f z=%.4f",
-            place_reference_frame.c_str(),
+            ik_reference_frame_.c_str(),
             table_pose.c_str(),
             target_tf.transform.translation.x,
             target_tf.transform.translation.y,
@@ -983,7 +1003,7 @@ private:
         }
 
         if (!waitForTagTransform(
-                place_reference_frame,
+                ik_reference_frame_,
                 table_pose,
                 target_tf,
                 std::chrono::milliseconds(3000),
@@ -996,17 +1016,20 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "[PLACE] final TF %s <- %s: x=%.4f y=%.4f z=%.4f",
-            place_reference_frame.c_str(),
+            ik_reference_frame_.c_str(),
             table_pose.c_str(),
             target_tf.transform.translation.x,
             target_tf.transform.translation.y,
             target_tf.transform.translation.z);
 
+        // O mount do braco e translacao + yaw puro (eixos Z paralelos ao
+        // base_footprint), entao o offset em Z vale identico neste frame.
         target_tf.transform.translation.z += container_place_z_offset_;
 
         publish_stage(goal_handle, "place_final_approach");
         //speak("Fazendo a aproximacao final para entregar o bloco");
-        return moveToTarget(arm, target_tf, "tcp", "place above " + table_pose, true);
+        return approachPlaceTargetCustomIk(
+            arm, target_tf, "place above " + table_pose);
     }
 
     rclcpp_action::GoalResponse

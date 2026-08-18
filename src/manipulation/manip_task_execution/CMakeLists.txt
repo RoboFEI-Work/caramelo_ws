@@ -29,7 +29,8 @@ target_include_directories(container_state_store PUBLIC
 target_compile_features(container_state_store PUBLIC cxx_std_17)
 target_link_libraries(container_state_store yaml-cpp)
 
-# IK propria do braco (5 GDL), usada hoje so no caminho de PRATELEIRA do pick.
+# IK propria do braco (5 GDL): prateleira, mesa comum (tentativas 1-2 do
+# ladder do pick) e entrega em alvo TF do place (2026-08-17).
 # Ver o cabecalho de include/manip_task_execution/custom_ik.hpp para o porque.
 add_library(custom_ik src/custom_ik.cpp)
 target_include_directories(custom_ik PUBLIC

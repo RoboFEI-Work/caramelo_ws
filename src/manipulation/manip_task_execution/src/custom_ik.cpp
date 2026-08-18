@@ -242,4 +242,19 @@ bool solveIk(
   return found;
 }
 
+double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1)
+{
+  return std::remainder(q1 - tag_yaw_in_arm_base, M_PI);
+}
+
+double projectedFrameYaw(const Eigen::Matrix3d & rotation)
+{
+  const Eigen::Vector3d x_axis = rotation.col(0);
+  if (std::hypot(x_axis.x(), x_axis.y()) >= 0.2) {
+    return std::atan2(x_axis.y(), x_axis.x());
+  }
+  const Eigen::Vector3d y_axis = rotation.col(1);
+  return std::atan2(y_axis.y(), y_axis.x()) - M_PI / 2.0;
+}
+
 }  // namespace manip_task_execution

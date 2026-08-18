@@ -97,4 +97,27 @@ bool solveIk(
   const ArmModel & model = ArmModel{},
   const IkOptions & options = IkOptions{});
 
+/// q5 que alinha a LINHA DOS DEDOS da garra ao yaw de um alvo, para uma
+/// solucao kDown ja resolvida (2026-08-17).
+///
+/// Vale porque o TCP esta sobre o eixo de rotacao do joint5: trocar q5 depois
+/// do solve nao move o TCP nem o eixo da ferramenta. Derivacao (validada
+/// numericamente contra forwardKinematics, erro < 1e-10 rad):
+///   R_tcp = Rz(q1)*Ry(q2+q3+q4)*Rz(q5); em kDown frontal q2+q3+q4 = pi
+///   => yaw(X_tcp) = q1 - q5 + pi. A linha dos dedos e o eixo X do TCP
+///   (manip_joint6/7 ficam em +-X do gripper_base_link, que coincide com o
+///   link5). A simetria de pi da garra de 2 dedos ja esta embutida:
+///   remainder devolve o representante de menor modulo, em [-pi/2, +pi/2] —
+///   sempre dentro dos limites +-3.14 do manip_joint5.
+///
+/// `tag_yaw_in_arm_base`: yaw do eixo X do frame alvo projetado no plano XY
+/// de manip_base_link. `q1`: junta 1 da solucao.
+double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1);
+
+/// Yaw do eixo X de uma rotacao (frame alvo em manip_base_link), projetado
+/// no plano XY. atan2 de colunas e mais robusto que getRPY para tag
+/// Z-up/Z-down; se o X estiver quase vertical (nao deve ocorrer com tag
+/// deitada no bloco), cai para o Y projetado - 90 graus.
+double projectedFrameYaw(const Eigen::Matrix3d & rotation);
+
 }  // namespace manip_task_execution
