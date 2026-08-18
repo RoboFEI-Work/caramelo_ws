@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 
+#include <std_msgs/msg/string.hpp>
+
 #include "caramelo_msgs/action/align_to_dock.hpp"
 #include "manip_bt/mission_map_config.hpp"
 #include "nav2_msgs/action/dock_robot.hpp"
@@ -40,7 +42,10 @@ public:
   void onHalted() override;
 
 private:
-  enum class Stage { kIdle, kUndocking, kDocking, kAligning, kNavigating };
+  // kStagingNav (2026-08-18): fluxo novo — NavigateToPose ate a STAGING e o
+  // align faz TODO o approach com muro por LiDAR (o /dock_robot uniciclo que
+  // empurrava contra a mesa vira rollback via use_opennav_approach).
+  enum class Stage { kIdle, kUndocking, kDocking, kStagingNav, kAligning, kNavigating };
   enum class Poll { kPending, kRejected, kFinished };
 
   template<typename ActionT>
@@ -74,6 +79,7 @@ private:
 
   bool startUndock();
   bool startDispatch();
+  bool startStagingNav();
   bool startAlign();
   BT::NodeStatus finishSuccess(bool docked);
   BT::NodeStatus fail(const std::string & reason);
@@ -82,6 +88,7 @@ private:
   double paramOr(const std::string & key, double fallback) const;
 
   std::shared_ptr<rclcpp::Node> node_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_pub_;
   Session<UndockRobot> undock_;
   Session<DockRobot> dock_;
   Session<AlignToDock> align_;
@@ -95,6 +102,7 @@ private:
   std::string mesa_;
   std::string dock_id_;
   bool use_docking_{true};
+  bool use_opennav_approach_{false};
   std::string undock_type_;
 };
 

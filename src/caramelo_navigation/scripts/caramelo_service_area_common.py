@@ -259,12 +259,18 @@ def _docking_from_entry(entry: dict, area_type: str) -> dict:
     docking = entry.get("docking") if isinstance(entry.get("docking"), dict) else {}
     old_approach = entry.get("approach") if isinstance(entry.get("approach"), dict) else {}
     linear_tolerance, angular_tolerance = default_tolerances(area_type)
-    return {
+    result = {
         "approach_offset": float(docking.get("approach_offset", old_approach.get("offset", default_offset(area_type)))),
         "linear_tolerance": float(docking.get("linear_tolerance", old_approach.get("linear_tolerance", linear_tolerance))),
         "angular_tolerance": float(docking.get("angular_tolerance", old_approach.get("angular_tolerance", angular_tolerance))),
         "use_docking": bool(docking.get("use_docking", default_use_docking(area_type))),
     }
+    # Distancia frontal robo->face desejada, POR MESA (2026-08-18, opcional).
+    # Ausente = o dock_align_node usa o parametro global — NAO inventar default
+    # aqui, senao a distincao "nao calibrado" se perde.
+    if docking.get("desired_face_dist") is not None:
+        result["desired_face_dist"] = float(docking["desired_face_dist"])
+    return result
 
 
 def dock_type_for_area(area_id: str) -> str:
@@ -391,6 +397,9 @@ def service_area_to_yaml_entry(area_id: str, area: dict) -> dict:
         "angular_tolerance": float(area["docking"]["angular_tolerance"]),
         "use_docking": bool(area["docking"]["use_docking"]),
     }
+    if area["docking"].get("desired_face_dist") is not None:
+        entry["docking"]["desired_face_dist"] = float(
+            area["docking"]["desired_face_dist"])
     entry["manipulation_enabled"] = bool(area["manipulation_enabled"])
     if area.get("notes"):
         entry["notes"] = str(area["notes"])
@@ -517,6 +526,11 @@ def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False)
             "pose": pose_to_list(normalized["final_robot_pose"]),
             "id": area_id,
         }
+        # Distancia frontal por mesa (2026-08-18): lida pelo dock_align_node;
+        # o parseDockFile do opennav 1.3.11 ignora chaves extras (verificado).
+        if normalized["docking"].get("desired_face_dist") is not None:
+            docks[area_id]["desired_face_dist"] = float(
+                normalized["docking"]["desired_face_dist"])
     data = {
         "dock_plugins": dock_plugins,
         "docks": docks,

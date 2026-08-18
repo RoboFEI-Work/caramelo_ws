@@ -237,12 +237,15 @@ def update_dock_pose(map_folder: Path, dock_id: str, dock_type: Optional[str], f
     data = load_yaml(dock_path)
     data.setdefault("dock_plugins", dict(DEFAULT_DOCK_PLUGINS))
     data.setdefault("docks", {})
-    data["docks"][dock_id] = {
-        "type": dock_type or default_dock_type(dock_id),
+    # MERGE, nao substituicao (2026-08-18): re-gravar a pose nao pode apagar
+    # chaves extras do dock (ex.: desired_face_dist calibrado por mesa).
+    entry = data["docks"].setdefault(dock_id, {})
+    entry.update({
+        "type": dock_type or entry.get("type") or default_dock_type(dock_id),
         "frame": frame,
         "pose": [round(float(pose[0]), 4), round(float(pose[1]), 4), round(float(pose[2]), 6)],
         "id": dock_id,
-    }
+    })
     dock_backup = write_yaml(dock_path, data, make_backup=True)
 
     service_backup = None

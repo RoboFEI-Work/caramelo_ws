@@ -17,6 +17,11 @@ Ele compoe actions ja existentes:
 A navegacao ate cada estacao e' feita pelo proprio DockRobot
 (navigate_to_staging_pose=true), entao nao reinventamos poses de aproximacao.
 
+TODO (2026-08-18): este CLI legado continua no caminho do opennav (/dock_robot
+approach uniciclo). O fluxo de COMPETICAO (bt_yaml_executor/GoToWS) migrou para
+NavigateToPose(staging) + align_to_dock com muro por LiDAR — se este script
+voltar a ser usado em missao real, portar o mesmo fluxo para ca.
+
 Depende de: dock poses reais gravadas em docking.yaml (hoje placeholders), do
 Docking Server no ar e do dock_align_node. NAO validado em hardware.
 

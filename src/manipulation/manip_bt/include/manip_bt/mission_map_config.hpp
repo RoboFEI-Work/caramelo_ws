@@ -23,6 +23,12 @@ public:
     double yaw{0.0};
     std::string type;
     bool pose_is_placeholder{true};  // pose [0,0,0] = ainda nao gravada
+    // Offsets de staging do dock_plugins do docking.yaml (2026-08-18) — o
+    // fluxo novo navega ate a staging por NavigateToPose e o align faz o
+    // approach; fallback -0.45 quando o plugin nao esta no YAML.
+    double staging_x_offset{-0.45};
+    double staging_yaw_offset{0.0};
+    bool staging_from_yaml{false};
   };
 
   // Lanca std::runtime_error se map_folder nao existir ou docking.yaml faltar.
@@ -35,6 +41,12 @@ public:
   bool hasDock(const std::string & dock_id) const;
   std::optional<DockInfo> dock(const std::string & dock_id) const;
   std::string dockType(const std::string & dock_id) const;
+
+  // Pose de STAGING do dock (2026-08-18): a pose do banco deslocada
+  // staging_x_offset (negativo = para tras) ao longo do yaw — identica a
+  // getStagingPose do SimpleNonChargingDock, entao rollback e fluxo novo
+  // compartilham o mesmo ponto. nullopt se o dock nao existe.
+  std::optional<DockInfo> stagingPose(const std::string & dock_id) const;
 
   // service_areas.yaml: docking.use_docking. Default quando ausente:
   // false p/ START/FINISH, true p/ o resto (mesma semantica do mission_runner).

@@ -54,6 +54,25 @@ MissionMapConfig::MissionMapConfig(const std::string & map_folder)
   if (!docks || !docks.IsMap()) {
     throw std::runtime_error("docking.yaml sem a chave 'docks': " + docking_path.string());
   }
+
+  // dock_plugins: staging offsets por type (2026-08-18) — o fluxo novo do
+  // GoToWS navega ate a staging por conta propria.
+  struct StagingOffsets
+  {
+    double x{-0.45};
+    double yaw{0.0};
+  };
+  std::unordered_map<std::string, StagingOffsets> staging_by_type;
+  const YAML::Node plugins = docking["dock_plugins"];
+  if (plugins && plugins.IsMap()) {
+    for (const auto & entry : plugins) {
+      StagingOffsets off;
+      off.x = entry.second["staging_x_offset"].as<double>(-0.45);
+      off.yaw = entry.second["staging_yaw_offset"].as<double>(0.0);
+      staging_by_type[entry.first.as<std::string>()] = off;
+    }
+  }
+
   for (const auto & entry : docks) {
     const std::string dock_id = entry.first.as<std::string>();
     const YAML::Node data = entry.second;
@@ -67,6 +86,12 @@ MissionMapConfig::MissionMapConfig(const std::string & map_folder)
     }
     info.pose_is_placeholder =
       std::abs(info.x) < 1e-9 && std::abs(info.y) < 1e-9 && std::abs(info.yaw) < 1e-9;
+    const auto staging_it = staging_by_type.find(info.type);
+    if (staging_it != staging_by_type.end()) {
+      info.staging_x_offset = staging_it->second.x;
+      info.staging_yaw_offset = staging_it->second.yaw;
+      info.staging_from_yaml = true;
+    }
     docks_[dock_id] = info;
   }
 
@@ -112,6 +137,22 @@ std::optional<MissionMapConfig::DockInfo> MissionMapConfig::dock(const std::stri
     return std::nullopt;
   }
   return it->second;
+}
+
+std::optional<MissionMapConfig::DockInfo> MissionMapConfig::stagingPose(
+  const std::string & dock_id) const
+{
+  const auto it = docks_.find(dock_id);
+  if (it == docks_.end()) {
+    return std::nullopt;
+  }
+  DockInfo staging = it->second;
+  // Mesma conta do getStagingPose do SimpleNonChargingDock: desloca ao longo
+  // do yaw do dock (offset negativo = para tras) e soma o yaw offset.
+  staging.x = it->second.x + it->second.staging_x_offset * std::cos(it->second.yaw);
+  staging.y = it->second.y + it->second.staging_x_offset * std::sin(it->second.yaw);
+  staging.yaw = it->second.yaw + it->second.staging_yaw_offset;
+  return staging;
 }
 
 std::string MissionMapConfig::dockType(const std::string & dock_id) const

@@ -175,6 +175,10 @@ struct MissionBuildContext
   std::string finish_dock_id;
   bool startup_home{true};
   std::string startup_pose_name{"home"};
+  // 2026-08-18 (pedido do operador): GoToWS falhou depois de todos os retries
+  // internos do align => PULA o bloco da estacao (picks/places dela) e a
+  // missao segue — nao perder a task inteira por uma mesa inacessivel.
+  bool skip_unreachable_station{true};
   std::vector<std::string> plan_rows;  // tabela do --dry-run
 };
 
@@ -266,6 +270,27 @@ std::string buildTreeXmlFromActions(
 
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
 
+  // Bloco de estacao com skip (2026-08-18, pedido do operador): cada goto de
+  // estacao dockavel abre um <Fallback><Inverter><GoToWS/></Inverter>
+  // <Sequence>picks/places</Sequence></Fallback>. GoToWS falhou (depois dos
+  // retries internos do align) => Inverter vira SUCCESS => a Fallback fecha
+  // SEM rodar o bloco => a missao segue para a proxima estacao. Pick/place
+  // falhando mantem a semantica atual (so o goto aciona a Fallback).
+  bool station_open = false;
+  bool station_has_actions = false;
+  const auto close_station_block = [&xml, &station_open, &station_has_actions]() {
+      if (!station_open) {
+        return;
+      }
+      if (!station_has_actions) {
+        xml << "      <AlwaysSuccess/>\n";  // Sequence v3 nao pode ficar vazia
+      }
+      xml << "      </Sequence>\n";
+      xml << "      </Fallback>\n";
+      station_open = false;
+      station_has_actions = false;
+    };
+
   for (std::size_t i = 0; i < actions.size(); ++i) {
     const YAML::Node action = actions[i];
     const std::string kind = action["kind"].as<std::string>("");
@@ -276,6 +301,7 @@ std::string buildTreeXmlFromActions(
 
       xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
           << "\"/>\n";
+      station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] home  pose=" + pose_name);
       continue;
@@ -295,11 +321,23 @@ std::string buildTreeXmlFromActions(
         ctx.map_config->useDocking(dock_id) :
         (dock_id != "START" && dock_id != "FINISH");
 
+      close_station_block();
+      const bool wrap = use_docking && ctx.skip_unreachable_station;
+      if (wrap) {
+        xml << "      <Fallback>\n";
+        xml << "      <Inverter>\n";
+      }
       emitGoToWs(xml, blackboard, i, ws, mesa, dock_id, use_docking);
+      if (wrap) {
+        xml << "      </Inverter>\n";
+        xml << "      <Sequence>\n";
+        station_open = true;
+      }
       current_station_dock = dock_id;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] goto  " + ws + " -> " + dock_id +
-        (use_docking ? "  (dock+align)" : "  (navegacao pura)"));
+        (use_docking ? "  (dock+align)" : "  (navegacao pura)") +
+        (wrap ? "  [falhou => pula a estacao]" : ""));
       continue;
     }
 
@@ -333,6 +371,7 @@ std::string buildTreeXmlFromActions(
 
       xml << "      <PickTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
+      station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] pick  tag=" + tag_frame +
         (table_pose.empty() ? "" : " mesa=" + table_pose));
@@ -353,6 +392,7 @@ std::string buildTreeXmlFromActions(
 
       xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
+      station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose);
       continue;
@@ -360,6 +400,10 @@ std::string buildTreeXmlFromActions(
 
     throw std::runtime_error("actions[" + std::to_string(i) + "] has unsupported kind: " + kind);
   }
+
+  // Fecha o bloco da ultima estacao ANTES do epilogo: o home final e o goto
+  // FINISH rodam SEMPRE, mesmo com a ultima estacao pulada.
+  close_station_block();
 
   // Epilogo: braco em home e ida ao FINISH (o undock de saida da ultima
   // estacao acontece dentro do proprio GoToWS). O task_planner nao emite o
@@ -440,7 +484,13 @@ int main(int argc, char ** argv)
 
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
-    blackboard->set("align_timeout", node->declare_parameter<double>("align_timeout", 30.0));
+    // 30 -> 60 (2026-08-18): o align cobre o approach inteiro + retries.
+    blackboard->set("align_timeout", node->declare_parameter<double>("align_timeout", 60.0));
+    // Fluxo novo do docking (2026-08-18): Nav2 ate a staging + align com muro
+    // por LiDAR. true = ROLLBACK para o approach do opennav (/dock_robot).
+    blackboard->set(
+      "use_opennav_approach",
+      node->declare_parameter<bool>("use_opennav_approach", false));
     blackboard->set(
       "max_undocking_time", node->declare_parameter<double>("max_undocking_time", 30.0));
     blackboard->set("nav_timeout", node->declare_parameter<double>("nav_timeout", 180.0));
@@ -460,6 +510,9 @@ int main(int argc, char ** argv)
     ctx.finish_dock_id = finish_dock_id;
     ctx.startup_home = startup_home;
     ctx.startup_pose_name = startup_pose_name;
+    // false = comportamento antigo (goto falhou => missao inteira falha).
+    ctx.skip_unreachable_station =
+      node->declare_parameter<bool>("skip_unreachable_station", true);
 
     std::string map_folder = map_folder_param;
     if (map_folder.empty() && !map_name_param.empty()) {

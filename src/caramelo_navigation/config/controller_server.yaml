@@ -86,10 +86,21 @@ controller_server:
       # do DWB abaixo de 45 e um custo aceito por ora.
       angular_dist_threshold: 0.785
       forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo.
-      # 0.6 -> 0.5 (2026-08-03): igual ao wz max do smoother e ao max_vel_theta
-      # do DWB (0.6 era pedido de torque da era pre-fix do firmware; o smoother
-      # clampava em 0.5 de qualquer forma).
-      rotate_to_heading_angular_vel: 0.5
+      # 0.5 -> 0.35 (2026-08-18, oscilacao do giro final no staging): o shim e
+      # bang-bang (comanda a vel cheia ate o disengage) e o ESC NAO freia no
+      # neutro (coast ~0.5s) -> a 0.5 rad/s o overshoot medado era ~14 graus,
+      # MAIOR que a janela de 11.5 do goal checker: o robo passava, invertia e
+      # ficava "girando de um lado pro outro" por construcao. A 0.35 (1.11x o
+      # piso fisico 0.315; 1o degrau do accel 7.0/20Hz = 0.35, parte no 1o
+      # ciclo) o overshoot estimado cai p/ ~7-9 graus < janela. Calibrar em
+      # campo +-0.02; NAO descer de 0.34.
+      rotate_to_heading_angular_vel: 0.35
+      # NOVO (2026-08-18): default era ~0.3925 (22.5 graus) — o shim soltava o
+      # giro AINDA FORA da janela de 11.5 e o DWB tinha que fechar 22.5->11.5
+      # com min_speed_theta 0.34 (grosso demais) — a "terra de ninguem" onde a
+      # oscilacao vivia. Com 0.15 (8.6 graus, DENTRO da janela de 0.20) o
+      # proprio shim termina o giro e o checker fecha direto.
+      angular_disengage_threshold: 0.15
       # 2.0 -> 7.0 (2026-08-03): o shim acelera em degraus de accel/20Hz A
       # PARTIR DO ODOM. Com 2.0 o degrau era 0.1 rad/s — dentro da zona neutra
       # do driver (<0.5x piso = 0.157) -> pulso neutro, robo parado, odom 0,

@@ -14,7 +14,9 @@ class DockPoseRecorder(Node):
         self.declare_parameter("map_name", "")
         self.declare_parameter("map_dir", "")
         self.declare_parameter("frame", "map")
-        self.declare_parameter("base_frame", "base_link")
+        # base_link -> base_footprint (2026-08-18): o dock_align_node persegue
+        # base_footprint; gravar em outro frame criava vies fixo em todo docking.
+        self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("update_service_area", True)
         self.declare_parameter("timeout", 1.0)
         self.map_name = self.get_parameter("map_name").value
