@@ -1524,10 +1524,12 @@ private:
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
     //   fase 1 — j1/j4 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j5 = +1.5708
-    //   fase 2 — j1..j4 da IK, j5 continua +1.5708
-    // O retorno faz o caminho inverso.
+    //   fase 2 — j1..j4 da IK, j5 = -1.5708 (2026-08-21: antes era +1.5708;
+    //            com kForward a garra chegava girada de 180 graus)
+    // O retorno faz o caminho inverso (fase 1 com j5 = +1.5708, como sempre).
     static constexpr double kShelfPhase1Joint3 = 2.3038;
-    static constexpr double kShelfWristJoint5 = 1.5708;
+    static constexpr double kShelfWristJoint5 = 1.5708;         // fase 1 / retorno
+    static constexpr double kShelfPhase2WristJoint5 = -1.5708;  // so a fase 2
     // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17.
     // 2026-08-21: sinal invertido para -1.5708 (no robo a garra chegava
     // girada de 180 graus com +1.5708). O punho da shelf continua +1.5708.
@@ -1685,7 +1687,7 @@ private:
 
         publish_stage(goal_handle, "shelf_phase2");
         const std::array<double, 5> phase2{
-            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfWristJoint5};
+            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfPhase2WristJoint5};
         return moveToJointTarget(arm, phase2, cycle_name + " shelf fase2");
     }
 
