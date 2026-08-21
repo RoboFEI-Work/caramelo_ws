@@ -1141,6 +1141,53 @@ private:
         return a;
     }
 
+    /// Pedido do operador 2026-08-21: no place em mesa o motor 2 (ombro) e o
+    /// ULTIMO a se mover — primeiro j1/j3/j4/j5 com o ombro parado (o braco se
+    /// arruma por cima da mesa), depois so o j2 desce ate o alvo. Sem estado
+    /// atual, cai no movimento unico.
+    bool moveToJointTargetJoint2Last(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        const auto state = arm->getCurrentState(2.0);
+        std::vector<double> cur;
+        if (state) {
+            state->copyJointGroupPositions(arm->getName(), cur);
+        }
+        if (cur.size() < 5) {
+            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico (j2 junto).", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first = q;
+        first[1] = cur[1];
+        if (std::abs(first[1] - q[1]) > 1e-3) {
+            if (!moveToJointTarget(arm, first, label + " [j2 parado]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [j2 por ultimo]");
+    }
+
+    /// Juntas j1..j5 de uma pose nomeada do SRDF (false se faltar alguma).
+    bool namedPoseJoints(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & name,
+        std::array<double, 5> & q) const
+    {
+        static const std::array<const char *, 5> kJoints{
+            "manip_joint1", "manip_joint2", "manip_joint3", "manip_joint4", "manip_joint5"};
+        const std::map<std::string, double> jv = arm->getNamedTargetValues(name);
+        for (std::size_t i = 0; i < kJoints.size(); ++i) {
+            const auto it = jv.find(kJoints[i]);
+            if (it == jv.end()) {
+                return false;
+            }
+            q[i] = it->second;
+        }
+        return true;
+    }
+
     /// Poses nomeadas do SRDF que pertencem a mesa `base` (base, base.1,
     /// base.2, ...), com a FK do TCP no frame da base do braco. Nunca decide
     /// pelo sufixo: na Mesa5 o .1 e a ESQUERDA e o .2 a direita, ao contrario
@@ -1430,10 +1477,7 @@ private:
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
         publish_stage(goal_handle, "going_table_slot");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget(slot.name);
-        if (!planAndExecute(arm, "go slot " + slot.name)) {
+        if (!moveToJointTargetJoint2Last(arm, slot.q, "go slot " + slot.name)) {
             return false;
         }
 
@@ -1583,6 +1627,10 @@ private:
                 "[SLOT] %s — caindo na pose unica legada '%s'.",
                 enum_error.c_str(), table_pose.c_str());
             speak("Indo para a pose de entrega " + spokenTargetName(table_pose));
+            std::array<double, 5> q{};
+            if (namedPoseJoints(arm, table_pose, q)) {
+                return moveToJointTargetJoint2Last(arm, q, "go " + table_pose);
+            }
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(table_pose);
@@ -1691,7 +1739,7 @@ private:
                         "[SLOT] XY livre [%+.3f %.3f %+.3f] margem %+.1f cm -> j [%.4f %.4f %.4f %.4f %.4f]",
                         p.x(), p.y(), p.z(), m * 100.0, q[0], q[1], q[2], q[3], q[4]);
                     publish_stage(goal_handle, "place_free_xy");
-                    bool ok = moveToJointTarget(arm, q, "place free xy " + table_pose);
+                    bool ok = moveToJointTargetJoint2Last(arm, q, "place free xy " + table_pose);
                     if (ok) {
                         if (!sleepInterruptibly(std::chrono::milliseconds(300))) {
                             return false;
@@ -1816,6 +1864,13 @@ private:
             }
 
             speak("Indo para a pose de entrega " + spokenTargetName(table_pose));
+            if (!isShelfPlaceTarget(table_pose)) {
+                // Mesa comum (pose unica): j2 por ultimo, como nos slots.
+                std::array<double, 5> q{};
+                if (namedPoseJoints(arm, table_pose, q)) {
+                    return moveToJointTargetJoint2Last(arm, q, "go " + table_pose);
+                }
+            }
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(table_pose);
