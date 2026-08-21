@@ -1671,6 +1671,26 @@ private:
         if (!solveShelfIk(tag_frame, cycle_name, q_ik_out)) {
             return false;
         }
+        // Fase 2 pega em 22,5 graus (kShallow, pedido do operador 2026-08-21).
+        // Resolvida AQUI, antes de qualquer movimento, com a mesma deteccao
+        // da IK de 45 graus: a fase 1 e o retorno continuam usando q_ik_out
+        // (45 graus) e NADA e relido entre as fases. Sem solucao rasa, a
+        // fase 2 usa a de 45 graus com aviso.
+        std::array<double, 5> q_phase2 = q_ik_out;
+        {
+            std::array<double, 5> q_shallow{};
+            if (solveShelfIk(
+                    tag_frame, cycle_name, q_shallow,
+                    manip_task_execution::ToolDirection::kShallow))
+            {
+                q_phase2 = q_shallow;
+            } else {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] shelf: IK de 22,5 graus sem solucao — fase 2 com a de 45 graus.",
+                    cycle_name.c_str());
+            }
+        }
 
         // Decisao do operador 2026-08-15: a tag e lida UMA unica vez (na IK
         // acima). A partir do momento em que o braco COMECA a se mover
@@ -1683,23 +1703,6 @@ private:
             q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
             return false;
-        }
-
-        // Fase 2 em 22,5 graus (kShallow). A fase 1 e o retorno continuam
-        // com a solucao de 45 graus (q_ik_out), sem mudar nada neles. Se a
-        // IK rasa nao resolver, cai na solucao de 45 graus com aviso.
-        std::array<double, 5> q_phase2 = q_ik_out;
-        std::array<double, 5> q_shallow{};
-        if (solveShelfIk(
-                tag_frame, cycle_name, q_shallow,
-                manip_task_execution::ToolDirection::kShallow))
-        {
-            q_phase2 = q_shallow;
-        } else {
-            RCLCPP_WARN(
-                this->get_logger(),
-                "[%s] shelf: IK de 22,5 graus sem solucao — fase 2 com a de 45 graus.",
-                cycle_name.c_str());
         }
 
         publish_stage(goal_handle, "shelf_phase2");
