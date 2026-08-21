@@ -168,6 +168,10 @@ Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection di
   if (direction == ToolDirection::kMiddle) {
     return (radial + down) / std::sqrt(2.0);
   }
+  if (direction == ToolDirection::kShallow) {
+    constexpr double kPitch = M_PI / 8.0;  // 22,5 graus abaixo da horizontal
+    return radial * std::cos(kPitch) + down * std::sin(kPitch);
+  }
   return radial;
 }
 

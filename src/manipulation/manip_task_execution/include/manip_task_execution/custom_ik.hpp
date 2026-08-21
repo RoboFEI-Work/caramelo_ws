@@ -29,6 +29,8 @@ namespace manip_task_execution
 enum class ToolDirection
 {
   kForward,  ///< horizontal, radialmente para fora (entrar numa prateleira)
+  kShallow,  ///< 22,5 graus abaixo da horizontal (meio do caminho entre
+             ///< kForward e kMiddle — pedido do operador 2026-08-21 p/ shelf)
   kMiddle,   ///< 45 graus entre frente e baixo
   kDown,     ///< top-down (pegada de mesa)
 };

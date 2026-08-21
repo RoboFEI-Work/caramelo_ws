@@ -1605,8 +1605,8 @@ private:
     }
 
     /// Wrapper da shelf — punho +1.5708, logs "shelf". 2026-08-21: direcao
-    /// da ferramenta trocada de kMiddle (45 graus) para kForward (pedido do
-    /// operador).
+    /// da ferramenta kShallow (22,5 graus abaixo da horizontal) — o operador
+    /// testou kMiddle (45) e kForward (0) e pediu o meio do caminho.
     bool solveShelfIk(
         const std::string & tag_frame,
         const std::string & cycle_name,
@@ -1614,7 +1614,7 @@ private:
     {
         return solveCustomIkForTag(
             tag_frame,
-            manip_task_execution::ToolDirection::kForward,
+            manip_task_execution::ToolDirection::kShallow,
             kShelfWristJoint5,
             "shelf",
             cycle_name,

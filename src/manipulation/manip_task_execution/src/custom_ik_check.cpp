@@ -4,7 +4,7 @@
 //   custom_ik_check                       -> varre uma grade de alvos e imprime
 //                                            uma linha CSV por alvo resolvido
 //   custom_ik_check <x> <y> <z> [modo]    -> resolve um alvo unico
-//                                            (modo: forward | middle | down)
+//                                            (modo: forward | shallow | middle | down)
 //
 // O formato CSV e o mesmo consumido pelo script de paridade:
 //   x,y,z,modo,q1,q2,q3,q4,q5,erro_pos_m,erro_dir_graus
@@ -35,6 +35,9 @@ ToolDirection parseDirection(const std::string & name)
   if (name == "down") {
     return ToolDirection::kDown;
   }
+  if (name == "shallow") {
+    return ToolDirection::kShallow;
+  }
   if (name == "middle") {
     return ToolDirection::kMiddle;
   }
@@ -46,6 +49,7 @@ const char * directionName(ToolDirection d)
   switch (d) {
     case ToolDirection::kDown: return "down";
     case ToolDirection::kMiddle: return "middle";
+    case ToolDirection::kShallow: return "shallow";
     default: return "forward";
   }
 }
