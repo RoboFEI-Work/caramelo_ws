@@ -1,5 +1,10 @@
 string tag_frame
 string table_pose
+# 2026-08-21: estacao de destino ("WS_3", "SH_1", "PP_1"...). O no de place
+# precisa distinguir mesa comum (escolha de slot por camera) de precision
+# placement/shelf, e chaveia por estacao a memoria de slots ja usados.
+# Vazio = comportamento legado (pose nomeada unica).
+string ws
 
 ---
 bool success

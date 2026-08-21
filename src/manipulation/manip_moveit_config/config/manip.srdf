@@ -190,12 +190,18 @@
         <joint name="manip_joint4" value="1.6406"/>
         <joint name="manip_joint5" value="-1.5708"/>
     </group_state>
+    <!-- 2026-08-21: regravada como simetrica da Mesa15.2 (j1 = 1.5708 - 0.4887;
+         j2..j5 iguais a Mesa15). A versao anterior (-1.9373, -0.5411, -0.9948,
+         -1.5184, +1.6232) era a familia "de costas" do mesmo ponto: exigia girar
+         o joint1 em ~201 graus com o bloco na garra e tinha a menor folga sobre
+         o tampo (4,3 cm). FK esperada em base_footprint: (0.536, -0.170, 0.208).
+         VALIDAR NO ROBO antes de usar em prova. -->
     <group_state name="Mesa15.1" group="arm">
-        <joint name="manip_joint1" value="-1.9373"/>
-        <joint name="manip_joint2" value="-0.5411"/>
-        <joint name="manip_joint3" value="-0.9948"/>
-        <joint name="manip_joint4" value="-1.5184"/>
-        <joint name="manip_joint5" value="1.6232"/>
+        <joint name="manip_joint1" value="1.0821"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
     </group_state>
     <group_state name="Mesa15.2" group="arm">
         <joint name="manip_joint1" value="2.0595"/>

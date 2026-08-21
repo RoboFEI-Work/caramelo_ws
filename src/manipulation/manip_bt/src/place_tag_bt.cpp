@@ -29,7 +29,9 @@ BT::PortsList PlaceTagBT::providedPorts()
 {
 	return {
 		BT::InputPort<std::string>("tag_frame"),
-		BT::InputPort<std::string>("table_pose")
+		BT::InputPort<std::string>("table_pose"),
+		// Opcional: estacao de destino ("WS_3", "PP_1"...). Vazio = legado.
+		BT::InputPort<std::string>("ws")
 	};
 }
 
@@ -48,11 +50,15 @@ BT::NodeStatus PlaceTagBT::onStart()
 		return BT::NodeStatus::FAILURE;
 	}
 
+	std::string ws;
+	getInput("ws", ws);   // opcional: ausente = legado (sem escolha de slot)
+
 	RCLCPP_INFO(
 		rclcpp::get_logger("PlaceTagBT"),
-		"Sending PLACE goal: tag_frame=%s table_pose=%s",
+		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s",
 		tag_frame.c_str(),
-		table_pose.c_str());
+		table_pose.c_str(),
+		ws.empty() ? "<sem ws>" : ws.c_str());
 
 	// Item 3.5: mesmo tratamento do PickTagBT — timeout vem do blackboard.
 	double wait_timeout = 10.0;
@@ -71,6 +77,7 @@ BT::NodeStatus PlaceTagBT::onStart()
 	PlaceTag::Goal goal_msg;
 	goal_msg.tag_frame = tag_frame;
 	goal_msg.table_pose = table_pose;
+	goal_msg.ws = ws;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
 	// stage — acao saudavel publica stage continuamente, nunca e cancelada.

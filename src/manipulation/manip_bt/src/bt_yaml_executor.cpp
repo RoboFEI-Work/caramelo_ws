@@ -269,6 +269,7 @@ std::string buildTreeXmlFromActions(
   }
 
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
+  std::string current_station_ws;    // 'ws' do ultimo goto (p/ o place legado sem 'ws')
 
   // Bloco de estacao com skip (2026-08-18, pedido do operador): cada goto de
   // estacao dockavel abre um <Fallback><Inverter><GoToWS/></Inverter>
@@ -334,6 +335,7 @@ std::string buildTreeXmlFromActions(
         station_open = true;
       }
       current_station_dock = dock_id;
+      current_station_ws = ws;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] goto  " + ws + " -> " + dock_id +
         (use_docking ? "  (dock+align)" : "  (navegacao pura)") +
@@ -386,15 +388,28 @@ std::string buildTreeXmlFromActions(
 
       setStringOnBlackboard(blackboard, i, "tag_frame", tag_frame);
       setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
+
+      // 2026-08-21: o 'ws' agora viaja ate o no de place (escolha de slot na
+      // mesa comum e guarda de PP/SH). Preferencia: 'ws' da propria acao
+      // (task_planner sempre grava); yaml de baixo nivel sem 'ws' herda a
+      // estacao do ultimo goto; sem nada = vazio (comportamento legado).
+      std::string place_ws;
       if (action["ws"]) {
-        setStringOnBlackboard(blackboard, i, "ws", action["ws"].as<std::string>());
+        place_ws = action["ws"].as<std::string>("");
       }
+      if (place_ws.empty()) {
+        place_ws = current_station_ws;
+      }
+      const std::string ws_key = actionBlackboardKey(i, "ws");
+      setStringOnBlackboard(blackboard, i, "ws", place_ws);
 
       xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
-          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
+          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
+          << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key)) << "\"/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
-        "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose);
+        "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
+        (place_ws.empty() ? "" : " ws=" + place_ws));
       continue;
     }
 

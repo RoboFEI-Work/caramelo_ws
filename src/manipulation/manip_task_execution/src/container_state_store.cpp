@@ -150,6 +150,13 @@ bool ContainerStateStore::resetAllEmpty(
       container["tag_frame"] = "";
       container["status"] = "empty";
     }
+    // Reset por rodada apaga tambem a memoria de slots de mesa (2026-08-21):
+    // sem isso, uma bancada anterior viraria obstaculo virtual por ate um
+    // TTL. Os dois caminhos de reset (este e o one-shot do launch, que
+    // reescreve o arquivo) ficam equivalentes.
+    if (root["table_slots"]) {
+      root.remove("table_slots");
+    }
 
     return writeYamlAtomically(root, file_path_, error_msg);
   } catch (const std::exception & ex) {
@@ -314,6 +321,117 @@ bool ContainerStateStore::updateContainer(
     container["status"] = occupied ? "filled" : "empty";
 
     return writeYamlAtomically(root, file_path_, error_msg);
+  } catch (const std::exception & ex) {
+    if (error_msg) {
+      *error_msg = ex.what();
+    }
+    return false;
+  }
+}
+
+bool ContainerStateStore::addTableSlotUsed(
+  const std::string & ws,
+  const TableSlotRecord & record,
+  std::string * error_msg)
+{
+  if (ws.empty()) {
+    if (error_msg) {
+      *error_msg = "ws is empty";
+    }
+    return false;
+  }
+
+  try {
+    YAML::Node root;
+    if (std::filesystem::exists(file_path_)) {
+      root = YAML::LoadFile(file_path_);
+    }
+    if (!root || !root.IsMap()) {
+      root = YAML::Node(YAML::NodeType::Map);
+    }
+
+    YAML::Node slots = root["table_slots"];
+    if (!slots || !slots.IsMap()) {
+      root["table_slots"] = YAML::Node(YAML::NodeType::Map);
+      slots = root["table_slots"];
+    }
+    YAML::Node list = slots[ws];
+    if (!list || !list.IsSequence()) {
+      slots[ws] = YAML::Node(YAML::NodeType::Sequence);
+      list = slots[ws];
+    }
+
+    YAML::Node entry(YAML::NodeType::Map);
+    entry.SetStyle(YAML::EmitterStyle::Flow);
+    entry["slot"] = record.slot;
+    entry["table_pose"] = record.table_pose;
+    entry["tag_frame"] = record.tag_frame;
+    entry["frame"] = record.frame;
+    entry["x"] = record.x;
+    entry["y"] = record.y;
+    entry["z"] = record.z;
+    entry["stamp"] = record.stamp_sec;
+    list.push_back(entry);
+
+    return writeYamlAtomically(root, file_path_, error_msg);
+  } catch (const std::exception & ex) {
+    if (error_msg) {
+      *error_msg = ex.what();
+    }
+    return false;
+  }
+}
+
+bool ContainerStateStore::getTableSlotsUsed(
+  const std::string & ws,
+  double ttl_sec,
+  double now_sec,
+  std::vector<TableSlotRecord> * records,
+  std::string * error_msg) const
+{
+  if (!records) {
+    if (error_msg) {
+      *error_msg = "records is null";
+    }
+    return false;
+  }
+  records->clear();
+  if (ws.empty() || !std::filesystem::exists(file_path_)) {
+    return true;
+  }
+
+  try {
+    const YAML::Node root = YAML::LoadFile(file_path_);
+    if (!root || !root.IsMap()) {
+      return true;
+    }
+    const YAML::Node slots = root["table_slots"];
+    if (!slots || !slots.IsMap()) {
+      return true;
+    }
+    const YAML::Node list = slots[ws];
+    if (!list || !list.IsSequence()) {
+      return true;
+    }
+    for (const auto & entry : list) {
+      if (!entry.IsMap()) {
+        continue;
+      }
+      TableSlotRecord rec;
+      rec.slot = entry["slot"].as<std::string>("");
+      rec.table_pose = entry["table_pose"].as<std::string>("");
+      rec.tag_frame = entry["tag_frame"].as<std::string>("");
+      rec.frame = entry["frame"].as<std::string>("");
+      rec.x = entry["x"].as<double>(0.0);
+      rec.y = entry["y"].as<double>(0.0);
+      rec.z = entry["z"].as<double>(0.0);
+      rec.stamp_sec = entry["stamp"].as<double>(0.0);
+      if (ttl_sec > 0.0 && (now_sec - rec.stamp_sec) > ttl_sec) {
+        continue;  // registro velho (bancada de outro dia)
+      }
+      records->push_back(rec);
+    }
+    return true;
   } catch (const std::exception & ex) {
     if (error_msg) {
       *error_msg = ex.what();

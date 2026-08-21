@@ -8,6 +8,7 @@
 # RSP/ros2_control roda na Pi (raspberry_bringup) e aqui NAO sobe nada disso.
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -55,6 +56,19 @@ def generate_launch_description():
     apriltag_params_file = os.path.join(
         manip_bringup_share, "config", "tags_36h11.yaml"
     )
+    # Multi-place (2026-08-21): o no de place enumera as tags que podem estar
+    # na mesa a partir da MESMA lista que o apriltag publica — uma fonte so.
+    with open(apriltag_params_file, "r", encoding="utf-8") as handle:
+        _apriltag_yaml = yaml.safe_load(handle) or {}
+    slot_obstacle_tag_frames = [
+        str(frame)
+        for frame in (
+            _apriltag_yaml.get("apriltag", {})
+            .get("ros__parameters", {})
+            .get("tag", {})
+            .get("frames", [])
+        )
+    ]
 
     declared_args = [
         # --- Composicao ---
@@ -137,6 +151,20 @@ def generate_launch_description():
         # a checagem — util para rodar missao demo aceitando falha silenciosa,
         # que era o comportamento historico antes de 2026-08-10.
         DeclareLaunchArgument("max_pose_error_m", default_value="0.025"),
+        # --- Multi-place na mesa comum (2026-08-21) ---
+        # false = pose unica legada (kill-switch de arena). Tambem aceita
+        # `ros2 param set /place_action_server slot_selection_enabled false`
+        # sem relaunch (o no rele os slot_* a cada goal) — mas esse param set
+        # vale so ate o no respawnar (respawn=True); para desligar de forma
+        # persistente use este arg.
+        DeclareLaunchArgument("place_slot_selection", default_value="true"),
+        # Folga centro a centro entre o ponto de soltar e cada tag na mesa.
+        DeclareLaunchArgument("place_slot_min_clearance_m", default_value="0.07"),
+        # Olhar a mesa de garra vazia (movimento extra) alem de em pegar_obj.
+        DeclareLaunchArgument("place_slot_observe_empty_gripper_first", default_value="false"),
+        # XY livre pela IK custom quando nenhuma pose fixa tem folga. OFF ate
+        # ser validado no robo (plano 2026-08-21, passo V7).
+        DeclareLaunchArgument("place_slot_fallback_free_xy", default_value="false"),
         DeclareLaunchArgument("grasp_min_effort_nm", default_value="0.15"),
         DeclareLaunchArgument("grasp_min_effort_increase_nm", default_value="0.05"),
         # >= 2 e OBRIGATORIO para o ladder da mesa ter os 3 degraus
@@ -351,6 +379,18 @@ def generate_launch_description():
                 LaunchConfiguration("grasp_min_effort_nm"), value_type=float),
             "grasp_min_effort_increase_nm": ParameterValue(
                 LaunchConfiguration("grasp_min_effort_increase_nm"), value_type=float),
+            # Multi-place (2026-08-21).
+            "slot_selection_enabled": ParameterValue(
+                LaunchConfiguration("place_slot_selection"), value_type=bool),
+            "slot_min_clearance_m": ParameterValue(
+                LaunchConfiguration("place_slot_min_clearance_m"), value_type=float),
+            "slot_observe_empty_gripper_first": ParameterValue(
+                LaunchConfiguration("place_slot_observe_empty_gripper_first"), value_type=bool),
+            "slot_fallback_free_xy_enabled": ParameterValue(
+                LaunchConfiguration("place_slot_fallback_free_xy"), value_type=bool),
+            "slot_obstacle_tag_frames": slot_obstacle_tag_frames,
+            "max_pose_error_m": ParameterValue(
+                LaunchConfiguration("max_pose_error_m"), value_type=float),
         }],
     )
 

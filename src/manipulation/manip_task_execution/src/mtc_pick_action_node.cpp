@@ -1529,7 +1529,9 @@ private:
     static constexpr double kShelfPhase1Joint3 = 2.3038;
     static constexpr double kShelfWristJoint5 = 1.5708;
     // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17.
-    static constexpr double kTableForwardWristJoint5 = 1.5708;
+    // 2026-08-21: sinal invertido para -1.5708 (no robo a garra chegava
+    // girada de 180 graus com +1.5708). O punho da shelf continua +1.5708.
+    static constexpr double kTableForwardWristJoint5 = -1.5708;
 
     enum class CustomIkOutcome { kOk, kNoTransform, kNoSolution };
 
@@ -1600,8 +1602,9 @@ private:
         return CustomIkOutcome::kOk;
     }
 
-    /// Wrapper da shelf — comportamento identico ao historico (kMiddle,
-    /// punho +1.5708, logs "shelf").
+    /// Wrapper da shelf — punho +1.5708, logs "shelf". 2026-08-21: direcao
+    /// da ferramenta trocada de kMiddle (45 graus) para kForward (pedido do
+    /// operador).
     bool solveShelfIk(
         const std::string & tag_frame,
         const std::string & cycle_name,
@@ -1609,7 +1612,7 @@ private:
     {
         return solveCustomIkForTag(
             tag_frame,
-            manip_task_execution::ToolDirection::kMiddle,
+            manip_task_execution::ToolDirection::kForward,
             kShelfWristJoint5,
             "shelf",
             cycle_name,
