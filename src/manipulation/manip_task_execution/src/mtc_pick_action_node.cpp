@@ -1523,7 +1523,8 @@ private:
     // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
-    //   fase 1 — j1/j4 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j5 = +1.5708
+    //   fase 1 — j1 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j4 = -(j4 da IK)
+    //            (sinal invertido, 2026-08-21), j5 = +1.5708
     //   fase 2 — j1..j4 da IK, j5 = -1.5708 (2026-08-21: antes era +1.5708;
     //            com kForward a garra chegava girada de 180 graus)
     // O retorno faz o caminho inverso (fase 1 com j5 = +1.5708, como sempre).
@@ -1679,8 +1680,9 @@ private:
         // (nao ha IK aproximada aqui) e a protecao contra "pegar o vazio"
         // fica com a verificacao de esforco da garra, que ja roda depois.
         publish_stage(goal_handle, "shelf_phase1");
+        // 2026-08-21: j4 com o sinal invertido na fase 1 (pedido do operador).
         const std::array<double, 5> phase1{
-            q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
+            q_ik_out[0], 0.0, kShelfPhase1Joint3, -q_ik_out[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
             return false;
         }
@@ -1702,7 +1704,7 @@ private:
         publish_stage(goal_handle, "shelf_retreat");
 
         const std::array<double, 5> phase1{
-            q_ik[0], 0.0, kShelfPhase1Joint3, q_ik[3], kShelfWristJoint5};
+            q_ik[0], 0.0, kShelfPhase1Joint3, -q_ik[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
             return false;
         }
