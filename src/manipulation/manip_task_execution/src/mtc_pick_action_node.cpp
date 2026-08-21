@@ -1523,10 +1523,9 @@ private:
     // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
-    //   fase 1 — j1/j4 da IK de 45 graus, j2 = 0, j3 = kShelfPhase1Joint3,
-    //            j5 = +1.5708
-    //   fase 2 — j1..j4 da IK de 22,5 graus (kShallow, 2026-08-21), j5 +1.5708
-    // O retorno faz o caminho inverso (fase 1 com a solucao de 45 graus).
+    //   fase 1 — j1/j4 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j5 = +1.5708
+    //   fase 2 — j1..j4 da IK, j5 continua +1.5708
+    // O retorno faz o caminho inverso.
     static constexpr double kShelfPhase1Joint3 = 2.3038;
     static constexpr double kShelfWristJoint5 = 1.5708;
     // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17;
@@ -1602,19 +1601,16 @@ private:
         return CustomIkOutcome::kOk;
     }
 
-    /// Wrapper da shelf — punho +1.5708, logs "shelf". A direcao da
-    /// ferramenta e parametro: kMiddle (45 graus, historico) para a fase 1;
-    /// kShallow (22,5 graus) para a fase 2 (pedido do operador 2026-08-21).
+    /// Wrapper da shelf — comportamento identico ao historico (kMiddle,
+    /// punho +1.5708, logs "shelf").
     bool solveShelfIk(
         const std::string & tag_frame,
         const std::string & cycle_name,
-        std::array<double, 5> & q_out,
-        manip_task_execution::ToolDirection direction =
-            manip_task_execution::ToolDirection::kMiddle)
+        std::array<double, 5> & q_out)
     {
         return solveCustomIkForTag(
             tag_frame,
-            direction,
+            manip_task_execution::ToolDirection::kMiddle,
             kShelfWristJoint5,
             "shelf",
             cycle_name,
@@ -1671,26 +1667,6 @@ private:
         if (!solveShelfIk(tag_frame, cycle_name, q_ik_out)) {
             return false;
         }
-        // Fase 2 pega em 22,5 graus (kShallow, pedido do operador 2026-08-21).
-        // Resolvida AQUI, antes de qualquer movimento, com a mesma deteccao
-        // da IK de 45 graus: a fase 1 e o retorno continuam usando q_ik_out
-        // (45 graus) e NADA e relido entre as fases. Sem solucao rasa, a
-        // fase 2 usa a de 45 graus com aviso.
-        std::array<double, 5> q_phase2 = q_ik_out;
-        {
-            std::array<double, 5> q_shallow{};
-            if (solveShelfIk(
-                    tag_frame, cycle_name, q_shallow,
-                    manip_task_execution::ToolDirection::kShallow))
-            {
-                q_phase2 = q_shallow;
-            } else {
-                RCLCPP_WARN(
-                    this->get_logger(),
-                    "[%s] shelf: IK de 22,5 graus sem solucao — fase 2 com a de 45 graus.",
-                    cycle_name.c_str());
-            }
-        }
 
         // Decisao do operador 2026-08-15: a tag e lida UMA unica vez (na IK
         // acima). A partir do momento em que o braco COMECA a se mover
@@ -1707,7 +1683,7 @@ private:
 
         publish_stage(goal_handle, "shelf_phase2");
         const std::array<double, 5> phase2{
-            q_phase2[0], q_phase2[1], q_phase2[2], q_phase2[3], kShelfWristJoint5};
+            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfWristJoint5};
         return moveToJointTarget(arm, phase2, cycle_name + " shelf fase2");
     }
 
