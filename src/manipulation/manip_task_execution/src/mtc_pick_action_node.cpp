@@ -1523,17 +1523,14 @@ private:
     // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
-    //   fase 1 — j1 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j4 = -(j4 da IK)
-    //            (sinal invertido, 2026-08-21), j5 = +1.5708
-    //   fase 2 — j1..j4 da IK, j5 = -1.5708 (2026-08-21: antes era +1.5708;
-    //            com kForward a garra chegava girada de 180 graus)
-    // O retorno faz o caminho inverso (fase 1 com j5 = +1.5708, como sempre).
+    //   fase 1 — j1/j4 da IK de 45 graus, j2 = 0, j3 = kShelfPhase1Joint3,
+    //            j5 = +1.5708
+    //   fase 2 — j1..j4 da IK de 22,5 graus (kShallow, 2026-08-21), j5 +1.5708
+    // O retorno faz o caminho inverso (fase 1 com a solucao de 45 graus).
     static constexpr double kShelfPhase1Joint3 = 2.3038;
-    static constexpr double kShelfWristJoint5 = 1.5708;         // fase 1 / retorno
-    static constexpr double kShelfPhase2WristJoint5 = -1.5708;  // so a fase 2
-    // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17.
-    // 2026-08-21: sinal invertido para -1.5708 (no robo a garra chegava
-    // girada de 180 graus com +1.5708). O punho da shelf continua +1.5708.
+    static constexpr double kShelfWristJoint5 = 1.5708;
+    // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17;
+    // 2026-08-21: -1.5708 (pedido do operador). A shelf continua +1.5708.
     static constexpr double kTableForwardWristJoint5 = -1.5708;
 
     enum class CustomIkOutcome { kOk, kNoTransform, kNoSolution };
@@ -1605,17 +1602,19 @@ private:
         return CustomIkOutcome::kOk;
     }
 
-    /// Wrapper da shelf — punho +1.5708, logs "shelf". 2026-08-21: direcao
-    /// da ferramenta kShallow (22,5 graus abaixo da horizontal) — o operador
-    /// testou kMiddle (45) e kForward (0) e pediu o meio do caminho.
+    /// Wrapper da shelf — punho +1.5708, logs "shelf". A direcao da
+    /// ferramenta e parametro: kMiddle (45 graus, historico) para a fase 1;
+    /// kShallow (22,5 graus) para a fase 2 (pedido do operador 2026-08-21).
     bool solveShelfIk(
         const std::string & tag_frame,
         const std::string & cycle_name,
-        std::array<double, 5> & q_out)
+        std::array<double, 5> & q_out,
+        manip_task_execution::ToolDirection direction =
+            manip_task_execution::ToolDirection::kMiddle)
     {
         return solveCustomIkForTag(
             tag_frame,
-            manip_task_execution::ToolDirection::kShallow,
+            direction,
             kShelfWristJoint5,
             "shelf",
             cycle_name,
@@ -1680,16 +1679,32 @@ private:
         // (nao ha IK aproximada aqui) e a protecao contra "pegar o vazio"
         // fica com a verificacao de esforco da garra, que ja roda depois.
         publish_stage(goal_handle, "shelf_phase1");
-        // 2026-08-21: j4 com o sinal invertido na fase 1 (pedido do operador).
         const std::array<double, 5> phase1{
-            q_ik_out[0], 0.0, kShelfPhase1Joint3, -q_ik_out[3], kShelfWristJoint5};
+            q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
             return false;
         }
 
+        // Fase 2 em 22,5 graus (kShallow). A fase 1 e o retorno continuam
+        // com a solucao de 45 graus (q_ik_out), sem mudar nada neles. Se a
+        // IK rasa nao resolver, cai na solucao de 45 graus com aviso.
+        std::array<double, 5> q_phase2 = q_ik_out;
+        std::array<double, 5> q_shallow{};
+        if (solveShelfIk(
+                tag_frame, cycle_name, q_shallow,
+                manip_task_execution::ToolDirection::kShallow))
+        {
+            q_phase2 = q_shallow;
+        } else {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] shelf: IK de 22,5 graus sem solucao — fase 2 com a de 45 graus.",
+                cycle_name.c_str());
+        }
+
         publish_stage(goal_handle, "shelf_phase2");
         const std::array<double, 5> phase2{
-            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfPhase2WristJoint5};
+            q_phase2[0], q_phase2[1], q_phase2[2], q_phase2[3], kShelfWristJoint5};
         return moveToJointTarget(arm, phase2, cycle_name + " shelf fase2");
     }
 
@@ -1704,7 +1719,7 @@ private:
         publish_stage(goal_handle, "shelf_retreat");
 
         const std::array<double, 5> phase1{
-            q_ik[0], 0.0, kShelfPhase1Joint3, -q_ik[3], kShelfWristJoint5};
+            q_ik[0], 0.0, kShelfPhase1Joint3, q_ik[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
             return false;
         }
