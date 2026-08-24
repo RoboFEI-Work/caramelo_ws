@@ -30,13 +30,13 @@ containers: []                          # sem potes na mesa neste teste
 # com a IK custom) e sao entregues na WS_1 (mesa comum, place ja validado).
 start_state:
   SH_1:
-    obj_ids: [01]
+    obj_ids: [01, 02]
     cont_ids: []
   WS_1:
-    obj_ids: [02,03]
+    obj_ids: [03]
     cont_ids: []
   WS_2:
-    obj_ids: [05,06]
+    obj_ids: []
     cont_ids: []  
   WS_3:
     obj_ids: []
@@ -45,7 +45,7 @@ start_state:
     obj_ids: []
     cont_ids: []
   WS_5:
-    obj_ids: []
+    obj_ids: [05, 06]
     cont_ids: []
 
 

@@ -500,7 +500,10 @@ int main(int argc, char ** argv)
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
     // 30 -> 60 (2026-08-18): o align cobre o approach inteiro + retries.
-    blackboard->set("align_timeout", node->declare_parameter<double>("align_timeout", 60.0));
+    // 60 -> 90 (2026-08-21, docking v4): 2 tentativas de ate 40 s (settle,
+    // esquadro, centragem e pulsos) + recuo entre elas cabem em 90; o
+    // GoToWS da +15 s e o recuo final usa esse tempo.
+    blackboard->set("align_timeout", node->declare_parameter<double>("align_timeout", 90.0));
     // Fluxo novo do docking (2026-08-18): Nav2 ate a staging + align com muro
     // por LiDAR. true = ROLLBACK para o approach do opennav (/dock_robot).
     blackboard->set(

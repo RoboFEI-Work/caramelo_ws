@@ -17,13 +17,13 @@ service_areas:
     type: finish
     frame_id: map
     final_robot_pose:
-      x: 0.0
-      y: 0.0
-      yaw: 0.0
+      x: 0.8385
+      y: -6.9445
+      yaw: -1.488243
     docking:
-      approach_offset: 0.0
-      linear_tolerance: 0.05
-      angular_tolerance: 0.05
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
       use_docking: false
     manipulation_enabled: false
     notes: FINISH - pose final do robo.
@@ -39,7 +39,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -57,7 +57,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -75,7 +75,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -93,7 +93,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -111,7 +111,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -129,7 +129,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -147,7 +147,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.5
+      approach_offset: 0.4
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -165,7 +165,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.025
       angular_tolerance: 0.035
       use_docking: true

@@ -182,12 +182,15 @@ def type_code(area_type: str) -> str:
 
 
 def default_offset(area_type: str) -> float:
+    # 2026-08-21 (docking v4): staging 10 cm mais perto (0.45 -> 0.35; shelf
+    # 0.50 -> 0.40). A re do undock do opennav volta ate esta pose, entao ela
+    # tambem encurta (~0.20 m com undock_linear_tolerance 0.15).
     area_type = normalize_area_type(area_type)
     if area_type in ("start", "finish"):
         return 0.0
     if area_type == "shelf":
-        return 0.50
-    return 0.45
+        return 0.40
+    return 0.35
 
 
 def default_tolerances(area_type: str) -> Tuple[float, float]:

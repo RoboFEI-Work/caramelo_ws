@@ -22,7 +22,7 @@ dock_plugins:
   caramelo_ws1_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -32,7 +32,7 @@ dock_plugins:
   caramelo_ws2_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -42,7 +42,7 @@ dock_plugins:
   caramelo_ws3_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -52,7 +52,7 @@ dock_plugins:
   caramelo_ws4_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -62,7 +62,7 @@ dock_plugins:
   caramelo_ws5_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -72,7 +72,7 @@ dock_plugins:
   caramelo_ws6_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -82,7 +82,7 @@ dock_plugins:
   caramelo_sh1_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.03
-    staging_x_offset: -0.5
+    staging_x_offset: -0.4
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -92,7 +92,7 @@ dock_plugins:
   caramelo_pp1_dock:
     plugin: opennav_docking::SimpleNonChargingDock
     docking_threshold: 0.025
-    staging_x_offset: -0.45
+    staging_x_offset: -0.35
     staging_yaw_offset: 0.0
     dock_direction: forward
     rotate_to_dock: false
@@ -104,79 +104,79 @@ docks:
     type: caramelo_start_dock
     frame: map
     pose:
-      - -0.807
-      - 0.0419
-      - -0.00846
+    - -0.807
+    - 0.0419
+    - -0.00846
     id: START
   FINISH:
     type: caramelo_finish_dock
     frame: map
     pose:
-      - 0.8385
-      - -6.9445
-      - -1.488243
+    - 0.8385
+    - -6.9445
+    - -1.488243
     id: FINISH
   WS1:
     type: caramelo_ws1_dock
     frame: map
     pose:
-      - 0.7762
-      - -0.4228
-      - 0.086555
+    - 0.7762
+    - -0.4228
+    - 0.086555
     id: WS1
   WS2:
     type: caramelo_ws2_dock
     frame: map
     pose:
-      - 0.8657
-      - -1.8516
-      - 0.006652
+    - 0.8657
+    - -1.8516
+    - 0.006652
     id: WS2
   WS3:
     type: caramelo_ws3_dock
     frame: map
     pose:
-      - -0.2175
-      - -1.8015
-      - 2.395436
+    - -0.2175
+    - -1.8015
+    - 2.395436
     id: WS3
   WS4:
     type: caramelo_ws4_dock
     frame: map
     pose:
-      - -0.2431
-      - -2.9939
-      - 3.129658
+    - -0.2431
+    - -2.9939
+    - 3.129658
     id: WS4
   WS5:
     type: caramelo_ws5_dock
     frame: map
     pose:
-      - 1.0529
-      - -4.3138
-      - 0.57319
+    - 1.0834
+    - -4.3961
+    - 0.56729
     id: WS5
   WS6:
     type: caramelo_ws6_dock
     frame: map
     pose:
-      - -0.1623
-      - -5.7086
-      - -1.617509
+    - -0.1623
+    - -5.7086
+    - -1.617509
     id: WS6
   SH1:
     type: caramelo_sh1_dock
     frame: map
     pose:
-      - 1.1126
-      - -5.4972
-      - -0.077576
+    - 1.1126
+    - -5.4972
+    - -0.077576
     id: SH1
   PP1:
     type: caramelo_pp1_dock
     frame: map
     pose:
-      - -0.3973
-      - -5.1778
-      - -3.086312
+    - -0.3973
+    - -5.1778
+    - -3.086312
     id: PP1

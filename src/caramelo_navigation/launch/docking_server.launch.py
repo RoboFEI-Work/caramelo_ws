@@ -241,7 +241,32 @@ def _launch_setup(context, *args, **kwargs):
             # Recalibrar se a pose ideal em relacao a mesa mudar.
             # 0.403 -> 0.393 (2026-08-03): medido na pose ideal de manipulacao
             # da WS1 (regua TF na face real; pose tambem re-gravada no banco).
-            {"refine_desired_face_dist": 0.393},
+            # 0.393 -> 0.45 (2026-08-21, docking v5): o robo ENCOSTOU com o
+            # muro lendo 0.398 => ponta real ~0.40 (footprint 0.395). 0.45 =
+            # 5 cm de folga real; o corte a 0.48 + coast ~3 cm para em ~0.45.
+            # Poses de place ficam ~5,7 cm mais perto da borda — conferir as
+            # internas (Mesa15.1) no robo.
+            # 0.45 -> 0.43 (pedido do operador 22/08: 2 cm mais perto).
+            {"refine_desired_face_dist": 0.42},
+            # ---- Seguranca do docking v4 (2026-08-21), explicita aqui ----
+            # hard_min ACIMA do bico (antes 0.32 = bico 5,5 cm dentro da mesa:
+            # o hard-stop so disparava depois da batida).
+            {"hard_min_face_dist": 0.39},
+            # Scan com mais de 0,2 s = posicao ate 2-3 cm atras da real.
+            {"wall_max_scan_age": 0.2},
+            # Janela de sucesso [stop-0.01, stop+band+0.01] = [0.41, 0.445].
+            {"wall_hysteresis_band": 0.015},
+            # 2 tentativas (40 s cada) cabem no align_timeout de 90 s.
+            {"approach_retries": 0},
+            # Reta curta (staging a ~0.35): 0.13 m/s limita o coast do ESC.
+            {"max_vel_x": 0.13},
+            # Coast do ESC apos o zero, MEDIDO no robo em 2026-08-21 com
+            # scripts/pulse_test.py (x: ~3 cm; giro: ~6 graus; lateral: ~0).
+            # Coast da RETA medido em campo (21/08): variou 8-12 cm entre
+            # rodadas -> corte 10 cm antes (parada tipica 0,43-0,47).
+            {"esc_coast_dist": 0.10},
+            {"yaw_coast_est": 0.10},
+            {"center_coast_est": 0.03},
         ],
     )
 

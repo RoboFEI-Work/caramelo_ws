@@ -5,12 +5,12 @@
 # shelf -> MesaSh). Pode editar a vontade: o sync so ADICIONA chaves que
 # faltam, nunca sobrescreve valores existentes.
 ws_to_table_pose:
-  WS_1: Mesa10
-  WS_2: Mesa10
-  WS_3: Mesa10
-  WS_4: Mesa10
-  WS_5: Mesa10
-  WS_6: Mesa10
+  WS_1: Mesa15
+  WS_2: Mesa15
+  WS_3: Mesa15
+  WS_4: Mesa15
+  WS_5: Mesa15
+  WS_6: Mesa15
   SH_1: MesaSh
   PP_1: Mesa10
 ws_to_dock_id:

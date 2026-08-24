@@ -39,7 +39,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -57,7 +57,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -75,7 +75,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -93,7 +93,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -111,12 +111,15 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
     manipulation_enabled: true
     notes: WS5 - pose final do robo em frente a mesa
+    kind: WS
+    dock_id: WS5
+    approach: front
   WS6:
     type: workstation
     frame_id: map
@@ -129,7 +132,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -147,7 +150,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.5
+      approach_offset: 0.4
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
@@ -165,7 +168,7 @@ service_areas:
       depth: 0.5
       height: 0.1
     docking:
-      approach_offset: 0.45
+      approach_offset: 0.35
       linear_tolerance: 0.025
       angular_tolerance: 0.035
       use_docking: true

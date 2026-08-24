@@ -100,9 +100,37 @@ GoToWSBT::Poll GoToWSBT::poll(
 template<typename ActionT>
 void GoToWSBT::cancel(Session<ActionT> & session)
 {
-  if (session.active && session.handle) {
+  if (!session.active) {
+    session.reset();
+    return;
+  }
+  // 2026-08-21 (campo): o halt chegava 0,2 s depois do send_goal, antes de o
+  // handle existir — o cancel virava no-op e o Nav2 seguiu navegando por 83 s
+  // depois do Ctrl-C. Agora espera o handle (ate 1 s) e a RESPOSTA do cancel
+  // (ate 0,5 s) — o processo encerra logo depois do halt e um cancel so
+  // enfileirado se perderia.
+  if (!session.handle && session.goal_future.valid()) {
+    if (rclcpp::spin_until_future_complete(node_, session.goal_future, 1s) ==
+      rclcpp::FutureReturnCode::SUCCESS)
+    {
+      session.handle = session.goal_future.get();
+    }
+    if (!session.handle) {
+      RCLCPP_ERROR(logger(),
+        "cancel: goal sem handle (rejeitado ou server sem resposta em 1 s) — "
+        "NAO foi possivel cancelar; confira se o robo parou.");
+    }
+  }
+  if (session.handle) {
     try {
-      session.client->async_cancel_goal(session.handle);
+      auto cancel_future = session.client->async_cancel_goal(session.handle);
+      if (rclcpp::spin_until_future_complete(node_, cancel_future, 500ms) !=
+        rclcpp::FutureReturnCode::SUCCESS)
+      {
+        RCLCPP_ERROR(logger(),
+          "cancel: server nao confirmou o cancelamento em 0,5 s — confira se "
+          "o robo parou.");
+      }
     } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
       // O resultado chegou entre o spin_some e o cancel (goal ja terminou no
       // server) — nada a cancelar.
