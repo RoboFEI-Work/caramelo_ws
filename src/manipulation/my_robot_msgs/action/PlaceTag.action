@@ -5,6 +5,10 @@ string table_pose
 # placement/shelf, e chaveia por estacao a memoria de slots ja usados.
 # Vazio = comportamento legado (pose nomeada unica).
 string ws
+# 2026-08-24: EMPILHAR — frame TF do objeto BASE ja na mesa (ex. "tag_4")
+# sobre o qual soltar o objeto carregado. table_pose continua valendo
+# (altura da mesa / fallback se a base nao for vista). Vazio = nao empilha.
+string stack_on
 
 ---
 bool success

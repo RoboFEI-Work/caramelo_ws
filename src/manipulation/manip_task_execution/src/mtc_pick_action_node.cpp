@@ -349,18 +349,23 @@ public:
             "table_down_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
         // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
         // graus estritos nao alcancam (ver solveShelfIk). false = so estrito.
-        shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", true);
+        // 2026-08-24 (noite): operador pediu a shelf COMO NA 1a VALIDACAO (15/08,
+        // commit 143cfd0): so a IK estrita de 45 graus, uma leitura de tag.
+        // Por isso os defaults abaixo sao false / 45 — o fallback "J4 livre" e
+        // a pegada "bottom" ficam disponiveis por parametro.
+        shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", false);
         shelf_free_max_dev_deg_ = this->declare_parameter<double>(
             "shelf_free_max_dev_deg", 30.0);
         shelf_free_j2_max_ = this->declare_parameter<double>(
             "shelf_free_j2_max", 1.2);
         // 2026-08-24 (pedido do operador: "na shelf, pegar com o bottom, nao
         // muda a fase 1"): inclinacao da ferramenta na PEGADA (fase 2), em
-        // graus a partir da vertical. 0 = "bottom" (para baixo, igual a mesa);
-        // 45 = comportamento antigo (fase 2 com a mesma solucao da fase 1).
+        // graus a partir da vertical. 45 (default) = comportamento validado em
+        // 15/08 (fase 2 com a mesma solucao da fase 1); 0 = "bottom" (para
+        // baixo, igual a mesa) — testado so em simulacao, operador voltou a 45.
         // A fase 1 usa SEMPRE a solucao de 45 graus (j2=0, j3 fixo, J4 dela).
         shelf_grasp_tilt_deg_ = this->declare_parameter<double>(
-            "shelf_grasp_tilt_deg", 0.0);
+            "shelf_grasp_tilt_deg", 45.0);
         // Pre-pega acima do bloco na pegada "bottom" (m; 0 = desligado). Ver
         // approachShelfTarget. Sobe o punho em mais esse tanto: conferir a
         // folga ate a prateleira de cima.
@@ -576,10 +581,10 @@ private:
     std::string shelf_ik_reference_frame_;
     int force_table_ik_strategy_{0};
     std::vector<double> table_down_tilt_ladder_deg_;
-    bool shelf_j4_free_{true};
+    bool shelf_j4_free_{false};
     double shelf_free_max_dev_deg_{30.0};
     double shelf_free_j2_max_{1.2};
-    double shelf_grasp_tilt_deg_{0.0};
+    double shelf_grasp_tilt_deg_{45.0};
     double shelf_bottom_pre_lift_m_{0.03};
     /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
     /// vazio = sem pre-pega (retorno vai direto a fase 1).

@@ -1,0 +1,27 @@
+# Missao de EMPILHAMENTO (2026-08-24): pegar as tags 4 e 7 na WS_4 e, na
+# WS_6, soltar a tag_4 na mesa e a tag_7 EM CIMA dela.
+#
+# Formato de BAIXO NIVEL (actions:), lido direto pelo bt_yaml_executor:
+#   ros2 run manip_bt bt_yaml_executor src/caramelo_bringup/missions/empilhar_ws4_ws6_actions.yaml \
+#     --ros-args -p map_folder:=/home/linux24-04/caramelo_ws/src/caramelo_mapping/maps/arenalegal_2026 \
+#     -p simulate_navigation:=false -p finish_dock_id:=FINISH
+#   (--dry-run imprime o plano sem executar — precisa do move_group no ar;
+#    para NAO ir ao FINISH use -p finish_dock_id:="''" — com aspas duplas por fora)
+#
+# Regras:
+#   - a base (tag_4) tem que ser solta ANTES do topo (tag_7), na mesma visita;
+#   - `stack_on: tag_4` no place da tag_7 = soltar em cima da tag_4 (o place
+#     ve a tag_4 pela camera, vai (x,y) dela e z + stack_place_z_offset);
+#   - `table_pose` continua obrigatorio: e' a altura da mesa e o fallback
+#     (se a tag_4 nao for vista, a tag_7 e' solta na mesa normalmente);
+#   - stack_place_z_offset (0,05 = cubo de 42 mm + folga) e' parametro do
+#     place_action_server — CALIBRAR no robo (ros2 param set).
+actions:
+  - {kind: goto, ws: WS_4, mesa: Mesa15}
+  - {kind: pick, tag_frame: tag_4, table_pose: Mesa15}
+  - {kind: pick, tag_frame: tag_7, table_pose: Mesa15}
+  - {kind: home}
+  - {kind: goto, ws: WS_6, mesa: Mesa15}
+  - {kind: place, tag_frame: tag_4, table_pose: Mesa15, ws: WS_6}
+  - {kind: place, tag_frame: tag_7, table_pose: Mesa15, ws: WS_6, stack_on: tag_4}
+  - {kind: home}

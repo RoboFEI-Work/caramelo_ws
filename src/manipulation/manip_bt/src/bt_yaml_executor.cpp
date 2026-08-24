@@ -403,13 +403,35 @@ std::string buildTreeXmlFromActions(
       const std::string ws_key = actionBlackboardKey(i, "ws");
       setStringOnBlackboard(blackboard, i, "ws", place_ws);
 
+      // 2026-08-24: EMPILHAR — `stack_on: tag_4` = soltar este objeto em cima
+      // do objeto da tag_4 (ja na mesa da MESMA estacao). table_pose continua
+      // obrigatorio (altura da mesa; fallback se a base nao for vista).
+      // Validacao fail-fast: frame TF plausivel e diferente do proprio objeto.
+      std::string stack_on;
+      if (action["stack_on"]) {
+        stack_on = action["stack_on"].as<std::string>("");
+      }
+      if (!stack_on.empty()) {
+        const bool plausible =
+          stack_on.rfind("tag_", 0) == 0 || stack_on.rfind("ct_", 0) == 0;
+        if (!plausible || stack_on == tag_frame) {
+          throw std::runtime_error(
+            "action[" + std::to_string(i) + "]: stack_on='" + stack_on +
+            "' invalido (esperado tag_N/ct_N diferente de tag_frame)");
+        }
+      }
+      const std::string stack_on_key = actionBlackboardKey(i, "stack_on");
+      setStringOnBlackboard(blackboard, i, "stack_on", stack_on);
+
       xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
-          << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key)) << "\"/>\n";
+          << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
+          << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key)) << "\"/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
-        (place_ws.empty() ? "" : " ws=" + place_ws));
+        (place_ws.empty() ? "" : " ws=" + place_ws) +
+        (stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on));
       continue;
     }
 

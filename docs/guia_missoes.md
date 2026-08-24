@@ -209,6 +209,36 @@ ros2 run manip_bt bt_yaml_executor minhas_acoes.yaml --ros-args \
 O undock antes de sair de uma estação é automático (embutido no goto seguinte);
 `home` antes de cada goto é responsabilidade de quem escreve as ações.
 
+## 6a. Empilhar objetos (`stack_on`, 24/08)
+
+Só no nível baixo (`actions:`) — o planejador da competição não gera isso.
+No `place` do objeto de CIMA, acrescente `stack_on: tag_<id da base>`; a base
+tem que ser solta ANTES, na mesma estação. `table_pose` continua obrigatório
+(altura da mesa e fallback: se a tag base não for vista pela câmera, o objeto
+é solto na mesa normalmente). Não vale para a prateleira.
+
+```yaml
+actions:
+  - {kind: goto, ws: WS_4, mesa: Mesa15}
+  - {kind: pick, tag_frame: tag_4, table_pose: Mesa15}
+  - {kind: pick, tag_frame: tag_7, table_pose: Mesa15}
+  - {kind: home}
+  - {kind: goto, ws: WS_6, mesa: Mesa15}
+  - {kind: place, tag_frame: tag_4, table_pose: Mesa15, ws: WS_6}
+  - {kind: place, tag_frame: tag_7, table_pose: Mesa15, ws: WS_6, stack_on: tag_4}
+  - {kind: home}
+```
+
+Exemplo pronto: `src/caramelo_bringup/missions/empilhar_ws4_ws6_actions.yaml`.
+O que o place faz com `stack_on`: vê a tag base pela câmera (a partir de
+`pegar_obj`, com o bloco na garra), vai para (x, y) dela com o TCP em
+`z_base + stack_place_z_offset` (parâmetro do `place_action_server`, 0,05 m =
+cubo de 42 mm + folga — **calibrar no robô**), passando por uma pré-pose
+`stack_pre_lift_m` (0,05) acima e descendo na vertical; depois de soltar sobe
+de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
+`stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
+`stack_tilt_ladder_deg` ([15, 30]).
+
 ## 6b. Parâmetros novos do executor (23/07)
 
 - `startup_home` (true): braço vai a `home` ANTES da primeira ação da missão.

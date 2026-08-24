@@ -82,6 +82,23 @@ public:
             default_container_state_file);
         container_place_z_offset_ =
             this->declare_parameter<double>("container_place_z_offset", 0.1);
+        // 2026-08-24 — EMPILHAR (pedido do operador: tag_7 em cima da tag_4).
+        // PlaceTag.goal.stack_on = frame da tag BASE ja na mesa. O TCP vai a
+        // (x, y) da base e z = z_base + stack_place_z_offset (altura do cubo
+        // ~42 mm + folga de queda; CALIBRAR no robo), passando por uma
+        // pre-pose stack_pre_lift_m acima e descendo na vertical; depois de
+        // soltar sobe de volta. Escada de inclinacao como no pick (alcance).
+        // Base nao vista / IK sem solucao -> place normal no table_pose
+        // (stack_fallback_to_table) em vez de abortar com o bloco na garra.
+        stack_place_z_offset_ =
+            this->declare_parameter<double>("stack_place_z_offset", 0.05);
+        stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.05);
+        stack_fallback_to_table_ =
+            this->declare_parameter<bool>("stack_fallback_to_table", true);
+        stack_arrival_tolerance_m_ =
+            this->declare_parameter<double>("stack_arrival_tolerance_m", 0.03);
+        stack_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
+            "stack_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
         skip_missing_place_tag_ =
             this->declare_parameter<bool>("skip_missing_place_tag", true);
         // Auditoria 2026-08-07, item 2.4: verificacao de objeto preso por
@@ -317,6 +334,15 @@ private:
     std::optional<rclcpp::Time> pegar_obj_arrival_time_;
     std::map<std::string, TableObstacle> early_obstacles_;
     std::optional<SlotDecision> last_slot_decision_;
+
+    // Empilhamento (2026-08-24), ver placeStackedOnFrame.
+    double stack_place_z_offset_{0.05};
+    double stack_pre_lift_m_{0.05};
+    bool stack_fallback_to_table_{true};
+    double stack_arrival_tolerance_m_{0.03};
+    std::vector<double> stack_tilt_ladder_deg_;
+    /// Juntas da pre-pose acima da pilha do ciclo atual (subida apos soltar).
+    std::optional<std::array<double, 5>> stack_lift_q_;
 
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
@@ -1827,11 +1853,218 @@ private:
             ws.c_str(), rec.slot.c_str(), rec.x, rec.y, rec.z, carried_tag.c_str());
     }
 
+    // =====================================================================
+    // EMPILHAR (2026-08-24): soltar o objeto carregado em cima do objeto da
+    // tag `base_frame`, ja apoiado na mesa da estacao.
+    //
+    // Convencao que fecha a conta (dados reais, ver memoria): o pick leva o
+    // TCP ao plano da tag (face de cima do cubo) e o place solta com o TCP na
+    // cota em que a tag de um cubo apoiado ficaria. Logo a cota da pilha e'
+    // simplesmente "onde a tag do cubo de cima vai ficar":
+    //   TCP = (x_base, y_base, z_base + stack_place_z_offset), ferramenta para
+    //   baixo, dedos no yaw da tag base. Pre-pose stack_pre_lift_m acima,
+    //   descida vertical (mesma inclinacao nas duas), subida apos soltar.
+    // =====================================================================
+    enum class StackOutcome { kOk, kBaseNotSeen, kNoIk, kMoveFailed };
+
+    StackOutcome placeStackedOnFrame(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & base_frame,
+        const std::string & table_pose,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        publish_stage(goal_handle, "stack_detecting_base");
+        speak("Procurando o bloco de baixo " + spokenTargetName(base_frame));
+        waitForCameraStream("PLACE");
+
+        geometry_msgs::msg::TransformStamped base_tf;
+        if (!waitForTagTransform(
+                ik_reference_frame_, base_frame, base_tf,
+                std::chrono::milliseconds(5000), std::chrono::milliseconds(200),
+                "stack detect " + base_frame))
+        {
+            return StackOutcome::kBaseNotSeen;
+        }
+        RCLCPP_INFO(
+            get_logger(), "[STACK] base %s <- %s: x=%.4f y=%.4f z=%.4f",
+            ik_reference_frame_.c_str(), base_frame.c_str(),
+            base_tf.transform.translation.x, base_tf.transform.translation.y,
+            base_tf.transform.translation.z);
+
+        // Mesmo pre-alinhamento lateral do place por TF (tag_direita/esquerda
+        // sao poses altas: a camera no punho segue vendo a base por cima do
+        // bloco carregado).
+        constexpr double kTagXNearZero = 0.1;
+        if (std::abs(base_tf.transform.translation.x) > kTagXNearZero) {
+            publish_stage(goal_handle, "stack_pre_approach");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget(
+                base_tf.transform.translation.x > 0.0 ? "tag_direita" : "tag_esquerda");
+            if (!planAndExecute(arm, "stack go tag_lateral")) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (!sleepInterruptibly(std::chrono::milliseconds(1000))) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (!waitForTagTransform(
+                    ik_reference_frame_, base_frame, base_tf,
+                    std::chrono::milliseconds(3000), std::chrono::milliseconds(200),
+                    "stack final " + base_frame))
+            {
+                return StackOutcome::kBaseNotSeen;
+            }
+        }
+
+        // Guarda: a base tem que estar A FRENTE do braco (na mesa), nao numa
+        // parede/prateleira atras ou sob o robo.
+        if (base_tf.transform.translation.y < 0.10) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[STACK] base %s em y=%.3f (atras/sob o braco) — nao empilho.",
+                base_frame.c_str(), base_tf.transform.translation.y);
+            return StackOutcome::kBaseNotSeen;
+        }
+
+        const Eigen::Vector3d target(
+            base_tf.transform.translation.x,
+            base_tf.transform.translation.y,
+            base_tf.transform.translation.z + stack_place_z_offset_);
+        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+        const double base_yaw = manip_task_execution::projectedFrameYaw(
+            Eigen::Quaterniond(
+                base_tf.transform.rotation.w, base_tf.transform.rotation.x,
+                base_tf.transform.rotation.y, base_tf.transform.rotation.z)
+            .toRotationMatrix());
+
+        // Escada de inclinacao (0, depois stack_tilt_ladder_deg): pre-pose e
+        // pegada precisam resolver na MESMA inclinacao para a descida ser
+        // vertical.
+        std::vector<double> tilts_deg{0.0};
+        for (const double t : stack_tilt_ladder_deg_) {
+            if (t > 0.0 && t < 90.0) {
+                tilts_deg.push_back(t);
+            }
+        }
+        std::array<double, 5> q_final{};
+        std::array<double, 5> q_lift{};
+        bool solved = false;
+        double tilt_used = 0.0;
+        for (const double tilt_deg : tilts_deg) {
+            const double tilt = tilt_deg * M_PI / 180.0;
+            if (manip_task_execution::solveIk(target, tilt, 0.0, q_final) &&
+                manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
+            {
+                solved = true;
+                tilt_used = tilt;
+                break;
+            }
+        }
+        if (!solved) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[STACK] IK propria nao achou solucao (com pre-pose) para "
+                "[%.3f %.3f %.3f] em %s.",
+                target.x(), target.y(), target.z(), ik_reference_frame_.c_str());
+            return StackOutcome::kNoIk;
+        }
+        q_final[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_final[0], tilt_used);
+        q_lift[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_lift[0], tilt_used);
+        RCLCPP_INFO(
+            get_logger(),
+            "[STACK] alvo [%.3f %.3f %.3f] (base z=%.3f + %.3f), ferramenta a %.0f graus, "
+            "yaw base=%.3f -> pre-pose j [%.3f %.3f %.3f %.3f %.3f], final j "
+            "[%.3f %.3f %.3f %.3f %.3f]",
+            target.x(), target.y(), target.z(), base_tf.transform.translation.z,
+            stack_place_z_offset_, tilt_used * 180.0 / M_PI, base_yaw,
+            q_lift[0], q_lift[1], q_lift[2], q_lift[3], q_lift[4],
+            q_final[0], q_final[1], q_final[2], q_final[3], q_final[4]);
+
+        publish_stage(goal_handle, "stack_pre_pose");
+        speak("Levando o bloco para cima da pilha");
+        // j2 (ombro) por ultimo, como nos slots (pedido do operador): o braco
+        // se posiciona em cima e so entao desce ate a pre-pose.
+        if (!moveToJointTargetJoint2Last(arm, q_lift, "stack pre-pose above " + base_frame)) {
+            return StackOutcome::kMoveFailed;
+        }
+        stack_lift_q_ = q_lift;  // subida apos soltar
+
+        publish_stage(goal_handle, "stack_final_approach");
+        if (!moveToJointTarget(arm, q_final, "stack descend onto " + base_frame)) {
+            return StackOutcome::kMoveFailed;
+        }
+
+        // Conferencia de chegada pela FK (como nos slots): longe demais do
+        // alvo = soltar derrubaria a pilha. Sobe de volta e deixa o chamador
+        // decidir (fallback para a mesa).
+        Eigen::Vector3d actual = target;
+        const double err = tcpErrorByFk(arm, target, &actual);
+        // err < 0 = sem joint_states: nao da para conferir — em cima de uma
+        // pilha, nao soltar as cegas (recua e cai no fallback da mesa).
+        if (err < 0.0 || err > stack_arrival_tolerance_m_) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[STACK] chegada %s (tolerancia %.1f cm) — nao solto em cima da pilha.",
+                err < 0.0 ? "sem joint_states para conferir"
+                          : (std::to_string(err * 100.0).substr(0, 4) + " cm do alvo").c_str(),
+                stack_arrival_tolerance_m_ * 100.0);
+            (void)moveToJointTarget(arm, q_lift, "stack back up (arrival)");
+            stack_lift_q_.reset();
+            return StackOutcome::kNoIk;
+        }
+
+        last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, target, 0.0};
+        RCLCPP_INFO(
+            get_logger(), "[STACK] em posicao sobre %s (erro FK %.1f cm) — soltando.",
+            base_frame.c_str(), err * 100.0);
+        return StackOutcome::kOk;
+    }
+
     bool moveToPlaceTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
+        stack_lift_q_.reset();
+        {
+            const auto goal = goal_handle->get_goal();
+            if (!goal->stack_on.empty()) {
+                if (isShelfPlaceTarget(table_pose)) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] empilhar na prateleira (%s) nao e suportado — place normal.",
+                        table_pose.c_str());
+                } else {
+                    const StackOutcome out = placeStackedOnFrame(
+                        arm, goal->stack_on, table_pose, goal_handle);
+                    if (out == StackOutcome::kOk) {
+                        return true;
+                    }
+                    if (out == StackOutcome::kMoveFailed || !stack_fallback_to_table_) {
+                        last_place_failure_reason_ = "empilhar_falhou";
+                        return false;
+                    }
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] nao consegui empilhar sobre %s (%s) — soltando na mesa "
+                        "normalmente (%s).",
+                        goal->stack_on.c_str(),
+                        out == StackOutcome::kBaseNotSeen ? "base nao vista" : "sem IK/chegada",
+                        table_pose.c_str());
+                    speak("Nao consegui empilhar, vou soltar na mesa");
+                    // Volta a pegar_obj antes do caminho normal (o braco pode
+                    // estar em tag_direita/esquerda ou na pre-pose).
+                    arm->setStartStateToCurrentState();
+                    arm->setEndEffectorLink("tcp");
+                    arm->setNamedTarget("pegar_obj");
+                    if (!planAndExecute(arm, "stack fallback return pegar_obj")) {
+                        last_place_failure_reason_ = "empilhar_falhou";
+                        return false;
+                    }
+                }
+            }
+        }
+
         if (!isTfPlaceTarget(table_pose)) {
             if (isShelfPlaceTarget(table_pose)) {
                 publish_stage(goal_handle, "shelf_waypoint");
@@ -2477,6 +2710,18 @@ private:
             return false;
         }
         recordSlotUsed(arm, place_ws, goal->tag_frame);
+
+        // Empilhou: sobe na vertical ate a pre-pose antes de recolher, para
+        // nao arrastar a pilha com a garra aberta. Melhor esforco.
+        if (stack_lift_q_) {
+            publish_stage(goal_handle, "stack_lift_after_release");
+            if (!moveToJointTarget(arm, *stack_lift_q_, "stack lift after release")) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[STACK] subida apos soltar falhou — recolhendo direto.");
+            }
+            stack_lift_q_.reset();
+        }
 
         // Caminho inverso na prateleira (pedido do operador 2026-08-17):
         // sair pelo waypoint pirocao e PARAR nele — sem voltar a pegar_obj.
