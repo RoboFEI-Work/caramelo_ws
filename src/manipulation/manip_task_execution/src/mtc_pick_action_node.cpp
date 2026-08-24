@@ -372,11 +372,14 @@ public:
         shelf_bottom_pre_lift_m_ = this->declare_parameter<double>(
             "shelf_bottom_pre_lift_m", 0.03);
         // 2026-08-24 (pedido do operador): FASE 3 da shelf — depois da fase 2,
-        // SO a J4 gira este tanto (graus) "para a mesa" (positivo = ferramenta
-        // mais para baixo, pela convencao do URDF/IK: q2+q3+q4 = pi - tilt) e
-        // ai a garra fecha. Independe da pose do bloco. 0 = desligado.
+        // J3 e J4 giram estes deltas (graus) num unico movimento e ai a garra
+        // fecha. Independe da pose do bloco. Pedido final: J4 +15, J3 -15
+        // (q2+q3+q4 fica igual = mesma inclinacao da ferramenta; o cotovelo
+        // recua e o punho compensa). Ambos 0 = desligado.
         shelf_phase3_j4_delta_deg_ = this->declare_parameter<double>(
-            "shelf_phase3_j4_delta_deg", 5.0);
+            "shelf_phase3_j4_delta_deg", 15.0);
+        shelf_phase3_j3_delta_deg_ = this->declare_parameter<double>(
+            "shelf_phase3_j3_delta_deg", -15.0);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -592,7 +595,8 @@ private:
     double shelf_free_j2_max_{1.2};
     double shelf_grasp_tilt_deg_{45.0};
     double shelf_bottom_pre_lift_m_{0.03};
-    double shelf_phase3_j4_delta_deg_{5.0};
+    double shelf_phase3_j4_delta_deg_{15.0};
+    double shelf_phase3_j3_delta_deg_{-15.0};
     /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
     /// vazio = sem pre-pega (retorno vai direto a fase 1).
     std::optional<std::array<double, 5>> shelf_lift_q_;
@@ -1912,23 +1916,29 @@ private:
             return fail_and_leave();
         }
 
-        // FASE 3 (pedido do operador 2026-08-24): so a J4 gira
-        // shelf_phase3_j4_delta_deg "para a mesa", independente da pose do
-        // bloco; em seguida o chamador fecha a garra. O retorno continua
-        // partindo daqui direto para a postura da fase 1 (J4 volta junto).
-        if (std::abs(shelf_phase3_j4_delta_deg_) > 1e-9) {
+        // FASE 3 (pedido do operador 2026-08-24): J3 e J4 giram os deltas
+        // shelf_phase3_j3/j4_delta_deg num unico movimento, independente da
+        // pose do bloco; em seguida o chamador fecha a garra. O retorno
+        // continua partindo daqui direto para a postura da fase 1.
+        if (std::abs(shelf_phase3_j4_delta_deg_) > 1e-9 ||
+            std::abs(shelf_phase3_j3_delta_deg_) > 1e-9)
+        {
             publish_stage(goal_handle, "shelf_phase3");
             std::array<double, 5> phase3 = phase2;
             const manip_task_execution::ArmModel limits;
+            phase3[2] = std::max(
+                limits.j3_min,
+                std::min(limits.j3_max, phase2[2] + shelf_phase3_j3_delta_deg_ * M_PI / 180.0));
             phase3[3] = std::max(
                 limits.j4_min,
                 std::min(limits.j4_max, phase2[3] + shelf_phase3_j4_delta_deg_ * M_PI / 180.0));
             RCLCPP_INFO(
                 this->get_logger(),
-                "[%s] shelf fase 3: J4 %.4f -> %.4f (%+.1f graus para a mesa).",
-                cycle_name.c_str(), phase2[3], phase3[3],
+                "[%s] shelf fase 3: J3 %.4f -> %.4f (%+.1f graus), J4 %.4f -> %.4f (%+.1f graus).",
+                cycle_name.c_str(), phase2[2], phase3[2],
+                (phase3[2] - phase2[2]) * 180.0 / M_PI, phase2[3], phase3[3],
                 (phase3[3] - phase2[3]) * 180.0 / M_PI);
-            if (!moveToJointTarget(arm, phase3, cycle_name + " shelf fase3 (j4 para a mesa)")) {
+            if (!moveToJointTarget(arm, phase3, cycle_name + " shelf fase3 (j3/j4)")) {
                 return fail_and_leave();
             }
         }
