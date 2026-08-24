@@ -1982,9 +1982,9 @@ private:
 
         publish_stage(goal_handle, "stack_pre_pose");
         speak("Levando o bloco para cima da pilha");
-        // j2 (ombro) por ultimo, como nos slots (pedido do operador): o braco
-        // se posiciona em cima e so entao desce ate a pre-pose.
-        if (!moveToJointTargetJoint2Last(arm, q_lift, "stack pre-pose above " + base_frame)) {
+        // Todas as juntas juntas (pedido do operador 2026-08-24) — sem o
+        // "j2 por ultimo" dos slots.
+        if (!moveToJointTarget(arm, q_lift, "stack pre-pose above " + base_frame)) {
             return StackOutcome::kMoveFailed;
         }
         stack_lift_q_ = q_lift;  // subida apos soltar
