@@ -189,7 +189,9 @@ class DockAlignNode(Node):
         self.declare_parameter("rotate_min_front", 0.46)
         # 0.48 -> 0.42 (campo 2026-08-21): lateral puro nao avanca o bico;
         # o operador confirmou que a 0,43 e' seguro andar de lado.
-        self.declare_parameter("lateral_min_front", 0.40)
+        # 2026-08-24: alvo 0,38 (decisao do operador) -> pousos 0,37-0,39; o
+        # retoque lateral na mesa precisa continuar valendo ate hard_min+0,01.
+        self.declare_parameter("lateral_min_front", 0.36)
         # Esquadro no standoff: alvo 0.06 rad (3.4 graus), no maximo 4 s;
         # depois aceita ate a tolerancia de sucesso (yaw_tolerance).
         self.declare_parameter("standoff_yaw_tol", 0.06)

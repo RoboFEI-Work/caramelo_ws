@@ -347,6 +347,13 @@ public:
         // fora) nesta escada: 0 e depois cada valor abaixo. Vazio = so 0.
         table_down_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "table_down_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
+        // graus estritos nao alcancam (ver solveShelfIk). false = so estrito.
+        shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", true);
+        shelf_free_max_dev_deg_ = this->declare_parameter<double>(
+            "shelf_free_max_dev_deg", 30.0);
+        shelf_free_j2_max_ = this->declare_parameter<double>(
+            "shelf_free_j2_max", 1.2);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -557,6 +564,9 @@ private:
     std::string shelf_ik_reference_frame_;
     int force_table_ik_strategy_{0};
     std::vector<double> table_down_tilt_ladder_deg_;
+    bool shelf_j4_free_{true};
+    double shelf_free_max_dev_deg_{30.0};
+    double shelf_free_j2_max_{1.2};
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -1560,7 +1570,11 @@ private:
         const char * label,
         const std::string & cycle_name,
         std::array<double, 5> & q_out,
-        double * target_yaw_out = nullptr)
+        double * target_yaw_out = nullptr,
+        const manip_task_execution::IkOptions & ik_options =
+            manip_task_execution::IkOptions{},
+        const manip_task_execution::ArmModel & arm_model =
+            manip_task_execution::ArmModel{})
     {
         geometry_msgs::msg::TransformStamped tf_arm;
         try {
@@ -1585,7 +1599,9 @@ private:
                 target,
                 tilt_from_vertical,
                 q5_fixed,
-                q_out))
+                q_out,
+                arm_model,
+                ik_options))
         {
             RCLCPP_ERROR(
                 this->get_logger(),
@@ -1606,30 +1622,67 @@ private:
                     tf_arm.transform.rotation.z).toRotationMatrix());
         }
 
+        // Inclinacao REAL da ferramenta na solucao (com a orientacao livre,
+        // ver shelf_j4_free, ela pode diferir da pedida).
+        Eigen::Vector3d fk_position;
+        Eigen::Matrix3d fk_rotation;
+        manip_task_execution::forwardKinematics(
+            q_out, manip_task_execution::ArmModel{}, fk_position, fk_rotation);
+        const double achieved_tilt = std::acos(
+            std::max(-1.0, std::min(1.0, -fk_rotation.col(2).z())));
+
         RCLCPP_INFO(
             this->get_logger(),
             "[%s] %s IK: alvo [%.3f %.3f %.3f] -> j "
-            "[%.4f %.4f %.4f %.4f %.4f]",
+            "[%.4f %.4f %.4f %.4f %.4f] (ferramenta a %.0f graus da vertical, "
+            "pedido %.0f)",
             cycle_name.c_str(), label, target.x(), target.y(), target.z(),
-            q_out[0], q_out[1], q_out[2], q_out[3], q_out[4]);
+            q_out[0], q_out[1], q_out[2], q_out[3], q_out[4],
+            achieved_tilt * 180.0 / M_PI, tilt_from_vertical * 180.0 / M_PI);
         return CustomIkOutcome::kOk;
     }
 
-    /// Wrapper da shelf — comportamento identico ao historico (kMiddle,
-    /// punho +1.5708, logs "shelf").
+    /// Wrapper da shelf (kMiddle = 45 graus, punho +1.5708, logs "shelf").
+    ///
+    /// 2026-08-24 (pedido do operador: "liberdade total na J4 depois da fase
+    /// 1, para garantir que ele consiga pegar o objeto"): a IK ESTRITA de 45
+    /// graus roda primeiro, exatamente como sempre. So quando ela nao acha
+    /// solucao (visto com o docking 3-5 cm mais perto: alvos de raio ~0,30 m)
+    /// e shelf_j4_free esta ligado, resolve de novo so a POSICAO — a
+    /// orientacao (que e o que amarra a J4: q2+q3+q4 = 135 graus) vira
+    /// preferencia, limitada a shelf_free_max_dev_deg em torno dos 45 graus
+    /// e com o ombro em j2 <= shelf_free_j2_max: revisao de 24/08 mostrou que
+    /// sem esses dois limites o solver elegia braco dobrado com a garra
+    /// apontando para cima (junta 4 dentro do chassi) em alvos baixos/perto.
     bool solveShelfIk(
         const std::string & tag_frame,
         const std::string & cycle_name,
         std::array<double, 5> & q_out)
     {
+        const double tilt = manip_task_execution::tiltFromVertical(
+            manip_task_execution::ToolDirection::kMiddle);
+        const CustomIkOutcome strict = solveCustomIkForTag(
+            tag_frame, tilt, kShelfWristJoint5, "shelf", cycle_name, q_out);
+        if (strict == CustomIkOutcome::kOk) {
+            return true;
+        }
+        if (strict == CustomIkOutcome::kNoTransform || !shelf_j4_free_) {
+            return false;
+        }
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[%s] shelf: 45 graus inalcancavel (o ERRO acima e' da IK estrita) "
+            "— tentando com a J4 livre (desvio ate %.0f graus, j2 <= %.2f).",
+            cycle_name.c_str(), shelf_free_max_dev_deg_, shelf_free_j2_max_);
+        manip_task_execution::IkOptions options;
+        options.orientation_weight = 0.0;  // posicao exata, orientacao livre
+        options.max_orientation_error = shelf_free_max_dev_deg_ * M_PI / 180.0;
+        manip_task_execution::ArmModel model;
+        model.j2_max = std::min(model.j2_max, shelf_free_j2_max_);
         return solveCustomIkForTag(
-            tag_frame,
-            manip_task_execution::tiltFromVertical(
-                manip_task_execution::ToolDirection::kMiddle),
-            kShelfWristJoint5,
-            "shelf",
-            cycle_name,
-            q_out) == CustomIkOutcome::kOk;
+            tag_frame, tilt, kShelfWristJoint5, "shelf (J4 livre)", cycle_name,
+            q_out, nullptr, options, model) == CustomIkOutcome::kOk;
     }
 
     /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
@@ -1683,8 +1736,9 @@ private:
             return false;
         }
 
-        // Decisao do operador 2026-08-15: a tag e lida UMA unica vez (na IK
-        // acima). A partir do momento em que o braco COMECA a se mover
+        // Decisao do operador 2026-08-15: a tag e lida so na IK acima (uma
+        // vez; duas se a estrita falhar e o fallback "J4 livre" rodar — ambas
+        // com o braco parado). A partir do momento em que o braco COMECA a se mover
         // (fase 1), nao ha mais NENHUMA releitura de tag/camera nem
         // verificacao de chegada — os alvos sao juntas exatas da nossa IK
         // (nao ha IK aproximada aqui) e a protecao contra "pegar o vazio"

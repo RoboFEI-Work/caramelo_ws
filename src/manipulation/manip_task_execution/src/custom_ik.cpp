@@ -241,9 +241,17 @@ bool solveIk(
       }
     }
 
-    // Criterio de escolha igual ao do Python: primeiro quem aponta melhor na
-    // direcao pedida, depois a solucao de menor norma articular.
-    const double orientation_error = rotation.col(2).cross(axis_desired).norm();
+    // Criterio de escolha: primeiro quem aponta melhor na direcao pedida,
+    // depois a solucao de menor norma articular. 2026-08-24: o erro passou a
+    // ser o ANGULO real (acos do produto escalar) e nao |a x d| como no
+    // Python — o seno nao distingue 16 graus de 164 graus, e com a orientacao
+    // livre (peso 0) isso elegia solucoes com a garra apontando para cima.
+    const double cos_err = std::max(
+      -1.0, std::min(1.0, rotation.col(2).dot(axis_desired)));
+    const double orientation_error = std::acos(cos_err);
+    if (orientation_error > options.max_orientation_error) {
+      continue;
+    }
     double joint_norm = 0.0;
     for (const double v : q) {
       joint_norm += v * v;

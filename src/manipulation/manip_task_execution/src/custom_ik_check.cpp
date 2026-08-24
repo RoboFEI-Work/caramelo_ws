@@ -3,10 +3,14 @@
 // Uso:
 //   custom_ik_check                       -> varre uma grade de alvos e imprime
 //                                            uma linha CSV por alvo resolvido
-//   custom_ik_check <x> <y> <z> [modo]    -> resolve um alvo unico
+//   custom_ik_check <x> <y> <z> [modo] [free]
+//                                         -> resolve um alvo unico
 //                                            (modo: forward | shallow | middle | down
 //                                             | tilt<graus>, ex. tilt20 = por cima
-//                                             inclinado 20 graus a partir da vertical)
+//                                             inclinado 20 graus a partir da vertical;
+//                                             "free" = orientacao LIVRE: so a posicao
+//                                             e exigida, o modo vira preferencia —
+//                                             e' o que a shelf usa com shelf_j4_free)
 //
 // O formato CSV e o mesmo consumido pelo script de paridade:
 //   x,y,z,modo,q1,q2,q3,q4,q5,erro_pos_m,erro_dir_graus
@@ -67,14 +71,26 @@ Mode modeFor(ToolDirection d)
 }
 
 /// Resolve e imprime uma linha CSV. Devolve false se nao houve solucao.
-bool reportOne(double x, double y, double z, const Mode & mode, double q5)
+bool reportOne(
+  double x, double y, double z, const Mode & mode, double q5, bool free_orientation = false)
 {
   const Eigen::Vector3d target(x, y, z);
   std::array<double, 5> q{};
 
-  if (!manip_task_execution::solveIk(target, mode.tilt_from_vertical, q5, q)) {
+  manip_task_execution::IkOptions options;
+  ArmModel model;
+  if (free_orientation) {
+    // Mesmos limites que a shelf usa no fallback "J4 livre" (mtc_pick_action_node).
+    options.orientation_weight = 0.0;
+    options.max_orientation_error = 30.0 * M_PI / 180.0;
+    model.j2_max = 1.2;
+  }
+  const std::string mode_name = free_orientation ? mode.name + "+free" : mode.name;
+  if (!manip_task_execution::solveIk(
+      target, mode.tilt_from_vertical, q5, q, model, options))
+  {
     std::cout << std::fixed << std::setprecision(4)
-              << x << "," << y << "," << z << "," << mode.name
+              << x << "," << y << "," << z << "," << mode_name
               << ",SEM_SOLUCAO\n";
     return false;
   }
@@ -90,7 +106,7 @@ bool reportOne(double x, double y, double z, const Mode & mode, double q5)
   const double direction_error_deg = std::acos(dot) * 180.0 / M_PI;
 
   std::cout << std::fixed << std::setprecision(6)
-            << x << "," << y << "," << z << "," << mode.name << ","
+            << x << "," << y << "," << z << "," << mode_name << ","
             << q[0] << "," << q[1] << "," << q[2] << "," << q[3] << "," << q[4] << ","
             << position_error << "," << direction_error_deg << "\n";
   return true;
@@ -106,8 +122,13 @@ int main(int argc, char ** argv)
     const double x = std::atof(argv[1]);
     const double y = std::atof(argv[2]);
     const double z = std::atof(argv[3]);
+    if (argc >= 5 && std::string(argv[4]) == "free") {
+      std::cerr << "uso: custom_ik_check x y z <modo> free  (o modo vem antes de 'free')\n";
+      return 2;
+    }
     const Mode mode = parseMode(argc >= 5 ? argv[4] : "forward");
-    return reportOne(x, y, z, mode, 0.0) ? 0 : 1;
+    const bool free_orientation = argc >= 6 && std::string(argv[5]) == "free";
+    return reportOne(x, y, z, mode, 0.0, free_orientation) ? 0 : 1;
   }
 
   // Grade de varredura: alcance util do braco a frente e para os lados.

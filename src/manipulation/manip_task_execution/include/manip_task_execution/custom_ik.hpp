@@ -73,6 +73,15 @@ struct IkOptions
   /// 90 graus do azimute do alvo E q3 >= 0 (cotovelo para cima, como todas as
   /// poses ensinadas do braco).
   bool require_forward{true};
+  /// 2026-08-24: desvio maximo aceito entre o eixo da ferramenta e a direcao
+  /// pedida (rad, angulo REAL via acos — distingue anti-paralelo). Default
+  /// pi/2: o residuo por produto vetorial tem ponto fixo tambem no ANTI-
+  /// paralelo, e em alvos altos (z >= ~0,22 no frame do braco) o solver
+  /// "resolvia" com a garra virada 180 graus em vez de falhar — acima de 90
+  /// graus e lixo por definicao. pi = sem filtro (comportamento antigo).
+  /// Com orientation_weight = 0 (posicao exata, orientacao livre) use um
+  /// teto menor (a shelf usa 30 graus) para descartar garra para cima/dentro.
+  double max_orientation_error{M_PI / 2.0};
 };
 
 /// Cinematica direta: devolve a posicao do TCP e a rotacao dele, no frame da
