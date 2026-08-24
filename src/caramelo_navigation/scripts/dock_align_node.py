@@ -189,7 +189,7 @@ class DockAlignNode(Node):
         self.declare_parameter("rotate_min_front", 0.46)
         # 0.48 -> 0.42 (campo 2026-08-21): lateral puro nao avanca o bico;
         # o operador confirmou que a 0,43 e' seguro andar de lado.
-        self.declare_parameter("lateral_min_front", 0.41)
+        self.declare_parameter("lateral_min_front", 0.40)
         # Esquadro no standoff: alvo 0.06 rad (3.4 graus), no maximo 4 s;
         # depois aceita ate a tolerancia de sucesso (yaw_tolerance).
         self.declare_parameter("standoff_yaw_tol", 0.06)
@@ -1068,7 +1068,7 @@ class DockAlignNode(Node):
                 goal_handle, deadline, attempt_end)
             if not center_enabled or front is None:
                 return front, npts, face_yaw
-            if front < lateral_min:
+            if front < lateral_min - 1e-6:
                 log(f"lateral({where}): front={front:.3f} < {lateral_min:.2f} — pulando")
                 return front, npts, face_yaw
             c = self._measure_center(goal_handle, rate, deadline, attempt_end)

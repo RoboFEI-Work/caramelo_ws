@@ -86,6 +86,18 @@ void forwardKinematics(
 /// Eixo Z desejado para o TCP, dado o alvo e o modo de direcao.
 Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection direction);
 
+/// Idem, por INCLINACAO continua: `tilt_from_vertical` e o angulo (rad) entre
+/// o eixo da ferramenta e a vertical, inclinando radialmente para fora
+/// (0 = kDown, pi/4 = kMiddle, pi/2 = kForward). Motivo (2026-08-24): a pegada
+/// top-down estrita alcanca so ~0,365 m de raio a z=0,04 (elos 0,185+0,205 e
+/// punho+TCP de 0,248 na vertical); alem disso o pick caia direto na pegada
+/// FRONTAL (de lado). Uma inclinacao pequena (15-30 graus) estende o alcance
+/// em varios centimetros mantendo a pegada "por cima".
+Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, double tilt_from_vertical);
+
+/// Inclinacao (rad, a partir da vertical) equivalente a cada ToolDirection.
+double tiltFromVertical(ToolDirection direction);
+
 /// Resolve a IK para o alvo do TCP (no frame da base do braco).
 ///
 /// `q5_fixed` e imposto (o braco tem 5 GDL; o solver otimiza q1..q4 e usa q5
@@ -94,6 +106,16 @@ Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection di
 bool solveIk(
   const Eigen::Vector3d & tcp_target_in_arm_base,
   ToolDirection direction,
+  double q5_fixed,
+  std::array<double, 5> & q_out,
+  const ArmModel & model = ArmModel{},
+  const IkOptions & options = IkOptions{});
+
+/// Idem, com a direcao da ferramenta dada por inclinacao continua a partir da
+/// vertical (ver desiredToolAxis(target, tilt_from_vertical)).
+bool solveIk(
+  const Eigen::Vector3d & tcp_target_in_arm_base,
+  double tilt_from_vertical,
   double q5_fixed,
   std::array<double, 5> & q_out,
   const ArmModel & model = ArmModel{},
@@ -115,6 +137,15 @@ bool solveIk(
 /// `tag_yaw_in_arm_base`: yaw do eixo X do frame alvo projetado no plano XY
 /// de manip_base_link. `q1`: junta 1 da solucao.
 double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1);
+
+/// Generalizacao para a pegada por cima INCLINADA (2026-08-24): com o eixo da
+/// ferramenta a `tilt_from_vertical` da vertical, q2+q3+q4 = pi - tilt e o
+/// eixo X do TCP projetado no plano XY fica em
+///   yaw = q1 + atan2(sin q5, -cos(tilt) * cos q5),
+/// logo q5 = atan2(sin d, -cos d / cos(tilt)), d = tag_yaw - q1 (reduzido a
+/// [-pi/2, pi/2] pela simetria da garra). Com tilt = 0 coincide com
+/// computeWristForTagYaw (mesma linha dos dedos, a menos de pi).
+double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1, double tilt_from_vertical);
 
 /// Yaw do eixo X de uma rotacao (frame alvo em manip_base_link), projetado
 /// no plano XY. atan2 de colunas e mais robusto que getRPY para tag

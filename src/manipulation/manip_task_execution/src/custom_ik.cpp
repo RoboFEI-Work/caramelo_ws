@@ -152,12 +152,19 @@ void forwardKinematics(
   tcp_rotation = T.rotation();
 }
 
-Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection direction)
+double tiltFromVertical(ToolDirection direction)
+{
+  switch (direction) {
+    case ToolDirection::kDown: return 0.0;
+    case ToolDirection::kMiddle: return M_PI / 4.0;
+    case ToolDirection::kShallow: return M_PI / 2.0 - M_PI / 8.0;  // 22,5 abaixo da horizontal
+    default: return M_PI / 2.0;  // kForward
+  }
+}
+
+Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, double tilt_from_vertical)
 {
   const Eigen::Vector3d down(0.0, 0.0, -1.0);
-  if (direction == ToolDirection::kDown) {
-    return down;
-  }
 
   // Direcao radial no plano XY (para onde o braco "aponta" ao alcancar o alvo).
   const double r = std::hypot(target.x(), target.y());
@@ -165,14 +172,13 @@ Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection di
     (r < 1e-9) ? Eigen::Vector3d(1.0, 0.0, 0.0)
                : Eigen::Vector3d(target.x() / r, target.y() / r, 0.0);
 
-  if (direction == ToolDirection::kMiddle) {
-    return (radial + down) / std::sqrt(2.0);
-  }
-  if (direction == ToolDirection::kShallow) {
-    constexpr double kPitch = M_PI / 8.0;  // 22,5 graus abaixo da horizontal
-    return radial * std::cos(kPitch) + down * std::sin(kPitch);
-  }
-  return radial;
+  // tilt 0 -> puro "down"; pi/4 -> (radial+down)/sqrt2 (kMiddle); pi/2 -> radial.
+  return radial * std::sin(tilt_from_vertical) + down * std::cos(tilt_from_vertical);
+}
+
+Eigen::Vector3d desiredToolAxis(const Eigen::Vector3d & target, ToolDirection direction)
+{
+  return desiredToolAxis(target, tiltFromVertical(direction));
 }
 
 bool solveIk(
@@ -183,7 +189,20 @@ bool solveIk(
   const ArmModel & model,
   const IkOptions & options)
 {
-  const Eigen::Vector3d axis_desired = desiredToolAxis(tcp_target_in_arm_base, direction);
+  return solveIk(
+    tcp_target_in_arm_base, tiltFromVertical(direction), q5_fixed, q_out, model, options);
+}
+
+bool solveIk(
+  const Eigen::Vector3d & tcp_target_in_arm_base,
+  double tilt_from_vertical,
+  double q5_fixed,
+  std::array<double, 5> & q_out,
+  const ArmModel & model,
+  const IkOptions & options)
+{
+  const Eigen::Vector3d axis_desired =
+    desiredToolAxis(tcp_target_in_arm_base, tilt_from_vertical);
   const double target_azimuth =
     std::atan2(tcp_target_in_arm_base.y(), tcp_target_in_arm_base.x());
   const double target_radius =
@@ -249,6 +268,17 @@ bool solveIk(
 double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1)
 {
   return std::remainder(q1 - tag_yaw_in_arm_base, M_PI);
+}
+
+double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1, double tilt_from_vertical)
+{
+  const double c = std::cos(tilt_from_vertical);
+  if (std::abs(c) < 1e-6) {
+    // Ferramenta horizontal: a linha dos dedos nao e mais um yaw no plano.
+    return computeWristForTagYaw(tag_yaw_in_arm_base, q1);
+  }
+  const double d = tag_yaw_in_arm_base - q1;
+  return std::remainder(std::atan2(std::sin(d), -std::cos(d) / c), M_PI);
 }
 
 double projectedFrameYaw(const Eigen::Matrix3d & rotation)

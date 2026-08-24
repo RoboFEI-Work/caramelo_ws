@@ -247,11 +247,11 @@ def _launch_setup(context, *args, **kwargs):
             # Poses de place ficam ~5,7 cm mais perto da borda — conferir as
             # internas (Mesa15.1) no robo.
             # 0.45 -> 0.43 (pedido do operador 22/08: 2 cm mais perto).
-            {"refine_desired_face_dist": 0.42},
+            {"refine_desired_face_dist": 0.40},
             # ---- Seguranca do docking v4 (2026-08-21), explicita aqui ----
             # hard_min ACIMA do bico (antes 0.32 = bico 5,5 cm dentro da mesa:
             # o hard-stop so disparava depois da batida).
-            {"hard_min_face_dist": 0.39},
+            {"hard_min_face_dist": 0.37},
             # Scan com mais de 0,2 s = posicao ate 2-3 cm atras da real.
             {"wall_max_scan_age": 0.2},
             # Janela de sucesso [stop-0.01, stop+band+0.01] = [0.41, 0.445].

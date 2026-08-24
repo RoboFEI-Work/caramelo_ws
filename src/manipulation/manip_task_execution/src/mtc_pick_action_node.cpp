@@ -339,6 +339,14 @@ public:
         // tentativas (torna o teste do degrau 2/3 deterministico).
         force_table_ik_strategy_ = this->declare_parameter<int>(
             "force_table_ik_strategy", 0);
+        // 2026-08-24 (pedido do operador: "sempre pegar por cima"): a pegada
+        // top-down ESTRITA so alcanca ~0,365 m de raio (z ~0,04) e, alem
+        // disso, o degrau 1 falhava e o pick caia no degrau 2 = pela FRENTE
+        // (de lado). Antes de desistir do "por cima", o degrau 1 tenta a
+        // ferramenta inclinada (graus a partir da vertical, radialmente para
+        // fora) nesta escada: 0 e depois cada valor abaixo. Vazio = so 0.
+        table_down_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
+            "table_down_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -548,6 +556,7 @@ private:
     std::vector<std::string> shelf_table_poses_;
     std::string shelf_ik_reference_frame_;
     int force_table_ik_strategy_{0};
+    std::vector<double> table_down_tilt_ladder_deg_;
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -777,9 +786,11 @@ private:
     }
 
     // 2026-08-17 — ladder de IK da MESA COMUM (pedido do operador): tentativa
-    // 1 = IK custom com a ferramenta para BAIXO (j5 alinhado ao yaw da tag),
-    // tentativa 2 = IK custom pela FRENTE (j5 fixo), tentativa 3+ = caminho
-    // antigo do MoveIt/pick_ik, que ja funciona, como ultimo recurso.
+    // 1 = IK custom com a ferramenta para BAIXO (j5 alinhado ao yaw da tag;
+    // desde 2026-08-24 com escada de inclinacao 0/15/30 graus dentro da
+    // mesma tentativa — ver table_down_tilt_ladder_deg), tentativa 2 = IK
+    // custom pela FRENTE (j5 fixo), tentativa 3+ = caminho antigo do
+    // MoveIt/pick_ik, que ja funciona, como ultimo recurso.
     enum class TableIkStrategy
     {
         kCustomDown,
@@ -1540,9 +1551,11 @@ private:
     /// (manip_mount_rpy). `label` so muda os logs ("shelf"/"mesa").
     /// `target_yaw_out` (opcional): yaw do eixo X do frame alvo projetado no
     /// plano XY da base do braco — usado para alinhar o j5 aos dedos.
+    /// `tilt_from_vertical`: direcao da ferramenta como inclinacao continua a
+    /// partir da vertical (0 = por cima, pi/4 = kMiddle, pi/2 = frente).
     CustomIkOutcome solveCustomIkForTag(
         const std::string & tag_frame,
-        manip_task_execution::ToolDirection direction,
+        double tilt_from_vertical,
         double q5_fixed,
         const char * label,
         const std::string & cycle_name,
@@ -1570,16 +1583,17 @@ private:
 
         if (!manip_task_execution::solveIk(
                 target,
-                direction,
+                tilt_from_vertical,
                 q5_fixed,
                 q_out))
         {
             RCLCPP_ERROR(
                 this->get_logger(),
                 "[%s] %s: IK propria nao achou solucao para [%.3f %.3f %.3f] "
-                "em %s.",
+                "em %s (ferramenta a %.0f graus da vertical).",
                 cycle_name.c_str(), label, target.x(), target.y(), target.z(),
-                shelf_ik_reference_frame_.c_str());
+                shelf_ik_reference_frame_.c_str(),
+                tilt_from_vertical * 180.0 / M_PI);
             return CustomIkOutcome::kNoSolution;
         }
 
@@ -1610,7 +1624,8 @@ private:
     {
         return solveCustomIkForTag(
             tag_frame,
-            manip_task_execution::ToolDirection::kMiddle,
+            manip_task_execution::tiltFromVertical(
+                manip_task_execution::ToolDirection::kMiddle),
             kShelfWristJoint5,
             "shelf",
             cycle_name,
@@ -1729,15 +1744,39 @@ private:
 
         std::array<double, 5> q{};
         double tag_yaw = 0.0;
-        const CustomIkOutcome outcome = solveCustomIkForTag(
-            tag_frame,
-            down ? manip_task_execution::ToolDirection::kDown
-                 : manip_task_execution::ToolDirection::kForward,
-            down ? 0.0 : kTableForwardWristJoint5,
-            "mesa",
-            cycle_name,
-            q,
-            down ? &tag_yaw : nullptr);
+        double tilt_used = 0.0;
+        CustomIkOutcome outcome = CustomIkOutcome::kNoSolution;
+
+        if (down) {
+            // Escada "por cima": vertical estrita e depois inclinacoes
+            // crescentes (table_down_tilt_ladder_deg). So cai para a pegada
+            // frontal (degrau 2) se NENHUMA delas alcancar.
+            std::vector<double> tilts_deg{0.0};
+            for (const double t : table_down_tilt_ladder_deg_) {
+                if (t > 0.0 && t < 90.0) {
+                    tilts_deg.push_back(t);
+                }
+            }
+            for (const double tilt_deg : tilts_deg) {
+                const double tilt = tilt_deg * M_PI / 180.0;
+                outcome = solveCustomIkForTag(
+                    tag_frame, tilt, 0.0, "mesa", cycle_name, q, &tag_yaw);
+                if (outcome != CustomIkOutcome::kNoSolution) {
+                    tilt_used = tilt;
+                    break;
+                }
+            }
+        } else {
+            outcome = solveCustomIkForTag(
+                tag_frame,
+                manip_task_execution::tiltFromVertical(
+                    manip_task_execution::ToolDirection::kForward),
+                kTableForwardWristJoint5,
+                "mesa",
+                cycle_name,
+                q,
+                nullptr);
+        }
 
         if (outcome == CustomIkOutcome::kNoTransform) {
             speak("Falha: perdi a tag na aproximação");
@@ -1750,12 +1789,14 @@ private:
 
         if (down) {
             // O TCP fica no eixo do joint5: trocar q5 pos-solve nao move a
-            // ponta, so gira a linha dos dedos para o yaw da tag.
-            q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0]);
+            // ponta, so gira a linha dos dedos para o yaw da tag (formula
+            // generalizada para a ferramenta inclinada).
+            q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0], tilt_used);
             RCLCPP_INFO(
                 this->get_logger(),
-                "[%s] mesa: j5 pela orientacao da tag: yaw=%.4f -> q5=%.4f",
-                cycle_name.c_str(), tag_yaw, q[4]);
+                "[%s] mesa: pegada por cima a %.0f graus da vertical; j5 pela "
+                "orientacao da tag: yaw=%.4f -> q5=%.4f",
+                cycle_name.c_str(), tilt_used * 180.0 / M_PI, tag_yaw, q[4]);
         }
 
         speak("Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame));

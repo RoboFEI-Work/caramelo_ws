@@ -4,7 +4,9 @@
 //   custom_ik_check                       -> varre uma grade de alvos e imprime
 //                                            uma linha CSV por alvo resolvido
 //   custom_ik_check <x> <y> <z> [modo]    -> resolve um alvo unico
-//                                            (modo: forward | shallow | middle | down)
+//                                            (modo: forward | shallow | middle | down
+//                                             | tilt<graus>, ex. tilt20 = por cima
+//                                             inclinado 20 graus a partir da vertical)
 //
 // O formato CSV e o mesmo consumido pelo script de paridade:
 //   x,y,z,modo,q1,q2,q3,q4,q5,erro_pos_m,erro_dir_graus
@@ -30,39 +32,49 @@ using manip_task_execution::ToolDirection;
 namespace
 {
 
-ToolDirection parseDirection(const std::string & name)
+/// Modo de direcao: nome fixo (forward/shallow/middle/down) ou "tilt<graus>".
+struct Mode
+{
+  std::string name;
+  double tilt_from_vertical;
+};
+
+Mode parseMode(const std::string & name)
 {
   if (name == "down") {
-    return ToolDirection::kDown;
+    return {name, manip_task_execution::tiltFromVertical(ToolDirection::kDown)};
   }
   if (name == "shallow") {
-    return ToolDirection::kShallow;
+    return {name, manip_task_execution::tiltFromVertical(ToolDirection::kShallow)};
   }
   if (name == "middle") {
-    return ToolDirection::kMiddle;
+    return {name, manip_task_execution::tiltFromVertical(ToolDirection::kMiddle)};
   }
-  return ToolDirection::kForward;
+  if (name.rfind("tilt", 0) == 0 && name.size() > 4) {
+    return {name, std::atof(name.c_str() + 4) * M_PI / 180.0};
+  }
+  return {"forward", manip_task_execution::tiltFromVertical(ToolDirection::kForward)};
 }
 
-const char * directionName(ToolDirection d)
+Mode modeFor(ToolDirection d)
 {
   switch (d) {
-    case ToolDirection::kDown: return "down";
-    case ToolDirection::kMiddle: return "middle";
-    case ToolDirection::kShallow: return "shallow";
-    default: return "forward";
+    case ToolDirection::kDown: return parseMode("down");
+    case ToolDirection::kMiddle: return parseMode("middle");
+    case ToolDirection::kShallow: return parseMode("shallow");
+    default: return parseMode("forward");
   }
 }
 
 /// Resolve e imprime uma linha CSV. Devolve false se nao houve solucao.
-bool reportOne(double x, double y, double z, ToolDirection dir, double q5)
+bool reportOne(double x, double y, double z, const Mode & mode, double q5)
 {
   const Eigen::Vector3d target(x, y, z);
   std::array<double, 5> q{};
 
-  if (!manip_task_execution::solveIk(target, dir, q5, q)) {
+  if (!manip_task_execution::solveIk(target, mode.tilt_from_vertical, q5, q)) {
     std::cout << std::fixed << std::setprecision(4)
-              << x << "," << y << "," << z << "," << directionName(dir)
+              << x << "," << y << "," << z << "," << mode.name
               << ",SEM_SOLUCAO\n";
     return false;
   }
@@ -72,12 +84,13 @@ bool reportOne(double x, double y, double z, ToolDirection dir, double q5)
   manip_task_execution::forwardKinematics(q, ArmModel{}, achieved, rotation);
 
   const double position_error = (target - achieved).norm();
-  const Eigen::Vector3d axis_desired = manip_task_execution::desiredToolAxis(target, dir);
+  const Eigen::Vector3d axis_desired =
+    manip_task_execution::desiredToolAxis(target, mode.tilt_from_vertical);
   const double dot = std::max(-1.0, std::min(1.0, rotation.col(2).dot(axis_desired)));
   const double direction_error_deg = std::acos(dot) * 180.0 / M_PI;
 
   std::cout << std::fixed << std::setprecision(6)
-            << x << "," << y << "," << z << "," << directionName(dir) << ","
+            << x << "," << y << "," << z << "," << mode.name << ","
             << q[0] << "," << q[1] << "," << q[2] << "," << q[3] << "," << q[4] << ","
             << position_error << "," << direction_error_deg << "\n";
   return true;
@@ -93,8 +106,8 @@ int main(int argc, char ** argv)
     const double x = std::atof(argv[1]);
     const double y = std::atof(argv[2]);
     const double z = std::atof(argv[3]);
-    const ToolDirection dir = parseDirection(argc >= 5 ? argv[4] : "forward");
-    return reportOne(x, y, z, dir, 0.0) ? 0 : 1;
+    const Mode mode = parseMode(argc >= 5 ? argv[4] : "forward");
+    return reportOne(x, y, z, mode, 0.0) ? 0 : 1;
   }
 
   // Grade de varredura: alcance util do braco a frente e para os lados.
@@ -107,7 +120,7 @@ int main(int argc, char ** argv)
           {ToolDirection::kForward, ToolDirection::kMiddle, ToolDirection::kDown})
         {
           ++total;
-          if (reportOne(x, y, z, dir, 0.0)) {
+          if (reportOne(x, y, z, modeFor(dir), 0.0)) {
             ++solved;
           }
         }
