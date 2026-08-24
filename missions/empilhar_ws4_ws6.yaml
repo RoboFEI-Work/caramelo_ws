@@ -1,0 +1,40 @@
+# Missao de EMPILHAMENTO (2026-08-24): as tags 4 e 7 comecam na WS_4 e
+# terminam na WS_6 com a 7 EM CIMA da 4.
+#
+# Formato da competicao (task_planner gera as acoes). Rodar:
+#   ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
+#     --task /home/linux24-04/caramelo_ws/missions/empilhar_ws4_ws6.yaml
+#   (--dry-run so mostra o plano; --simulate-nav sem Nav2; --yes sem confirmar)
+#
+# Novo no finish_state: `stacks: [[04, 07]]` = lista de BAIXO para CIMA.
+# O planner solta a base (04) antes e emite `stack_on: tag_4` no place da 07;
+# o place ve a tag_4 pela camera e solta a 7 em cima (altura =
+# stack_place_z_offset do place_action_server, 0,05 m — calibrar no robo).
+# Se a tag_4 nao for vista, a 7 e' solta na mesa normalmente.
+
+task_id: EMPILHAR_WS4_WS6
+name: Empilhar tag 7 sobre tag 4 (WS_4 -> WS_6)
+duration_min: 10
+active_service_areas: [WS_4, WS_6]
+
+objects:
+  - {id: 04, type: ATTC, color: RED}    # objeto com a tag id 4 (frame tag_4) — BASE
+  - {id: 07, type: ATTC, color: RED}    # objeto com a tag id 7 (frame tag_7) — TOPO
+containers: []
+
+start_state:
+  WS_4:
+    obj_ids: [04, 07]
+    cont_ids: []
+  WS_6:
+    obj_ids: []
+    cont_ids: []
+
+finish_state:
+  WS_4:
+    obj_ids: []
+    cont_ids: []
+  WS_6:
+    obj_ids: [04, 07]
+    cont_ids: []
+    stacks: [[04, 07]]    # 07 em cima do 04

@@ -48,6 +48,10 @@ struct TransferItem
   std::string destination_container_pose;
   bool needs_pick = false;
   bool needs_place = false;
+  // 2026-08-24 EMPILHAR: este objeto e' solto EM CIMA do objeto `stack_on_obj`
+  // (frame `stack_on_frame`), que precisa estar na mesa de `to_ws` antes.
+  int stack_on_obj = -1;
+  std::string stack_on_frame;
 };
 
 struct PlannerState
@@ -288,6 +292,101 @@ std::map<int, ContainerAssignment> parseContainerAssignments(
   return assignments;
 }
 
+/// 2026-08-24 — EMPILHAMENTO no YAML da competicao. Em finish_state.<WS>:
+///   stacks: [[04, 07], [1, 2, 3]]   # cada lista de BAIXO para CIMA
+/// ou, em constraints, frases "O7 on top of O4" / "O7 em cima de O4" /
+/// "O7 sobre O4" / "O7 stacked on O4". Devolve topo -> base. Valida que os
+/// dois objetos terminam na MESMA estacao (a da declaracao), que nao ha
+/// topo com duas bases e que nao ha ciclo.
+std::map<int, int> parseStackAssignments(
+  const YAML::Node & root,
+  const std::map<int, std::string> & finish_index)
+{
+  std::map<int, int> top_to_base;
+  const YAML::Node finish_state = root["finish_state"];
+  if (!finish_state || !finish_state.IsMap()) {
+    return top_to_base;
+  }
+
+  const std::regex on_top_regex(
+    "\\bO\\s*0*([0-9]+)\\b\\s*(?:must\\s+be\\s+|deve\\s+(?:estar|ficar)\\s+)?"
+    "(?:on\\s+top\\s+of|stacked\\s+on|em\\s+cima\\s+d[aoe]|sobre)\\s*\\bO?\\s*0*([0-9]+)\\b",
+    std::regex_constants::icase);
+
+  auto add = [&](const std::string & ws_name, const int top, const int base) {
+      if (top == base) {
+        throw std::runtime_error(
+                "finish_state." + ws_name + ": objeto " + std::to_string(top) +
+                " nao pode ser empilhado sobre ele mesmo");
+      }
+      for (const int id : {top, base}) {
+        const auto it = finish_index.find(id);
+        if (it == finish_index.end() || it->second != ws_name) {
+          throw std::runtime_error(
+                  "finish_state." + ws_name + ": pilha usa o objeto " + std::to_string(id) +
+                  " que nao termina nessa estacao (obj_ids)");
+        }
+      }
+      if (top_to_base.count(top) > 0 && top_to_base[top] != base) {
+        throw std::runtime_error(
+                "finish_state." + ws_name + ": objeto " + std::to_string(top) +
+                " declarado em cima de duas bases");
+      }
+      top_to_base[top] = base;
+    };
+
+  for (const auto & ws_it : finish_state) {
+    const std::string ws_name = trim(ws_it.first.as<std::string>());
+
+    const YAML::Node stacks = ws_it.second["stacks"];
+    if (stacks) {
+      if (!stacks.IsSequence()) {
+        throw std::runtime_error("finish_state." + ws_name + ".stacks must be a sequence");
+      }
+      for (const auto & stack : stacks) {
+        if (!stack.IsSequence() || stack.size() < 2) {
+          throw std::runtime_error(
+                  "finish_state." + ws_name +
+                  ".stacks: cada pilha e' uma lista de >= 2 ids, de baixo para cima");
+        }
+        for (std::size_t i = 1; i < stack.size(); ++i) {
+          add(ws_name, parseObjectId(stack[i]), parseObjectId(stack[i - 1]));
+        }
+      }
+    }
+
+    const YAML::Node constraints = ws_it.second["constraints"];
+    if (constraints && constraints.IsSequence()) {
+      for (const auto & constraint_node : constraints) {
+        const std::string constraint = trim(constraint_node.as<std::string>());
+        // Todas as relacoes da frase ("O7 on top of O4, O1 on top of O7").
+        for (
+          std::sregex_iterator it(constraint.begin(), constraint.end(), on_top_regex), end;
+          it != end;
+          ++it)
+        {
+          add(ws_name, std::stoi((*it)[1].str()), std::stoi((*it)[2].str()));
+        }
+      }
+    }
+  }
+
+  // Sem ciclos (4 sobre 7 e 7 sobre 4).
+  for (const auto & [top, _] : top_to_base) {
+    std::set<int> seen{top};
+    int cur = top;
+    while (top_to_base.count(cur) > 0) {
+      cur = top_to_base[cur];
+      if (!seen.insert(cur).second) {
+        throw std::runtime_error(
+                "finish_state: pilha com ciclo envolvendo o objeto " + std::to_string(top));
+      }
+    }
+  }
+
+  return top_to_base;
+}
+
 std::map<int, std::string> parseApriltagIdToFrame(const std::string & apriltag_yaml_path)
 {
   const YAML::Node tag_root = YAML::LoadFile(apriltag_yaml_path);
@@ -317,7 +416,8 @@ std::vector<TransferItem> buildTransfers(
   const std::map<int, std::string> & finish_index,
   const std::map<int, std::string> & id_to_frame,
   const std::set<int> & ignored_object_ids,
-  const std::map<int, ContainerAssignment> & container_assignments)
+  const std::map<int, ContainerAssignment> & container_assignments,
+  const std::map<int, int> & stack_assignments)
 {
   std::set<int> all_ids;
   for (const auto & [obj_id, _] : objects) {
@@ -374,6 +474,19 @@ std::vector<TransferItem> buildTransfers(
       item.tag_frame = frame_it->second;
     }
 
+    const auto stack_it = stack_assignments.find(obj_id);
+    const bool stacked_top = stack_it != stack_assignments.end();
+    if (stacked_top) {
+      item.stack_on_obj = stack_it->second;
+      const auto base_frame_it = id_to_frame.find(item.stack_on_obj);
+      if (base_frame_it == id_to_frame.end()) {
+        throw std::runtime_error(
+                "Objeto base da pilha " + std::to_string(item.stack_on_obj) +
+                " nao tem frame de tag no apriltag yaml");
+      }
+      item.stack_on_frame = base_frame_it->second;
+    }
+
     const bool has_start = !item.from_ws.empty();
     const bool has_finish = !item.to_ws.empty();
     const bool moved = has_start && has_finish && (item.from_ws != item.to_ws);
@@ -381,8 +494,10 @@ std::vector<TransferItem> buildTransfers(
     const bool removed = has_start && !has_finish;
     const bool added = !has_start && has_finish;
 
-    item.needs_pick = moved || removed || assigned_to_container;
-    item.needs_place = moved || added || assigned_to_container;
+    // Topo de pilha sempre e' pego e solto (mesmo se comeca e termina na
+    // mesma estacao: precisa subir em cima da base).
+    item.needs_pick = moved || removed || assigned_to_container || (stacked_top && has_start);
+    item.needs_place = moved || added || assigned_to_container || stacked_top;
 
     if (!item.needs_pick && !item.needs_place) {
       continue;
@@ -390,6 +505,11 @@ std::vector<TransferItem> buildTransfers(
 
     // Without a resolved tag frame we cannot emit the minimal action schema.
     if (item.tag_frame.empty()) {
+      if (stacked_top) {
+        throw std::runtime_error(
+                "Objeto " + std::to_string(obj_id) +
+                " (topo de pilha) nao tem frame de tag no apriltag yaml");
+      }
       continue;
     }
 
@@ -437,6 +557,41 @@ std::vector<int> shuffledBestCandidates(
   return best_indices;
 }
 
+// ---- pilhas (2026-08-24) --------------------------------------------------
+// A base de uma pilha esta "na mesa" se ja foi solta ou se nunca precisou de
+// acao (comeca e termina na mesma estacao, sem ser topo de outra pilha).
+bool baseOnTable(
+  const std::vector<TransferItem> & transfers,
+  const PlannerState & state,
+  const int base_id)
+{
+  if (state.placed.count(base_id) > 0) {
+    return true;
+  }
+  const auto it = std::find_if(
+    transfers.begin(), transfers.end(),
+    [base_id](const TransferItem & x) { return x.obj_id == base_id; });
+  return it == transfers.end() || !it->needs_place;
+}
+
+bool baseCarried(const PlannerState & state, const int base_id)
+{
+  return std::find(state.inventory.begin(), state.inventory.end(), base_id) !=
+         state.inventory.end();
+}
+
+/// Um topo so pode ser PEGO quando a base ja esta na mesa ou tambem esta no
+/// inventario (senao o topo ficaria preso a bordo esperando a base — ver a
+/// revisao adversarial de 24/08: isso travava o planejador num laco infinito).
+bool topPickable(
+  const std::vector<TransferItem> & transfers,
+  const PlannerState & state,
+  const TransferItem & t)
+{
+  return t.stack_on_obj < 0 || baseOnTable(transfers, state, t.stack_on_obj) ||
+         baseCarried(state, t.stack_on_obj);
+}
+
 int countPendingPicksAtWs(
   const std::vector<TransferItem> & transfers,
   const PlannerState & state,
@@ -449,7 +604,9 @@ int countPendingPicksAtWs(
 
   int count = 0;
   for (const auto & t : transfers) {
-    if (t.needs_pick && state.picked.count(t.obj_id) == 0 && t.from_ws == ws) {
+    if (t.needs_pick && state.picked.count(t.obj_id) == 0 && t.from_ws == ws &&
+      topPickable(transfers, state, t))
+    {
       ++count;
     }
   }
@@ -464,7 +621,9 @@ int countCarriedPlacesAtWs(
   int count = 0;
   for (const int obj_id : state.inventory) {
     const auto & t = findTransferById(transfers, obj_id);
-    if (t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws) {
+    if (t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws &&
+      topPickable(transfers, state, t))   // topo sem base disponivel nao conta
+    {
       ++count;
     }
   }
@@ -559,10 +718,7 @@ void appendPlacesAtWs(
   const std::string & ws,
   const std::map<std::string, std::string> & ws_to_table_pose)
 {
-  std::vector<int> remaining_inventory;
-  for (const int obj_id : state.inventory) {
-    const auto & t = findTransferById(transfers, obj_id);
-    if (t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws) {
+  const auto emit_place = [&](const TransferItem & t) {
       YAML::Node place;
       place["kind"] = "place";
       place["tag_frame"] = t.tag_frame;
@@ -577,12 +733,49 @@ void appendPlacesAtWs(
         }
         place["table_pose"] = ws_it->second;
       }
+      if (!t.stack_on_frame.empty()) {
+        place["stack_on"] = t.stack_on_frame;
+      }
 
       action_seq.push_back(place);
       state.placed.insert(t.obj_id);
-    } else {
+    };
+
+  // Duas passadas: primeiro o que NAO e' topo de pilha (inclui as bases),
+  // depois os topos cuja base ja esta na mesa. Um topo cuja base ainda nao
+  // foi solta fica no inventario (o laco de buildOutput volta aqui).
+  std::vector<int> remaining_inventory;
+  std::vector<int> deferred_tops;
+  for (const int obj_id : state.inventory) {
+    const auto & t = findTransferById(transfers, obj_id);
+    const bool here = t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws;
+    if (!here) {
       remaining_inventory.push_back(obj_id);
+    } else if (t.stack_on_obj >= 0) {
+      deferred_tops.push_back(obj_id);
+    } else {
+      emit_place(t);
     }
+  }
+  // Topos: repete ate nao haver progresso (pilha de 3+: o topo do topo so
+  // sai depois do meio).
+  bool progress = true;
+  while (progress && !deferred_tops.empty()) {
+    progress = false;
+    std::vector<int> still_deferred;
+    for (const int obj_id : deferred_tops) {
+      const auto & t = findTransferById(transfers, obj_id);
+      if (baseOnTable(transfers, state, t.stack_on_obj)) {
+        emit_place(t);
+        progress = true;
+      } else {
+        still_deferred.push_back(obj_id);
+      }
+    }
+    deferred_tops = still_deferred;
+  }
+  for (const int obj_id : deferred_tops) {
+    remaining_inventory.push_back(obj_id);
   }
   state.inventory = remaining_inventory;
 }
@@ -594,6 +787,12 @@ void appendPicksAtWs(
   const std::string & ws,
   const std::map<std::string, std::string> & ws_to_table_pose)
 {
+  // Topo de pilha so e' pego com a base ja na mesa ou a bordo (topPickable);
+  // como a base pode ter sido pega nesta mesma passada, repete ate nao haver
+  // progresso.
+  bool progress = true;
+  while (progress) {
+  progress = false;
   for (const auto & t : transfers) {
     if (state.inventory.size() >= 3) {
       return;
@@ -601,6 +800,10 @@ void appendPicksAtWs(
     if (!t.needs_pick || state.picked.count(t.obj_id) > 0 || t.from_ws != ws) {
       continue;
     }
+    if (!topPickable(transfers, state, t)) {
+      continue;
+    }
+    progress = true;
 
     YAML::Node pick;
     pick["kind"] = "pick";
@@ -620,6 +823,7 @@ void appendPicksAtWs(
     if (t.needs_place) {
       state.inventory.push_back(t.obj_id);
     }
+  }
   }
 }
 
@@ -652,9 +856,19 @@ YAML::Node buildOutput(
       throw std::runtime_error("Task planner got stuck: no reachable pick/place candidate");
     }
 
+    const std::size_t picked_before = state.picked.size();
+    const std::size_t placed_before = state.placed.size();
     appendGotoIfNeeded(action_seq, state, next_ws, ws_to_table_pose);
     appendPlacesAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
     appendPicksAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
+    // Guarda de progresso (revisao 24/08): sem pick nem place novo nesta
+    // iteracao o laco giraria para sempre — falha explicita em vez disso.
+    if (state.picked.size() == picked_before && state.placed.size() == placed_before) {
+      throw std::runtime_error(
+              "Task planner got stuck: sem progresso em " + next_ws +
+              " (pilha cuja base nao pode ser alcancada? inventario: " +
+              std::to_string(state.inventory.size()) + " objeto(s) a bordo)");
+    }
   }
 
 
@@ -795,6 +1009,7 @@ int main(int argc, char ** argv)
     const auto start_index = buildStateIndex(competition_root["start_state"], active_areas, "start_state");
     const auto finish_index = buildStateIndex(competition_root["finish_state"], active_areas, "finish_state");
     const auto id_to_frame = parseApriltagIdToFrame(apriltag_yaml_path);
+    const auto stack_assignments = parseStackAssignments(competition_root, finish_index);
     const auto transfers =
       buildTransfers(
         objects,
@@ -802,7 +1017,8 @@ int main(int argc, char ** argv)
         finish_index,
         id_to_frame,
         ignored_object_ids,
-        container_assignments);
+        container_assignments,
+        stack_assignments);
     const auto output = buildOutput(competition_root, transfers, apriltag_yaml_path, ws_to_table_pose);
 
     YAML::Emitter out;

@@ -152,6 +152,25 @@ finish_state:                        # onde cada coisa deve TERMINAR
 - ids de tag disponíveis (cfg da competição): 1..7 → `tag_1..tag_7`,
   10..16 → `ct_10..ct_16` (potes), 20..28 → `tag_20..tag_28`, 42 → `tag_42`.
 
+### 3a. Empilhar no YAML da competição (24/08)
+
+No `finish_state` da estação de destino, declare as pilhas de BAIXO para CIMA:
+
+```yaml
+finish_state:
+  WS_6:
+    obj_ids: [04, 07]
+    cont_ids: []
+    stacks: [[04, 07]]          # 07 em cima do 04 (aceita [4, 7, 9] para 3 níveis)
+    # ou: constraints: ["O7 must be on top of O4"]
+```
+
+O `task_planner` solta a base antes do topo (na mesma visita) e emite
+`stack_on: tag_4` no place do topo — ver §6a para o que o place faz com isso.
+Exemplo pronto: `missions/empilhar_ws4_ws6.yaml`. Casos inválidos (ciclo,
+objeto que não termina nessa estação, topo com duas bases) abortam o planner
+com mensagem clara.
+
 ## 4. ws_table_mapping.yaml — qual dos dois vale?
 
 Existem duas cópias, mas **só uma manda**:
