@@ -5,6 +5,16 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# 2026-08-24: a IK custom (custom_ik.cpp, Newton amortecido com Eigen, 343
+# sementes x 250 iteracoes) leva ~23 s por solve em -O0 e ~0,1 s em -O2. Um
+# `colcon build` sem --cmake-args compila SEM otimizacao, e o pick "custom"
+# ficava 200x mais lento em outro PC. Sem build type explicito, usa
+# RelWithDebInfo (-O2 -g). Quem passar -DCMAKE_BUILD_TYPE mantem o seu.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
+    "Build type (default RelWithDebInfo: a IK custom precisa de -O2)" FORCE)
+endif()
+
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)

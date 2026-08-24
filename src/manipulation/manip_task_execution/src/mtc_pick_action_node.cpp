@@ -354,6 +354,18 @@ public:
             "shelf_free_max_dev_deg", 30.0);
         shelf_free_j2_max_ = this->declare_parameter<double>(
             "shelf_free_j2_max", 1.2);
+        // 2026-08-24 (pedido do operador: "na shelf, pegar com o bottom, nao
+        // muda a fase 1"): inclinacao da ferramenta na PEGADA (fase 2), em
+        // graus a partir da vertical. 0 = "bottom" (para baixo, igual a mesa);
+        // 45 = comportamento antigo (fase 2 com a mesma solucao da fase 1).
+        // A fase 1 usa SEMPRE a solucao de 45 graus (j2=0, j3 fixo, J4 dela).
+        shelf_grasp_tilt_deg_ = this->declare_parameter<double>(
+            "shelf_grasp_tilt_deg", 0.0);
+        // Pre-pega acima do bloco na pegada "bottom" (m; 0 = desligado). Ver
+        // approachShelfTarget. Sobe o punho em mais esse tanto: conferir a
+        // folga ate a prateleira de cima.
+        shelf_bottom_pre_lift_m_ = this->declare_parameter<double>(
+            "shelf_bottom_pre_lift_m", 0.03);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -567,6 +579,11 @@ private:
     bool shelf_j4_free_{true};
     double shelf_free_max_dev_deg_{30.0};
     double shelf_free_j2_max_{1.2};
+    double shelf_grasp_tilt_deg_{0.0};
+    double shelf_bottom_pre_lift_m_{0.03};
+    /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
+    /// vazio = sem pre-pega (retorno vai direto a fase 1).
+    std::optional<std::array<double, 5>> shelf_lift_q_;
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
@@ -1544,9 +1561,12 @@ private:
     // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
-    //   fase 1 — j1/j4 da IK, j2 = 0, j3 = kShelfPhase1Joint3, j5 = +1.5708
-    //   fase 2 — j1..j4 da IK, j5 continua +1.5708
-    // O retorno faz o caminho inverso.
+    //   fase 1 — j1/j4 da IK de 45 graus, j2 = 0, j3 = kShelfPhase1Joint3,
+    //            j5 = +1.5708
+    //   fase 2 — j1..j4 da IK da PEGADA (shelf_grasp_tilt_deg; 0 = "bottom",
+    //            ferramenta para baixo, desde 2026-08-24; 45 = a mesma da
+    //            fase 1, como era antes), j5 continua +1.5708
+    // O retorno faz o caminho inverso (fase 1 com a solucao de 45 graus).
     static constexpr double kShelfPhase1Joint3 = 2.3038;
     static constexpr double kShelfWristJoint5 = 1.5708;
     // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17;
@@ -1574,7 +1594,8 @@ private:
         const manip_task_execution::IkOptions & ik_options =
             manip_task_execution::IkOptions{},
         const manip_task_execution::ArmModel & arm_model =
-            manip_task_execution::ArmModel{})
+            manip_task_execution::ArmModel{},
+        double target_z_offset = 0.0)
     {
         geometry_msgs::msg::TransformStamped tf_arm;
         try {
@@ -1593,7 +1614,7 @@ private:
         const Eigen::Vector3d target(
             tf_arm.transform.translation.x,
             tf_arm.transform.translation.y,
-            tf_arm.transform.translation.z);
+            tf_arm.transform.translation.z + target_z_offset);
 
         if (!manip_task_execution::solveIk(
                 target,
@@ -1659,10 +1680,32 @@ private:
         const std::string & cycle_name,
         std::array<double, 5> & q_out)
     {
-        const double tilt = manip_task_execution::tiltFromVertical(
-            manip_task_execution::ToolDirection::kMiddle);
+        return solveShelfIkAt(
+            tag_frame,
+            manip_task_execution::tiltFromVertical(
+                manip_task_execution::ToolDirection::kMiddle),
+            "shelf", cycle_name, q_out);
+    }
+
+    /// IK da prateleira para uma inclinacao qualquer da ferramenta (rad a
+    /// partir da vertical): estrita primeiro; se nao alcancar e shelf_j4_free,
+    /// posicao exata com a orientacao livre (limitada). `label` so muda logs.
+    bool solveShelfIkAt(
+        const std::string & tag_frame,
+        double tilt_from_vertical,
+        const char * label,
+        const std::string & cycle_name,
+        std::array<double, 5> & q_out,
+        double target_z_offset = 0.0,
+        bool * used_free_fallback = nullptr)
+    {
+        if (used_free_fallback) {
+            *used_free_fallback = false;
+        }
         const CustomIkOutcome strict = solveCustomIkForTag(
-            tag_frame, tilt, kShelfWristJoint5, "shelf", cycle_name, q_out);
+            tag_frame, tilt_from_vertical, kShelfWristJoint5, label, cycle_name, q_out,
+            nullptr, manip_task_execution::IkOptions{}, manip_task_execution::ArmModel{},
+            target_z_offset);
         if (strict == CustomIkOutcome::kOk) {
             return true;
         }
@@ -1672,17 +1715,24 @@ private:
 
         RCLCPP_WARN(
             this->get_logger(),
-            "[%s] shelf: 45 graus inalcancavel (o ERRO acima e' da IK estrita) "
+            "[%s] %s: %.0f graus inalcancavel (o ERRO acima e' da IK estrita) "
             "— tentando com a J4 livre (desvio ate %.0f graus, j2 <= %.2f).",
-            cycle_name.c_str(), shelf_free_max_dev_deg_, shelf_free_j2_max_);
+            cycle_name.c_str(), label, tilt_from_vertical * 180.0 / M_PI,
+            shelf_free_max_dev_deg_, shelf_free_j2_max_);
         manip_task_execution::IkOptions options;
         options.orientation_weight = 0.0;  // posicao exata, orientacao livre
         options.max_orientation_error = shelf_free_max_dev_deg_ * M_PI / 180.0;
         manip_task_execution::ArmModel model;
         model.j2_max = std::min(model.j2_max, shelf_free_j2_max_);
-        return solveCustomIkForTag(
-            tag_frame, tilt, kShelfWristJoint5, "shelf (J4 livre)", cycle_name,
-            q_out, nullptr, options, model) == CustomIkOutcome::kOk;
+        const std::string free_label = std::string(label) + " (J4 livre)";
+        const bool ok = solveCustomIkForTag(
+            tag_frame, tilt_from_vertical, kShelfWristJoint5, free_label.c_str(),
+            cycle_name, q_out, nullptr, options, model,
+            target_z_offset) == CustomIkOutcome::kOk;
+        if (ok && used_free_fallback) {
+            *used_free_fallback = true;
+        }
+        return ok;
     }
 
     /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
@@ -1732,6 +1782,7 @@ private:
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
         std::array<double, 5> & q_ik_out)
     {
+        shelf_lift_q_.reset();  // estado da pre-pega e' por ciclo
         if (!solveShelfIk(tag_frame, cycle_name, q_ik_out)) {
             return false;
         }
@@ -1743,6 +1794,74 @@ private:
         // verificacao de chegada — os alvos sao juntas exatas da nossa IK
         // (nao ha IK aproximada aqui) e a protecao contra "pegar o vazio"
         // fica com a verificacao de esforco da garra, que ja roda depois.
+        // 2026-08-24 (pedido do operador: "pegar com o bottom, nao muda a fase
+        // 1"): a PEGADA (fase 2) usa uma segunda IK com a ferramenta a
+        // shelf_grasp_tilt_deg da vertical (0 = para baixo, como na mesa),
+        // resolvida AQUI, antes de qualquer movimento. A fase 1 e o retorno
+        // continuam com a solucao de 45 graus (q_ik_out). Se a pegada "bottom"
+        // nao tiver solucao (nem com a J4 livre), a fase 2 usa a de 45 graus
+        // como sempre fez, com WARN.
+        std::array<double, 5> q_grasp = q_ik_out;
+        const double grasp_tilt = shelf_grasp_tilt_deg_ * M_PI / 180.0;
+        const double tilt_45 = manip_task_execution::tiltFromVertical(
+            manip_task_execution::ToolDirection::kMiddle);
+        if (std::abs(grasp_tilt - tilt_45) > 1e-6) {
+            std::array<double, 5> q_try{};
+            bool grasp_used_free = false;
+            if (solveShelfIkAt(
+                    tag_frame, grasp_tilt, "shelf pegada", cycle_name, q_try, 0.0,
+                    &grasp_used_free))
+            {
+                q_grasp = q_try;
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[%s] shelf: fase 2 com a ferramenta a %.0f graus da vertical "
+                    "(J4 %.3f -> %.3f em relacao a fase 1).",
+                    cycle_name.c_str(), shelf_grasp_tilt_deg_, q_ik_out[3], q_try[3]);
+
+                // Pre-pega ACIMA do bloco (revisao 24/08): indo direto da fase
+                // 1 para a pegada, a interpolacao em juntas faz o TCP chegar
+                // de rasante (2,7-3,3 cm de deslizamento radial no ultimo cm
+                // de descida) e, na retirada, arrasta o bloco no tampo antes
+                // de descolar. Com o ponto shelf_bottom_pre_lift_m acima, a
+                // descida (2b) e a subida do retorno viram quase verticais.
+                if (shelf_bottom_pre_lift_m_ > 0.0) {
+                    std::array<double, 5> q_lift{};
+                    bool lift_used_free = false;
+                    if (solveShelfIkAt(
+                            tag_frame, grasp_tilt, "shelf pre-pega", cycle_name,
+                            q_lift, shelf_bottom_pre_lift_m_, &lift_used_free))
+                    {
+                        if (lift_used_free && !grasp_used_free) {
+                            // Pegada estrita mas pre-pega so com a orientacao
+                            // livre: ferramentas em angulos diferentes, a
+                            // descida 2a->2 nao seria vertical. Melhor sem.
+                            RCLCPP_WARN(
+                                this->get_logger(),
+                                "[%s] shelf: pre-pega so resolve com a J4 livre e a "
+                                "pegada e' estrita — orientacoes diferentes; fase 2 "
+                                "direto na pegada.",
+                                cycle_name.c_str());
+                        } else {
+                            shelf_lift_q_ = q_lift;
+                        }
+                    } else {
+                        RCLCPP_WARN(
+                            this->get_logger(),
+                            "[%s] shelf: pre-pega %.0f mm acima sem solucao — fase 2 "
+                            "direto na pegada.",
+                            cycle_name.c_str(), shelf_bottom_pre_lift_m_ * 1000.0);
+                    }
+                }
+            } else {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] shelf: pegada a %.0f graus sem solucao — fase 2 com a "
+                    "solucao de 45 graus.",
+                    cycle_name.c_str(), shelf_grasp_tilt_deg_);
+            }
+        }
+
         publish_stage(goal_handle, "shelf_phase1");
         const std::array<double, 5> phase1{
             q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
@@ -1750,10 +1869,37 @@ private:
             return false;
         }
 
+        // Depois da fase 1 o braco esta na boca do vao: qualquer falha daqui
+        // para frente sai pelo caminho inverso antes de devolver false —
+        // senao o retry planeja de dentro da estante direto para pegar_obj_sh
+        // e arrasta o braco pela prateleira.
+        const auto fail_and_leave = [&]() {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] shelf: falha na aproximacao — saindo da estante pelo caminho "
+                "inverso antes de desistir.",
+                cycle_name.c_str());
+            (void)retreatFromShelf(arm, q_ik_out, cycle_name, goal_handle);
+            return false;
+        };
+
+        if (shelf_lift_q_) {
+            publish_stage(goal_handle, "shelf_phase2_pre_grasp");
+            const std::array<double, 5> phase2a{
+                (*shelf_lift_q_)[0], (*shelf_lift_q_)[1], (*shelf_lift_q_)[2],
+                (*shelf_lift_q_)[3], kShelfWristJoint5};
+            if (!moveToJointTarget(arm, phase2a, cycle_name + " shelf fase2a (pre-pega)")) {
+                return fail_and_leave();
+            }
+        }
+
         publish_stage(goal_handle, "shelf_phase2");
         const std::array<double, 5> phase2{
-            q_ik_out[0], q_ik_out[1], q_ik_out[2], q_ik_out[3], kShelfWristJoint5};
-        return moveToJointTarget(arm, phase2, cycle_name + " shelf fase2");
+            q_grasp[0], q_grasp[1], q_grasp[2], q_grasp[3], kShelfWristJoint5};
+        if (!moveToJointTarget(arm, phase2, cycle_name + " shelf fase2")) {
+            return fail_and_leave();
+        }
+        return true;
     }
 
     /// Caminho inverso: desfaz a fase 2, depois a fase 1, e volta a pose de
@@ -1765,6 +1911,17 @@ private:
         const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
         publish_stage(goal_handle, "shelf_retreat");
+
+        // Pegada "bottom" com pre-pega: sobe na vertical primeiro (descola o
+        // bloco do tampo) e so entao volta a postura da fase 1.
+        if (shelf_lift_q_) {
+            const std::array<double, 5> lift{
+                (*shelf_lift_q_)[0], (*shelf_lift_q_)[1], (*shelf_lift_q_)[2],
+                (*shelf_lift_q_)[3], kShelfWristJoint5};
+            if (!moveToJointTarget(arm, lift, cycle_name + " shelf retorno subida")) {
+                return false;
+            }
+        }
 
         const std::array<double, 5> phase1{
             q_ik[0], 0.0, kShelfPhase1Joint3, q_ik[3], kShelfWristJoint5};
