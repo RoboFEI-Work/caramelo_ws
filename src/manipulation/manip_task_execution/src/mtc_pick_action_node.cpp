@@ -371,6 +371,12 @@ public:
         // folga ate a prateleira de cima.
         shelf_bottom_pre_lift_m_ = this->declare_parameter<double>(
             "shelf_bottom_pre_lift_m", 0.03);
+        // 2026-08-24 (pedido do operador): FASE 3 da shelf — depois da fase 2,
+        // SO a J4 gira este tanto (graus) "para a mesa" (positivo = ferramenta
+        // mais para baixo, pela convencao do URDF/IK: q2+q3+q4 = pi - tilt) e
+        // ai a garra fecha. Independe da pose do bloco. 0 = desligado.
+        shelf_phase3_j4_delta_deg_ = this->declare_parameter<double>(
+            "shelf_phase3_j4_delta_deg", 5.0);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -586,6 +592,7 @@ private:
     double shelf_free_j2_max_{1.2};
     double shelf_grasp_tilt_deg_{45.0};
     double shelf_bottom_pre_lift_m_{0.03};
+    double shelf_phase3_j4_delta_deg_{5.0};
     /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
     /// vazio = sem pre-pega (retorno vai direto a fase 1).
     std::optional<std::array<double, 5>> shelf_lift_q_;
@@ -1903,6 +1910,27 @@ private:
             q_grasp[0], q_grasp[1], q_grasp[2], q_grasp[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase2, cycle_name + " shelf fase2")) {
             return fail_and_leave();
+        }
+
+        // FASE 3 (pedido do operador 2026-08-24): so a J4 gira
+        // shelf_phase3_j4_delta_deg "para a mesa", independente da pose do
+        // bloco; em seguida o chamador fecha a garra. O retorno continua
+        // partindo daqui direto para a postura da fase 1 (J4 volta junto).
+        if (std::abs(shelf_phase3_j4_delta_deg_) > 1e-9) {
+            publish_stage(goal_handle, "shelf_phase3");
+            std::array<double, 5> phase3 = phase2;
+            const manip_task_execution::ArmModel limits;
+            phase3[3] = std::max(
+                limits.j4_min,
+                std::min(limits.j4_max, phase2[3] + shelf_phase3_j4_delta_deg_ * M_PI / 180.0));
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[%s] shelf fase 3: J4 %.4f -> %.4f (%+.1f graus para a mesa).",
+                cycle_name.c_str(), phase2[3], phase3[3],
+                (phase3[3] - phase2[3]) * 180.0 / M_PI);
+            if (!moveToJointTarget(arm, phase3, cycle_name + " shelf fase3 (j4 para a mesa)")) {
+                return fail_and_leave();
+            }
         }
         return true;
     }
