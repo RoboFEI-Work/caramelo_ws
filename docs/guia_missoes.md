@@ -152,6 +152,34 @@ finish_state:                        # onde cada coisa deve TERMINAR
 - ids de tag disponíveis (cfg da competição): 1..7 → `tag_1..tag_7`,
   10..16 → `ct_10..ct_16` (potes), 20..28 → `tag_20..tag_28`, 42 → `tag_42`.
 
+### 3b. YAML novo do @Work Commander (25/08)
+
+O planner aceita os dois formatos. O novo:
+
+```yaml
+schema_version: 1
+task_id: BTT2
+version: equipe            # "equipe" = sem cores; a versão do robô traz a cor no type
+active_service_areas: [WS_1, WS_2, WS_3, WS_6]
+objects:
+- {id: 4, type: ATTC}      # cor desconhecida -> place na mesa
+- {id: 8, type: ATTC_RED}  # cor no type (aceita RED/BLUE, vermelho/azul, ATTC-blue, ...)
+start_state:
+  WS_2: {obj_ids: [13, 4]}
+finish_state:
+  WS_6: {obj_ids: [30, 13, 4]}
+```
+
+- Não há mais `containers:`/`cont_ids` nem tag nos containers: **sem bloco `containers:` no
+  YAML, se o objeto tem cor (RED/BLUE) e vai para uma mesa comum, o place tenta o container
+  dessa cor visto pela câmera** (`container_color` na ação); sem container visível (ou sem o
+  detector no ar), solta na mesa. Formato antigo **com** `containers:` + "inside": só os objetos
+  das constraints vão para container (pela COR do container, que precisa ser RED/BLUE); os
+  outros vão para a mesa como antes.
+- Ids 1..30 têm frame `tag_<id>` em `tags_36h11.yaml`; objeto sem frame agora é **erro** do
+  planner (antes sumia do plano em silêncio). Objeto só no `start_state` vira aviso (não é
+  pego); só no `finish_state` é erro. `type` com "DECOY" é ignorado. `stacks:` continua (§3a).
+
 ### 3a. Empilhar no YAML da competição (24/08)
 
 No `finish_state` da estação de destino, declare as pilhas de BAIXO para CIMA:
@@ -257,6 +285,69 @@ cubo de 42 mm + folga — **calibrar no robô**), passando por uma pré-pose
 de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
 `stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
 `stack_tilt_ladder_deg` ([15, 30]).
+
+## 6a-bis. Container por cor (`container_color`, 25/08)
+
+> Manutenção completa (trocar container, cor, garra; que arquivo/linha/parâmetro mexer):
+> [containers_por_cor.md](containers_por_cor.md).
+
+No nível baixo: `- {kind: place, tag_frame: tag_8, table_pose: Mesa15, ws: WS_6, container_color: RED}`
+(RED|BLUE; nunca junto com `stack_on`). O place: publica a cota da borda em
+`/manip/container_plane_z`, espera o TF `ct_vermelho`/`ct_azul` do `container_detector`
+(até `container_detect_timeout_sec` 3 s), alinha lateral se preciso, vai para
+(x, y) do container com o fundo do cubo `container_drop_clearance_m` (1 cm) acima da
+borda (`container_rim_height_m` 0,07), abre. A descida é em 3 movimentos (pedido de
+25/08): base e punho (j1, j4, j5) com o braço na altura atual → ombro+cotovelo (j2, j3)
+até a pose de elevação (`stack_pre_lift_m` 5 cm acima) → descida vertical curta.
+Saída (25/08): fecha a garra (`container_close_gripper_on_exit` true,
+`container_exit_gripper_position` 0,170 = fechada; use p.ex. −0,05 para fechar só parcialmente),
+mede o esforço — se pegou o bloco de volta, reabre e sai com a garra aberta — sobe na
+vertical até a pose de elevação e volta a `pegar_obj` com j2/j3 primeiro (os dedos abertos
+batiam na parede e empurravam o container). Não viu / sem IK → solta na mesa.
+Params do `place_action_server`: `container_frame_red/blue`, `container_rim_height_m`,
+`container_drop_clearance_m`, `cube_height_m`, `container_detect_timeout_sec`,
+`container_arrival_tolerance_m` (erro em XY, 3 cm), `container_arrival_z_tolerance_m` (erro em Z,
+6 cm — o braço estendido afunda ~2,5 cm sistematicamente, medido 25/08), `container_tilt_ladder_deg`,
+`container_fallback_to_table`, `container_close_gripper_on_exit`, `container_exit_gripper_position`,
+`container_slot_offsets_long_m` / `container_slot_offsets_short_m` (vários blocos no MESMO
+container, 25/08: candidatos de deslocamento do ponto de soltura no eixo longo/curto do
+container, default [+3, −3, 0] cm no longo; cada bloco vai para o candidato mais longe dos
+que a memória de slots diz que já foram soltos lá — 1º a +3 cm, 2º a −3 cm, 3º no centro).
+
+**Calibrar as cores do container** (`manip_bringup/config/container_detector.yaml`,
+todos reajustáveis com `ros2 param set /container_detector ...`):
+```bash
+# sem robô, com uma foto:
+ros2 run manip_bringup container_detector_node.py --image foto.jpg --out overlay.png
+ros2 run manip_bringup container_detector_node.py --image foto.jpg --probe 800,600   # HSV do pixel
+# no robô:
+ros2 launch ... use_container_detector:=true container_detector_always_on:=true
+ros2 topic echo /manip/container_detector/status
+ros2 run rqt_image_view rqt_image_view /manip/container_detector/debug_image
+ros2 run tf2_ros tf2_echo manip_base_link ct_vermelho
+```
+**A garra é VERMELHA e aparece na imagem** (câmera e garra são solidárias → sempre nos
+mesmos pixels). O detector apaga essas regiões da máscara antes de segmentar:
+`exclusion_polys_norm` (dedos ABERTOS, cantos superiores — valem sempre) e
+`exclusion_polys_holding_norm` + `exclusion_rects_norm` (dedos FECHADOS + cubo carregado —
+só com a garra fechada, lida de `/joint_states`: `gripper_joint` `manip_joint6` >
+`gripper_holding_above` −0,12). Para recalibrar na arena (câmera trocada/remontada):
+```bash
+# foto com a garra ABERTA sobre a mesa branca, SEM container vermelho na imagem:
+ros2 run manip_bringup container_detector_node.py --image garra_aberta.png --fit-gripper
+#   -> cole as linhas "topo" em exclusion_polys_norm
+# foto com a garra FECHADA num cubo AZUL (mesma condição):
+ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper                 # dedos fechados
+ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper --fit-color azul --margin-px 20   # cubo
+#   -> cole em exclusion_polys_holding_norm (junte o topo do cubo até y=0)
+# conferir: --out overlay.png (polígonos em amarelo); --gripper-open simula garra vazia
+```
+Blob cortado pela borda ou por uma região apagada = "parcial": usa o centroide da parte
+visível (cai dentro da abertura), mas precisa de ≥ `partial_min_area_frac` (25 %) da área
+esperada. Blob inteiro: solidez ≥ 0,75, proporção 1,1–2,6, retangularidade ≥ 0,70 e lados
+dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de container
+(dedo cortado pela borda vira quadrilátero) — por isso as máscaras fixas.
+`yaw_axis_offset_deg` = 90 se os dedos tiverem que cruzar o lado curto.
 
 ## 6b. Parâmetros novos do executor (23/07)
 

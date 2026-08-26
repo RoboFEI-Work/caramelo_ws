@@ -106,6 +106,16 @@ def generate_launch_description():
             description="Inicia o speech_node (Piper) no stack de manipulacao",
         ),
         DeclareLaunchArgument(
+            "use_container_detector",
+            default_value="true",
+            description="Detector de containers vermelho/azul por cor (place em container)",
+        ),
+        DeclareLaunchArgument(
+            "container_detector_always_on",
+            default_value="false",
+            description="Detector processa sempre (calibracao), nao so durante o place",
+        ),
+        DeclareLaunchArgument(
             "use_gui",
             default_value="false",
             description="GUI fora do escopo; abrir manualmente (sem efeito por ora)",
@@ -204,6 +214,8 @@ def generate_launch_description():
                 "use_camera": use_camera,
                 "use_apriltag": use_apriltag,
                 "use_audio": use_audio,
+                "use_container_detector": LaunchConfiguration("use_container_detector"),
+                "container_detector_always_on": LaunchConfiguration("container_detector_always_on"),
                 "use_rviz_manip": use_rviz_manip,
                 "camera_profile": LaunchConfiguration("camera_profile"),
                 "verify_grasp_effort": LaunchConfiguration("verify_grasp_effort"),

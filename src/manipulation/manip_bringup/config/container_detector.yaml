@@ -1,0 +1,113 @@
+# Detector de containers (vermelho/azul) por COR — container_detector_node.py
+#
+# Como funciona: imagem colorida da RealSense do punho -> HSV -> mascara por
+# cor -> maior mancha ("blob") com formato de retangulo -> ray-cast do centro
+# sobre o PLANO DA BORDA do container (z vem do place node em
+# /manip/container_plane_z; sem ele usa plane_z_default) -> TF
+# manip_base_link -> ct_vermelho / ct_azul (X = lado longo do container).
+#
+# TUDO aqui e' parametro ROS reajustavel ao vivo:
+#   ros2 param set /container_detector vermelho.s_min 120
+#   ros2 param set /container_detector azul.h_ranges "[95, 130]"
+# Para calibrar sem robo:
+#   ros2 run manip_bringup container_detector_node.py --image foto.jpg --out overlay.png
+#   ros2 run manip_bringup container_detector_node.py --image foto.jpg --probe 800,600
+container_detector:
+  ros__parameters:
+    # --- ativacao / custo ---
+    rate_hz: 3.0                 # frames processados por segundo (o resto e' descartado)
+    always_on: false             # true = processa sempre (calibracao/bag); false = so durante o place
+    process_scale: 0.5           # reduz a imagem antes de segmentar (640x480 -> 320x240)
+    image_topic: /camera/camera/color/image_raw
+    camera_info_topic: /camera/camera/color/camera_info
+    place_active_topic: /manip/place_active
+    plane_z_topic: /manip/container_plane_z
+    debug_image: true            # publica /manip/container_detector/debug_image (so com assinante)
+
+    # --- frames / plano ---
+    base_frame: manip_base_link  # frame da IK custom (o place resolve tudo nele)
+    camera_frame: ""             # vazio = usa o frame_id do CameraInfo (camera_color_optical_frame)
+    plane_z_default: 0.041       # z da BORDA em manip_base_link se o place nao publicar (mesa 15 cm: -0.029 + 0.070)
+    tf_timeout_s: 0.0            # 0 = sem espera (usa o ultimo TF se o stamp da imagem for mais novo)
+    reject_when_camera_moving: true
+    camera_motion_max_m: 0.005   # entre frames processados
+    camera_motion_max_deg: 1.0
+
+    # --- container (105 x 170 x 70 mm medidos em 25/08; so FILTROS frouxos) ---
+    container_long_m: 0.170
+    container_short_m: 0.105
+    container_height_m: 0.070
+    dims_tolerance_frac: 0.6     # lados projetados dentro de +-60% (vista inclinada mostra a parede)
+    area_expected_min_frac: 0.2  # area do blob vs area esperada a distancia d
+    area_expected_max_frac: 5.0
+    min_area_px: 300.0           # em pixels JA escalados (process_scale)
+    min_solidity: 0.75           # area / area do hull convexo (bin visto de cima e' quase convexo)
+    min_aspect_ratio: 1.10       # lado longo / lado curto do minAreaRect (cubo e' ~1.0)
+    max_aspect_ratio: 2.60       # container 1.62 (ate' ~2.1 em perspectiva); lado de cubo visto de canto da 4.4
+    min_rectangularity: 0.70     # area / area do minAreaRect: container 0.83-0.91, triangulo 0.5 (so' blob inteiro)
+    partial_min_area_frac: 0.25  # blob cortado: pelo menos 25% da area esperada (cubo na borda = 10-20%, filete = 5%)
+    wall_bias_correction: true   # compensa a parede visivel que puxa o centro para a camera
+    wall_bias_max_m: 0.02
+
+    # --- regioes da GARRA na imagem (apagadas da mascara antes de segmentar) ---
+    # Camera e garra sao solidarias (link5): os dedos VERMELHOS aparecem sempre
+    # nos mesmos pixels. Poligonos = contorno real dos dedos ABERTOS + 10 px
+    # (RealSense 640x480, 25/08). Recalibrar na arena com a garra sobre a mesa
+    # branca, sem container vermelho na imagem:
+    #   ros2 run manip_bringup container_detector_node.py --image foto.png --fit-gripper
+    # (cole as linhas "topo"; com um cubo na garra fechada, cole tambem as "solto")
+    exclusion_polys_norm:
+      - "0.000,0.000 0.138,0.000 0.157,0.094 0.155,0.304 0.000,0.225"                          # dedo esquerdo
+      - "0.841,0.000 1.000,0.000 1.000,0.140 0.867,0.277 0.838,0.279 0.795,0.113 0.789,0.023"  # dedo direito
+    # Garra FECHADA segurando um cubo (foto realsense_cubo_na_garra.png, 25/08):
+    # os dedos varrem para o centro (esq. x 0-0.22, dir. x 0.53-0.79, y 0-0.26)
+    # e o cubo (faces + tag) ocupa x 0.15-0.66, y 0-0.39. So' valem com a garra
+    # fechada (/joint_states). Recalibrar: cubo na garra fechada sobre a mesa
+    # branca, --fit-gripper (dedos) e --fit-gripper --fit-color azul (cubo azul).
+    exclusion_polys_holding_norm:
+      - "0.791,0.023 0.791,0.077 0.773,0.133 0.722,0.196 0.616,0.260 0.594,0.250 0.528,0.037 0.534,0.000 0.762,0.000"  # dedo direito fechado
+      - "0.217,0.219 0.206,0.235 0.184,0.235 0.048,0.150 0.005,0.113 0.000,0.002 0.209,0.000"                          # dedo esquerdo fechado
+      - "0.150,0.000 0.660,0.000 0.660,0.250 0.600,0.360 0.570,0.390 0.300,0.385 0.260,0.355 0.150,0.240"              # cubo carregado (+margem)
+    exclusion_rects_norm: [0.30, 0.00, 0.62, 0.42]   # retangulo extra do cubo (reserva; tambem so' com a garra fechada)
+    cube_rect_only_when_holding: true   # retangulo so' com a garra fechada (/joint_states); sem joint_states = fechada
+    gripper_joint: manip_joint6         # aberta -0.2265, fechada 0.170 (SRDF gripper_open/gripper_close)
+    gripper_holding_above: -0.12
+    joint_states_topic: /joint_states
+    border_margin_px: 3          # blob encostado na borda da imagem = objeto cortado
+    accept_partial: true         # cortado: usa o centroide da parte visivel (cai dentro da abertura); false = rejeita
+
+    # --- sanidade 3D (em manip_base_link: +Y = frente do robo) ---
+    min_target_y_m: 0.10
+    max_target_radius_m: 0.60
+    max_ray_length_m: 1.0
+
+    # --- morfologia (kernel em px escalados) ---
+    morph_open_px: 3
+    morph_close_px: 5
+    morph_close_iters: 2
+
+    # --- suavizacao ---
+    smoothing_n: 5
+    smoothing_window_s: 2.0
+    smoothing_jump_reset_m: 0.04
+    min_samples: 2
+    yaw_axis_offset_deg: 0.0     # 90 se os dedos tiverem que cruzar o lado CURTO
+
+    # --- cores (OpenCV: H 0-179, S/V 0-255). h_ranges = pares [lo, hi, lo, hi, ...] ---
+    colors: [vermelho, azul]
+    vermelho:
+      enabled: true
+      frame: ct_vermelho
+      h_ranges: [0, 10, 170, 179] # RealSense: H 0-2 / 178-179, S 130-226, V 73-145
+      s_min: 90
+      s_max: 255
+      v_min: 50
+      v_max: 255
+    azul:
+      enabled: true
+      frame: ct_azul
+      h_ranges: [85, 125]         # RealSense (25/08): azul do bin em H 92-95; celular dava 99-105
+      s_min: 80
+      s_max: 255
+      v_min: 30                    # interior sombreado chega a V~50
+      v_max: 255

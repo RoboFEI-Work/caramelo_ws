@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <rclcpp/rclcpp.hpp>
@@ -423,15 +425,53 @@ std::string buildTreeXmlFromActions(
       const std::string stack_on_key = actionBlackboardKey(i, "stack_on");
       setStringOnBlackboard(blackboard, i, "stack_on", stack_on);
 
+      // 2026-08-25: CONTAINER POR COR — `container_color: RED|BLUE` = soltar
+      // dentro do container dessa cor visto pela camera na mesa de destino
+      // (fallback: mesa). Fail-fast: cor conhecida e nunca junto com stack_on.
+      std::string container_color;
+      if (action["container_color"]) {
+        container_color = action["container_color"].as<std::string>("");
+        std::transform(
+          container_color.begin(), container_color.end(), container_color.begin(),
+          [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        while (!container_color.empty() && std::isspace(
+            static_cast<unsigned char>(container_color.back())))
+        {
+          container_color.pop_back();
+        }
+        while (!container_color.empty() && std::isspace(
+            static_cast<unsigned char>(container_color.front())))
+        {
+          container_color.erase(container_color.begin());
+        }
+      }
+      if (!container_color.empty()) {
+        if (container_color != "RED" && container_color != "BLUE") {
+          throw std::runtime_error(
+            "action[" + std::to_string(i) + "]: container_color='" + container_color +
+            "' invalido (esperado RED|BLUE)");
+        }
+        if (!stack_on.empty()) {
+          throw std::runtime_error(
+            "action[" + std::to_string(i) + "]: container_color e stack_on juntos nao "
+            "fazem sentido (soltar num container OU em cima de um bloco)");
+        }
+      }
+      const std::string container_color_key = actionBlackboardKey(i, "container_color");
+      setStringOnBlackboard(blackboard, i, "container_color", container_color);
+
       xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
           << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
-          << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key)) << "\"/>\n";
+          << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key))
+          << "\" container_color=\"" << escapeXmlAttr(blackboardPort(container_color_key))
+          << "\"/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
         (place_ws.empty() ? "" : " ws=" + place_ws) +
-        (stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on));
+        (stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on) +
+        (container_color.empty() ? "" : " NO CONTAINER " + container_color));
       continue;
     }
 

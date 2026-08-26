@@ -5,7 +5,7 @@
 #   - Estações com pose REAL gravada: WS_1 (dock WS1) e WS_2 (dock WS2).
 #     WS_3/WS_4/SH_1 etc. têm pose placeholder -> o executor aborta (fail-fast).
 #   - id do objeto = id da AprilTag colada nele (cfg: 1..7 -> tag_1..tag_7,
-#     20..28 -> tag_20..tag_28; potes: 10..16 -> ct_10..ct_16).
+#     agora 1..30 -> tag_1..tag_30; containers sem tag, por COR — 25/08).
 #   - Altura da mesa: WS_1 usa a pose de braco Mesa0 e WS_2 usa Mesa5
 #     (ws_table_mapping.yaml do mapa). Hoje o place real validado foi na Mesa0.
 #

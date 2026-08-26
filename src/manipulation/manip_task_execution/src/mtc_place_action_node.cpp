@@ -4,6 +4,7 @@
 #include <control_msgs/msg/dynamic_joint_state.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -29,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <algorithm>
+#include <limits>
 #include <array>
 #include <map>
 #include <vector>
@@ -99,6 +101,50 @@ public:
             this->declare_parameter<double>("stack_arrival_tolerance_m", 0.03);
         stack_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "stack_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        // 2026-08-25 — CONTAINER POR COR na MESA (NAO confundir com os potes a
+        // bordo container1..3 / container_state_store). PlaceTag.goal.
+        // container_color = RED|BLUE. O container_detector publica os frames
+        // ct_vermelho/ct_azul (centro no plano da BORDA, X = lado longo)
+        // enquanto o place esta ativo; este no publica a cota da borda em
+        // /manip/container_plane_z a partir da FK da pose nomeada da mesa.
+        // Alvo do TCP = borda + cubo + folga (fundo do cubo 3 cm acima da
+        // borda, decisao do operador). Nao visto / sem IK -> place normal.
+        container_frame_red_ = this->declare_parameter<std::string>(
+            "container_frame_red", "ct_vermelho");
+        container_frame_blue_ = this->declare_parameter<std::string>(
+            "container_frame_blue", "ct_azul");
+        container_rim_height_m_ =
+            this->declare_parameter<double>("container_rim_height_m", 0.07);
+        container_drop_clearance_m_ =
+            this->declare_parameter<double>("container_drop_clearance_m", 0.01);
+        container_close_gripper_on_exit_ =
+            this->declare_parameter<bool>("container_close_gripper_on_exit", true);
+        container_slot_offsets_long_m_ = this->declare_parameter<std::vector<double>>(
+            "container_slot_offsets_long_m", std::vector<double>{0.03, -0.03, 0.0});
+        container_slot_offsets_short_m_ = this->declare_parameter<std::vector<double>>(
+            "container_slot_offsets_short_m", std::vector<double>{0.0, 0.0, 0.0});
+        container_exit_gripper_position_ =
+            this->declare_parameter<double>("container_exit_gripper_position", 0.170);
+        cube_height_m_ = this->declare_parameter<double>("cube_height_m", 0.042);
+        container_detect_timeout_sec_ =
+            this->declare_parameter<double>("container_detect_timeout_sec", 3.0);
+        container_arrival_tolerance_m_ =
+            this->declare_parameter<double>("container_arrival_tolerance_m", 0.03);
+        container_arrival_z_tolerance_m_ =
+            this->declare_parameter<double>("container_arrival_z_tolerance_m", 0.06);
+        container_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
+            "container_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        container_fallback_to_table_ =
+            this->declare_parameter<bool>("container_fallback_to_table", true);
+        container_plane_topic_ = this->declare_parameter<std::string>(
+            "container_plane_topic", "/manip/container_plane_z");
+        // Container fora do quadro de pegar_obj (mesa de 80 cm, camera a ~0,33 m
+        // ve so' +-20 cm): procura tambem de tag_direita/tag_esquerda antes de
+        // desistir (campo 25/08: bins cortados na borda sao rejeitados).
+        container_search_lateral_ =
+            this->declare_parameter<bool>("container_search_lateral", true);
+        container_search_timeout_sec_ =
+            this->declare_parameter<double>("container_search_timeout_sec", 1.5);
         skip_missing_place_tag_ =
             this->declare_parameter<bool>("skip_missing_place_tag", true);
         // Auditoria 2026-08-07, item 2.4: verificacao de objeto preso por
@@ -145,6 +191,10 @@ public:
                 "/manip/place_active",
                 rclcpp::QoS(1).transient_local().reliable());
         publishPlaceActive(false);
+        // Cota (z em manip_base_link) da BORDA do container da mesa de
+        // destino, para o container_detector fazer o ray-cast no plano certo.
+        container_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
+            container_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
 
         // 2026-08-12: entregar na prateleira exige um waypoint obrigatorio
         // (`pirocao`) antes e depois da pose de mesa — sem ele o braco bate
@@ -344,6 +394,34 @@ private:
     /// Juntas da pre-pose acima da pilha do ciclo atual (subida apos soltar).
     std::optional<std::array<double, 5>> stack_lift_q_;
 
+    // Container por cor na mesa (2026-08-25), ver placeIntoContainer.
+    std::string container_frame_red_;
+    std::string container_frame_blue_;
+    double container_rim_height_m_{0.07};
+    double container_drop_clearance_m_{0.03};
+    double cube_height_m_{0.042};
+    double container_detect_timeout_sec_{3.0};
+    double container_arrival_tolerance_m_{0.03};   // erro em XY (o que decide se cai dentro)
+    double container_arrival_z_tolerance_m_{0.06}; // erro em Z: o braco estendido afunda ~2,5 cm (medido 25/08)
+    std::vector<double> container_tilt_ladder_deg_;
+    bool container_fallback_to_table_{true};
+    std::string container_plane_topic_;
+    bool container_search_lateral_{true};
+    double container_search_timeout_sec_{1.5};
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr container_plane_z_pub_;
+    /// Cota da borda publicada para o goal atual (autoridade do Z do drop).
+    std::optional<double> container_plane_z_;
+    /// O braco saiu de pegar_obj durante placeIntoContainer (fallback recolhe).
+    bool container_arm_moved_{false};
+    bool container_exit_pending_{false};   // soltou no container: fechar garra, subir j2/j3, depois o resto
+    bool container_close_gripper_on_exit_{true};
+    // Varios blocos no mesmo container: candidatos de deslocamento do ponto
+    // de soltura no eixo LONGO/curto do container (m). O escolhido e' o mais
+    // longe dos blocos ja soltos la (memoria de slots).
+    std::vector<double> container_slot_offsets_long_m_{0.03, -0.03, 0.0};
+    std::vector<double> container_slot_offsets_short_m_{0.0, 0.0, 0.0};
+    double container_exit_gripper_position_{0.170};  // manip_joint6/7: fechada 0.170, aberta -0.2265
+
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
@@ -411,6 +489,8 @@ private:
         if (target.rfind(tag_prefix, 0) == 0) {
             target.erase(0, sizeof(tag_prefix) - 1);
             target = "tag " + target;
+        } else if (target.rfind("ct_", 0) == 0 && target.size() > 3) {
+            target = "container " + target.substr(3);   // ct_vermelho -> container vermelho
         } else if (target.rfind("ct", 0) == 0 && target.size() > 2) {
             target = "container " + target.substr(2);
         }
@@ -1195,6 +1275,127 @@ private:
         return moveToJointTarget(arm, q, label + " [j2 por ultimo]");
     }
 
+    /// Desloca `target` (x,y) para um dos candidatos de
+    /// container_slot_offsets_{long,short}_m, expressos no eixo longo/curto do
+    /// container (yaw do frame). Sem bloco anterior na memoria: candidato 0.
+    /// Com blocos: o candidato mais longe do bloco mais proximo — robusto ao
+    /// sinal do yaw (pode virar 180 graus entre deteccoes) e a onde o 1o caiu.
+    void applyContainerSlotOffset(
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & frame,
+        double frame_yaw,
+        Eigen::Vector3d & target)
+    {
+        const auto & offs_l = container_slot_offsets_long_m_;
+        const auto & offs_s = container_slot_offsets_short_m_;
+        if (offs_l.empty()) {
+            return;
+        }
+        std::vector<Eigen::Vector2d> prior;
+        const std::string ws = normalizedWs(goal_handle->get_goal()->ws);
+        if (slot_memory_enabled_ && !ws.empty()) {
+            std::vector<manip_task_execution::TableSlotRecord> records;
+            std::string err;
+            if (container_state_store_->getTableSlotsUsed(
+                    ws, slot_memory_ttl_sec_, this->get_clock()->now().seconds(), &records, &err))
+            {
+                for (const auto & rec : records) {
+                    if (rec.slot == frame && rec.frame == ik_reference_frame_) {
+                        prior.emplace_back(rec.x, rec.y);
+                    }
+                }
+            } else {
+                RCLCPP_WARN(get_logger(), "[CONTAINER] memoria de slots ilegivel (%s) — solto no candidato 0.", err.c_str());
+            }
+        }
+        const double c = std::cos(frame_yaw);
+        const double sn = std::sin(frame_yaw);
+        std::vector<Eigen::Vector2d> cands;
+        for (std::size_t k = 0; k < offs_l.size(); ++k) {
+            const double dl = offs_l[k];
+            const double ds = k < offs_s.size() ? offs_s[k] : 0.0;
+            cands.emplace_back(target.x() + dl * c - ds * sn, target.y() + dl * sn + ds * c);
+        }
+        std::size_t best = 0;
+        double best_score = -1.0;
+        if (!prior.empty()) {
+            for (std::size_t k = 0; k < cands.size(); ++k) {
+                double score = std::numeric_limits<double>::infinity();
+                for (const auto & p : prior) {
+                    score = std::min(score, (cands[k] - p).norm());
+                }
+                if (score > best_score) {
+                    best_score = score;
+                    best = k;
+                }
+            }
+        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[CONTAINER] %zu bloco(s) ja soltos em %s (memoria): candidato %zu/%zu "
+            "(%+.3f longo, %+.3f curto) -> [%.3f %.3f]%s",
+            prior.size(), frame.c_str(), best + 1, cands.size(),
+            offs_l[best], best < offs_s.size() ? offs_s[best] : 0.0,
+            cands[best].x(), cands[best].y(),
+            prior.empty() ? "" : (", " + std::to_string(best_score * 100.0).substr(0, 4) + " cm do bloco mais proximo").c_str());
+        target.x() = cands[best].x();
+        target.y() = cands[best].y();
+    }
+
+    /// Como moveToJointTargetJoint2Last, mas segurando ombro (j2) E cotovelo
+    /// (j3): primeiro base/punho (j1, j4, j5) com o braco na altura atual, so'
+    /// depois j2+j3 juntos. Evita que o cotovelo abaixe o TCP enquanto a base
+    /// ainda gira (esbarrou na parede do container em 25/08).
+    bool moveToJointTargetJoints23Last(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        const auto state = arm->getCurrentState(2.0);
+        std::vector<double> cur;
+        if (state) {
+            state->copyJointGroupPositions(arm->getName(), cur);
+        }
+        if (cur.size() < 5) {
+            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico (j2/j3 juntos).", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first = q;
+        first[1] = cur[1];
+        first[2] = cur[2];
+        if (std::abs(first[1] - q[1]) > 1e-3 || std::abs(first[2] - q[2]) > 1e-3) {
+            if (!moveToJointTarget(arm, first, label + " [j2/j3 parados]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [j2/j3 por ultimo]");
+    }
+
+    /// Inverso de moveToJointTargetJoints23Last: primeiro ombro+cotovelo (j2,
+    /// j3) com base/punho parados (sobe na vertical), depois j1/j4/j5.
+    bool moveToJointTargetJoints23First(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        const auto state = arm->getCurrentState(2.0);
+        std::vector<double> cur;
+        if (state) {
+            state->copyJointGroupPositions(arm->getName(), cur);
+        }
+        if (cur.size() < 5) {
+            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first{cur[0], q[1], q[2], cur[3], cur[4]};
+        if (std::abs(first[1] - cur[1]) > 1e-3 || std::abs(first[2] - cur[2]) > 1e-3) {
+            if (!moveToJointTarget(arm, first, label + " [so j2/j3]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [resto]");
+    }
+
     /// Juntas j1..j5 de uma pose nomeada do SRDF (false se faltar alguma).
     bool namedPoseJoints(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -1416,7 +1617,10 @@ private:
             TableObstacle ob;
             ob.frame = key;
             ob.p = Eigen::Vector3d(rec.x, rec.y, rec.z);
-            ob.clearance = clearanceForFrame(rec.tag_frame) + 0.02;
+            // Slot "ct_vermelho"/"ct_azul" = bloco solto DENTRO de um container:
+            // folga de container (0,13), nao a do cubo.
+            ob.clearance = clearanceForFrame(
+                rec.slot.rfind("ct_", 0) == 0 ? rec.slot : rec.tag_frame) + 0.02;
             ob.origin = "memoria";
             ob.age_sec = now_sec - rec.stamp_sec;
             out[key] = ob;
@@ -2020,12 +2224,326 @@ private:
         return StackOutcome::kOk;
     }
 
+    // =====================================================================
+    // CONTAINER POR COR (2026-08-25): soltar o objeto DENTRO do container
+    // vermelho/azul que a camera ve na mesa de destino. NAO e' o pote a
+    // bordo (container1..3). Fluxo espelhado em placeStackedOnFrame.
+    // =====================================================================
+    std::string containerFrameForColor(const std::string & color) const
+    {
+        if (color == "RED") {
+            return container_frame_red_;
+        }
+        if (color == "BLUE") {
+            return container_frame_blue_;
+        }
+        return "";
+    }
+
+    static std::string containerColorPt(const std::string & color)
+    {
+        if (color == "RED") {
+            return "vermelho";
+        }
+        if (color == "BLUE") {
+            return "azul";
+        }
+        return color;
+    }
+
+    /// Cota do TAMPO da mesa (manip_base_link) a partir da pose nomeada: o
+    /// TCP de soltura fica na cota da face de cima de um cubo apoiado, logo
+    /// tampo = FK.z - altura do cubo (mesma convencao do empilhamento).
+    bool tabletopZForPose(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & table_pose,
+        double * z_out) const
+    {
+        std::array<double, 5> q{};
+        if (!namedPoseJoints(arm, table_pose, q)) {
+            return false;
+        }
+        Eigen::Vector3d p;
+        Eigen::Matrix3d rot;
+        manip_task_execution::forwardKinematics(q, manip_task_execution::ArmModel{}, p, rot);
+        *z_out = p.z() - cube_height_m_;
+        return true;
+    }
+
+    /// Publica (latched) a cota da BORDA do container para o detector, antes
+    /// de qualquer movimento do ciclo — o detector so precisa dela na hora da
+    /// aproximacao, ~10 s depois.
+    void publishContainerPlaneZ(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<const PlaceTag::Goal> & goal)
+    {
+        container_plane_z_.reset();
+        // Publica para TODO goal em mesa comum (nao so' os com cor): o detector
+        // tambem alimenta os obstaculos dos places normais e precisa do plano
+        // da mesa ATUAL (o topico e' latched — sem isso ficaria com a mesa
+        // anterior ou o default).
+        if (isShelfPlaceTarget(goal->table_pose) || isTfPlaceTarget(goal->table_pose) ||
+            normalizedWs(goal->ws).rfind("WS", 0) != 0)
+        {
+            if (!goal->container_color.empty()) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[CONTAINER] table_pose '%s' / ws '%s' nao e mesa comum — sem plano da "
+                    "borda (container por cor so em WS_*).",
+                    goal->table_pose.c_str(), goal->ws.c_str());
+            }
+            return;
+        }
+        double tabletop = 0.0;
+        if (!tabletopZForPose(arm, goal->table_pose, &tabletop)) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[CONTAINER] sem juntas da pose '%s' — sem plano da borda; o detector "
+                "usa o default dele.",
+                goal->table_pose.c_str());
+            return;
+        }
+        const double plane_z = tabletop + container_rim_height_m_;
+        std_msgs::msg::Float64 msg;
+        msg.data = plane_z;
+        container_plane_z_pub_->publish(msg);
+        container_plane_z_ = plane_z;
+        RCLCPP_INFO(
+            get_logger(),
+            "[CONTAINER] plano da borda em %s: z=%.3f (tampo %.3f + borda %.3f) — "
+            "publicado em %s.",
+            ik_reference_frame_.c_str(), plane_z, tabletop, container_rim_height_m_,
+            container_plane_topic_.c_str());
+    }
+
+    StackOutcome placeIntoContainer(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & color,
+        const std::string & table_pose,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        const std::string frame = containerFrameForColor(color);
+        const std::string cor = containerColorPt(color);
+        if (frame.empty()) {
+            RCLCPP_WARN(
+                get_logger(), "[CONTAINER] cor '%s' sem frame configurado — place normal.",
+                color.c_str());
+            return StackOutcome::kBaseNotSeen;
+        }
+
+        // Detector nao esta no ar (ninguem assina o plano da borda): nao
+        // faz sentido esperar 3 s pelo TF — place normal direto.
+        if (container_plane_z_pub_->get_subscription_count() == 0) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[CONTAINER] container_detector nao esta no ar (sem assinante em %s) — "
+                "place normal.",
+                container_plane_topic_.c_str());
+            return StackOutcome::kBaseNotSeen;
+        }
+
+        publish_stage(goal_handle, "container_detecting");
+        speak("Procurando o container " + cor);
+        waitForCameraStream("PLACE");
+
+        geometry_msgs::msg::TransformStamped tf;
+        const auto detect_timeout = std::chrono::milliseconds(
+            static_cast<int>(std::max(0.2, container_detect_timeout_sec_) * 1000.0));
+        bool seen = waitForTagTransform(
+            ik_reference_frame_, frame, tf, detect_timeout,
+            std::chrono::milliseconds(200), "container detect " + frame);
+        if (!seen && container_search_lateral_) {
+            // Varredura lateral: o container pode estar fora do quadro de
+            // pegar_obj (ou cortado na borda, que o detector rejeita).
+            const auto search_timeout = std::chrono::milliseconds(
+                static_cast<int>(std::max(0.5, container_search_timeout_sec_) * 1000.0));
+            for (const char * pose : {"tag_direita", "tag_esquerda"}) {
+                publish_stage(goal_handle, "container_search");
+                RCLCPP_INFO(
+                    get_logger(), "[CONTAINER] %s nao visto de pegar_obj — olhando de %s.",
+                    frame.c_str(), pose);
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                arm->setNamedTarget(pose);
+                container_arm_moved_ = true;
+                if (!planAndExecute(arm, std::string("container search ") + pose)) {
+                    return StackOutcome::kMoveFailed;
+                }
+                if (!sleepInterruptibly(std::chrono::milliseconds(800))) {
+                    return StackOutcome::kMoveFailed;
+                }
+                if (waitForTagTransform(
+                        ik_reference_frame_, frame, tf, search_timeout,
+                        std::chrono::milliseconds(200), std::string("container search ") + pose))
+                {
+                    seen = true;
+                    break;
+                }
+            }
+        }
+        if (!seen) {
+            return StackOutcome::kBaseNotSeen;
+        }
+        RCLCPP_INFO(
+            get_logger(), "[CONTAINER] %s <- %s: x=%.4f y=%.4f z=%.4f",
+            ik_reference_frame_.c_str(), frame.c_str(),
+            tf.transform.translation.x, tf.transform.translation.y,
+            tf.transform.translation.z);
+
+        // Pre-alinhamento lateral (mesmo do empilhamento / place por TF).
+        constexpr double kTagXNearZero = 0.1;
+        if (std::abs(tf.transform.translation.x) > kTagXNearZero) {
+            publish_stage(goal_handle, "container_pre_approach");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget(
+                tf.transform.translation.x > 0.0 ? "tag_direita" : "tag_esquerda");
+            container_arm_moved_ = true;
+            if (!planAndExecute(arm, "container go tag_lateral")) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (!sleepInterruptibly(std::chrono::milliseconds(1000))) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (!waitForTagTransform(
+                    ik_reference_frame_, frame, tf,
+                    std::chrono::milliseconds(3000), std::chrono::milliseconds(200),
+                    "container final " + frame))
+            {
+                return StackOutcome::kBaseNotSeen;
+            }
+        }
+
+        if (tf.transform.translation.y < 0.10) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[CONTAINER] %s em y=%.3f (atras/sob o braco) — nao uso.",
+                frame.c_str(), tf.transform.translation.y);
+            return StackOutcome::kBaseNotSeen;
+        }
+
+        // Cota: o plano da borda vem da FK da mesa (autoridade); o z do TF e'
+        // so conferencia (o detector ray-casta no plano que publicamos).
+        double plane_z = tf.transform.translation.z;
+        if (container_plane_z_) {
+            if (std::abs(tf.transform.translation.z - *container_plane_z_) > 0.05) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[CONTAINER] z do frame (%.3f) difere do plano da borda (%.3f) em "
+                    "mais de 5 cm — usando o plano da FK.",
+                    tf.transform.translation.z, *container_plane_z_);
+            }
+            plane_z = *container_plane_z_;
+        }
+        Eigen::Vector3d target(
+            tf.transform.translation.x,
+            tf.transform.translation.y,
+            plane_z + cube_height_m_ + container_drop_clearance_m_);
+        const double frame_yaw = manip_task_execution::projectedFrameYaw(
+            Eigen::Quaterniond(
+                tf.transform.rotation.w, tf.transform.rotation.x,
+                tf.transform.rotation.y, tf.transform.rotation.z)
+            .toRotationMatrix());
+        // Varios blocos no MESMO container (pedido do operador 25/08): soltar
+        // sempre no centro empilha o 2o em cima do 1o (e a garra o re-pega ao
+        // fechar). Cada bloco vai para o candidato mais LONGE dos que a
+        // memoria de slots diz que ja soltamos neste container.
+        applyContainerSlotOffset(goal_handle, frame, frame_yaw, target);
+
+        std::vector<double> tilts_deg{0.0};
+        for (const double t : container_tilt_ladder_deg_) {
+            if (t > 0.0 && t < 90.0) {
+                tilts_deg.push_back(t);
+            }
+        }
+        // Pose de recuo VERTICAL (stack_pre_lift_m acima) resolvida junto, na
+        // mesma inclinacao: se a chegada reprovar, sobe por ela antes de
+        // qualquer plano em juntas para pegar_obj (revisao 25/08).
+        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+        std::array<double, 5> q{};
+        std::array<double, 5> q_lift{};
+        bool solved = false;
+        double tilt_used = 0.0;
+        for (const double tilt_deg : tilts_deg) {
+            const double tilt = tilt_deg * M_PI / 180.0;
+            if (manip_task_execution::solveIk(target, tilt, 0.0, q) &&
+                manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
+            {
+                solved = true;
+                tilt_used = tilt;
+                break;
+            }
+        }
+        if (!solved) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[CONTAINER] IK propria nao achou solucao (com recuo) para [%.3f %.3f %.3f] em %s.",
+                target.x(), target.y(), target.z(), ik_reference_frame_.c_str());
+            return StackOutcome::kNoIk;
+        }
+        // Linha dos dedos ao longo do lado LONGO do container (X do frame).
+        q[4] = manip_task_execution::computeWristForTagYaw(frame_yaw, q[0], tilt_used);
+        q_lift[4] = q[4];
+        RCLCPP_INFO(
+            get_logger(),
+            "[CONTAINER] alvo [%.3f %.3f %.3f] (borda %.3f + cubo %.3f + folga %.3f), "
+            "ferramenta a %.0f graus, yaw %.3f -> j [%.3f %.3f %.3f %.3f %.3f]",
+            target.x(), target.y(), target.z(), plane_z, cube_height_m_,
+            container_drop_clearance_m_, tilt_used * 180.0 / M_PI, frame_yaw,
+            q[0], q[1], q[2], q[3], q[4]);
+
+        publish_stage(goal_handle, "container_approach");
+        speak("Levando o bloco para dentro do container " + cor);
+        container_arm_moved_ = true;
+        // Pedido do operador (25/08): so' descer depois que as outras juntas
+        // estao certas. 1) base e punho (j1, j4, j5) com o braco na altura
+        // atual; 2) j2+j3 ate' a pose de ELEVACAO (mesmo x,y, +stack_pre_lift_m
+        // acima do alvo); 3) descida vertical curta ate' o alvo.
+        if (!moveToJointTargetJoints23Last(arm, q_lift, "container above " + frame)) {
+            return StackOutcome::kMoveFailed;
+        }
+        if (!moveToJointTarget(arm, q, "container descend " + frame)) {
+            return StackOutcome::kMoveFailed;
+        }
+
+        Eigen::Vector3d actual = target;
+        const double err = tcpErrorByFk(arm, target, &actual);
+        // XY decide se o bloco cai dentro; Z so' muda a altura da queda — e o
+        // braco estendido afunda ~2,5 cm sistematicamente (medido 25/08), por
+        // isso tolerancia propria.
+        const double err_xy = (err < 0.0) ? -1.0 : std::hypot(actual.x() - target.x(), actual.y() - target.y());
+        const double err_z = (err < 0.0) ? 0.0 : std::abs(actual.z() - target.z());
+        if (err < 0.0 || err_xy > container_arrival_tolerance_m_ || err_z > container_arrival_z_tolerance_m_) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[CONTAINER] chegada %s (tolerancia xy %.1f cm, z %.1f cm) — nao solto no container; "
+                "subindo antes do fallback.",
+                err < 0.0 ? "sem joint_states para conferir"
+                          : (std::to_string(err_xy * 100.0).substr(0, 4) + " cm em xy, " +
+                             std::to_string(err_z * 100.0).substr(0, 4) + " cm em z").c_str(),
+                container_arrival_tolerance_m_ * 100.0, container_arrival_z_tolerance_m_ * 100.0);
+            (void)moveToJointTarget(arm, q_lift, "container back up (arrival)");
+            return StackOutcome::kNoIk;
+        }
+
+        last_slot_decision_ = SlotDecision{frame, table_pose, target, 0.0};
+        stack_lift_q_ = q_lift;            // saida: sobe na vertical antes de recolher
+        container_exit_pending_ = true;    // ... com a garra FECHADA (pedido do operador 25/08)
+        RCLCPP_INFO(
+            get_logger(),
+            "[CONTAINER] em posicao sobre o container %s (erro FK %.1f cm: dx %+.1f dy %+.1f dz %+.1f cm) — soltando.",
+            cor.c_str(), err * 100.0, (actual.x() - target.x()) * 100.0,
+            (actual.y() - target.y()) * 100.0, (actual.z() - target.z()) * 100.0);
+        return StackOutcome::kOk;
+    }
+
     bool moveToPlaceTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
         stack_lift_q_.reset();
+        container_exit_pending_ = false;
         {
             const auto goal = goal_handle->get_goal();
             if (!goal->stack_on.empty()) {
@@ -2060,6 +2578,60 @@ private:
                     if (!planAndExecute(arm, "stack fallback return pegar_obj")) {
                         last_place_failure_reason_ = "empilhar_falhou";
                         return false;
+                    }
+                }
+            }
+        }
+
+        // Container por cor (2026-08-25): so em mesa comum WS_*, nunca junto
+        // com empilhamento (o executor ja rejeita a combinacao).
+        {
+            const auto goal = goal_handle->get_goal();
+            if (!goal->container_color.empty() && goal->stack_on.empty()) {
+                const std::string cor = containerColorPt(goal->container_color);
+                container_arm_moved_ = false;
+                if (containerFrameForColor(goal->container_color).empty()) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[CONTAINER] cor '%s' sem container fisico (RED|BLUE) — place normal.",
+                        goal->container_color.c_str());
+                } else if (isShelfPlaceTarget(table_pose) || isTfPlaceTarget(table_pose) ||
+                    normalizedWs(goal->ws).rfind("WS", 0) != 0)
+                {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[CONTAINER] container por cor so em mesa comum WS_* (mesa '%s', ws '%s') "
+                        "— place normal.",
+                        table_pose.c_str(), goal->ws.c_str());
+                } else {
+                    const StackOutcome out = placeIntoContainer(
+                        arm, goal->container_color, table_pose, goal_handle);
+                    if (out == StackOutcome::kOk) {
+                        return true;
+                    }
+                    if (out == StackOutcome::kMoveFailed || !container_fallback_to_table_) {
+                        last_place_failure_reason_ = "container_falhou";
+                        return false;
+                    }
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[CONTAINER] nao consegui soltar no container %s (%s) — soltando na "
+                        "mesa normalmente (%s).",
+                        cor.c_str(),
+                        out == StackOutcome::kBaseNotSeen ? "nao visto" : "sem IK/chegada",
+                        table_pose.c_str());
+                    speak(
+                        out == StackOutcome::kBaseNotSeen
+                            ? "Nao vi o container " + cor + ", vou soltar na mesa"
+                            : "Nao consegui chegar no container " + cor + ", vou soltar na mesa");
+                    if (container_arm_moved_) {
+                        arm->setStartStateToCurrentState();
+                        arm->setEndEffectorLink("tcp");
+                        arm->setNamedTarget("pegar_obj");
+                        if (!planAndExecute(arm, "container fallback return pegar_obj")) {
+                            last_place_failure_reason_ = "container_falhou";
+                            return false;
+                        }
                     }
                 }
             }
@@ -2220,9 +2792,25 @@ private:
         cancel_requested_.store(false);
         RCLCPP_INFO(
             get_logger(),
-            "Received place goal tag=%s table=%s",
+            "Received place goal tag=%s table=%s ws=%s stack_on=%s container_color=%s",
             goal->tag_frame.c_str(),
-            goal->table_pose.c_str());
+            goal->table_pose.c_str(),
+            goal->ws.c_str(),
+            goal->stack_on.empty() ? "-" : goal->stack_on.c_str(),
+            goal->container_color.empty() ? "-" : goal->container_color.c_str());
+        if (!goal->container_color.empty() &&
+            goal->container_color != "RED" && goal->container_color != "BLUE")
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "container_color '%s' desconhecida (esperado RED|BLUE) — place na mesa.",
+                goal->container_color.c_str());
+        }
+        if (!goal->container_color.empty() && !goal->stack_on.empty()) {
+            RCLCPP_WARN(
+                get_logger(),
+                "container_color e stack_on juntos: empilhar tem precedencia, container ignorado.");
+        }
 
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
     }
@@ -2296,6 +2884,7 @@ private:
         pegar_obj_arrival_time_.reset();
         early_obstacles_.clear();
         last_slot_decision_.reset();
+        container_plane_z_.reset();
         speak(
             "Iniciando a rotina de entregar a " +
             spokenTargetName(goal->tag_frame));
@@ -2334,6 +2923,7 @@ private:
             return;
         }
         setActiveInterfaces(arm, gripper);
+        publishContainerPlaneZ(arm, goal);
 
         arm->setPoseReferenceFrame("base_footprint");
         arm->setPlanningTime(15.0);
@@ -2710,6 +3300,71 @@ private:
             return false;
         }
         recordSlotUsed(arm, place_ws, goal->tag_frame);
+
+        // Soltou DENTRO do container (pedido do operador 25/08): os dedos
+        // abertos batiam na parede e empurravam o container ao recolher.
+        // Fecha a garra, sobe na vertical (j2/j3 ate' a pose de elevacao) e
+        // so' depois volta a pegar_obj — j2/j3 primeiro, o resto em seguida.
+        // Melhor esforco: o bloco ja' foi entregue.
+        if (container_exit_pending_) {
+            container_exit_pending_ = false;
+            if (container_close_gripper_on_exit_) {
+                std::optional<GripperEffortSample> base;
+                if (verify_grasp_effort_) {
+                    base = waitForFreshGripperEffort(std::chrono::milliseconds(600));
+                }
+                publish_stage(goal_handle, "container_closing_gripper");
+                gripper->setStartStateToCurrentState();
+                const std::map<std::string, double> jt{
+                    {"manip_joint6", container_exit_gripper_position_},
+                    {"manip_joint7", container_exit_gripper_position_}};
+                gripper->setJointValueTarget(jt);
+                if (!planAndExecute(gripper, "close gripper after container release")) {
+                    RCLCPP_WARN(get_logger(), "[CONTAINER] garra nao fechou apos soltar — saindo assim mesmo.");
+                } else if (verify_grasp_effort_ && base) {
+                    // Receio do operador (25/08): fechar pode pegar o bloco de
+                    // volta. O esforco da garra denuncia: se carregou, reabre
+                    // (o bloco cai de novo no container) e sai com a garra aberta.
+                    publish_stage(goal_handle, "container_verifying_empty");
+                    // So' o valor ABSOLUTO conta: a leitura de base logo apos
+                    // abrir ainda pode trazer o esforco da pega anterior
+                    // (1,09 Nm visto em 25/08) e mascarar uma re-pega.
+                    GripperEffortSample zero = *base;
+                    zero.motor6 = 0.0;
+                    zero.motor7 = 0.0;
+                    if (verifyGraspByEffort(zero, "CONTAINER-EXIT")) {
+                        RCLCPP_WARN(
+                            get_logger(),
+                            "[CONTAINER] a garra pegou o bloco de volta ao fechar — reabrindo e "
+                            "saindo com a garra aberta.");
+                        speak("Peguei o bloco de volta, vou soltar de novo");
+                        gripper->setStartStateToCurrentState();
+                        gripper->setNamedTarget("gripper_open");
+                        (void)planAndExecute(gripper, "reopen after regrasp in container");
+                    }
+                }
+            }
+            if (stack_lift_q_) {
+                publish_stage(goal_handle, "container_lift_after_release");
+                if (!moveToJointTarget(arm, *stack_lift_q_, "container lift after release")) {
+                    RCLCPP_WARN(get_logger(), "[CONTAINER] subida vertical apos soltar falhou — recolhendo direto.");
+                }
+                stack_lift_q_.reset();
+            }
+            std::array<double, 5> q_rest{};
+            if (namedPoseJoints(arm, "pegar_obj", q_rest)) {
+                publish_stage(goal_handle, "returning_pegar_obj_final");
+                if (!moveToJointTargetJoints23First(arm, q_rest, "return pegar_obj after container")) {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Entrega no container concluida mas o retorno a pegar_obj falhou — "
+                        "braco pode estar estendido sobre a mesa.");
+                    speak("Entreguei o bloco, mas nao consegui recolher o braco");
+                }
+                return true;
+            }
+            // sem juntas de pegar_obj: cai no retorno generico abaixo
+        }
 
         // Empilhou: sobe na vertical ate a pre-pose antes de recolher, para
         // nao arrastar a pilha com a garra aberta. Melhor esforco.

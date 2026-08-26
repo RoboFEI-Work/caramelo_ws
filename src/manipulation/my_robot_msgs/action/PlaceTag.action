@@ -9,6 +9,12 @@ string ws
 # sobre o qual soltar o objeto carregado. table_pose continua valendo
 # (altura da mesa / fallback se a base nao for vista). Vazio = nao empilha.
 string stack_on
+# 2026-08-25: CONTAINER POR COR — "RED" | "BLUE" = soltar DENTRO do container
+# dessa cor visto pela camera na mesa de destino (frames ct_vermelho /
+# ct_azul do container_detector). Vazio = mesa. Se o container nao for
+# visto, o no faz o place normal na mesa (fallback). Nao combinar com
+# stack_on (o executor rejeita).
+string container_color
 
 ---
 bool success

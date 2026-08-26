@@ -14,8 +14,17 @@ install(
 )
 
 install(
-  PROGRAMS scripts/perception_gate_node.py
+  PROGRAMS
+    scripts/perception_gate_node.py
+    scripts/container_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  # Nucleo do detector de containers (segmentacao + projecao), sem ROS.
+  ament_add_pytest_test(test_container_detector test/test_container_detector.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
 
 ament_package()

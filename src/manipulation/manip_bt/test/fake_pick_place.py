@@ -87,7 +87,13 @@ class FakePickPlace(Node):
             return result
 
         goal_handle.succeed()
-        self.get_logger().info(f"'{stage}' concluido com sucesso (fake).")
+        extra = ''
+        if stage == 'place':
+            req = goal_handle.request
+            extra = (f" tag={getattr(req, 'tag_frame', '?')} mesa={getattr(req, 'table_pose', '?')}"
+                     f" ws={getattr(req, 'ws', '')} stack_on={getattr(req, 'stack_on', '')}"
+                     f" container_color={getattr(req, 'container_color', '')}")
+        self.get_logger().info(f"'{stage}' concluido com sucesso (fake).{extra}")
         result.success = True
         result.message = "fake"
         return result

@@ -42,6 +42,8 @@ def generate_launch_description():
     use_pick_place = LaunchConfiguration("use_pick_place")
     use_rviz_manip = LaunchConfiguration("use_rviz_manip")
     launch_pick_telemetry = LaunchConfiguration("launch_pick_telemetry")
+    use_container_detector = LaunchConfiguration("use_container_detector")
+    container_detector_always_on = LaunchConfiguration("container_detector_always_on")
 
     manip_bringup_share = get_package_share_directory("manip_bringup")
     moveit_config_share = get_package_share_directory("manip_moveit_config")
@@ -69,8 +71,26 @@ def generate_launch_description():
             .get("frames", [])
         )
     ]
+    # Containers por cor (2026-08-25): os frames publicados pelo
+    # container_detector entram como obstaculo dos places normais (0,13 m
+    # via clearanceForFrame, prefixo ct_). Sem detector, o place ignora
+    # frames sem TF.
+    slot_obstacle_tag_frames += ["ct_vermelho", "ct_azul"]
 
     declared_args = [
+        DeclareLaunchArgument(
+            "use_container_detector",
+            default_value="true",
+            description=(
+                "Detector de containers vermelho/azul por cor (container_detector_node.py). "
+                "So processa imagem enquanto ha um place ativo."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "container_detector_always_on",
+            default_value="false",
+            description="Detector processa sempre (calibracao/bag), nao so durante o place",
+        ),
         # --- Composicao ---
         DeclareLaunchArgument(
             "use_mock_hardware",
@@ -458,6 +478,26 @@ def generate_launch_description():
         ],
     )
 
+    # --- Detector de containers por cor (2026-08-25) ---
+    # Segmentacao HSV + ray-cast no plano da borda (a profundidade do D455
+    # nao alcanca a mesa daqui). Publica TF manip_base_link -> ct_vermelho /
+    # ct_azul so enquanto ve o container e so durante o place (/manip/
+    # place_active). nice +15 como o apriltag. Cores em config/container_detector.yaml.
+    container_detector = Node(
+        package="manip_bringup",
+        executable="container_detector_node.py",
+        name="container_detector",
+        output="screen",
+        prefix="nice -n 15",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_container_detector),
+        parameters=[
+            os.path.join(manip_bringup_share, "config", "container_detector.yaml"),
+            {"always_on": ParameterValue(container_detector_always_on, value_type=bool)},
+        ],
+    )
+
     # --- Gate da percepcao (adendo da auditoria 2026-08-07) ---
     # A camera so streama durante pick/place. Desacoplado: sem este no, tudo
     # se comporta como antes (camera sempre ligada). Ver o docstring do script.
@@ -479,8 +519,12 @@ def generate_launch_description():
             # gate mantem a camera ligada.
             "viewer_subscriber_baseline": ParameterValue(
                 PythonExpression(
-                    ["1 if '", LaunchConfiguration("use_apriltag"),
-                     "' == 'true' else 0"]),
+                    ["(1 if '", LaunchConfiguration("use_apriltag"),
+                     "' == 'true' else 0) + (1 if '",
+                     LaunchConfiguration("use_container_detector"),
+                     "' == 'true' and '",
+                     LaunchConfiguration("container_detector_always_on"),
+                     "' == 'true' else 0)"]),
                 value_type=int),
         }],
     )
@@ -609,6 +653,7 @@ def generate_launch_description():
         perception_gate,
         renice_camera,
         apriltag,
+        container_detector,
         speech,
         pick_telemetry,
         rviz,

@@ -33,7 +33,10 @@ BT::PortsList PlaceTagBT::providedPorts()
 		// Opcional: estacao de destino ("WS_3", "PP_1"...). Vazio = legado.
 		BT::InputPort<std::string>("ws"),
 		// Opcional (2026-08-24): empilhar — frame da tag BASE ja na mesa.
-		BT::InputPort<std::string>("stack_on")
+		BT::InputPort<std::string>("stack_on"),
+		// Opcional (2026-08-25): "RED"|"BLUE" = soltar dentro do container
+		// dessa cor visto na mesa; vazio = mesa.
+		BT::InputPort<std::string>("container_color")
 	};
 }
 
@@ -56,14 +59,17 @@ BT::NodeStatus PlaceTagBT::onStart()
 	getInput("ws", ws);   // opcional: ausente = legado (sem escolha de slot)
 	std::string stack_on;
 	getInput("stack_on", stack_on);   // opcional: vazio = nao empilha
+	std::string container_color;
+	getInput("container_color", container_color);   // opcional: vazio = mesa
 
 	RCLCPP_INFO(
 		rclcpp::get_logger("PlaceTagBT"),
-		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s stack_on=%s",
+		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s stack_on=%s container_color=%s",
 		tag_frame.c_str(),
 		table_pose.c_str(),
 		ws.empty() ? "<sem ws>" : ws.c_str(),
-		stack_on.empty() ? "<nao>" : stack_on.c_str());
+		stack_on.empty() ? "<nao>" : stack_on.c_str(),
+		container_color.empty() ? "<mesa>" : container_color.c_str());
 
 	// Item 3.5: mesmo tratamento do PickTagBT — timeout vem do blackboard.
 	double wait_timeout = 10.0;
@@ -84,6 +90,7 @@ BT::NodeStatus PlaceTagBT::onStart()
 	goal_msg.table_pose = table_pose;
 	goal_msg.ws = ws;
 	goal_msg.stack_on = stack_on;
+	goal_msg.container_color = container_color;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
 	// stage — acao saudavel publica stage continuamente, nunca e cancelada.

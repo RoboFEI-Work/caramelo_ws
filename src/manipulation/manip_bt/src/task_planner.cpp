@@ -22,20 +22,22 @@ struct ObjectInfo
 {
   int id = -1;
   std::string type;
-  std::string color;
+  std::string color;   // canonica (RED, BLUE, ...) ou vazia
 };
 
+// Container da MESA (arena). 2026-08-25: nao tem mais tag — e' identificado
+// pela COR (container_detector). `pose_name` (ct<id>) foi removido.
 struct ContainerInfo
 {
   int id = -1;
   std::string color;
   std::string ws;
-  std::string pose_name;
 };
 
 struct ContainerAssignment
 {
-  std::string container_pose;
+  int container_id = -1;
+  std::string container_color;
   std::string container_ws;
 };
 
@@ -45,7 +47,10 @@ struct TransferItem
   std::string tag_frame;
   std::string from_ws;
   std::string to_ws;
-  std::string destination_container_pose;
+  // 2026-08-25: cor do container da mesa onde soltar (RED|BLUE); vazia =
+  // mesa. Vem da constraint "inside" (formato antigo) ou da cor do proprio
+  // objeto (formato novo: se houver container dessa cor visivel, o place usa).
+  std::string container_color;
   bool needs_pick = false;
   bool needs_place = false;
   // 2026-08-24 EMPILHAR: este objeto e' solto EM CIMA do objeto `stack_on_obj`
@@ -84,6 +89,83 @@ std::string toUpper(std::string value)
     value.begin(), value.end(), value.begin(),
     [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
   return value;
+}
+
+// 2026-08-25 — cores. Aceita ingles/portugues, maiusculas/minusculas.
+std::string canonicalColor(const std::string & raw)
+{
+  const std::string t = toUpper(trim(raw));
+  static const std::map<std::string, std::string> kMap{
+    {"RED", "RED"}, {"VERMELHO", "RED"}, {"VERMELHA", "RED"},
+    {"BLUE", "BLUE"}, {"AZUL", "BLUE"},
+    {"GREEN", "GREEN"}, {"VERDE", "GREEN"},
+    {"YELLOW", "YELLOW"}, {"AMARELO", "YELLOW"}, {"AMARELA", "YELLOW"},
+    {"BLACK", "BLACK"}, {"PRETO", "BLACK"}, {"PRETA", "BLACK"},
+    {"WHITE", "WHITE"}, {"BRANCO", "WHITE"}, {"BRANCA", "WHITE"},
+    {"ORANGE", "ORANGE"}, {"LARANJA", "ORANGE"},
+  };
+  const auto it = kMap.find(t);
+  return it == kMap.end() ? "" : it->second;
+}
+
+/// Cor de um objeto: campo `color:` (formato antigo) ou um token de cor
+/// dentro de `type:` (formato novo: "RED", "ATTC_RED", "ATTC-blue"...).
+/// Vazia se nao houver cor conhecida (ex.: `type: ATTC` da versao equipe).
+std::string extractColor(const YAML::Node & obj)
+{
+  const std::string color_field = trim(obj["color"].as<std::string>(""));
+  if (!color_field.empty()) {
+    const std::string c = canonicalColor(color_field);
+    if (c.empty()) {
+      std::cerr << "[task_planner] AVISO: color '" << color_field
+                << "' desconhecida — usando como esta." << std::endl;
+      return toUpper(color_field);
+    }
+    return c;
+  }
+  const std::string type = toUpper(trim(obj["type"].as<std::string>("")));
+  std::string token;
+  for (std::size_t i = 0; i <= type.size(); ++i) {
+    const bool sep = i == type.size() || !std::isalnum(static_cast<unsigned char>(type[i]));
+    if (!sep) {
+      token += type[i];
+      continue;
+    }
+    if (!token.empty()) {
+      const std::string c = canonicalColor(token);
+      if (!c.empty()) {
+        return c;
+      }
+      token.clear();
+    }
+  }
+  // Sem token de cor separado (ex.: "ATTCRED") = sem cor: inferir por
+  // substring dava falso positivo ("REDUCED" -> RED).
+  return "";
+}
+
+/// Cores que TEM container fisico na arena (detector: vermelho/azul).
+bool colorHasContainer(const std::string & color)
+{
+  return color == "RED" || color == "BLUE";
+}
+
+/// 2026-08-25: YAML do @Work Commander traz schema_version/version. So
+/// avisamos — chaves desconhecidas sempre foram ignoradas.
+void checkSchemaVersion(const YAML::Node & root)
+{
+  const YAML::Node sv = root["schema_version"];
+  if (sv) {
+    const std::string v = trim(sv.as<std::string>(""));
+    if (v != "1") {
+      std::cerr << "[task_planner] AVISO: schema_version '" << v
+                << "' desconhecida (esperado 1) — usando o parser v1." << std::endl;
+    }
+  }
+  const YAML::Node ver = root["version"];
+  if (ver) {
+    std::cout << "[task_planner] task version: " << trim(ver.as<std::string>("")) << std::endl;
+  }
 }
 
 int parseObjectId(const YAML::Node & node)
@@ -140,7 +222,7 @@ std::map<int, ObjectInfo> parseObjects(const YAML::Node & root, std::set<int> & 
     const int id = parseObjectId(obj["id"]);
 
     const std::string type_upper = toUpper(trim(obj["type"].as<std::string>("")));
-    if (type_upper == "DECOY") {
+    if (type_upper.find("DECOY") != std::string::npos) {   // "DECOY", "DECOY_RED"...
       ignored_object_ids.insert(id);
       continue;
     }
@@ -152,7 +234,7 @@ std::map<int, ObjectInfo> parseObjects(const YAML::Node & root, std::set<int> & 
     ObjectInfo info;
     info.id = id;
     info.type = trim(obj["type"].as<std::string>(""));
-    info.color = trim(obj["color"].as<std::string>(""));
+    info.color = extractColor(obj);
     by_id[id] = info;
   }
 
@@ -178,7 +260,7 @@ std::map<int, ContainerInfo> parseContainers(const YAML::Node & root)
 
     ContainerInfo info;
     info.id = id;
-    info.color = trim(container["color"].as<std::string>(""));
+    info.color = canonicalColor(container["color"].as<std::string>(""));
     info.ws = trim(container["at"].as<std::string>(""));
     if (info.ws.empty()) {
       info.ws = trim(container["at_ws"].as<std::string>(""));
@@ -187,7 +269,6 @@ std::map<int, ContainerInfo> parseContainers(const YAML::Node & root)
       throw std::runtime_error("containers id " + std::to_string(id) + " missing at/at_ws");
     }
 
-    info.pose_name = "ct" + std::to_string(id);
     by_id[id] = info;
   }
 
@@ -234,6 +315,20 @@ std::map<int, ContainerAssignment> parseContainerAssignments(
 {
   std::map<int, ContainerAssignment> assignments;
   if (containers.empty()) {
+    const YAML::Node fs = root["finish_state"];
+    if (fs && fs.IsMap()) {
+      for (const auto & ws_it : fs) {
+        const YAML::Node cons = ws_it.second["constraints"];
+        if (cons && cons.IsSequence()) {
+          for (const auto & c : cons) {
+            if (toUpper(c.as<std::string>("")).find("INSIDE") != std::string::npos) {
+              std::cerr << "[task_planner] AVISO: constraint '" << c.as<std::string>("")
+                        << "' ignorada — nao ha bloco 'containers:' no yaml." << std::endl;
+            }
+          }
+        }
+      }
+    }
     return assignments;
   }
 
@@ -267,6 +362,17 @@ std::map<int, ContainerAssignment> parseContainerAssignments(
         throw std::runtime_error(
                 "Constraint references unknown container id: " + std::to_string(container_id));
       }
+      if (container_it->second.color.empty()) {
+        throw std::runtime_error(
+                "containers id " + std::to_string(container_id) +
+                " sem 'color': a entrega em container agora e' por COR (deteccao visual), "
+                "nao por tag");
+      }
+      if (!colorHasContainer(container_it->second.color)) {
+        throw std::runtime_error(
+                "containers id " + std::to_string(container_id) + " com cor '" +
+                container_it->second.color + "': o detector so conhece RED|BLUE");
+      }
 
       const std::string objects_part = constraint.substr(0, inside_match.position());
       for (
@@ -282,7 +388,8 @@ std::map<int, ContainerAssignment> parseContainerAssignments(
         }
 
         ContainerAssignment assignment;
-        assignment.container_pose = container_it->second.pose_name;
+        assignment.container_id = container_id;
+        assignment.container_color = container_it->second.color;
         assignment.container_ws = container_it->second.ws;
         assignments[obj_id] = assignment;
       }
@@ -417,7 +524,8 @@ std::vector<TransferItem> buildTransfers(
   const std::map<int, std::string> & id_to_frame,
   const std::set<int> & ignored_object_ids,
   const std::map<int, ContainerAssignment> & container_assignments,
-  const std::map<int, int> & stack_assignments)
+  const std::map<int, int> & stack_assignments,
+  const bool yaml_declares_containers)
 {
   std::set<int> all_ids;
   for (const auto & [obj_id, _] : objects) {
@@ -441,6 +549,14 @@ std::vector<TransferItem> buildTransfers(
 
   std::vector<TransferItem> transfers;
   transfers.reserve(all_ids.size());
+  std::vector<int> ids_without_frame;
+
+  // Participantes de pilha (topo ou base) nunca vao para container.
+  std::set<int> stack_participants;
+  for (const auto & [top, base] : stack_assignments) {
+    stack_participants.insert(top);
+    stack_participants.insert(base);
+  }
 
   for (const int obj_id : all_ids) {
     TransferItem item;
@@ -459,8 +575,14 @@ std::vector<TransferItem> buildTransfers(
     }
 
     const auto assignment_it = container_assignments.find(obj_id);
-    if (assignment_it != container_assignments.end()) {
-      item.destination_container_pose = assignment_it->second.container_pose;
+    const bool assigned_to_container = assignment_it != container_assignments.end();
+    if (assigned_to_container) {
+      if (stack_participants.count(obj_id) > 0) {
+        throw std::runtime_error(
+                "Object id " + std::to_string(obj_id) +
+                " esta numa pilha E numa constraint de container — contradicao");
+      }
+      item.container_color = assignment_it->second.container_color;
       if (item.to_ws.empty()) {
         item.to_ws = assignment_it->second.container_ws;
       } else if (item.to_ws != assignment_it->second.container_ws) {
@@ -490,30 +612,71 @@ std::vector<TransferItem> buildTransfers(
     const bool has_start = !item.from_ws.empty();
     const bool has_finish = !item.to_ws.empty();
     const bool moved = has_start && has_finish && (item.from_ws != item.to_ws);
-    const bool assigned_to_container = !item.destination_container_pose.empty();
     const bool removed = has_start && !has_finish;
     const bool added = !has_start && has_finish;
 
+    if (removed) {
+      std::cerr << "[task_planner] AVISO: objeto " << obj_id << " esta no start_state ("
+                << item.from_ws << ") mas nao no finish_state — sem destino, nao sera pego."
+                << std::endl;
+      continue;
+    }
+    if (added) {
+      throw std::runtime_error(
+              "Object id " + std::to_string(obj_id) + " esta no finish_state (" + item.to_ws +
+              ") mas em nenhum start_state — sem origem para pegar");
+    }
+
     // Topo de pilha sempre e' pego e solto (mesmo se comeca e termina na
     // mesma estacao: precisa subir em cima da base).
-    item.needs_pick = moved || removed || assigned_to_container || (stacked_top && has_start);
-    item.needs_place = moved || added || assigned_to_container || stacked_top;
+    item.needs_pick = moved || assigned_to_container || (stacked_top && has_start);
+    item.needs_place = moved || assigned_to_container || stacked_top;
 
     if (!item.needs_pick && !item.needs_place) {
       continue;
     }
 
-    // Without a resolved tag frame we cannot emit the minimal action schema.
-    if (item.tag_frame.empty()) {
-      if (stacked_top) {
-        throw std::runtime_error(
-                "Objeto " + std::to_string(obj_id) +
-                " (topo de pilha) nao tem frame de tag no apriltag yaml");
+    // Formato novo (SEM bloco `containers:` no yaml): objeto de cor com
+    // container fisico, solto numa mesa comum e fora de pilha -> o place
+    // tenta o container dessa cor (se a camera vir um; senao, mesa). No
+    // formato antigo (com `containers:`) so as constraints "inside" mandam
+    // para container — quem nao esta numa constraint vai para a mesa.
+    if (!yaml_declares_containers && item.needs_place && item.container_color.empty() &&
+      stack_participants.count(obj_id) == 0 && item.to_ws.rfind("WS", 0) == 0)
+    {
+      const auto obj_it = objects.find(obj_id);
+      if (obj_it != objects.end() && colorHasContainer(obj_it->second.color)) {
+        item.container_color = obj_it->second.color;
       }
+    } else if (assigned_to_container) {
+      const auto obj_it = objects.find(obj_id);
+      if (obj_it != objects.end() && !obj_it->second.color.empty() &&
+        obj_it->second.color != item.container_color)
+      {
+        std::cerr << "[task_planner] AVISO: objeto " << obj_id << " e' " << obj_it->second.color
+                  << " mas a constraint manda para o container " << item.container_color
+                  << " — a constraint vence." << std::endl;
+      }
+    }
+
+    // Sem frame de tag nao ha como pegar/soltar: erro explicito (antes o
+    // objeto sumia do plano em silencio).
+    if (item.tag_frame.empty()) {
+      ids_without_frame.push_back(obj_id);
       continue;
     }
 
     transfers.push_back(item);
+  }
+
+  if (!ids_without_frame.empty()) {
+    std::string ids;
+    for (const int id : ids_without_frame) {
+      ids += (ids.empty() ? "" : ", ") + std::to_string(id);
+    }
+    throw std::runtime_error(
+            "Objetos sem frame de tag no apriltag yaml (tag.ids/frames/sizes): " + ids +
+            " — acrescentar em tags_36h11.yaml");
   }
 
   std::sort(
@@ -724,17 +887,16 @@ void appendPlacesAtWs(
       place["tag_frame"] = t.tag_frame;
       place["ws"] = t.to_ws;
 
-      if (!t.destination_container_pose.empty()) {
-        place["table_pose"] = t.destination_container_pose;
-      } else {
-        const auto ws_it = ws_to_table_pose.find(t.to_ws);
-        if (ws_it == ws_to_table_pose.end()) {
-          throw std::runtime_error("Missing WS->Mesa mapping for destination workspace: " + t.to_ws);
-        }
-        place["table_pose"] = ws_it->second;
+      const auto ws_it = ws_to_table_pose.find(t.to_ws);
+      if (ws_it == ws_to_table_pose.end()) {
+        throw std::runtime_error("Missing WS->Mesa mapping for destination workspace: " + t.to_ws);
       }
+      place["table_pose"] = ws_it->second;
       if (!t.stack_on_frame.empty()) {
         place["stack_on"] = t.stack_on_frame;
+      }
+      if (!t.container_color.empty()) {
+        place["container_color"] = t.container_color;
       }
 
       action_seq.push_back(place);
@@ -1001,6 +1163,7 @@ int main(int argc, char ** argv)
     const auto ws_to_table_pose = parseWsToTablePose(ws_map_yaml_path);
 
     const YAML::Node competition_root = YAML::LoadFile(competition_yaml_path);
+    checkSchemaVersion(competition_root);
     const auto active_areas = parseActiveAreas(competition_root);
     std::set<int> ignored_object_ids;
     const auto objects = parseObjects(competition_root, ignored_object_ids);
@@ -1018,8 +1181,31 @@ int main(int argc, char ** argv)
         id_to_frame,
         ignored_object_ids,
         container_assignments,
-        stack_assignments);
+        stack_assignments,
+        !containers.empty());
     const auto output = buildOutput(competition_root, transfers, apriltag_yaml_path, ws_to_table_pose);
+
+    // Resumo para o operador (run_mission.py repassa o stdout antes de confirmar).
+    {
+      std::size_t n_container = 0;
+      std::size_t n_stack = 0;
+      std::string container_list;
+      for (const auto & t : transfers) {
+        if (!t.container_color.empty()) {
+          ++n_container;
+          container_list += (container_list.empty() ? "" : ", ") + t.tag_frame + "->" +
+            t.container_color;
+        }
+        if (!t.stack_on_frame.empty()) {
+          ++n_stack;
+        }
+      }
+      std::cout << "[task_planner] " << transfers.size() << " objeto(s) a transportar; "
+                << ignored_object_ids.size() << " decoy(s) ignorado(s); "
+                << n_container << " place(s) em container por cor"
+                << (container_list.empty() ? "" : " (" + container_list + ")") << "; "
+                << n_stack << " empilhamento(s)." << std::endl;
+    }
 
     YAML::Emitter out;
     out << output;
