@@ -377,9 +377,9 @@ public:
         // (q2+q3+q4 fica igual = mesma inclinacao da ferramenta; o cotovelo
         // recua e o punho compensa). Ambos 0 = desligado.
         shelf_phase3_j4_delta_deg_ = this->declare_parameter<double>(
-            "shelf_phase3_j4_delta_deg", 15.0);
+            "shelf_phase3_j4_delta_deg", 0.0);
         shelf_phase3_j3_delta_deg_ = this->declare_parameter<double>(
-            "shelf_phase3_j3_delta_deg", -15.0);
+            "shelf_phase3_j3_delta_deg", 0.0);
 
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
@@ -595,8 +595,8 @@ private:
     double shelf_free_j2_max_{1.2};
     double shelf_grasp_tilt_deg_{45.0};
     double shelf_bottom_pre_lift_m_{0.03};
-    double shelf_phase3_j4_delta_deg_{15.0};
-    double shelf_phase3_j3_delta_deg_{-15.0};
+    double shelf_phase3_j4_delta_deg_{0.0};
+    double shelf_phase3_j3_delta_deg_{0.0};
     /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
     /// vazio = sem pre-pega (retorno vai direto a fase 1).
     std::optional<std::array<double, 5>> shelf_lift_q_;
