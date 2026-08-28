@@ -1,0 +1,13 @@
+# Deslocamento LATERAL puro da base (holonomico), em malha fechada por
+# ODOMETRIA (/odom do EKF). Servido pelo dock_align_node (mesmo no' do
+# align_to_dock), nome relativo 'nudge_base'. 2026-08-28: fila de alcance.
+float32 dy        # m, + = ESQUERDA (eixo +y de base_footprint); |dy| em [nudge_min_travel, nudge_max_travel]
+float32 timeout   # s; 0 => nudge_default_timeout do no'
+---
+bool success
+float32 travelled # m com sinal, medido por odometria (0 se nao saiu do lugar)
+string reason     # "" no sucesso; abaixo_do_passo_minimo | acima_do_curso_maximo |
+                  # sem_odometria | sem_scan | muito_perto_da_mesa | obstaculo_lateral |
+                  # muro | timeout | cancelado | ocupado | curso_incompleto
+---
+float32 travelled

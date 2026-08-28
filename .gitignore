@@ -6,3 +6,5 @@ log/
 colcon_install_layout.*
 __pycache__/
 *.py[cod]
+# frames gravados pelo container_detector durante o place (diagnostico, volumosos)
+missions/fotos_containers/debug/

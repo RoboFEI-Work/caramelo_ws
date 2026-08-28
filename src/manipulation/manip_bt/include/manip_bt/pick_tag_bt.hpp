@@ -37,6 +37,10 @@ private:
   // feedback de stage do server — acao saudavel publica stage continuamente
   // e nunca e cancelada; silencio prolongado = server pendurado -> FAILURE.
   std::chrono::steady_clock::time_point last_progress_;
+  // 2026-08-28 (fila de alcance): valor enviado em goal.final_attempt, so
+  // para o log do resultado. Porta ausente => true (XML antigo inalterado).
+  bool final_attempt_{true};
+  std::string tag_frame_;
 };
 
 }  // namespace manip_bt

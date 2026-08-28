@@ -256,6 +256,13 @@ ros2 run manip_bt bt_yaml_executor minhas_acoes.yaml --ros-args \
 O undock antes de sair de uma estação é automático (embutido no goto seguinte);
 `home` antes de cada goto é responsabilidade de quem escreve as ações.
 
+Desde 28/08 os picks/places de uma mesa comum (`WS_*`, `PP_*`) entram
+automaticamente numa **fila de alcance** (`<ReachQueue>`, ver §6d): o que voltar
+"alvo visto mas fora de alcance" é adiado, a base se ajusta de lado e a fila
+repete. Um `home` no meio da estação fecha a fila (o próximo pick/place da
+mesma estação abre outra). `SH_*` e START/FINISH ficam fora. Para o XML
+antigo, byte a byte: `-p reach_queue_enabled:=false`.
+
 ## 6a. Empilhar objetos (`stack_on`, 24/08)
 
 Só no nível baixo (`actions:`) — o planejador da competição não gera isso.
@@ -357,6 +364,15 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   há menos de 1 s — protege contra alvo fantasma (TF velha com robô movido).
   Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
   campo de visão (não é erro de IK).
+- Fila de alcance (28/08, ver §6d): `reach_queue_enabled` (true),
+  `reach_queue_ws_prefixes` (`["WS_","PP_"]`), `reach_queue_max_nudges` (2),
+  `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
+  `nudge_timeout` (20 s, goal do `nudge_base`).
+
+- Ordem das juntas na pega (28/08, pedido do operador): na aproximação por cima o pick
+  gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto
+  (`[resto]`); na volta a `pegar_obj` com o bloco, recolhe j2..j5 (`[j1 parado]`) e gira
+  **j1 por último** (`[j1 por ultimo]`) — o braço estendido nunca varre a mesa girando.
 
 ## 6c. Raspberry NOVA (ou reinstalada): restaurar o SSH sem senha
 
@@ -377,6 +393,66 @@ Se o PC ainda não tiver chave (`ls ~/.ssh/id_*` vazio): `ssh-keygen -t ed25519`
 (enter em tudo) antes do passo 2. Regras que continuam valendo: 1 conexão SSH
 por vez; NTP da Pi (sem RTC, deriva rápido — conferir `timedatectl` sempre).
 
+## 6d. Fila de alcance por estação (`ReachQueue` + `nudge_base`, 28/08)
+
+**Problema**: o robô estaciona na mesa numa pose que nem sempre deixa o braço
+alcançar todos os objetos/containers (28/08: container azul a +20 cm → alvo
+3 cm fora do alcance → cubo caiu na mesa). **Solução**: por estação de mesa
+comum, o executor embrulha os picks/places numa `<ReachQueue>`:
+
+1. Passada 1 na ordem do planner (places, depois picks) com `final_attempt=false`.
+   Alvo VISTO sem IK → o servidor sai cedo com `success=true, skipped=true,
+   unreachable=true, suggested_base_shift_m=±0.10..0.25` (o place antes
+   devolve o cubo ao container de bordo) → a fila loga `ADIADO pick_N` e adia.
+   Tag nunca vista → pulada como sempre (`tag_nao_vista`), NÃO é adiada.
+2. Fila vazia com adiados → `AJUSTE LATERAL k/2: ±0.xx m` = action `nudge_base`
+   (dock_align_node, malha fechada por odometria, `+` = esquerda), com a
+   sugestão do 1º adiado limitada a `[min_shift_m, max_shift_m]`; sucesso →
+   refaz os adiados. No máximo `reach_queue_max_nudges` (2) por estação.
+3. Ajuste falhou / orçamento esgotado / sugestão 0 → `PASSAGEM FINAL: N
+   acao(oes) pendente(s)` com `final_attempt=true` = comportamento antigo
+   (escada completa + pular / fallback na mesa). Fecha com
+   `concluida (ajustes=k, total=±0.xx m)`.
+4. Pick/place com FAILURE de verdade (abort, servidor sumiu) → a fila falha
+   como a Sequence de antes (missão aborta / estação pulada pela Fallback).
+
+**Uma fila por estação**: um `home` no meio da estação fecha a fila (o
+`NudgeBase` entra antes do `home`) e os picks/places seguintes da **mesma**
+estação ficam fora dela (XML antigo, `final_attempt=true`) — o orçamento de
+`reach_queue_max_nudges` (2) vale por estação, não por fila.
+
+O acumulado dos ajustes vai em `/manip/base_shift_total` (Float64,
+transient_local; só o dock_align_node publica; zera a cada `align_to_dock`) e o
+nó de place usa esse offset na memória de slots.
+
+**XML gerado** (`--dry-run`): `<ReachQueue name="rq_<g>" ws=… max_nudges="2"
+max_shift_m="0.25" min_shift_m="0.10" final_attempt="{rq_<g>_final}"
+shift_m="{rq_<g>_shift_m}">` + folhas com `name="pick_<i>"`,
+`final_attempt="{rq_<g>_final}"`, `unreachable=`, `suggested_base_shift_m=`,
+`skipped=` + `<NudgeBase dy="{rq_<g>_shift_m}" timeout="{nudge_timeout}"
+ws=…/>` como último filho (`<g>` = índice do goto da estação). Fora da fila as
+folhas ficam idênticas ao XML antigo (porta `final_attempt` ausente = true).
+Com `-p simulate_navigation:=true` o `NudgeBase` é simulado (loga
+`[SIMULADO] ajuste lateral …; base NAO se move`).
+
+**Bancada sem robô** (`ROS_DOMAIN_ID=99`, sem MoveIt — sem `home` no YAML):
+
+```bash
+# gtest do nó de controle (folhas roteirizadas)
+colcon test --packages-select manip_bt --ctest-args -R test_reach_queue && colcon test-result --verbose
+# cenário completo com os fakes (nav + nudge_base + pick/place "fora de alcance")
+src/manipulation/manip_bt/test/run_reach_queue_scenario.sh        # all | main | fail_pick | unseen | fail_nudge
+```
+
+O cenário (`test/reach_queue_actions.yaml`) confere por grep: `ADIADO pick_2 …
++0.20` → `AJUSTE LATERAL 1/2: +0.20` → pick ok → `AJUSTE LATERAL 2/2: +0.25` →
+`PASSAGEM FINAL` → `SUCCESS`; e as regressões `fail_stage:=pick` (FAILURE, exit
+1), só tags nunca vistas (sem ADIADO) e `fail_stage:=nudge` (PASSAGEM FINAL sem
+mover). Fakes: `fake_pick_place.py -p unreachable_picks:=['tag_7:0.20']`
+(alcançável só quando o acumulado de `/manip/base_shift_total` chega a ≤ 6 cm
+do valor), `-p unseen_tags:=['tag_9']`; `fake_nav_actions.py -p
+nudge_slip:=0.85 -p fail_stage:=nudge`.
+
 ## 7. Avisos rápidos (aprendidos na validação)
 
 - **Cabo de rede caiu durante trajetória do braço** = o braço termina o
@@ -389,7 +465,10 @@ por vez; NTP da Pi (sem RTC, deriva rápido — conferir `timedatectl` sempre).
   launch antigo que não morreu) brigando pelo map→odom. Conferir com
   `ps -eo pid,lstart,comm | grep amcl` e matar o launch antigo INTEIRO. O
   mesmo vale p/ nós rodados à mão dias antes (ex.: dock_align_node duplicado
-  rouba goals da action com params errados). Higiene: antes de relançar,
+  rouba goals da action com params errados — e, desde 28/08, também o
+  `nudge_base` da fila de alcance: um dock_align_node velho responde ao ajuste
+  lateral com params/guardas antigos ou `ocupado`, e a fila cai direto na
+  PASSAGEM FINAL sem mover a base). Higiene: antes de relançar,
   `ps -eo pid,lstart,comm | grep -E "amcl|nav|dock_align"` e limpar o velho.
 - **Câmera muda com nó no ar** = provavelmente porta USB 2 ("Device USB type:
   2.1" + "Reduced performance" no log). O D455 exige USB 3 (porta azul) — sem

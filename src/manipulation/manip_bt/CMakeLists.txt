@@ -29,8 +29,10 @@ add_executable(bt_yaml_executor
   src/go_to_named_pose_bt.cpp
   src/go_to_ws_bt.cpp
   src/mission_map_config.cpp
+  src/nudge_base_bt.cpp
   src/pick_tag_bt.cpp
   src/place_tag_bt.cpp
+  src/reach_queue_bt.cpp
 )
 
 add_executable(competition_yaml_translator
@@ -121,6 +123,19 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Fila de alcance (2026-08-28): o ReachQueue e' logica pura de BT — testa
+  # com folhas roteirizadas, sem ROS no ar (so' o logger do rclcpp).
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_reach_queue
+    test/test_reach_queue.cpp
+    src/reach_queue_bt.cpp
+  )
+  target_include_directories(test_reach_queue PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_compile_features(test_reach_queue PUBLIC cxx_std_17)
+  ament_target_dependencies(test_reach_queue rclcpp behaviortree_cpp_v3)
 endif()
 
 ament_package()

@@ -126,4 +126,12 @@ install(PROGRAMS
   RENAME sync_route_graph
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  # Matematica pura do nudge_base (projecao da odometria, regra de aceite),
+  # sem ROS ativo (2026-08-28).
+  ament_add_pytest_test(test_nudge_math test/test_nudge_math.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
+
 ament_package()

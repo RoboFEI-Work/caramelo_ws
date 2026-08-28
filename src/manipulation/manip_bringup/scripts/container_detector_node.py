@@ -86,7 +86,8 @@ class DetectorConfig:
     container_long_m: float = 0.170
     container_short_m: float = 0.105
     container_height_m: float = 0.070
-    dims_tolerance_frac: float = 0.5
+    dims_tolerance_frac: float = 0.5        # limite INFERIOR dos lados (blob inteiro)
+    dims_tolerance_upper_frac: float = 1.0  # limite SUPERIOR (ate 2x): de perto as paredes inflam a mancha (27/08)
     area_expected_min_frac: float = 0.2
     area_expected_max_frac: float = 5.0
     min_target_y_m: float = 0.10
@@ -95,6 +96,19 @@ class DetectorConfig:
     wall_bias_correction: bool = True
     wall_bias_max_m: float = 0.02
     yaw_axis_offset_deg: float = 0.0
+    # Yaw confiavel so' com mancha alongada (lado longo/curto medidos no plano);
+    # senao usa o ultimo yaw confiavel da cor (o pote nao gira entre olhadas).
+    yaw_min_aspect_full: float = 1.3
+    yaw_min_aspect_partial: float = 1.5
+    yaw_partial_min_area_frac: float = 0.6     # parcial: so' confia no yaw com >= 60% da area esperada
+    yaw_partial_min_long_frac: float = 0.7     # ... e lado longo visivel >= 70% do nominal (28/08: filete de 0,12x0,05 dava 78 graus)
+    yaw_memory_s: float = 60.0
+    yaw_memory_max_jump_deg: float = 30.0      # medida parcial que discorda da memoria por mais que isso nao a substitui
+    # Mancha cortada de UM lado (borda/garra) ao longo de um eixo conhecido:
+    # centro deslocado para o lado cortado por (nominal - visivel)/2.
+    partial_extend_enable: bool = True
+    partial_extend_max_shift_m: float = 0.05
+    partial_extend_min_visible_frac: float = 0.35
     colors: Dict[str, ColorSpec] = field(default_factory=lambda: dict(DEFAULT_COLORS))
 
 
@@ -344,6 +358,9 @@ class ContainerPose:
     dist: float          # camera -> centro (m)
     area_ratio: float    # area do blob / area esperada
     partial: bool = False
+    yaw_reliable: bool = True   # mancha alongada o bastante para o yaw valer
+    yaw_from_memory: bool = False
+    shift_m: float = 0.0        # deslocamento aplicado ao centro (mancha cortada)
 
 
 class PlaneCaster:
@@ -382,8 +399,15 @@ class PlaneCaster:
             return None
         return self.o + t * r
 
-    def container_pose(self, blob: Blob, plane_z: float) -> Tuple[Optional[ContainerPose], str]:
-        """Devolve (pose, motivo_de_rejeicao). pose None quando rejeitado."""
+    def container_pose(self, blob: Blob, plane_z: float, yaw_hint: Optional[float] = None,
+                       excl_mask: Optional[np.ndarray] = None, scale: float = 1.0
+                       ) -> Tuple[Optional[ContainerPose], str]:
+        """Devolve (pose, motivo_de_rejeicao). pose None quando rejeitado.
+
+        yaw_hint: ultimo yaw confiavel da cor (usado se a mancha for ambigua).
+        excl_mask/scale: mascara da garra na resolucao do contorno, para saber
+        se a mancha esta cortada pela garra (alem da borda da imagem).
+        """
         c = self.cast(blob.center[0], blob.center[1], plane_z)
         if c is None:
             return None, "sem_plano"
@@ -401,12 +425,18 @@ class PlaneCaster:
         area_exp = cfg.container_long_m * cfg.container_short_m * fx * fy / max(dist * dist, 1e-6)
         area_ratio = blob.area_px / area_exp if area_exp > 0 else 0.0
         tol = cfg.dims_tolerance_frac
+        tol_up = cfg.dims_tolerance_upper_frac
         if area_ratio > cfg.area_expected_max_frac:
             return None, f"area_esperada({area_ratio:.2f}x)"
-        if long_len > cfg.container_long_m * (1 + tol):
-            return None, f"lado_longo({long_len:.3f}m)"
-        if short_len > cfg.container_short_m * (1 + tol):
-            return None, f"lado_curto({short_len:.3f}m)"
+        # Lados so' para blob INTEIRO: num blob cortado (borda/garra) o
+        # minAreaRect nao mede o container. 27/08: o vermelho visto de perto
+        # (tag_esquerda) media 0,20 x 0,176 m — paredes visiveis inflam a
+        # projecao — e era rejeitado por lado_curto com o limite antigo (1,6x).
+        if not blob.partial:
+            if long_len > cfg.container_long_m * (1 + tol_up):
+                return None, f"lado_longo({long_len:.3f}m)"
+            if short_len > cfg.container_short_m * (1 + tol_up):
+                return None, f"lado_curto({short_len:.3f}m)"
         if blob.partial and area_ratio < cfg.partial_min_area_frac:
             # Pedaco pequeno demais (filete de dedo/cubo na borda de uma mascara).
             return None, f"area_parcial({area_ratio:.2f}x)"
@@ -441,7 +471,83 @@ class PlaneCaster:
             return None, f"longe(r={math.hypot(x, y):.2f})"
         yaw = math.atan2(l2[1] - l1[1], l2[0] - l1[0]) + math.radians(cfg.yaw_axis_offset_deg)
         yaw = wrap_half_pi(yaw)
-        return ContainerPose(x, y, yaw, long_len, short_len, dist, area_ratio, blob.partial), ""
+        # Yaw so' e' confiavel com mancha alongada (27/08: vermelho visto de
+        # perto media 0,181 x 0,185 e o yaw saiu 4 graus em vez de 87).
+        ratio = long_len / short_len if short_len > 1e-6 else 999.0
+        need = cfg.yaw_min_aspect_partial if blob.partial else cfg.yaw_min_aspect_full
+        yaw_reliable = ratio >= need
+        if blob.partial and yaw_reliable:
+            # filete alongado (parede vista ao lado da mascara da garra) tem
+            # razao alta mas nao e' o container: exige area e lado longo minimos
+            if area_ratio < cfg.yaw_partial_min_area_frac or long_len < cfg.container_long_m * cfg.yaw_partial_min_long_frac:
+                yaw_reliable = False
+        yaw_from_memory = False
+        if not yaw_reliable and yaw_hint is not None:
+            yaw = wrap_half_pi(float(yaw_hint))
+            yaw_from_memory = True
+        shift_m = 0.0
+        if blob.partial and cfg.partial_extend_enable and (yaw_reliable or yaw_from_memory):
+            x, y, shift_m = self._extend_partial_center(
+                blob, plane_z, x, y, yaw, excl_mask, scale)
+        pose = ContainerPose(x, y, yaw, long_len, short_len, dist, area_ratio, blob.partial)
+        pose.yaw_reliable = yaw_reliable
+        pose.yaw_from_memory = yaw_from_memory
+        pose.shift_m = shift_m
+        return pose, ""
+
+    def _extend_partial_center(self, blob: Blob, plane_z: float, x: float, y: float, yaw: float,
+                               excl_mask: Optional[np.ndarray], scale: float):
+        """Mancha cortada de UM lado ao longo do eixo longo/curto (yaw conhecido):
+        o centro real fica alem do centroide visivel, para o lado cortado, por
+        (nominal - visivel)/2. Cortada dos dois lados ou pouco visivel: nao mexe."""
+        cfg = self.cfg
+        cnt = blob.contour.reshape(-1, 2).astype(float)
+        if cnt.shape[0] < 4:
+            return x, y, 0.0
+        inv = 1.0 / float(scale)
+        pts = []
+        cut = []
+        h = w = None
+        if excl_mask is not None:
+            h, w = excl_mask.shape[:2]
+            excl = cv2.dilate(excl_mask, np.ones((5, 5), np.uint8))
+        m = float(cfg.border_margin_px) + 2.0
+        for (u, v) in cnt:
+            p3 = self.cast(u * inv, v * inv, plane_z)
+            if p3 is None:
+                continue
+            pts.append(p3[:2])
+            is_cut = False
+            if h is not None:
+                is_cut = u <= m or v <= m or u >= w - 1 - m or v >= h - 1 - m
+                ui, vi = int(round(u)), int(round(v))
+                if 0 <= vi < h and 0 <= ui < w and excl[vi, ui] > 0:
+                    is_cut = True
+            cut.append(is_cut)
+        if len(pts) < 4:
+            return x, y, 0.0
+        P = np.asarray(pts)
+        C = np.asarray(cut, dtype=bool)
+        total = 0.0
+        out = np.array([x, y], dtype=float)
+        for axis_dir, nominal in ((np.array([math.cos(yaw), math.sin(yaw)]), cfg.container_long_m),
+                                  (np.array([-math.sin(yaw), math.cos(yaw)]), cfg.container_short_m)):
+            s_ = P @ axis_dir
+            lo, hi = float(s_.min()), float(s_.max())
+            visible = hi - lo
+            if visible <= 0.0 or visible >= nominal * 0.97:
+                continue
+            if visible < nominal * cfg.partial_extend_min_visible_frac:
+                continue
+            band = 0.12 * visible
+            cut_lo = bool(np.any(C & (s_ <= lo + band)))
+            cut_hi = bool(np.any(C & (s_ >= hi - band)))
+            if cut_lo == cut_hi:
+                continue          # cortada dos dois lados ou de nenhum: sem informacao
+            shift = min((nominal - visible) / 2.0, cfg.partial_extend_max_shift_m)
+            out = out + (shift if cut_hi else -shift) * axis_dir
+            total = math.hypot(total, shift)
+        return float(out[0]), float(out[1]), float(total)
 
 
 def wrap_half_pi(yaw: float) -> float:
@@ -541,6 +647,7 @@ def segment_image(bgr_full: np.ndarray, cfg: DetectorConfig, holding: bool = Tru
         mask = seg.build_mask(hsv, spec)
         masks[name] = mask
         per_color[name] = seg.find_blobs(mask, scale, bgr_full.shape)
+    masks["__garra__"] = seg.exclusion_mask(hsv.shape[:2])   # para saber se a mancha esta cortada pela garra
     return per_color, hsv, masks
 
 
@@ -576,9 +683,13 @@ def config_from_dict(p: dict) -> DetectorConfig:
               "cube_rect_only_when_holding", "gripper_joint", "gripper_holding_above",
               "morph_open_px", "morph_close_px", "morph_close_iters",
               "container_long_m", "container_short_m", "container_height_m",
-              "dims_tolerance_frac", "area_expected_min_frac", "area_expected_max_frac",
+              "dims_tolerance_frac", "dims_tolerance_upper_frac",
+              "area_expected_min_frac", "area_expected_max_frac",
               "min_target_y_m", "max_target_radius_m", "max_ray_length_m",
-              "wall_bias_correction", "wall_bias_max_m", "yaw_axis_offset_deg"]
+              "wall_bias_correction", "wall_bias_max_m", "yaw_axis_offset_deg",
+              "yaw_min_aspect_full", "yaw_min_aspect_partial", "yaw_memory_s",
+              "yaw_partial_min_area_frac", "yaw_partial_min_long_frac", "yaw_memory_max_jump_deg",
+              "partial_extend_enable", "partial_extend_max_shift_m", "partial_extend_min_visible_frac"]
     for k in simple:
         if k in p:
             setattr(cfg, k, _coerce(type(getattr(cfg, k)), p[k]))
@@ -725,6 +836,11 @@ def ros_main(argv=None) -> int:
             dp("place_active_topic", "/manip/place_active")
             dp("plane_z_topic", "/manip/container_plane_z")
             dp("debug_image", True)
+            # Grava o que o detector VE durante o place (frame cru + overlay +
+            # linha de status em log.txt) — para analisar depois sem o robo:
+            #   container_detector_node.py --image <ts>_raw.png --config ... --out x.png
+            dp("save_debug_dir", "")           # vazio = nao grava
+            dp("save_debug_every_s", 1.0)      # no maximo 1 par de imagens por segundo
             dp("base_frame", "manip_base_link")
             dp("camera_frame", "")
             dp("plane_z_default", 0.041)
@@ -736,6 +852,7 @@ def ros_main(argv=None) -> int:
             dp("container_short_m", 0.105)
             dp("container_height_m", 0.070)
             dp("dims_tolerance_frac", 0.5)
+            dp("dims_tolerance_upper_frac", 1.0)
             dp("area_expected_min_frac", 0.2)
             dp("area_expected_max_frac", 5.0)
             dp("min_area_px", 300.0)
@@ -746,6 +863,15 @@ def ros_main(argv=None) -> int:
             dp("partial_min_area_frac", 0.25)
             dp("wall_bias_correction", True)
             dp("wall_bias_max_m", 0.02)
+            dp("yaw_min_aspect_full", 1.3)
+            dp("yaw_min_aspect_partial", 1.5)
+            dp("yaw_memory_s", 60.0)
+            dp("yaw_partial_min_area_frac", 0.6)
+            dp("yaw_partial_min_long_frac", 0.7)
+            dp("yaw_memory_max_jump_deg", 30.0)
+            dp("partial_extend_enable", True)
+            dp("partial_extend_max_shift_m", 0.05)
+            dp("partial_extend_min_visible_frac", 0.35)
             dp("exclusion_rects_norm", [0.30, 0.00, 0.62, 0.42])
             dp("exclusion_polys_holding_norm", [""])
             dp("exclusion_polys_norm", [" ".join(f"{x:.3f},{y:.3f}" for x, y in poly)
@@ -863,9 +989,13 @@ def ros_main(argv=None) -> int:
                     "cube_rect_only_when_holding", "gripper_joint", "gripper_holding_above",
                     "morph_open_px", "morph_close_px", "morph_close_iters",
                     "container_long_m", "container_short_m", "container_height_m",
-                    "dims_tolerance_frac", "area_expected_min_frac", "area_expected_max_frac",
+                    "dims_tolerance_frac", "dims_tolerance_upper_frac",
+                    "area_expected_min_frac", "area_expected_max_frac",
                     "min_target_y_m", "max_target_radius_m", "max_ray_length_m",
                     "wall_bias_correction", "wall_bias_max_m", "yaw_axis_offset_deg",
+                    "yaw_min_aspect_full", "yaw_min_aspect_partial", "yaw_memory_s",
+                    "yaw_partial_min_area_frac", "yaw_partial_min_long_frac", "yaw_memory_max_jump_deg",
+                    "partial_extend_enable", "partial_extend_max_shift_m", "partial_extend_min_visible_frac",
                     "exclusion_rects_norm", "exclusion_polys_norm", "exclusion_polys_holding_norm", "colors"]
             p = {k: g(k) for k in keys}
             ov = overrides or {}
@@ -899,6 +1029,10 @@ def ros_main(argv=None) -> int:
             if self._pending_cfg is not None:
                 self._apply_cfg(self._pending_cfg)
                 self._pending_cfg = None
+            # `always_on` mudado por `ros2 param set` so' valia no proximo
+            # /manip/place_active (27/08): reavalia a assinatura da imagem aqui.
+            if any(prm.name == "always_on" for prm in params) and hasattr(self, "image_sub"):
+                self._update_active()
 
         def _apply_cfg(self, cfg: DetectorConfig):
             self.cfg = cfg
@@ -1045,8 +1179,12 @@ def ros_main(argv=None) -> int:
                 pose = None
                 reason = "nao visto" if not blobs else \
                     ", ".join(sorted({b.reason for b in blobs if b.reason}))[:60]
+                mem = getattr(self, "yaw_memory", {}).get(name)
+                yaw_hint = mem[0] if (mem is not None and (t_img - mem[1]) <= float(self.cfg.yaw_memory_s)) else None
                 for b in accepted:
-                    pose, why = self.caster.container_pose(b, plane_z)
+                    pose, why = self.caster.container_pose(
+                        b, plane_z, yaw_hint=yaw_hint, excl_mask=masks.get("__garra__"),
+                        scale=float(self.cfg.process_scale))
                     if pose is not None:
                         break
                     b.reason = why
@@ -1055,6 +1193,19 @@ def ros_main(argv=None) -> int:
                 if pose is None:
                     status.append(f"{name}: {reason or 'nao visto'}")
                     continue
+                if pose.yaw_reliable:
+                    if not hasattr(self, "yaw_memory"):
+                        self.yaw_memory = {}
+                    prev = self.yaw_memory.get(name)
+                    jump = abs(wrap_half_pi(pose.yaw - prev[0])) if prev is not None else 0.0
+                    if prev is not None and pose.partial and jump > math.radians(float(self.cfg.yaw_memory_max_jump_deg)) \
+                            and (t_img - prev[1]) <= float(self.cfg.yaw_memory_s):
+                        # medida parcial discordando da memoria: suspeita -> usa a memoria
+                        pose.yaw = prev[0]
+                        pose.yaw_from_memory = True
+                        pose.yaw_reliable = False
+                    else:
+                        self.yaw_memory[name] = (pose.yaw, t_img)
                 sm.push(t_img, pose.x, pose.y, pose.yaw)
                 est = sm.estimate(t_img)
                 if est is None:
@@ -1069,10 +1220,12 @@ def ros_main(argv=None) -> int:
                 ps.pose.orientation.z = math.sin(yaw / 2.0)
                 ps.pose.orientation.w = math.cos(yaw / 2.0)
                 self.pose_pubs[name].publish(ps)
+                yaw_tag = "(mem)" if pose.yaw_from_memory else ("" if pose.yaw_reliable else "(?)")
+                shift_tag = f" desloc={pose.shift_m * 100:.1f}cm" if pose.shift_m > 0.0 else ""
                 status.append(
                     f"{name}{' PARCIAL' if pose.partial else ''}: x={x:.3f} y={y:.3f} "
-                    f"yaw={math.degrees(yaw):.0f}deg n={n} area={pose.area_ratio:.2f}xA_esp "
-                    f"lados={pose.long_len:.3f}/{pose.short_len:.3f}")
+                    f"yaw={math.degrees(yaw):.0f}deg{yaw_tag} n={n} area={pose.area_ratio:.2f}xA_esp "
+                    f"lados={pose.long_len:.3f}/{pose.short_len:.3f}{shift_tag}")
             dt_ms = (time.perf_counter() - t0) * 1000.0
             lat = now_wall - t_img
             if lat > 0.5:
@@ -1080,11 +1233,35 @@ def ros_main(argv=None) -> int:
                     f"imagem com {lat:.2f}s de atraso (latencia/relogio)", throttle_duration_sec=10.0)
             status.append(f"plane_z={plane_z:.3f}({plane_src}) tf={'latest' if used_latest else 'stamp'} {dt_ms:.1f}ms")
             self._publish_status(" | ".join(status))
-            if bool(self.get_parameter("debug_image").value) and self.debug_pub.get_subscription_count() > 0:
+            want_pub = bool(self.get_parameter("debug_image").value) and self.debug_pub.get_subscription_count() > 0
+            save_dir = str(self.get_parameter("save_debug_dir").value or "").strip()
+            want_save = bool(save_dir) and (now_wall - getattr(self, "_last_save_wall", 0.0)) >= float(
+                self.get_parameter("save_debug_every_s").value)
+            if want_pub or want_save:
                 overlay = draw_overlay(bgr, self.cfg.process_scale, per_color, self.cfg, status, holding)
-                out = self.bridge.cv2_to_imgmsg(overlay, encoding="bgr8")
-                out.header = msg.header
-                self.debug_pub.publish(out)
+                if want_pub:
+                    out = self.bridge.cv2_to_imgmsg(overlay, encoding="bgr8")
+                    out.header = msg.header
+                    self.debug_pub.publish(out)
+                if want_save:
+                    self._save_debug(save_dir, bgr, overlay, status, now_wall)
+
+        def _save_debug(self, save_dir: str, bgr, overlay, status, now_wall: float):
+            """Par <ts>_raw.png / <ts>_overlay.png + linha em log.txt (melhor esforco)."""
+            try:
+                d = os.path.expanduser(save_dir)
+                os.makedirs(d, exist_ok=True)
+                ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(now_wall)) + f"_{int((now_wall % 1) * 1000):03d}"
+                cv2.imwrite(os.path.join(d, f"{ts}_raw.png"), bgr)
+                cv2.imwrite(os.path.join(d, f"{ts}_overlay.png"), overlay)
+                with open(os.path.join(d, "log.txt"), "a", encoding="utf-8") as fh:
+                    fh.write(f"{ts} | {' | '.join(status)}\n")
+                self._last_save_wall = now_wall
+                if not getattr(self, "_save_announced", False):
+                    self._save_announced = True
+                    self.get_logger().info(f"gravando frames do detector em {d}")
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warn(f"nao consegui gravar debug em {save_dir}: {exc}", throttle_duration_sec=10.0)
 
         def _publish_tf(self, base, child, x, y, z, yaw, stamp):
             tf = TransformStamped()

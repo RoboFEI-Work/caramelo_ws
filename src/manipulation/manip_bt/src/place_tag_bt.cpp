@@ -36,7 +36,18 @@ BT::PortsList PlaceTagBT::providedPorts()
 		BT::InputPort<std::string>("stack_on"),
 		// Opcional (2026-08-25): "RED"|"BLUE" = soltar dentro do container
 		// dessa cor visto na mesa; vazio = mesa.
-		BT::InputPort<std::string>("container_color")
+		BT::InputPort<std::string>("container_color"),
+		// 2026-08-28 (fila de alcance): tentativa FINAL na estacao? Porta
+		// AUSENTE => true (XML antigo = comportamento de sempre). Dentro de
+		// uma <ReachQueue> vem de {rq_<g>_final} e comeca em false: alvo visto
+		// sem IK faz o server devolver o cubo ao container de bordo e sair
+		// cedo com unreachable=true (sem fallback na mesa).
+		BT::InputPort<bool>("final_attempt", true, "tentativa final (ausente = true)"),
+		// Saidas do resultado (2026-08-28) — quem decide o que fazer e o
+		// ReachQueue; este no continua devolvendo SUCCESS em todo success=true.
+		BT::OutputPort<bool>("unreachable"),
+		BT::OutputPort<double>("suggested_base_shift_m"),
+		BT::OutputPort<bool>("skipped")
 	};
 }
 
@@ -49,6 +60,7 @@ BT::NodeStatus PlaceTagBT::onStart()
 		RCLCPP_ERROR(rclcpp::get_logger("PlaceTagBT"), "Missing input port: tag_frame");
 		return BT::NodeStatus::FAILURE;
 	}
+	tag_frame_ = tag_frame;
 
 	if (!getInput("table_pose", table_pose)) {
 		RCLCPP_ERROR(rclcpp::get_logger("PlaceTagBT"), "Missing input port: table_pose");
@@ -62,14 +74,28 @@ BT::NodeStatus PlaceTagBT::onStart()
 	std::string container_color;
 	getInput("container_color", container_color);   // opcional: vazio = mesa
 
+	// Porta ausente (ou sem valor no blackboard) => true: comportamento antigo.
+	final_attempt_ = true;
+	if (!getInput("final_attempt", final_attempt_)) {
+		final_attempt_ = true;
+	}
+
+	// Zera as saidas ANTES de mandar o goal (ver pick_tag_bt.cpp): o erro de
+	// setOutput sem remapeamento (XML antigo) e ignorado de proposito.
+	setOutput("unreachable", false);
+	setOutput("suggested_base_shift_m", 0.0);
+	setOutput("skipped", false);
+
 	RCLCPP_INFO(
 		rclcpp::get_logger("PlaceTagBT"),
-		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s stack_on=%s container_color=%s",
+		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s stack_on=%s container_color=%s "
+		"final_attempt=%s",
 		tag_frame.c_str(),
 		table_pose.c_str(),
 		ws.empty() ? "<sem ws>" : ws.c_str(),
 		stack_on.empty() ? "<nao>" : stack_on.c_str(),
-		container_color.empty() ? "<mesa>" : container_color.c_str());
+		container_color.empty() ? "<mesa>" : container_color.c_str(),
+		final_attempt_ ? "true" : "false");
 
 	// Item 3.5: mesmo tratamento do PickTagBT — timeout vem do blackboard.
 	double wait_timeout = 10.0;
@@ -91,6 +117,7 @@ BT::NodeStatus PlaceTagBT::onStart()
 	goal_msg.ws = ws;
 	goal_msg.stack_on = stack_on;
 	goal_msg.container_color = container_color;
+	goal_msg.final_attempt = final_attempt_;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
 	// stage — acao saudavel publica stage continuamente, nunca e cancelada.
@@ -174,14 +201,35 @@ BT::NodeStatus PlaceTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
-	// Item 2.5 (auditoria 2026-08-07): skip explicito no contrato.
-	if (wrapped_result.result->skipped) {
+	// 2026-08-28 (fila de alcance): veredito do server nas portas de saida
+	// ANTES do SUCCESS — o ReachQueue le pelo blackboard.
+	const auto & res = *wrapped_result.result;
+	setOutput("unreachable", res.unreachable);
+	setOutput("suggested_base_shift_m", static_cast<double>(res.suggested_base_shift_m));
+	setOutput("skipped", res.skipped);
+
+	if (res.unreachable) {
+		RCLCPP_WARN(
+			rclcpp::get_logger("PlaceTagBT"),
+			"PLACE FORA DE ALCANCE (%s): alvo x=%.2f y=%.2f em manip_base_link, "
+			"sugestao lateral %+.2f m%s — %s",
+			tag_frame_.c_str(),
+			static_cast<double>(res.target_x),
+			static_cast<double>(res.target_y),
+			static_cast<double>(res.suggested_base_shift_m),
+			final_attempt_ ? " (tentativa final)" :
+			" (cubo devolvido ao container de bordo; a fila de alcance decide)",
+			res.message.c_str());
+	}
+	if (res.skipped) {
+		// Item 2.5 (auditoria 2026-08-07): skip explicito no contrato. (Linha
+		// estavel: vale tambem para o skip por alcance.)
 		RCLCPP_WARN(
 			rclcpp::get_logger("PlaceTagBT"),
 			"PLACE PULADO (causa: %s): %s — missao continua.",
-			wrapped_result.result->fail_reason.c_str(),
-			wrapped_result.result->message.c_str());
-	} else {
+			res.fail_reason.c_str(),
+			res.message.c_str());
+	} else if (!res.unreachable) {
 		RCLCPP_INFO(rclcpp::get_logger("PlaceTagBT"), "PLACE action completed successfully");
 	}
 	return BT::NodeStatus::SUCCESS;

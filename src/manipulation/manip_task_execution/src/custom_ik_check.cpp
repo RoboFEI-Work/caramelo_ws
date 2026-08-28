@@ -11,6 +11,14 @@
 //                                             "free" = orientacao LIVRE: so a posicao
 //                                             e exigida, o modo vira preferencia —
 //                                             e' o que a shelf usa com shelf_j4_free)
+//   custom_ik_check shift <x> <y> <z> [lift_m]
+//                                         -> fila de alcance (2026-08-28): imprime
+//                                            uma linha por (candidato de deslocamento
+//                                            lateral, tilt) com ok/SEM_SOLUCAO e no fim
+//                                            o deslocamento que findBaseShiftForReach
+//                                            escolheria (mesma escada 0/15/30 do
+//                                            pick/place; lift = tambem exige IK em
+//                                            z+lift, como o place em pilha/container)
 //
 // O formato CSV e o mesmo consumido pelo script de paridade:
 //   x,y,z,modo,q1,q2,q3,q4,q5,erro_pos_m,erro_dir_graus
@@ -23,12 +31,14 @@
 // (manip_base_link), igual ao script Python — nao em base_footprint.
 
 #include "manip_task_execution/custom_ik.hpp"
+#include "manip_task_execution/reach_shift.hpp"
 
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <vector>
 
 using manip_task_execution::ArmModel;
 using manip_task_execution::ToolDirection;
@@ -112,10 +122,72 @@ bool reportOne(
   return true;
 }
 
+/// Modo "shift" (fila de alcance, 2026-08-28): tabela de depuracao de campo.
+/// Uma linha por (candidato, tilt): candidato 0 = sem mover a base; depois
+/// cada |dy| de ReachShiftOptions::candidates_m na direcao que aproxima o
+/// alvo, ja com o desconto de undershoot que a busca aplica. Linhas
+/// "afasta" sao candidatos que a busca (allow_overshoot=false) nem testa.
+/// No fim, a escolha oficial de findBaseShiftForReach.
+int runShiftMode(double x, double y, double z, double lift_m)
+{
+  using manip_task_execution::ReachShiftOptions;
+
+  ReachShiftOptions opts;
+  opts.lift_m = lift_m;
+  const Eigen::Vector3d target(x, y, z);
+
+  std::cout << "candidato_m,dy_efetivo_m,x_manip,y_manip,z_manip,tilt_graus,ik,ik_lift\n";
+  const double sign = x > 0.0 ? -1.0 : 1.0;
+  std::vector<double> steps{0.0};
+  steps.insert(steps.end(), opts.candidates_m.begin(), opts.candidates_m.end());
+  for (const double d : steps) {
+    // d == 0 e' a linha "sem mover" (evita imprimir -0.000 com sign negativo).
+    const double dy = d == 0.0 ? 0.0 : sign * d;
+    const double dy_eff = d == 0.0 ? 0.0 : dy - sign * opts.undershoot_margin_m;
+    const bool overshoot = std::abs(x + dy_eff) > std::abs(x) + 1e-12;
+    const Eigen::Vector3d shifted(
+      manip_task_execution::manipXAfterBaseShift(x, dy_eff), y, z);
+    for (const double tilt : opts.tilts_rad) {
+      std::array<double, 5> q{};
+      const bool ok = manip_task_execution::solveIk(
+        shifted, tilt, opts.q5_fixed, q, opts.model, opts.ik);
+      std::string lift_state = "-";
+      if (lift_m != 0.0) {
+        std::array<double, 5> q_lift{};
+        const Eigen::Vector3d lifted = shifted + Eigen::Vector3d(0.0, 0.0, lift_m);
+        lift_state = manip_task_execution::solveIk(
+          lifted, tilt, opts.q5_fixed, q_lift, opts.model, opts.ik) ? "ok" : "SEM_SOLUCAO";
+      }
+      std::cout << std::fixed << std::setprecision(3)
+                << dy << "," << dy_eff << ","
+                << shifted.x() << "," << shifted.y() << "," << shifted.z() << ","
+                << std::setprecision(0) << tilt * 180.0 / M_PI << ","
+                << (ok ? "ok" : "SEM_SOLUCAO") << "," << lift_state
+                << (overshoot ? ",afasta" : "") << "\n";
+    }
+  }
+
+  const auto result = manip_task_execution::findBaseShiftForReach(target, opts);
+  std::cout << std::fixed << std::setprecision(3)
+            << "escolha: alcancavel_agora=" << (result.reachable_now ? "sim" : "nao")
+            << " shift_m=" << result.shift_m
+            << " (base_footprint, + = esquerda; 0 = nada resolve)"
+            << " tilt_graus=" << std::setprecision(0) << result.tilt_rad * 180.0 / M_PI
+            << std::setprecision(3)
+            << " alvo_deslocado=(" << result.shifted_target.x() << ","
+            << result.shifted_target.y() << "," << result.shifted_target.z() << ")\n";
+  return result.reachable_now || result.shift_m != 0.0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
 {
+  if (argc >= 5 && std::string(argv[1]) == "shift") {
+    const double lift_m = argc >= 6 ? std::atof(argv[5]) : 0.0;
+    return runShiftMode(std::atof(argv[2]), std::atof(argv[3]), std::atof(argv[4]), lift_m);
+  }
+
   std::cout << "x,y,z,modo,q1,q2,q3,q4,q5,erro_pos_m,erro_dir_graus\n";
 
   if (argc >= 4) {

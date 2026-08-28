@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <rclcpp/rclcpp.hpp>
@@ -18,8 +20,10 @@
 #include "manip_bt/go_to_named_pose_bt.hpp"
 #include "manip_bt/go_to_ws_bt.hpp"
 #include "manip_bt/mission_map_config.hpp"
+#include "manip_bt/nudge_base_bt.hpp"
 #include "manip_bt/pick_tag_bt.hpp"
 #include "manip_bt/place_tag_bt.hpp"
+#include "manip_bt/reach_queue_bt.hpp"
 
 namespace
 {
@@ -86,6 +90,49 @@ public:
     setOutput("docked", false);
     setOutput("current_dock_id", dock_id);
     setOutput("current_dock_type", std::string(""));
+    return BT::NodeStatus::SUCCESS;
+  }
+};
+
+// Mock do ajuste lateral (2026-08-28, fila de alcance) para simulate_navigation:
+// MESMAS portas do NudgeBase real. So loga e espera 1 s — a base NAO se move
+// e nada e publicado (o /manip/base_shift_total e do dock_align_node), entao
+// um pick/place "fora de alcance" continua fora de alcance ate a passada final.
+class SimulatedNudgeBaseBT : public BT::SyncActionNode
+{
+public:
+  SimulatedNudgeBaseBT(const std::string & name, const BT::NodeConfiguration & config)
+  : BT::SyncActionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<double>("dy"),
+      BT::InputPort<double>("timeout", 20.0, "timeout do goal (s)"),
+      BT::InputPort<std::string>("ws", "", "estacao (so para o log)"),
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    double dy = 0.0;
+    getInput("dy", dy);
+    std::string ws;
+    getInput("ws", ws);
+
+    RCLCPP_WARN(
+      rclcpp::get_logger("SimulatedNudgeBase"),
+      "[SIMULADO] ajuste lateral %+.2f m; base NAO se move (%s)", dy, ws.c_str());
+
+    // Espera de 1 s em fatias de 100 ms para o Ctrl-C nao ficar preso.
+    for (int i = 0; i < 10 && rclcpp::ok() && !g_interrupted; ++i) {
+      rclcpp::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!rclcpp::ok() || g_interrupted) {
+      return BT::NodeStatus::FAILURE;
+    }
     return BT::NodeStatus::SUCCESS;
   }
 };
@@ -181,8 +228,34 @@ struct MissionBuildContext
   // internos do align => PULA o bloco da estacao (picks/places dela) e a
   // missao segue — nao perder a task inteira por uma mesa inacessivel.
   bool skip_unreachable_station{true};
+  // 2026-08-28: FILA DE ALCANCE por estacao (<ReachQueue>): picks/places de
+  // uma mesa comum (prefixos abaixo) rodam numa fila que adia os "fora de
+  // alcance", ajusta a base de lado (NudgeBase, ate max_nudges vezes) e
+  // termina com a passada final. false = XML identico ao de antes.
+  bool reach_queue_enabled{true};
+  std::vector<std::string> reach_queue_ws_prefixes{"WS_", "PP_"};
+  int reach_queue_max_nudges{2};
+  double reach_queue_max_shift_m{0.25};
+  double reach_queue_min_shift_m{0.10};
   std::vector<std::string> plan_rows;  // tabela do --dry-run
 };
+
+std::string formatMeters(const double value)
+{
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.2f", value);
+  return buf;
+}
+
+bool wsHasReachQueuePrefix(const std::string & ws, const std::vector<std::string> & prefixes)
+{
+  for (const auto & prefix : prefixes) {
+    if (!prefix.empty() && ws.rfind(prefix, 0) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // Resolve WS da tarefa -> dock_id e valida contra o docking.yaml (fail-fast:
 // melhor abortar aqui do que descobrir com o robo andando).
@@ -294,6 +367,78 @@ std::string buildTreeXmlFromActions(
       station_has_actions = false;
     };
 
+  // Fila de alcance (2026-08-28): abre no 1o pick/place depois do goto de uma
+  // estacao elegivel (dock+align e prefixo WS_/PP_) e fecha — com o NudgeBase
+  // como ultimo filho — em home, goto ou no fim das acoes. UMA fila por
+  // estacao (revisao 28/08): um home no meio da estacao fecha a fila e os
+  // picks/places seguintes da MESMA estacao saem FORA dela (XML antigo,
+  // final_attempt=true) — o orcamento de max_nudges vale por estacao, nao
+  // por fila.
+  bool queue_open = false;
+  bool station_queue_eligible = false;
+  std::size_t station_goto_index = 0;
+  std::string station_ws_key;
+  std::string queue_final_key;
+  std::string queue_shift_key;
+  const auto close_reach_queue = [&]() {
+      if (!queue_open) {
+        return;
+      }
+      xml << "      <NudgeBase dy=\"" << escapeXmlAttr(blackboardPort(queue_shift_key))
+          << "\" timeout=\"{nudge_timeout}\""
+          << " ws=\"" << escapeXmlAttr(blackboardPort(station_ws_key)) << "\"/>\n";
+      xml << "      </ReachQueue>\n";
+      queue_open = false;
+      // A estacao ja gastou a fila dela: nada de reabrir com orcamento novo.
+      station_queue_eligible = false;
+    };
+  const auto open_reach_queue_if_needed = [&]() {
+      if (queue_open || !station_queue_eligible) {
+        return;
+      }
+      const std::string queue_name = "rq_" + std::to_string(station_goto_index);
+      queue_final_key = queue_name + "_final";
+      queue_shift_key = queue_name + "_shift_m";
+      // Tipos pre-gravados: o blackboard v3 trava o tipo de cada chave e as
+      // folhas leem/escrevem bool e double nelas.
+      blackboard->set(queue_final_key, false);
+      blackboard->set(queue_shift_key, 0.0);
+      xml << "      <ReachQueue name=\"" << queue_name
+          << "\" ws=\"" << escapeXmlAttr(blackboardPort(station_ws_key))
+          << "\" max_nudges=\"" << ctx.reach_queue_max_nudges
+          << "\" max_shift_m=\"" << formatMeters(ctx.reach_queue_max_shift_m)
+          << "\" min_shift_m=\"" << formatMeters(ctx.reach_queue_min_shift_m)
+          << "\" final_attempt=\"" << escapeXmlAttr(blackboardPort(queue_final_key))
+          << "\" shift_m=\"" << escapeXmlAttr(blackboardPort(queue_shift_key)) << "\">\n";
+      queue_open = true;
+      ctx.plan_rows.push_back(
+        "[rq] fila de alcance " + current_station_ws + ": ate " +
+        std::to_string(ctx.reach_queue_max_nudges) + " ajustes laterais de ate " +
+        formatMeters(ctx.reach_queue_max_shift_m) + " m");
+    };
+  // Atributos extras das folhas DENTRO da fila (fora dela o XML fica igual).
+  const auto reach_leaf_attrs = [&](const std::size_t action_index) -> std::string {
+      if (!queue_open) {
+        return "";
+      }
+      const std::string unreachable_key = actionBlackboardKey(action_index, "unreachable");
+      const std::string shift_key = actionBlackboardKey(action_index, "shift_m");
+      const std::string skipped_key = actionBlackboardKey(action_index, "skipped");
+      blackboard->set(unreachable_key, false);
+      blackboard->set(shift_key, 0.0);
+      blackboard->set(skipped_key, false);
+      return " final_attempt=\"" + escapeXmlAttr(blackboardPort(queue_final_key)) +
+             "\" unreachable=\"" + escapeXmlAttr(blackboardPort(unreachable_key)) +
+             "\" suggested_base_shift_m=\"" + escapeXmlAttr(blackboardPort(shift_key)) +
+             "\" skipped=\"" + escapeXmlAttr(blackboardPort(skipped_key)) + "\"";
+    };
+  const auto reach_leaf_name = [&](const std::string & kind, const std::size_t action_index) {
+      if (!queue_open) {
+        return std::string();
+      }
+      return " name=\"" + kind + "_" + std::to_string(action_index) + "\"";
+    };
+
   for (std::size_t i = 0; i < actions.size(); ++i) {
     const YAML::Node action = actions[i];
     const std::string kind = action["kind"].as<std::string>("");
@@ -302,6 +447,7 @@ std::string buildTreeXmlFromActions(
       const std::string pose_name_key = actionBlackboardKey(i, "pose_name");
       setStringOnBlackboard(blackboard, i, "pose_name", pose_name);
 
+      close_reach_queue();
       xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
           << "\"/>\n";
       station_has_actions = station_has_actions || station_open;
@@ -324,6 +470,7 @@ std::string buildTreeXmlFromActions(
         ctx.map_config->useDocking(dock_id) :
         (dock_id != "START" && dock_id != "FINISH");
 
+      close_reach_queue();
       close_station_block();
       const bool wrap = use_docking && ctx.skip_unreachable_station;
       if (wrap) {
@@ -338,6 +485,10 @@ std::string buildTreeXmlFromActions(
       }
       current_station_dock = dock_id;
       current_station_ws = ws;
+      station_queue_eligible = ctx.reach_queue_enabled && use_docking &&
+        wsHasReachQueuePrefix(ws, ctx.reach_queue_ws_prefixes);
+      station_goto_index = i;
+      station_ws_key = actionBlackboardKey(i, "ws");
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] goto  " + ws + " -> " + dock_id +
         (use_docking ? "  (dock+align)" : "  (navegacao pura)") +
@@ -373,8 +524,11 @@ std::string buildTreeXmlFromActions(
       const std::string table_pose_key = actionBlackboardKey(i, "table_pose");
       setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
 
-      xml << "      <PickTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
-          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\"/>\n";
+      open_reach_queue_if_needed();
+      xml << "      <PickTag" << reach_leaf_name("pick", i)
+          << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
+          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\""
+          << reach_leaf_attrs(i) << "/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] pick  tag=" + tag_frame +
@@ -460,12 +614,14 @@ std::string buildTreeXmlFromActions(
       const std::string container_color_key = actionBlackboardKey(i, "container_color");
       setStringOnBlackboard(blackboard, i, "container_color", container_color);
 
-      xml << "      <PlaceTag tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
+      open_reach_queue_if_needed();
+      xml << "      <PlaceTag" << reach_leaf_name("place", i)
+          << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
           << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
           << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key))
           << "\" container_color=\"" << escapeXmlAttr(blackboardPort(container_color_key))
-          << "\"/>\n";
+          << "\"" << reach_leaf_attrs(i) << "/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
@@ -478,8 +634,9 @@ std::string buildTreeXmlFromActions(
     throw std::runtime_error("actions[" + std::to_string(i) + "] has unsupported kind: " + kind);
   }
 
-  // Fecha o bloco da ultima estacao ANTES do epilogo: o home final e o goto
-  // FINISH rodam SEMPRE, mesmo com a ultima estacao pulada.
+  // Fecha a fila de alcance e o bloco da ultima estacao ANTES do epilogo: o
+  // home final e o goto FINISH rodam SEMPRE, mesmo com a ultima estacao pulada.
+  close_reach_queue();
   close_station_block();
 
   // Epilogo: braco em home e ida ao FINISH (o undock de saida da ultima
@@ -581,6 +738,9 @@ int main(int argc, char ** argv)
     //   --ros-args -p use_lidar_refine:=false
     blackboard->set("use_lidar_refine", node->declare_parameter<bool>("use_lidar_refine", true));
     blackboard->set("skip_align", node->declare_parameter<bool>("skip_align", false));
+    // 2026-08-28 (fila de alcance): timeout do goal nudge_base (a base anda
+    // <= 0,25 m; o servidor tem o proprio nudge_default_timeout quando 0).
+    blackboard->set("nudge_timeout", node->declare_parameter<double>("nudge_timeout", 20.0));
     blackboard->set("docked", false);
     blackboard->set("current_dock_id", std::string(""));
     blackboard->set("current_dock_type", std::string(""));
@@ -593,6 +753,25 @@ int main(int argc, char ** argv)
     // false = comportamento antigo (goto falhou => missao inteira falha).
     ctx.skip_unreachable_station =
       node->declare_parameter<bool>("skip_unreachable_station", true);
+    // Fila de alcance (2026-08-28). reach_queue_enabled:=false => XML
+    // identico ao de antes (folhas sem final_attempt => true).
+    ctx.reach_queue_enabled = node->declare_parameter<bool>("reach_queue_enabled", true);
+    ctx.reach_queue_ws_prefixes = node->declare_parameter<std::vector<std::string>>(
+      "reach_queue_ws_prefixes", std::vector<std::string>{"WS_", "PP_"});
+    ctx.reach_queue_max_nudges = static_cast<int>(
+      node->declare_parameter<int64_t>("reach_queue_max_nudges", 2));
+    ctx.reach_queue_max_shift_m =
+      node->declare_parameter<double>("reach_queue_max_shift_m", 0.25);
+    ctx.reach_queue_min_shift_m =
+      node->declare_parameter<double>("reach_queue_min_shift_m", 0.10);
+    if (ctx.reach_queue_max_nudges < 0 || ctx.reach_queue_max_shift_m <= 0.0 ||
+      ctx.reach_queue_min_shift_m < 0.0 ||
+      ctx.reach_queue_min_shift_m > ctx.reach_queue_max_shift_m)
+    {
+      throw std::runtime_error(
+              "reach_queue_*: esperado max_nudges >= 0 e 0 <= min_shift_m <= max_shift_m "
+              "(max_shift_m > 0).");
+    }
 
     std::string map_folder = map_folder_param;
     if (map_folder.empty() && !map_name_param.empty()) {
@@ -628,10 +807,13 @@ int main(int argc, char ** argv)
     factory.registerNodeType<manip_bt::GoToNamedPoseBT>("GoToNamedPose");
     factory.registerNodeType<manip_bt::PickTagBT>("PickTag");
     factory.registerNodeType<manip_bt::PlaceTagBT>("PlaceTag");
+    factory.registerNodeType<manip_bt::ReachQueueBT>("ReachQueue");
     if (simulate_navigation) {
       factory.registerNodeType<SimulatedGoToWSBT>("GoToWS");
+      factory.registerNodeType<SimulatedNudgeBaseBT>("NudgeBase");
     } else {
       factory.registerNodeType<manip_bt::GoToWSBT>("GoToWS");
+      factory.registerNodeType<manip_bt::NudgeBaseBT>("NudgeBase");
     }
 
     RCLCPP_INFO(

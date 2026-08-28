@@ -1,0 +1,23 @@
+# Cenario de bancada da FILA DE ALCANCE (2026-08-28) — usado pelo
+# run_reach_queue_scenario.sh com os fakes em ROS_DOMAIN_ID=99.
+# Sem `home` (nao ha MoveIt na bancada) e sem epilogo (finish_dock_id vazio).
+#
+# WS_1 (fake_pick_place: unreachable_picks ['tag_7:0.20','tag_8:0.60'],
+#       unseen_tags ['tag_9']; fake_nav: nudge_slip 0.85):
+#   [1] place tag_2 ........ alcancavel
+#   [2] pick  tag_7 ........ precisa +0.20 m -> ADIADO, sugestao +0.20
+#   [3] pick  tag_8 ........ precisa +0.60 m -> ADIADO, sugestao +0.25
+#   [4] pick  tag_9 ........ nunca vista -> pulada (sem ADIADO)
+#   AJUSTE LATERAL 1/2: +0.20 (anda 0.17) -> tag_7 ok, tag_8 ADIADO (+0.25)
+#   AJUSTE LATERAL 2/2: +0.25 (anda 0.2125, total 0.3825) -> tag_8 ADIADO (+0.20)
+#   PASSAGEM FINAL: tag_8 pulada (fora_de_alcance_final) -> concluida (2, +0.45)
+# WS_2 (unreachable_places ['tag_1:-0.15']): o align zera o acumulado;
+#   [6] place tag_1 ........ precisa -0.15 m -> ADIADO, AJUSTE 1/2: -0.15 -> ok
+actions:
+  - {kind: goto, ws: WS_1, mesa: Mesa0}
+  - {kind: place, tag_frame: tag_2, table_pose: Mesa0, ws: WS_1}
+  - {kind: pick, tag_frame: tag_7}
+  - {kind: pick, tag_frame: tag_8}
+  - {kind: pick, tag_frame: tag_9}
+  - {kind: goto, ws: WS_2, mesa: Mesa5}
+  - {kind: place, tag_frame: tag_1, table_pose: Mesa5, ws: WS_2, container_color: BLUE}

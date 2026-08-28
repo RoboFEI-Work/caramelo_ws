@@ -23,6 +23,11 @@ container_detector:
     place_active_topic: /manip/place_active
     plane_z_topic: /manip/container_plane_z
     debug_image: true            # publica /manip/container_detector/debug_image (so com assinante)
+    # Gravacao do que o detector ve durante o place: <ts>_raw.png + <ts>_overlay.png
+    # + log.txt (status por frame). "" = desligado. Ligado em 27/08 para diagnosticar
+    # o vermelho — esvaziar a pasta de tempos em tempos (~1 MB/s de place).
+    save_debug_dir: /home/linux24-04/caramelo_ws/missions/fotos_containers/debug
+    save_debug_every_s: 1.0
 
     # --- frames / plano ---
     base_frame: manip_base_link  # frame da IK custom (o place resolve tudo nele)
@@ -37,7 +42,9 @@ container_detector:
     container_long_m: 0.170
     container_short_m: 0.105
     container_height_m: 0.070
-    dims_tolerance_frac: 0.6     # lados projetados dentro de +-60% (vista inclinada mostra a parede)
+    dims_tolerance_frac: 0.6     # lados de blob INTEIRO no minimo 40% do nominal
+    dims_tolerance_upper_frac: 1.0  # ... e no maximo 2x: de perto as paredes inflam a mancha (27/08: 0,20x0,176 m
+                                    # visto de tag_esquerda era rejeitado por lado_curto). Blob cortado: so' area.
     area_expected_min_frac: 0.2  # area do blob vs area esperada a distancia d
     area_expected_max_frac: 5.0
     min_area_px: 300.0           # em pixels JA escalados (process_scale)
@@ -92,6 +99,20 @@ container_detector:
     smoothing_jump_reset_m: 0.04
     min_samples: 2
     yaw_axis_offset_deg: 0.0     # 90 se os dedos tiverem que cruzar o lado CURTO
+    # Yaw so' vale com mancha alongada (lado longo/curto medidos no plano); senao
+    # usa o ultimo yaw confiavel da cor (28/08: de perto o vermelho saia 0,18x0,18
+    # e o yaw virava 4 graus -> deslocamento de 3 cm no eixo errado, cubo na parede).
+    yaw_min_aspect_full: 1.3
+    yaw_min_aspect_partial: 1.5
+    yaw_partial_min_area_frac: 0.6   # parcial: yaw so' com >= 60% da area esperada...
+    yaw_partial_min_long_frac: 0.7   # ... e lado longo >= 70% do nominal (filete de parede dava 78 graus)
+    yaw_memory_s: 60.0
+    yaw_memory_max_jump_deg: 30.0    # parcial discordando da memoria por mais que isso: fica a memoria
+    # Mancha cortada de UM lado (borda da imagem/garra) num eixo conhecido: o centro
+    # e' empurrado para o lado cortado por (nominal - visivel)/2 (max 5 cm).
+    partial_extend_enable: true
+    partial_extend_max_shift_m: 0.05
+    partial_extend_min_visible_frac: 0.35
 
     # --- cores (OpenCV: H 0-179, S/V 0-255). h_ranges = pares [lo, hi, lo, hi, ...] ---
     colors: [vermelho, azul]

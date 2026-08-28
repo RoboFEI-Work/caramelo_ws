@@ -44,6 +44,7 @@
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
+#include "manip_task_execution/reach_shift.hpp"
 #include "my_robot_msgs/action/place_tag.hpp"
 
 class PlaceActionServer : public rclcpp::Node
@@ -136,6 +137,24 @@ public:
             "container_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
         container_fallback_to_table_ =
             this->declare_parameter<bool>("container_fallback_to_table", true);
+        // 2026-08-28 (fila de alcance): container/pilha VISTOS mas sem IK em
+        // nenhum candidato x inclinacao => com final_attempt=false o place sai
+        // CEDO: devolve o cubo ao container de bordo (yaml continua occupied)
+        // e responde unreachable=true com uma sugestao de deslocamento
+        // lateral da base verificada pela mesma IK (reach_shift), SEM cair na
+        // mesa. false = comportamento antigo (fallback silencioso na mesa).
+        // Mesmos nomes/defaults do no de pick.
+        unreachable_bailout_enabled_ = this->declare_parameter<bool>(
+            "unreachable_bailout_enabled", true);
+        // |dy| candidatos (m, base_footprint), crescentes; o piso do ESC nao
+        // executa passos < ~0,10 m e o curso maximo e decisao do operador.
+        unreachable_shift_candidates_m_ = this->declare_parameter<std::vector<double>>(
+            "unreachable_shift_candidates_m",
+            std::vector<double>{0.10, 0.15, 0.20, 0.25});
+        // A base para um pouco antes do pedido: a busca testa o alvo com
+        // esse desconto para nao sugerir um passo que fique 1 cm curto.
+        unreachable_shift_margin_m_ = this->declare_parameter<double>(
+            "unreachable_shift_margin_m", 0.02);
         container_plane_topic_ = this->declare_parameter<std::string>(
             "container_plane_topic", "/manip/container_plane_z");
         // Container fora do quadro de pegar_obj (mesa de 80 cm, camera a ~0,33 m
@@ -195,6 +214,19 @@ public:
         // destino, para o container_detector fazer o ray-cast no plano certo.
         container_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             container_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
+        // 2026-08-28 (fila de alcance): deslocamento lateral ACUMULADO da base
+        // desde o ultimo align_to_dock (+ = esquerda, base_footprint), que so
+        // o dock_align_node publica (latched; zera a cada align_to_dock). A
+        // memoria de slots e gravada no frame da pose de docking (offset 0):
+        // ler = x + offset, gravar = x - offset (ver containerSlotCandidates,
+        // addMemoryObstacles, recordSlotUsed). O yaml NUNCA e reescrito.
+        base_shift_total_subscription_ =
+            this->create_subscription<std_msgs::msg::Float64>(
+                "/manip/base_shift_total",
+                rclcpp::QoS(1).transient_local().reliable(),
+                [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+                    base_shift_total_.store(msg->data, std::memory_order_relaxed);
+                });
 
         // 2026-08-12: entregar na prateleira exige um waypoint obrigatorio
         // (`pirocao`) antes e depois da pose de mesa — sem ele o braco bate
@@ -421,6 +453,28 @@ private:
     std::vector<double> container_slot_offsets_long_m_{0.03, -0.03, 0.0};
     std::vector<double> container_slot_offsets_short_m_{0.0, 0.0, 0.0};
     double container_exit_gripper_position_{0.170};  // manip_joint6/7: fechada 0.170, aberta -0.2265
+
+    // ---- Fila de alcance (2026-08-28) ----
+    bool unreachable_bailout_enabled_{true};
+    std::vector<double> unreachable_shift_candidates_m_{0.10, 0.15, 0.20, 0.25};
+    double unreachable_shift_margin_m_{0.02};
+    // Estado POR GOAL (zerado em execute()): o container/pilha foi VISTO e
+    // nenhum candidato x inclinacao teve IK antes de qualquer movimento.
+    bool last_failure_unreachable_{false};
+    // Sugestao de deslocamento da base (base_footprint, + = esquerda; 0 =
+    // de lado nao resolve), so calculada no caminho de saida cedo.
+    double last_suggested_shift_m_{0.0};
+    // Alvos 3D (manip_base_link) que a escada nao alcancou, na ordem de
+    // preferencia (container: candidatos de slot; pilha: 1 alvo). O 1o vira
+    // target_x/target_y do result e decide a direcao da busca.
+    std::vector<Eigen::Vector3d> last_unreachable_targets_;
+    /// O braco saiu de pegar_obj durante placeStackedOnFrame (pre-alinhamento
+    /// lateral) — a devolucao do cubo passa por pegar_obj antes.
+    bool stack_arm_moved_{false};
+    /// Deslocamento lateral acumulado da base (m, + = esquerda), do
+    /// /manip/base_shift_total (dock_align_node). 0 sem publicacao.
+    std::atomic<double> base_shift_total_{0.0};
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr base_shift_total_subscription_;
 
     std::string camera_info_topic_;
     double perception_warmup_timeout_{6.0};
@@ -1280,19 +1334,23 @@ private:
     /// container (yaw do frame). Sem bloco anterior na memoria: candidato 0.
     /// Com blocos: o candidato mais longe do bloco mais proximo — robusto ao
     /// sinal do yaw (pode virar 180 graus entre deteccoes) e a onde o 1o caiu.
-    void applyContainerSlotOffset(
+    std::vector<Eigen::Vector2d> containerSlotCandidates(
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
         const std::string & frame,
         double frame_yaw,
-        Eigen::Vector3d & target)
+        const Eigen::Vector3d & target)
     {
         const auto & offs_l = container_slot_offsets_long_m_;
         const auto & offs_s = container_slot_offsets_short_m_;
         if (offs_l.empty()) {
-            return;
+            return {Eigen::Vector2d(target.x(), target.y())};
         }
         std::vector<Eigen::Vector2d> prior;
         const std::string ws = normalizedWs(goal_handle->get_goal()->ws);
+        // Memoria gravada no frame da pose de docking; a base ja pode ter
+        // andado de lado (fila de alcance, 2026-08-28): ponto fixo na mesa
+        // aparece em x + offset no manip_base_link de agora.
+        const double offset = base_shift_total_.load(std::memory_order_relaxed);
         if (slot_memory_enabled_ && !ws.empty()) {
             std::vector<manip_task_execution::TableSlotRecord> records;
             std::string err;
@@ -1301,7 +1359,7 @@ private:
             {
                 for (const auto & rec : records) {
                     if (rec.slot == frame && rec.frame == ik_reference_frame_) {
-                        prior.emplace_back(rec.x, rec.y);
+                        prior.emplace_back(rec.x + offset, rec.y);
                     }
                 }
             } else {
@@ -1338,8 +1396,28 @@ private:
             offs_l[best], best < offs_s.size() ? offs_s[best] : 0.0,
             cands[best].x(), cands[best].y(),
             prior.empty() ? "" : (", " + std::to_string(best_score * 100.0).substr(0, 4) + " cm do bloco mais proximo").c_str());
-        target.x() = cands[best].x();
-        target.y() = cands[best].y();
+        // Ordem: preferido, depois os outros por distancia ao bloco mais
+        // proximo (maior primeiro) — se o preferido nao tiver IK (28/08: pote
+        // longe a direita, +3 cm caia fora do alcance), tenta os seguintes.
+        std::vector<std::pair<double, std::size_t>> order;
+        for (std::size_t k = 0; k < cands.size(); ++k) {
+            double score = 0.0;
+            if (!prior.empty()) {
+                score = std::numeric_limits<double>::infinity();
+                for (const auto & p : prior) {
+                    score = std::min(score, (cands[k] - p).norm());
+                }
+            }
+            order.emplace_back(k == best ? std::numeric_limits<double>::infinity() : score, k);
+        }
+        std::stable_sort(order.begin(), order.end(),
+                         [](const auto & a, const auto & b) { return a.first > b.first; });
+        std::vector<Eigen::Vector2d> ranked;
+        for (const auto & [score, k] : order) {
+            (void)score;
+            ranked.push_back(cands[k]);
+        }
+        return ranked;
     }
 
     /// Como moveToJointTargetJoint2Last, mas segurando ombro (j2) E cotovelo
@@ -1609,6 +1687,9 @@ private:
             return;
         }
         std::size_t n = 0;
+        // Memoria no frame da pose de docking -> x + deslocamento lateral
+        // acumulado da base (fila de alcance, 2026-08-28).
+        const double offset = base_shift_total_.load(std::memory_order_relaxed);
         for (const auto & rec : records) {
             if (rec.frame != ik_reference_frame_) {
                 continue;
@@ -1616,7 +1697,7 @@ private:
             const std::string key = "memoria:" + rec.tag_frame + "@" + rec.slot;
             TableObstacle ob;
             ob.frame = key;
-            ob.p = Eigen::Vector3d(rec.x, rec.y, rec.z);
+            ob.p = Eigen::Vector3d(rec.x + offset, rec.y, rec.z);
             // Slot "ct_vermelho"/"ct_azul" = bloco solto DENTRO de um container:
             // folga de container (0,13), nao a do cubo.
             ob.clearance = clearanceForFrame(
@@ -2038,12 +2119,17 @@ private:
         Eigen::Vector3d actual = last_slot_decision_->p;
         (void)tcpErrorByFk(arm, last_slot_decision_->p, &actual);
 
+        // Grava no frame da pose de docking: desconta o deslocamento lateral
+        // acumulado da base (fila de alcance, 2026-08-28), para a leitura
+        // (x + offset) bater mesmo depois de outro nudge ou de re-docking.
+        const double offset = base_shift_total_.load(std::memory_order_relaxed);
+
         manip_task_execution::TableSlotRecord rec;
         rec.slot = last_slot_decision_->slot;
         rec.table_pose = last_slot_decision_->table_pose;
         rec.tag_frame = carried_tag;
         rec.frame = ik_reference_frame_;
-        rec.x = actual.x();
+        rec.x = actual.x() - offset;
         rec.y = actual.y();
         rec.z = actual.z();
         rec.stamp_sec = this->get_clock()->now().seconds();
@@ -2053,8 +2139,11 @@ private:
             return;
         }
         RCLCPP_INFO(
-            get_logger(), "[SLOT] memoria: %s usou %s em [%+.3f %.3f %+.3f] (%s)",
-            ws.c_str(), rec.slot.c_str(), rec.x, rec.y, rec.z, carried_tag.c_str());
+            get_logger(),
+            "[SLOT] memoria: %s usou %s em [%+.3f %.3f %+.3f] (%s; x real %+.3f, "
+            "offset da base %+.3f)",
+            ws.c_str(), rec.slot.c_str(), rec.x, rec.y, rec.z, carried_tag.c_str(),
+            actual.x(), offset);
     }
 
     // =====================================================================
@@ -2069,7 +2158,26 @@ private:
     //   baixo, dedos no yaw da tag base. Pre-pose stack_pre_lift_m acima,
     //   descida vertical (mesma inclinacao nas duas), subida apos soltar.
     // =====================================================================
-    enum class StackOutcome { kOk, kBaseNotSeen, kNoIk, kMoveFailed };
+    // kUnreachable (2026-08-28, fila de alcance): alvo VISTO e nenhum
+    // candidato x inclinacao teve IK ANTES de qualquer movimento em direcao
+    // ao alvo (os alvos ficam em last_unreachable_targets_). Falha de
+    // CHEGADA (FK fora da tolerancia) continua kNoIk.
+    enum class StackOutcome { kOk, kBaseNotSeen, kNoIk, kMoveFailed, kUnreachable };
+
+    /// Escada de inclinacao da ferramenta em rad: 0 e depois cada valor
+    /// (graus) de `ladder_deg` em (0, 90). E a MESMA lista que a busca de
+    /// deslocamento da base (reach_shift) testa — o que resolve la resolve
+    /// aqui (2026-08-28).
+    static std::vector<double> tiltLadderRad(const std::vector<double> & ladder_deg)
+    {
+        std::vector<double> tilts{0.0};
+        for (const double t : ladder_deg) {
+            if (t > 0.0 && t < 90.0) {
+                tilts.push_back(t * M_PI / 180.0);
+            }
+        }
+        return tilts;
+    }
 
     StackOutcome placeStackedOnFrame(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -2105,6 +2213,7 @@ private:
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(
                 base_tf.transform.translation.x > 0.0 ? "tag_direita" : "tag_esquerda");
+            stack_arm_moved_ = true;
             if (!planAndExecute(arm, "stack go tag_lateral")) {
                 return StackOutcome::kMoveFailed;
             }
@@ -2144,18 +2253,11 @@ private:
         // Escada de inclinacao (0, depois stack_tilt_ladder_deg): pre-pose e
         // pegada precisam resolver na MESMA inclinacao para a descida ser
         // vertical.
-        std::vector<double> tilts_deg{0.0};
-        for (const double t : stack_tilt_ladder_deg_) {
-            if (t > 0.0 && t < 90.0) {
-                tilts_deg.push_back(t);
-            }
-        }
         std::array<double, 5> q_final{};
         std::array<double, 5> q_lift{};
         bool solved = false;
         double tilt_used = 0.0;
-        for (const double tilt_deg : tilts_deg) {
-            const double tilt = tilt_deg * M_PI / 180.0;
+        for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
             if (manip_task_execution::solveIk(target, tilt, 0.0, q_final) &&
                 manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
             {
@@ -2165,12 +2267,16 @@ private:
             }
         }
         if (!solved) {
+            // Base VISTA, sem IK em nenhuma inclinacao, braco ainda longe da
+            // pilha: fora de alcance (fila de alcance, 2026-08-28). O
+            // chamador decide entre sair cedo e o fallback da mesa.
             RCLCPP_ERROR(
                 get_logger(),
                 "[STACK] IK propria nao achou solucao (com pre-pose) para "
-                "[%.3f %.3f %.3f] em %s.",
+                "[%.3f %.3f %.3f] em %s — fora de alcance.",
                 target.x(), target.y(), target.z(), ik_reference_frame_.c_str());
-            return StackOutcome::kNoIk;
+            last_unreachable_targets_ = {target};
+            return StackOutcome::kUnreachable;
         }
         q_final[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_final[0], tilt_used);
         q_lift[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_lift[0], tilt_used);
@@ -2448,38 +2554,58 @@ private:
         // sempre no centro empilha o 2o em cima do 1o (e a garra o re-pega ao
         // fechar). Cada bloco vai para o candidato mais LONGE dos que a
         // memoria de slots diz que ja soltamos neste container.
-        applyContainerSlotOffset(goal_handle, frame, frame_yaw, target);
+        const std::vector<Eigen::Vector2d> slot_cands =
+            containerSlotCandidates(goal_handle, frame, frame_yaw, target);
 
-        std::vector<double> tilts_deg{0.0};
-        for (const double t : container_tilt_ladder_deg_) {
-            if (t > 0.0 && t < 90.0) {
-                tilts_deg.push_back(t);
-            }
-        }
+        const std::vector<double> tilts = tiltLadderRad(container_tilt_ladder_deg_);
         // Pose de recuo VERTICAL (stack_pre_lift_m acima) resolvida junto, na
         // mesma inclinacao: se a chegada reprovar, sobe por ela antes de
         // qualquer plano em juntas para pegar_obj (revisao 25/08).
-        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+        Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
         std::array<double, 5> q{};
         std::array<double, 5> q_lift{};
         bool solved = false;
         double tilt_used = 0.0;
-        for (const double tilt_deg : tilts_deg) {
-            const double tilt = tilt_deg * M_PI / 180.0;
-            if (manip_task_execution::solveIk(target, tilt, 0.0, q) &&
-                manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
-            {
-                solved = true;
-                tilt_used = tilt;
-                break;
+        for (std::size_t ci = 0; ci < slot_cands.size() && !solved; ++ci) {
+            target.x() = slot_cands[ci].x();
+            target.y() = slot_cands[ci].y();
+            target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+            for (const double tilt : tilts) {
+                if (manip_task_execution::solveIk(target, tilt, 0.0, q) &&
+                    manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
+                {
+                    solved = true;
+                    tilt_used = tilt;
+                    break;
+                }
+            }
+            if (!solved) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[CONTAINER] candidato %zu/%zu [%.3f %.3f] sem IK — tentando o proximo.",
+                    ci + 1, slot_cands.size(), target.x(), target.y());
+            } else if (ci > 0) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[CONTAINER] usando o candidato %zu/%zu [%.3f %.3f] (preferido sem IK).",
+                    ci + 1, slot_cands.size(), target.x(), target.y());
             }
         }
         if (!solved) {
+            // Container VISTO, sem IK em nenhum candidato x inclinacao, braco
+            // ainda longe dele: fora de alcance (fila de alcance, 2026-08-28).
+            // Guarda os candidatos como alvos 3D (ordem de preferencia
+            // preservada) para a busca de deslocamento da base; o chamador
+            // decide entre sair cedo e o fallback da mesa.
             RCLCPP_ERROR(
                 get_logger(),
-                "[CONTAINER] IK propria nao achou solucao (com recuo) para [%.3f %.3f %.3f] em %s.",
+                "[CONTAINER] IK propria nao achou solucao (com recuo) em nenhum candidato perto de [%.3f %.3f %.3f] em %s — fora de alcance.",
                 target.x(), target.y(), target.z(), ik_reference_frame_.c_str());
-            return StackOutcome::kNoIk;
+            last_unreachable_targets_.clear();
+            for (const auto & cand : slot_cands) {
+                last_unreachable_targets_.emplace_back(cand.x(), cand.y(), target.z());
+            }
+            return StackOutcome::kUnreachable;
         }
         // Linha dos dedos ao longo do lado LONGO do container (X do frame).
         q[4] = manip_task_execution::computeWristForTagYaw(frame_yaw, q[0], tilt_used);
@@ -2537,6 +2663,87 @@ private:
         return StackOutcome::kOk;
     }
 
+    /// Fila de alcance (2026-08-28): o container/pilha foi VISTO e nenhum
+    /// candidato x inclinacao teve IK antes de qualquer movimento
+    /// (StackOutcome::kUnreachable). Com o bailout ligado e o goal ainda nao
+    /// sendo a tentativa final da estacao, o place sai cedo: pergunta a
+    /// reach_shift quantos cm de lado a base precisa andar (mesma IK, mesma
+    /// escada de inclinacao e mesma elevacao stack_pre_lift_m que a
+    /// aproximacao usa) e marca a falha como "alvo_fora_de_alcance" — SEM
+    /// fallback de mesa e SEM soltar; o chamador (run_place_cycle) devolve o
+    /// cubo ao container de bordo e execute() responde skipped/unreachable.
+    /// Devolve false quando o caminho de sempre (fallback na mesa) deve
+    /// seguir: tentativa final, bailout desligado ou contradicao da IK.
+    bool tryUnreachableBailout(
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::vector<double> & tilt_ladder_deg,
+        const std::string & log_tag,
+        const std::string & spoken_prefix)
+    {
+        const bool final_attempt = goal_handle->get_goal()->final_attempt;
+        if (!unreachable_bailout_enabled_ || final_attempt) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] alvo VISTO fora de alcance; %s — seguindo o caminho de sempre "
+                "(fallback na mesa).",
+                log_tag.c_str(),
+                final_attempt ? "tentativa FINAL da estacao" : "unreachable_bailout_enabled=false");
+            return false;
+        }
+        if (last_unreachable_targets_.empty()) {
+            // Nao deveria acontecer (kUnreachable sempre guarda os alvos).
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] fora de alcance sem alvos guardados — seguindo o caminho de sempre.",
+                log_tag.c_str());
+            return false;
+        }
+
+        publish_stage(goal_handle, "unreachable_check");
+        manip_task_execution::ReachShiftOptions opts;
+        opts.candidates_m = unreachable_shift_candidates_m_;
+        opts.tilts_rad = tiltLadderRad(tilt_ladder_deg);
+        opts.q5_fixed = 0.0;
+        opts.lift_m = stack_pre_lift_m_;
+        opts.undershoot_margin_m = unreachable_shift_margin_m_;
+        const manip_task_execution::ReachShiftResult shift =
+            manip_task_execution::findBaseShiftForReach(last_unreachable_targets_, opts);
+        const Eigen::Vector3d & first = last_unreachable_targets_.front();
+
+        if (shift.reachable_now) {
+            // Contradicao: a mesma IK, com a mesma escada e a mesma elevacao,
+            // resolveu um dos alvos sem mover a base. Nao adia — segue o
+            // fallback de sempre.
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] reach_shift resolve o alvo [%.3f %.3f %.3f] SEM mover a base, "
+                "mas a aproximacao nao achou IK. Seguindo o caminho de sempre.",
+                log_tag.c_str(), first.x(), first.y(), first.z());
+            return false;
+        }
+
+        last_failure_unreachable_ = true;
+        last_suggested_shift_m_ = shift.shift_m;
+        last_place_failure_reason_ = "alvo_fora_de_alcance";
+        RCLCPP_WARN(
+            get_logger(),
+            "[%s] alvo VISTO em [%.3f %.3f %.3f] (%s, %zu candidato(s)) FORA DO ALCANCE. "
+            "Sugestao de deslocamento da base: %+.2f m (%s; alvo deslocado "
+            "[%.3f %.3f %.3f], inclinacao %.0f graus). Saindo cedo: sem fallback de "
+            "mesa, devolvendo o bloco ao container de bordo (fila de alcance).",
+            log_tag.c_str(), first.x(), first.y(), first.z(),
+            ik_reference_frame_.c_str(), last_unreachable_targets_.size(),
+            shift.shift_m,
+            shift.shift_m == 0.0 ? "de lado nao resolve" :
+            (shift.shift_m > 0.0 ? "esquerda" : "direita"),
+            shift.shifted_target.x(), shift.shifted_target.y(), shift.shifted_target.z(),
+            shift.tilt_rad * 180.0 / M_PI);
+        speak(
+            spoken_prefix + " esta fora do meu alcance" +
+            (shift.shift_m != 0.0 ? ", vou precisar me mover" : ""));
+        return true;
+    }
+
     bool moveToPlaceTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & table_pose,
@@ -2544,6 +2751,8 @@ private:
     {
         stack_lift_q_.reset();
         container_exit_pending_ = false;
+        stack_arm_moved_ = false;
+        container_arm_moved_ = false;
         {
             const auto goal = goal_handle->get_goal();
             if (!goal->stack_on.empty()) {
@@ -2557,6 +2766,15 @@ private:
                         arm, goal->stack_on, table_pose, goal_handle);
                     if (out == StackOutcome::kOk) {
                         return true;
+                    }
+                    // Fila de alcance (2026-08-28): base VISTA, sem IK antes
+                    // de mover — sai cedo, sem fallback de mesa e sem soltar.
+                    if (out == StackOutcome::kUnreachable &&
+                        tryUnreachableBailout(
+                            goal_handle, stack_tilt_ladder_deg_, "STACK",
+                            "O bloco base esta fora do meu alcance"))
+                    {
+                        return false;
                     }
                     if (out == StackOutcome::kMoveFailed || !stack_fallback_to_table_) {
                         last_place_failure_reason_ = "empilhar_falhou";
@@ -2609,6 +2827,17 @@ private:
                     if (out == StackOutcome::kOk) {
                         return true;
                     }
+                    // Fila de alcance (2026-08-28): container VISTO, sem IK
+                    // em nenhum candidato antes de mover — sai cedo, sem
+                    // fallback de mesa e sem soltar (28/08: o azul a
+                    // x=+0,20 m caia na mesa em silencio).
+                    if (out == StackOutcome::kUnreachable &&
+                        tryUnreachableBailout(
+                            goal_handle, container_tilt_ladder_deg_, "CONTAINER",
+                            "O container " + cor + " esta fora do meu alcance"))
+                    {
+                        return false;
+                    }
                     if (out == StackOutcome::kMoveFailed || !container_fallback_to_table_) {
                         last_place_failure_reason_ = "container_falhou";
                         return false;
@@ -2637,6 +2866,10 @@ private:
             }
         }
 
+        // Place normal na mesa (poses nomeadas do SRDF / slots MesaX.N e
+        // prateleira): NAO tem conceito de alcance — as poses sao fixas em
+        // juntas e sempre resolvem. A fila de alcance (2026-08-28) so vale
+        // para container por cor e pilha, cujos alvos vem da camera.
         if (!isTfPlaceTarget(table_pose)) {
             if (isShelfPlaceTarget(table_pose)) {
                 publish_stage(goal_handle, "shelf_waypoint");
@@ -2792,12 +3025,15 @@ private:
         cancel_requested_.store(false);
         RCLCPP_INFO(
             get_logger(),
-            "Received place goal tag=%s table=%s ws=%s stack_on=%s container_color=%s",
+            "Received place goal tag=%s table=%s ws=%s stack_on=%s container_color=%s "
+            "final_attempt=%s base_shift_total=%+.3f",
             goal->tag_frame.c_str(),
             goal->table_pose.c_str(),
             goal->ws.c_str(),
             goal->stack_on.empty() ? "-" : goal->stack_on.c_str(),
-            goal->container_color.empty() ? "-" : goal->container_color.c_str());
+            goal->container_color.empty() ? "-" : goal->container_color.c_str(),
+            goal->final_attempt ? "true" : "false",
+            base_shift_total_.load(std::memory_order_relaxed));
         if (!goal->container_color.empty() &&
             goal->container_color != "RED" && goal->container_color != "BLUE")
         {
@@ -2844,14 +3080,43 @@ private:
         publishPlaceActive(true);
         const auto goal = goal_handle->get_goal();
 
+        // Fila de alcance (2026-08-28): estado por goal, zerado ANTES de
+        // qualquer saida (o cancel antes de comecar tambem preenche o result).
+        last_failure_unreachable_ = false;
+        last_suggested_shift_m_ = 0.0;
+        last_unreachable_targets_.clear();
+        stack_arm_moved_ = false;
+        container_arm_moved_ = false;
+
         auto result =
             std::make_shared<PlaceTag::Result>();
 
+        // Fila de alcance: os campos de alcance saem preenchidos em TODOS os
+        // desfechos (0/false por default). unreachable so e verdadeiro sem
+        // entrega — o executor adia o objeto quando o ve. target_x/y ficam
+        // como diagnostico sempre que a aproximacao chegou a montar alvos.
+        const auto fill_reach_fields = [this, &result](bool physical_success)
+            {
+                result->unreachable = !physical_success && last_failure_unreachable_;
+                result->suggested_base_shift_m =
+                    result->unreachable ?
+                    static_cast<float>(last_suggested_shift_m_) : 0.0f;
+                if (!last_unreachable_targets_.empty()) {
+                    result->target_x = static_cast<float>(last_unreachable_targets_.front().x());
+                    result->target_y = static_cast<float>(last_unreachable_targets_.front().y());
+                } else {
+                    result->target_x = 0.0f;
+                    result->target_y = 0.0f;
+                }
+            };
+
         const auto finish_failure =
-            [this, &goal_handle, &result, &execution_guard](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard, &fill_reach_fields](
+                const std::string & message)
             {
                 result->success = false;
                 result->fail_reason = last_place_failure_reason_;
+                fill_reach_fields(false);
                 execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Place canceled: " + message;
@@ -2862,12 +3127,14 @@ private:
                 }
             };
         const auto finish_skip =
-            [this, &goal_handle, &result, &execution_guard](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard, &fill_reach_fields](
+                const std::string & message)
             {
                 result->success = true;
                 result->skipped = true;  // item 2.5: contrato explicito
                 result->fail_reason = "tag_nao_esta_em_container";
                 result->message = message;
+                fill_reach_fields(true);
                 publish_stage(goal_handle, "skipped_missing_container_tag");
                 speak("Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa");
                 execution_guard.release();
@@ -2946,6 +3213,13 @@ private:
         if (!success && last_place_failure_reason_.empty()) {
             last_place_failure_reason_ = "ik_ou_execucao_falhou";
         }
+        // Fila de alcance (2026-08-28): saida cedo (alvo visto, sem IK, ainda
+        // nao e a tentativa final, cubo ja devolvido ao container de bordo) —
+        // vira skip com unreachable=true; o executor desloca a base e pede
+        // este place de novo. Nunca chama setEmpty (o yaml continua occupied).
+        const bool unreachable_bailout =
+            !success && last_failure_unreachable_ &&
+            unreachable_bailout_enabled_ && !goal->final_attempt;
 
         // Verificacao adversarial 2026-08-10: gravar o yaml ANTES de
         // responder um cancel tardio — entrega concluida com cancel na saida
@@ -2971,6 +3245,7 @@ private:
             }
             result->success = true;
             result->message = "Place completed (cancel recebido apos a entrega)";
+            fill_reach_fields(true);
             execution_guard.release();
             goal_handle->canceled(result);
             return;
@@ -2987,6 +3262,7 @@ private:
             slot_suffix = buf;
         }
         result->success = success;
+        fill_reach_fields(success);
         if (success && state_write_success) {
             result->message = "Place completed" + slot_suffix;
         } else if (success && !state_write_success) {
@@ -3006,6 +3282,24 @@ private:
         {
             publish_stage(goal_handle, "done");
             speak("Entrega concluida com sucesso");
+            execution_guard.release();
+            goal_handle->succeed(result);
+        }
+        else if (unreachable_bailout)
+        {
+            // Fila de alcance: nao e falha — o cubo esta de volta no
+            // container de bordo e o executor desloca a base e volta.
+            // success=true + skipped=true + unreachable=true (+ sugestao).
+            publish_stage(goal_handle, "skipped_unreachable");
+            result->success = true;
+            result->skipped = true;
+            result->fail_reason = last_place_failure_reason_;
+            char shift_txt[32];
+            std::snprintf(
+                shift_txt, sizeof(shift_txt), "%+.2f", last_suggested_shift_m_);
+            result->message =
+                "Place skipped: alvo visto mas fora de alcance (bloco devolvido ao " +
+                container_pose + "; sugestao base " + std::string(shift_txt) + " m)";
             execution_guard.release();
             goal_handle->succeed(result);
         }
@@ -3143,6 +3437,112 @@ private:
             cycle_name.c_str(), baseline.motor6, m6_avg,
             baseline.motor7, m7_avg, sample_count);
         return m6_loaded && m7_loaded;
+    }
+
+    /// Fila de alcance (2026-08-28): o alvo (container/pilha) esta fora do
+    /// alcance e o cubo ainda esta na garra — devolve-o ao container de
+    /// bordo de onde saiu, pelo caminho inverso da busca: pegar_obj (se o
+    /// braco saiu de la) -> pre_container -> <container_pose> -> abre a
+    /// garra -> pre_container -> pegar_obj. O yaml do container continua
+    /// occupied (o setEmpty so roda com entrega concluida), entao o proximo
+    /// PlaceTag deste bloco, depois do ajuste da base, volta a busca-lo la.
+    /// false = o cubo pode ter ficado na garra ou o braco fora de pegar_obj:
+    /// o chamador aborta como falha_com_bloco_na_garra (sem unreachable).
+    bool returnCubeToOnboardContainer(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const std::string & container_pose,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "[PLACE] alvo fora de alcance — devolvendo o bloco ao %s (yaml continua occupied).",
+            container_pose.c_str());
+        speak("Vou devolver o bloco ao " + spokenTargetName(container_pose));
+        arm->setMaxAccelerationScalingFactor(1.0);
+
+        if (container_arm_moved_ || stack_arm_moved_) {
+            // Braco em tag_direita/esquerda ou na pre-pose: volta ao caminho
+            // validado (pegar_obj) antes de descer ao pote.
+            publish_stage(goal_handle, "returning_cube_pegar_obj");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (!planAndExecute(arm, "return cube: pegar_obj")) {
+                return false;
+            }
+        }
+
+        publish_stage(goal_handle, "returning_cube_pre_container");
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget("pre_container");
+        if (!planAndExecute(arm, "return cube: pre_container")) {
+            return false;
+        }
+
+        publish_stage(goal_handle, "returning_cube_container");
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget(container_pose);
+        if (!planAndExecute(arm, "return cube: " + container_pose)) {
+            return false;
+        }
+
+        publish_stage(goal_handle, "returning_cube_opening_gripper");
+        gripper->setStartStateToCurrentState();
+        gripper->setNamedTarget("gripper_open");
+        if (!planAndExecute(gripper, "return cube: open gripper")) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[PLACE] a garra nao abriu dentro do %s — o bloco pode continuar na garra.",
+                container_pose.c_str());
+            return false;
+        }
+        // Conferencia so pelo valor ABSOLUTO do esforco (base zero, mesmo
+        // padrao da saida do container da mesa): garra ainda carregada
+        // depois de abrir = o bloco pode nao ter ficado no pote. Apenas
+        // WARN — nada aqui reprova a devolucao.
+        if (verify_grasp_effort_) {
+            const auto sample = waitForFreshGripperEffort(std::chrono::milliseconds(600));
+            if (sample) {
+                GripperEffortSample zero = *sample;
+                zero.motor6 = 0.0;
+                zero.motor7 = 0.0;
+                if (verifyGraspByEffort(zero, "RETURN-CUBE")) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[PLACE] esforco da garra ainda alto depois de abrir no %s — o bloco "
+                        "pode nao ter ficado no container de bordo.",
+                        container_pose.c_str());
+                }
+            } else {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[PLACE] sem telemetria de esforco para conferir a devolucao — seguindo.");
+            }
+        }
+
+        publish_stage(goal_handle, "returning_cube_pre_container_out");
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget("pre_container");
+        if (!planAndExecute(arm, "return cube: pre_container (saida)")) {
+            return false;
+        }
+
+        publish_stage(goal_handle, "returning_cube_pegar_obj_final");
+        arm->setStartStateToCurrentState();
+        arm->setEndEffectorLink("tcp");
+        arm->setNamedTarget("pegar_obj");
+        if (!planAndExecute(arm, "return cube: pegar_obj (final)")) {
+            return false;
+        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[PLACE] bloco devolvido ao %s; braco em pegar_obj — pronto para o ajuste da base.",
+            container_pose.c_str());
+        return true;
     }
 
     bool run_place_cycle(
@@ -3283,6 +3683,17 @@ private:
         publish_stage(goal_handle, "going_table");
         //speak("Levando o bloco para o destino");
         if (!moveToPlaceTarget(arm, table_pose, goal_handle)) {
+            // Fila de alcance (2026-08-28): alvo visto fora de alcance — o
+            // cubo volta ao container de bordo antes de o goal sair como
+            // skipped/unreachable (execute()). Se a devolucao falhar, vira a
+            // falha de sempre (abort com o bloco na garra), sem unreachable.
+            if (last_failure_unreachable_) {
+                if (!returnCubeToOnboardContainer(arm, gripper, container_pose, goal_handle)) {
+                    last_failure_unreachable_ = false;
+                    last_place_failure_reason_ = "falha_com_bloco_na_garra";
+                }
+                return false;
+            }
             if (last_place_failure_reason_.empty()) {
                 last_place_failure_reason_ = "falha_com_bloco_na_garra";
             }

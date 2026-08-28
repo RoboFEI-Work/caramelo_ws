@@ -49,11 +49,21 @@ target_include_directories(custom_ik PUBLIC
   ${EIGEN3_INCLUDE_DIRS})
 target_compile_features(custom_ik PUBLIC cxx_std_17)
 
+# Fila de alcance (2026-08-28): "quantos cm de lado a base precisa andar"
+# verificado pela mesma IK/escada que o pick/place usam.
+add_library(reach_shift src/reach_shift.cpp)
+target_include_directories(reach_shift PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+  ${EIGEN3_INCLUDE_DIRS})
+target_compile_features(reach_shift PUBLIC cxx_std_17)
+target_link_libraries(reach_shift custom_ik)
+
 # Executavel de conferencia: compara o solver C++ com o script Python do
 # operador numa grade de alvos (pega erro de transcricao).
 add_executable(custom_ik_check src/custom_ik_check.cpp)
 target_compile_features(custom_ik_check PUBLIC cxx_std_17)
-target_link_libraries(custom_ik_check custom_ik)
+target_link_libraries(custom_ik_check custom_ik reach_shift)
 
 add_executable(mtc_pick_action_node src/mtc_pick_action_node.cpp)
 target_include_directories(mtc_pick_action_node PUBLIC
@@ -74,7 +84,7 @@ ament_target_dependencies(
   "tf2_ros"
   "tf2_geometry_msgs"
 )
-target_link_libraries(mtc_pick_action_node container_state_store custom_ik)
+target_link_libraries(mtc_pick_action_node container_state_store custom_ik reach_shift)
 
 add_executable(mtc_place_action_node src/mtc_place_action_node.cpp)
 target_include_directories(mtc_place_action_node PUBLIC
@@ -94,12 +104,13 @@ ament_target_dependencies(
   "tf2_ros"
   "tf2_geometry_msgs"
 )
-target_link_libraries(mtc_place_action_node container_state_store custom_ik)
+target_link_libraries(mtc_place_action_node container_state_store custom_ik reach_shift)
 
 install(
   TARGETS
     container_state_store
     custom_ik
+    reach_shift
     custom_ik_check
     mtc_pick_action_node
     mtc_place_action_node
@@ -124,6 +135,14 @@ if(BUILD_TESTING)
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Fila de alcance (2026-08-28): a busca de deslocamento lateral e' testada
+  # contra a IK REAL (alvos calibrados). Precisa de -O2 (ja forcado acima);
+  # TIMEOUT folgado porque a IK roda ~10 buscas e a maquina pode estar
+  # compilando outros pacotes em paralelo.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_reach_shift test/test_reach_shift.cpp TIMEOUT 300)
+  target_link_libraries(test_reach_shift reach_shift)
 endif()
 
 ament_package()

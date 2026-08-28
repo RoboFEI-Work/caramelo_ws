@@ -246,3 +246,101 @@ def test_overlapping_exclusion_polys_have_no_hole():
     seg.holding = True
     m = seg.exclusion_mask((100, 100))
     assert m[20, 20] == 255 and m[5, 5] == 255 and m[40, 40] == 255 and m[80, 80] == 0
+
+
+def test_partial_blob_ignores_side_limits_and_full_blob_uses_upper_tolerance():
+    cfg = cd.DetectorConfig()
+    K = np.array([[385.0, 0, 320.0], [0, 385.0, 240.0], [0, 0, 1]])
+    caster = cd.PlaneCaster(K, None, cfg)
+    o, R = _camera_looking_down(10.0)
+    caster.set_camera_pose(o, R)
+    # Container "inflado" (paredes visiveis) cortado pela borda de baixo: 0,20 x 0,18 m no plano.
+    img = np.full((480, 640, 3), 200, np.uint8)
+    cv2.rectangle(img, (170, 250), (470, 520), _hsv_bgr(3), -1)
+    per_color, _hsv, _masks = cd.segment_image(img, cfg, holding=False)
+    blob = [b for b in per_color["vermelho"] if b.reason is None][0]
+    assert blob.partial
+    pose, why = caster.container_pose(blob, 0.041)
+    assert pose is not None, why
+    # Inteiro e um pouco inflado (1,3x): aceito com o limite superior de 2x...
+    img2 = np.full((480, 640, 3), 200, np.uint8)
+    _draw_rect(img2, (320, 320), (310, 190), 0, _hsv_bgr(3))
+    per2, _h, _m = cd.segment_image(img2, cfg, holding=False)
+    blob2 = [b for b in per2["vermelho"] if b.reason is None][0]
+    assert not blob2.partial
+    pose2, why2 = caster.container_pose(blob2, 0.041)
+    assert pose2 is not None, why2
+    # ... e rejeitado se o limite superior for apertado (1,1x; o blob mede ~1,2x).
+    cfg.dims_tolerance_upper_frac = 0.1
+    pose3, why3 = caster.container_pose(blob2, 0.041)
+    assert pose3 is None and why3.startswith("lado_"), why3
+
+
+def _project_rect(K, o, R, cx, cy, yaw, L, W, plane_z):
+    corners = []
+    for sx, sy in ((1, 1), (1, -1), (-1, -1), (-1, 1)):
+        dx, dy = sx * L / 2.0, sy * W / 2.0
+        px = cx + dx * math.cos(yaw) - dy * math.sin(yaw)
+        py = cy + dx * math.sin(yaw) + dy * math.cos(yaw)
+        p = np.array([px, py, plane_z])
+        pc = R.T @ (p - o)
+        corners.append((K[0, 0] * pc[0] / pc[2] + K[0, 2], K[1, 1] * pc[1] / pc[2] + K[1, 2]))
+    return np.array(corners)
+
+
+def test_yaw_reliability_and_memory():
+    cfg = cd.DetectorConfig()
+    cfg.wall_bias_correction = False
+    K = np.array([[385.0, 0, 320.0], [0, 385.0, 240.0], [0, 0, 1]])
+    caster = cd.PlaneCaster(K, [0, 0, 0, 0, 0], cfg)
+    o, R = _camera_looking_down(10.0)
+    caster.set_camera_pose(o, R)
+    plane_z = 0.041
+    # alongado (0,17 x 0,105): yaw confiavel
+    img = np.full((480, 640, 3), 200, np.uint8)
+    cv2.fillPoly(img, [_project_rect(K, o, R, 0.0, 0.30, math.radians(30), 0.17, 0.105, plane_z).astype(np.int32)], _hsv_bgr(3))
+    blob = [b for b in cd.segment_image(img, cfg, holding=False)[0]["vermelho"] if b.reason is None][0]
+    pose, why = caster.container_pose(blob, plane_z)
+    assert pose is not None and pose.yaw_reliable and not pose.yaw_from_memory
+    assert abs(cd.wrap_half_pi(pose.yaw - math.radians(30))) < math.radians(3)
+    # pouco alongado (0,17 x 0,14, razao 1,2 < 1,3): passa no 2D mas o yaw NAO e confiavel; com dica usa a memoria
+    img2 = np.full((480, 640, 3), 200, np.uint8)
+    cv2.fillPoly(img2, [_project_rect(K, o, R, 0.0, 0.30, math.radians(10), 0.17, 0.14, plane_z).astype(np.int32)], _hsv_bgr(3))
+    blob2 = [b for b in cd.segment_image(img2, cfg, holding=False)[0]["vermelho"] if b.reason is None][0]
+    pose2, _ = caster.container_pose(blob2, plane_z)
+    assert pose2 is not None and not pose2.yaw_reliable and not pose2.yaw_from_memory
+    pose3, _ = caster.container_pose(blob2, plane_z, yaw_hint=math.radians(70))
+    assert pose3.yaw_from_memory and abs(cd.wrap_half_pi(pose3.yaw - math.radians(70))) < 1e-9
+
+
+def test_partial_center_extended_towards_cut_side():
+    cfg = cd.DetectorConfig()
+    cfg.wall_bias_correction = False
+    K = np.array([[385.0, 0, 320.0], [0, 385.0, 240.0], [0, 0, 1]])
+    caster = cd.PlaneCaster(K, [0, 0, 0, 0, 0], cfg)
+    o, R = _camera_looking_down(0.0)
+    caster.set_camera_pose(o, R)
+    plane_z = 0.041
+    L, W = cfg.container_long_m, cfg.container_short_m
+    # container com o eixo longo ao longo de X, centro deslocado para fora da
+    # imagem pela ESQUERDA: so' ~60% do lado longo aparece.
+    yaw = 0.0
+    cx_true, cy_true = -0.19, 0.28
+    poly = _project_rect(K, o, R, cx_true, cy_true, yaw, L, W, plane_z)
+    img = np.full((480, 640, 3), 200, np.uint8)
+    cv2.fillPoly(img, [poly.astype(np.int32)], _hsv_bgr(3))
+    per, _h, masks = cd.segment_image(img, cfg, holding=False)
+    blob = [b for b in per["vermelho"] if b.reason is None][0]
+    assert blob.partial
+    excl = masks["__garra__"]
+    # sem extensao: centroide da parte visivel (puxado para a direita)
+    cfg.partial_extend_enable = False
+    p0, why0 = caster.container_pose(blob, plane_z, yaw_hint=yaw, excl_mask=excl, scale=cfg.process_scale)
+    assert p0 is not None, why0
+    assert p0.x - cx_true > 0.02
+    # com extensao: volta para perto do centro real
+    cfg.partial_extend_enable = True
+    p1, why1 = caster.container_pose(blob, plane_z, yaw_hint=yaw, excl_mask=excl, scale=cfg.process_scale)
+    assert p1 is not None, why1
+    assert p1.shift_m > 0.01
+    assert abs(p1.x - cx_true) < 0.012 and abs(p1.y - cy_true) < 0.012, (p1.x, p1.y)

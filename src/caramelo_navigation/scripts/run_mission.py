@@ -88,9 +88,13 @@ def _preflight(args) -> bool:
 
     exigidos = ["/move_action", "/pick_tag", "/place_tag"]
     if not args.simulate_nav:
-        exigidos += ["/navigate_to_pose", "/dock_robot", "/undock_robot", "/align_to_dock"]
+        # /nudge_base (2026-08-28): ajuste lateral da fila de alcance, servido
+        # pelo mesmo dock_align_node do /align_to_dock.
+        exigidos += ["/navigate_to_pose", "/dock_robot", "/undock_robot",
+                     "/align_to_dock", "/nudge_base"]
 
-    rotulos = {"/move_action": "move_group (MoveIt)"}
+    rotulos = {"/move_action": "move_group (MoveIt)",
+               "/nudge_base": "nudge_base (dock_align_node)"}
     print("Verificando os servidores da missao (pre-flight)...")
     inicio = _time.monotonic()
     pendentes = list(exigidos)

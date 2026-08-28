@@ -15,6 +15,13 @@ string stack_on
 # visto, o no faz o place normal na mesa (fallback). Nao combinar com
 # stack_on (o executor rejeita).
 string container_color
+# 2026-08-28: FILA DE ALCANCE — tentativa FINAL na estacao? false (default) =
+# o executor ainda pode deslocar a base de lado: alvo VISTO mas fora do
+# alcance faz o no sair cedo com unreachable=true (sem degraus extras, sem
+# varredura, e o place devolve o cubo ao container de bordo). true =
+# comportamento de sempre (escada completa + skip / fallback na mesa).
+# Ignorado na prateleira (MesaSh).
+bool final_attempt
 
 ---
 bool success
@@ -23,6 +30,15 @@ bool success
 bool skipped
 string fail_reason
 string message
+# 2026-08-28: alvo VISTO mas fora do alcance do braco (so' mesa comum).
+bool unreachable
+# Deslocamento LATERAL da base sugerido, frame base_footprint (+ = ESQUERDA),
+# quantizado em +-{0.10,0.15,0.20,0.25}, verificado pela IK propria.
+# 0 = deslocar de lado nao resolve (o executor pula o objeto).
+float32 suggested_base_shift_m
+# Alvo do TCP que falhou, em manip_base_link (diagnostico).
+float32 target_x
+float32 target_y
 
 ---
 string current_stage

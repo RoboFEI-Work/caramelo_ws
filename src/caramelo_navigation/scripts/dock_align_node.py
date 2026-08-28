@@ -36,10 +36,24 @@ LIMITES HONESTOS (ADR-05):
     arredonda — a garantia "executa exato" vale p/ movimentos de eixo puro.
 
 Nada aqui foi validado no robo — a percepcao e os ganhos precisam de dados reais.
+
+AJUSTE LATERAL `nudge_base` (2026-08-28, fila de alcance): segunda action no
+mesmo no. A arvore pede "anda dy de lado" (+ = esquerda) quando o braco nao
+alcanca um alvo na mesa. Malha fechada por ODOMETRIA (/odom do EKF — a face
+reta nao observa o lateral), com as MESMAS guardas do docking (muro
+hard_min, faixa lateral, scan velho/cego = nao anda, cancel, timeout, eixo
+puro). Fala antes de mover; publica o total acumulado em
+/manip/base_shift_total (latched; zera a cada align_to_dock) para o place
+node deslocar a memoria de slots. Nunca roda junto com o align (lock).
+Revisao 2026-08-28 (achados): pre-checagem projeta o avanco do bico pela
+inclinacao da face e vigia o front durante o curso; ganho de escorregamento
+lateral (odom nao ve o slip); assentamento por ODOMETRIA (o front nao muda
+num lateral); corte desconta a idade da odometria; NaN/inf no goal = recusa.
 """
 import math
 import os
 import sys
+import threading
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -47,17 +61,20 @@ from rclpy.time import Time
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
+                       qos_profile_sensor_data)
 
 from geometry_msgs.msg import TwistStamped
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Float64, String
 import tf2_ros
 
 # Helpers compartilhados de docking (carregam docking.yaml por pasta de mapa).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from caramelo_docking_common import load_yaml, resolve_map_folder, docking_file  # noqa: E402
 
-from caramelo_msgs.action import AlignToDock  # noqa: E402
+from caramelo_msgs.action import AlignToDock, NudgeBase  # noqa: E402
 
 
 def _normalize_angle(angle):
@@ -72,6 +89,86 @@ def _yaw_from_quat(z, w, x=0.0, y=0.0):
 
 def _clamp(value, limit):
     return max(-limit, min(limit, value))
+
+
+def _lateral_displacement(x0, y0, yaw0, x, y):
+    """Projecao do deslocamento (x0,y0)->(x,y) no eixo +y INICIAL do robo
+    (yaw0 no frame da odometria), em m: + = andou para a ESQUERDA (eixo +y
+    de base_footprint). Funcao pura, testavel sem ROS — e a medida de curso
+    do nudge_base (2026-08-28)."""
+    return -math.sin(yaw0) * (x - x0) + math.cos(yaw0) * (y - y0)
+
+
+def _longitudinal_displacement(x0, y0, yaw0, x, y):
+    """Projecao no eixo +x INICIAL do robo (+ = frente). So para o log do
+    nudge: um lateral puro deveria dar ~0 aqui."""
+    return math.cos(yaw0) * (x - x0) + math.sin(yaw0) * (y - y0)
+
+
+def _nudge_accepts(dy, travelled, slack):
+    """Regra de sucesso do nudge: andou (com o sinal certo) pelo menos
+    |dy| - slack. Pura, testavel."""
+    sign = 1.0 if dy > 0.0 else -1.0
+    return travelled * sign >= abs(dy) - slack
+
+
+def _nudge_request_valid(dy, timeout):
+    """Goal bem formado (achado 4): NaN/inf em dy passariam nas checagens de
+    faixa (NaN nunca e menor nem maior que nada) e o curso so acabaria por
+    timeout; timeout NaN/inf idem. Pura, testavel."""
+    return math.isfinite(dy) and math.isfinite(timeout)
+
+
+def _front_after_lateral(front, dy, face_yaw):
+    """Pior caso do front DEPOIS de andar |dy| de lado ao longo de uma face
+    cuja normal faz face_yaw com o eixo x do robo: o bico avanca
+    |dy|*sin(|face_yaw|) (0,25 m a 5 graus = 2,2 cm; os pousos ficam a
+    0,365-0,39 m com hard_min 0,35). Usa |face_yaw| de proposito: nao
+    depende do sentido do lateral (conservador). Pura, testavel (achado 1)."""
+    return front - abs(dy) * math.sin(abs(face_yaw))
+
+
+def _nudge_corrected(raw_lateral, gain):
+    """Lateral medido pela odometria x ganho de escorregamento (achado 2).
+    O /odom do EKF integra so a velocidade das rodas (odom0_config funde
+    vx, vy, vyaw) e nao ve o escorregamento lateral (~18% no campo 21/08):
+    o bruto SUPERESTIMA o curso. gain = real/odom, calibrado com trena
+    (esperado ~0,82); 1.0 = sem correcao. Pura, testavel."""
+    return raw_lateral * gain
+
+
+def _nudge_cut_reached(mag, travelled, sign, coast, min_v, odom_age, period):
+    """Criterio de corte do curso lateral (achado 5): o que falta
+    (mag - travelled*sign) ja cabe no coast do ESC MAIS o que a base anda
+    enquanto a medida envelhece (odom_age) e ate a proxima decisao (period)
+    — a mesma conta da reta do align (lag = v*(idade + periodo)). Pura,
+    testavel."""
+    return mag - travelled * sign <= coast + min_v * (odom_age + period)
+
+
+class _OdomSettle:
+    """Assentamento por ODOMETRIA do nudge (achado 3): num lateral puro o
+    front NAO muda, entao o _settle do docking (front estavel em 3 scans)
+    devolveria enquanto o ESC ainda retem a referencia (~0,5 s) e a medida
+    sairia com a base em movimento. Assentado = o lateral ficou dentro de
+    eps da amostra que abriu a janela por pelo menos min_s (>= retencao do
+    ESC); qualquer amostra fora de eps reabre a janela nela. Comparar com a
+    ancora (e nao so com a amostra anterior) evita que um rastejo de 2-3 mm
+    por amostra a 50 Hz passe por parado. Pura, testavel:
+    update(t, lateral) -> True quando assentou."""
+
+    def __init__(self, eps, min_s):
+        self.eps = float(eps)
+        self.min_s = float(min_s)
+        self.anchor_t = None
+        self.anchor_lat = None
+
+    def update(self, t, lateral):
+        if self.anchor_lat is None or abs(lateral - self.anchor_lat) >= self.eps:
+            self.anchor_t = t
+            self.anchor_lat = lateral
+            return False
+        return t - self.anchor_t >= self.min_s
 
 
 def _fit_line_tls(points):
@@ -264,6 +361,51 @@ class DockAlignNode(Node):
         # pose de dock desatualizada ANTES de andar rumo a face errada.
         self.declare_parameter("staging_sanity_max_m", 0.6)
 
+        # ------- nudge_base (2026-08-28, fila de alcance): deslocamento
+        # LATERAL puro pedido pela arvore quando o braco nao alcanca um alvo
+        # na mesa. Malha fechada por ODOMETRIA (/odom do EKF), nao pelo
+        # LiDAR — a face reta nao observa o lateral. Curso maximo por
+        # chamada e passo minimo executavel (campo 2026-08-21: o lateral
+        # escorrega ~18% e nao tem coast; passo minimo ~10 cm no piso).
+        self.declare_parameter("nudge_max_travel", 0.25)
+        self.declare_parameter("nudge_min_travel", 0.08)
+        self.declare_parameter("nudge_default_timeout", 15.0)
+        # Folga aceita no curso: pedido 0.20 e andou 0.17 = sucesso (o
+        # deslocamento REAL e publicado de qualquer jeito).
+        self.declare_parameter("nudge_accept_slack", 0.03)
+        # Odometria mais velha que isto = cega: nao comeca / corta o curso.
+        # 0.2 (revisao, achado 5): a idade entra no corte como atraso da
+        # medida; mais velha que isto a conta ja nao vale.
+        self.declare_parameter("nudge_odom_max_age", 0.2)
+        # Exige medicao do muro (face no plano do LiDAR) para andar de lado;
+        # false SO para mesas invisiveis ao LiDAR — ai nao ha muro nenhum.
+        self.declare_parameter("nudge_require_scan", True)
+        self.declare_parameter("odom_topic", "/odom")
+        # Fala "Vou me ajustar para a esquerda/direita" ANTES de mover (o
+        # operador afasta objetos) e espera este tanto antes do 1o comando.
+        self.declare_parameter("speech_enabled", True)
+        self.declare_parameter("nudge_speech_lead_s", 1.0)
+        # ---- revisao 2026-08-28 (achados da revisao adversarial) ----
+        # Achado 1: num lateral ao longo de uma face NAO perpendicular o bico
+        # avanca |dy|*sin(face_yaw). A pre-checagem projeta isso; durante o
+        # curso, front caindo mais que isto em relacao ao inicio = muro.
+        # Ruido do front (percentil) e ~settle_stable_eps; subir se disparar
+        # a toa.
+        self.declare_parameter("nudge_front_drift_max", 0.02)
+        # Achado 2: o /odom do EKF integra so a velocidade das rodas e nao
+        # ve o escorregamento lateral (~18% no campo). Ganho real/odom
+        # aplicado ao lateral medido (corte, aceite, feedback e total
+        # publicado). CALIBRAR com trena: pedir 0.20, medir o real, ganho =
+        # real / odom bruto do log de fim (esperado ~0.82). 1.0 = sem
+        # correcao (o aceite entao conta com a folga nudge_accept_slack).
+        self.declare_parameter("nudge_odom_lateral_gain", 1.0)
+        # Achado 3: assentamento por ODOMETRIA (o front nao muda num lateral
+        # puro): lateral dentro de eps por min_s (>= retencao do ESC ~0,5 s),
+        # teto max_s; so depois mede o curso e decide.
+        self.declare_parameter("nudge_settle_eps", 0.003)
+        self.declare_parameter("nudge_settle_min_s", 0.8)
+        self.declare_parameter("nudge_settle_max_s", 3.0)
+
         # ------- Refino de yaw sob suspeita (operador 2026-08-18: "as vezes
         # piora"): so aplica a correcao quando 2 fits confiantes consecutivos
         # concordam; e da para desligar de vez por parametro.
@@ -330,22 +472,108 @@ class DockAlignNode(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
+        # ------- nudge_base (2026-08-28) -------
+        # Odometria do EKF: (x, y, yaw, hora de CHEGADA ns) — idade pela
+        # chegada, como o scan (relogio da Pi nao e confiavel).
+        self._odom = None
+        self.create_subscription(
+            Odometry, self.get_parameter("odom_topic").value,
+            self._odom_cb, qos_profile_sensor_data, callback_group=self._cb_group,
+        )
+        self._speech_pub = self.create_publisher(String, "/manip/speech", 10)
+        # Total lateral acumulado desde o ultimo align_to_dock (+ = esquerda).
+        # LATCHED (transient_local, depth 1): o place node pode assinar
+        # depois e ainda recebe o ultimo valor. SO este no publica aqui.
+        self._shift_pub = self.create_publisher(
+            Float64, "/manip/base_shift_total",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE))
+        self._base_shift_total = 0.0
+        self._publish_shift_total()
+        # Lock de MOVIMENTO: align_to_dock e nudge_base publicam na mesma
+        # referencia e o executor e multi-thread — nunca os dois juntos.
+        # Aquisicao NAO bloqueante: ocupado = rejeita/aborta, nunca enfileira.
+        self._motion_lock = threading.Lock()
+        # Pose de odometria no inicio do nudge em curso (p/ o feedback) e o
+        # ganho de escorregamento em uso (feedback = mesma medida do result).
+        self._nudge_origin = None
+        self._nudge_gain = 1.0
+
         self._action = ActionServer(
             self, AlignToDock, "align_to_dock",
             execute_callback=self._execute,
-            goal_callback=lambda _g: GoalResponse.ACCEPT,
+            goal_callback=self._motion_goal_cb,
+            cancel_callback=lambda _g: CancelResponse.ACCEPT,
+            callback_group=self._cb_group,
+        )
+        self._nudge_action = ActionServer(
+            self, NudgeBase, "nudge_base",
+            execute_callback=self._execute_nudge,
+            goal_callback=self._motion_goal_cb,
             cancel_callback=lambda _g: CancelResponse.ACCEPT,
             callback_group=self._cb_group,
         )
         self.get_logger().info(
             f"dock_align_node pronto. Publica em '{self._ref_topic}', "
-            f"frames {self._global_frame}->{self._base_frame}."
+            f"frames {self._global_frame}->{self._base_frame}; "
+            f"nudge_base por odometria em '{self.get_parameter('odom_topic').value}'."
         )
 
     def _scan_cb(self, msg):
         self._last_scan = msg
         self._last_scan_rx_ns = self.get_clock().now().nanoseconds
         self._scan_seq += 1
+
+    def _odom_cb(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        # Tupla atribuida de uma vez (leitura atomica pelas threads do nudge).
+        self._odom = (p.x, p.y, _yaw_from_quat(q.z, q.w, q.x, q.y),
+                      self.get_clock().now().nanoseconds)
+
+    def _odom_sample(self, max_age):
+        """(x, y, yaw, idade_s, rx_ns) da ultima odometria se chegou ha
+        menos de max_age s; senao None (nunca recebida ou velha = cega). A
+        idade entra no corte do curso (achado 5)."""
+        odom = self._odom
+        if odom is None:
+            return None
+        age = (self.get_clock().now().nanoseconds - odom[3]) * 1e-9
+        if age > max_age:
+            return None
+        return odom[0], odom[1], odom[2], age, odom[3]
+
+    def _odom_pose(self, max_age):
+        """(x, y, yaw) da odometria fresca, ou None (ver _odom_sample)."""
+        sample = self._odom_sample(max_age)
+        return None if sample is None else sample[:3]
+
+    def _motion_goal_cb(self, _goal):
+        """Goal de align_to_dock OU nudge_base: rejeita se a base ja esta em
+        movimento por outro goal (os dois publicam na mesma referencia)."""
+        if self._motion_lock.locked():
+            self.get_logger().warn(
+                "goal rejeitado: outro movimento (align/nudge) em curso — ocupado")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _publish_shift_total(self):
+        msg = Float64()
+        msg.data = float(self._base_shift_total)
+        self._shift_pub.publish(msg)
+
+    def _set_shift_total(self, value):
+        self._base_shift_total = float(value)
+        self._publish_shift_total()
+        self.get_logger().info(
+            f"/manip/base_shift_total = {self._base_shift_total:+.3f} m")
+
+    def _speak(self, text):
+        if not bool(self.get_parameter("speech_enabled").value):
+            return
+        msg = String()
+        msg.data = text
+        self._speech_pub.publish(msg)
 
     # ------------------------------------------------------------------ TF
     def _robot_pose(self):
@@ -1169,6 +1397,21 @@ class DockAlignNode(Node):
         return "shutdown", None
 
     def _execute(self, goal_handle):
+        """Entrada do align_to_dock: toma o lock de movimento (ocupado se um
+        nudge esta em curso) e ZERA o total lateral acumulado — um novo
+        docking e uma nova referencia para a memoria de slots do place
+        (2026-08-28). O trabalho de verdade esta em _execute_align."""
+        if not self._motion_lock.acquire(blocking=False):
+            return self._abort(goal_handle, AlignToDock.Result(),
+                               "ocupado: outro movimento (nudge_base) em curso")
+        try:
+            self._set_shift_total(0.0)
+            return self._execute_align(goal_handle)
+        finally:
+            self._publish_cmd(0.0, 0.0, 0.0)
+            self._motion_lock.release()
+
+    def _execute_align(self, goal_handle):
         """Orquestrador: N tentativas de aproximacao; entre elas, RECUO ate a
         folga de pre-docking. v5: uma tentativa por padrao (approach_retries 0
         e' aceitavel); apos falhar TUDO, recua ate o staging antes de abortar
@@ -1315,12 +1558,334 @@ class DockAlignNode(Node):
         return "ok"
 
     def _feedback(self, goal_handle, phase, ex, ey, eyaw):
+        # As primitivas (_settle/_cut_drive/_check_guards) servem as duas
+        # actions: despacha pelo tipo do goal (2026-08-28).
+        if isinstance(goal_handle.request, NudgeBase.Goal):
+            fb = NudgeBase.Feedback()
+            fb.travelled = float(self._nudge_travelled_now())
+            goal_handle.publish_feedback(fb)
+            return
         fb = AlignToDock.Feedback()
         fb.phase = phase
         fb.x_error = ex
         fb.y_error = ey
         fb.yaw_error = eyaw
         goal_handle.publish_feedback(fb)
+
+    # ------------------------------------------------ nudge_base (2026-08-28)
+    def _nudge_travelled_now(self):
+        """Curso lateral (ja com o ganho de escorregamento) desde o inicio
+        do nudge em curso pela ULTIMA odometria recebida (mesmo velha — e
+        so feedback/log)."""
+        origin = self._nudge_origin
+        odom = self._odom
+        if origin is None or odom is None:
+            return 0.0
+        return _nudge_corrected(
+            _lateral_displacement(origin[0], origin[1], origin[2],
+                                  odom[0], odom[1]),
+            self._nudge_gain)
+
+    def _nudge_progress(self, origin):
+        """(lateral BRUTO da odometria, longitudinal, dyaw) desde `origin`
+        pela ultima odometria recebida (para o resultado e o log). O ganho
+        de escorregamento e aplicado por quem chama."""
+        odom = self._odom
+        if odom is None:
+            return 0.0, 0.0, 0.0
+        x0, y0, yaw0 = origin
+        return (_lateral_displacement(x0, y0, yaw0, odom[0], odom[1]),
+                _longitudinal_displacement(x0, y0, yaw0, odom[0], odom[1]),
+                _normalize_angle(odom[2] - yaw0))
+
+    def _execute_nudge(self, goal_handle):
+        """Servidor da action nudge_base: deslocamento LATERAL puro (+ =
+        esquerda) em malha fechada por odometria, com as guardas do docking.
+        O total acumulado vai para /manip/base_shift_total mesmo em curso
+        parcial/abortado — a base se moveu de fato e o place precisa saber."""
+        g = goal_handle.request
+        result = NudgeBase.Result()
+        result.success = False
+        result.travelled = 0.0
+
+        def fail(reason, travelled=0.0, canceled=False):
+            result.success = False
+            result.reason = reason
+            result.travelled = float(travelled)
+            self.get_logger().warn(
+                f"nudge_base: {reason} (dy={g.dy:+.3f} m, andou {travelled:+.3f} m)")
+            if canceled:
+                goal_handle.canceled()
+            else:
+                goal_handle.abort()
+            return result
+
+        if not self._motion_lock.acquire(blocking=False):
+            return fail("ocupado")
+        rate = None
+        try:
+            period = 1.0 / float(self.get_parameter("control_frequency").value)
+            rate = self.create_rate(1.0 / period)
+            return self._run_nudge(goal_handle, g, result, fail, rate)
+        finally:
+            # Zero final SO se a fase de movimento comecou (goal rejeitado
+            # pelas guardas nao toca a referencia compartilhada).
+            if self._nudge_origin is not None:
+                self._publish_cmd(0.0, 0.0, 0.0)
+            self._nudge_origin = None
+            if rate is not None:
+                try:
+                    self.destroy_rate(rate)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._motion_lock.release()
+
+    def _run_nudge(self, goal_handle, g, result, fail, rate):
+        dy = float(g.dy)
+        mag = abs(dy)
+        sign = 1.0 if dy > 0.0 else -1.0
+        min_travel = float(self.get_parameter("nudge_min_travel").value)
+        max_travel = float(self.get_parameter("nudge_max_travel").value)
+        slack = float(self.get_parameter("nudge_accept_slack").value)
+        odom_max_age = float(self.get_parameter("nudge_odom_max_age").value)
+        require_scan = bool(self.get_parameter("nudge_require_scan").value)
+        lateral_min = float(self.get_parameter("lateral_min_front").value)
+        hard_min = float(self.get_parameter("hard_min_face_dist").value)
+        wall_enabled = bool(self.get_parameter("wall_enabled").value)
+        coast = float(self.get_parameter("center_coast_est").value)
+        min_v = float(self.get_parameter("min_body_vel").value)
+        period = 1.0 / float(self.get_parameter("control_frequency").value)
+        gain = float(self.get_parameter("nudge_odom_lateral_gain").value)
+        drift_max = float(self.get_parameter("nudge_front_drift_max").value)
+        timeout = float(g.timeout) if g.timeout > 0.0 \
+            else float(self.get_parameter("nudge_default_timeout").value)
+        lead = float(self.get_parameter("nudge_speech_lead_s").value)
+
+        def log(msg):
+            self.get_logger().info(f"[nudge {dy:+.2f}] {msg}")
+
+        # ---- (0) pedido bem formado (achado 4): NaN/inf passariam nas
+        # comparacoes de faixa abaixo e o curso so acabaria por timeout.
+        if not _nudge_request_valid(dy, float(g.timeout)):
+            return fail("pedido_invalido")
+
+        # ---- (1) validacao do pedido: nada abaixo do passo executavel nem
+        # acima do curso maximo por chamada (a arvore quantiza antes).
+        if mag < min_travel - 1e-6:
+            return fail("abaixo_do_passo_minimo")
+        if mag > max_travel + 1e-6:
+            return fail("acima_do_curso_maximo")
+
+        # ---- (2) odometria fresca: sem ela nao ha malha — nao anda.
+        origin = self._odom_pose(odom_max_age)
+        if origin is None:
+            return fail("sem_odometria")
+
+        # ---- (3) muro e faixa lateral, como no lateral_adjust do docking.
+        front, npts, scan_age, face_yaw = self._front_wall_distance()
+        if front is None:
+            if require_scan:
+                log("sem medicao do muro: "
+                    + ("/scan ausente, velho ou sem TF" if npts < 0
+                       else "face fora do plano do LiDAR (BLIND)")
+                    + f" (idade {scan_age:.2f} s) — nao ando as cegas")
+                return fail("sem_scan")
+            self.get_logger().warn(
+                "nudge_base: SEM muro (nudge_require_scan=false) — "
+                "o lateral vai so pela odometria.")
+        else:
+            if wall_enabled and front < hard_min:
+                return fail("muro")
+            # Achado 1: a face pode nao estar perpendicular ao robo; num
+            # lateral de |dy| ao longo dela o bico avanca |dy|*sin(face_yaw)
+            # (0,25 m a 5 graus = 2,2 cm). Sem angulo confiavel nao da para
+            # prever o avanco: com require_scan e recusa (sem_scan).
+            if face_yaw is None:
+                if require_scan:
+                    log(f"face a {front:.3f} m SEM angulo confiavel (fit TLS "
+                        "reprovado) — nao sei quanto o bico avanca num "
+                        "lateral; nao ando")
+                    return fail("sem_scan")
+                self.get_logger().warn(
+                    "nudge_base: face sem angulo confiavel "
+                    "(nudge_require_scan=false) — assumo face perpendicular.")
+                face_yaw = 0.0
+            front_proj = _front_after_lateral(front, mag, face_yaw)
+            if front_proj < lateral_min - 1e-6:
+                log(f"front={front:.3f} (projetado {front_proj:.3f} apos "
+                    f"{mag:.2f} m a {math.degrees(face_yaw):+.1f} graus) "
+                    f"< lateral_min_front {lateral_min:.2f}")
+                return fail("muito_perto_da_mesa")
+            if not self._side_clear(sign, front):
+                side = self._side_min[0] if sign > 0 else self._side_min[1]
+                log(f"faixa lateral {'esq' if sign > 0 else 'dir'} ocupada a "
+                    f"{side:.3f} m (face a {front:.3f})")
+                return fail("obstaculo_lateral")
+
+        # ---- (4) avisa ANTES de mover (fora do collision_monitor: o
+        # operador afasta objetos), respeitando cancel durante a espera.
+        self._nudge_gain = gain
+        self._nudge_origin = origin
+        self._speak("Vou me ajustar para a " + ("esquerda" if sign > 0 else "direita"))
+        start_s = self.get_clock().now().nanoseconds * 1e-9
+        deadline = start_s + timeout
+        while rclpy.ok() and self.get_clock().now().nanoseconds * 1e-9 - start_s < lead:
+            if goal_handle.is_cancel_requested:
+                return fail("cancelado", canceled=True)
+            rate.sleep()
+
+        max_s = (mag + 0.05) / min_v + 1.0
+        log(f"inicio: front={'?' if front is None else '%.3f' % front} "
+            f"face_yaw={'?' if front is None else '%+.1f' % math.degrees(face_yaw)} "
+            f"coast={coast:.3f} ganho_odom={gain:.2f} max_s={max_s:.1f} "
+            f"timeout={timeout:.0f}")
+
+        # ---- (5) curso continuo no piso, cortado pela odometria (com a
+        # idade da medida descontada); depois assenta por ODOMETRIA — o
+        # front nao muda num lateral, o _settle do docking devolveria com a
+        # base ainda rodando (achado 3). Qualquer guarda vira _AttemptAbort.
+        outcome, info = "ok", None
+        settled = False
+        try:
+            self._nudge_drive(goal_handle, rate, deadline, sign, mag, origin,
+                              coast, max_s, require_scan, odom_max_age,
+                              gain, period, front, drift_max)
+            settled = self._nudge_settle(goal_handle, rate, deadline, origin)
+        except self._AttemptAbort as ab:
+            outcome, info = ab.outcome, ab.info
+            # Abortado a base ainda escorrega o coast: espera parar com a
+            # referencia em zero (sem guardas — ja dispararam) para que o
+            # total publicado seja a posicao REAL, nao a de meio do coast.
+            settled = self._nudge_settle(goal_handle, rate, deadline, origin,
+                                         guarded=False)
+        self._publish_cmd(0.0, 0.0, 0.0)
+
+        # ---- (6) medida final e total acumulado — SEMPRE, porque a base se
+        # moveu de fato mesmo quando o curso ficou incompleto. O ganho de
+        # escorregamento (achado 2) vale para o aceite e para o total.
+        if self._odom_pose(odom_max_age) is None:
+            self.get_logger().warn(
+                "nudge_base: odometria velha na medida final — usando a ultima recebida.")
+        raw, longi, dyaw = self._nudge_progress(origin)
+        travelled = _nudge_corrected(raw, gain)
+        self._set_shift_total(self._base_shift_total + travelled)
+        log(f"fim ({outcome}{'' if info is None else ': ' + str(info)}): lateral "
+            f"{travelled * 100:+.1f} cm (odom bruto {raw * 100:+.1f} cm x ganho "
+            f"{gain:.2f}; pedido {dy * 100:+.1f}), longitudinal "
+            f"{longi * 100:+.1f} cm, yaw {math.degrees(dyaw):+.1f} graus, "
+            f"assentou={'sim' if settled else 'NAO (teto)'}")
+
+        if outcome == "canceled":
+            return fail("cancelado", travelled, canceled=True)
+        if outcome == "hard_stop":
+            return fail("muro", travelled)
+        if outcome in ("timeout", "soft_timeout"):
+            return fail("timeout", travelled)
+        if outcome == "side_blocked":
+            return fail("obstaculo_lateral", travelled)
+        if outcome == "shutdown":
+            return fail("cancelado", travelled, canceled=True)
+        if _nudge_accepts(dy, travelled, slack):
+            result.success = True
+            result.reason = ""
+            result.travelled = float(travelled)
+            goal_handle.succeed()
+            return result
+        return fail("curso_incompleto", travelled)
+
+    def _nudge_drive(self, goal_handle, rate, deadline, sign, mag, origin,
+                     coast, max_s, require_scan, odom_max_age, gain, period,
+                     front0, drift_max):
+        """Laco do _cut_drive para o lateral por ODOMETRIA. Diferencas de
+        proposito: o erro e avaliado a CADA ciclo (o _cut_drive so avalia em
+        scan novo — sem scan ele andaria ate max_s sem nunca medir); sem
+        medicao do muro (require_scan) ou odometria velha = corta na hora;
+        a faixa lateral e vigiada a cada ciclo; o front nao pode cair mais
+        que drift_max em relacao ao inicio (face inclinada = o bico avanca,
+        achado 1b) — muro; o corte desconta a idade da odometria (achado
+        5) e usa o lateral ja corrigido pelo ganho (achado 2). Guardas de
+        cancel/timeout/hard_min em _check_guards, como nas outras
+        primitivas. front0 = front da pre-checagem (None sem scan)."""
+        min_v = float(self.get_parameter("min_body_vel").value)
+        start_s = self.get_clock().now().nanoseconds * 1e-9
+        x0, y0, yaw0 = origin
+        while rclpy.ok():
+            front, _npts, _fy = self._check_guards(goal_handle, deadline, deadline)
+            now_s = self.get_clock().now().nanoseconds * 1e-9
+            if now_s - start_s > max_s:
+                self.get_logger().warn("nudge_base: teto de tempo do curso — corto")
+                break
+            if require_scan and front is None:
+                self.get_logger().warn(
+                    "nudge_base: muro sem medicao no meio do curso (STALE/BLIND) — corto")
+                break
+            if front is not None:
+                if front0 is None:
+                    front0 = front
+                elif front < front0 - drift_max:
+                    self._publish_cmd(0.0, 0.0, 0.0)
+                    raise self._AttemptAbort(
+                        "hard_stop",
+                        f"muro: bico avancou {(front0 - front) * 100:.1f} cm no "
+                        f"lateral (front {front:.3f} < {front0:.3f} - "
+                        f"{drift_max:.3f}; face inclinada?)")
+            if not self._side_clear(sign, front):
+                self._publish_cmd(0.0, 0.0, 0.0)
+                raise self._AttemptAbort(
+                    "side_blocked", "obstaculo entrou na faixa lateral durante o curso")
+            sample = self._odom_sample(odom_max_age)
+            if sample is None:
+                self.get_logger().warn("nudge_base: odometria velha no meio do curso — corto")
+                break
+            raw = _lateral_displacement(x0, y0, yaw0, sample[0], sample[1])
+            travelled = _nudge_corrected(raw, gain)
+            if _nudge_cut_reached(mag, travelled, sign, coast, min_v,
+                                  sample[3], period):
+                # Falta so o coast (+ o que anda ate a medida chegar):
+                # corta e deixa o ESC terminar.
+                self.get_logger().info(
+                    f"nudge_base: corte a {travelled * 100:+.1f} cm (odom bruto "
+                    f"{raw * 100:+.1f} cm, idade {sample[3] * 1000:.0f} ms)")
+                break
+            self._publish_cmd(0.0, math.copysign(min_v, sign), 0.0)
+            self._feedback(goal_handle, "deslocando", 0.0, 0.0, 0.0)
+            rate.sleep()
+        self._publish_cmd(0.0, 0.0, 0.0)
+        return
+
+    def _nudge_settle(self, goal_handle, rate, deadline, origin, guarded=True):
+        """Assenta por ODOMETRIA (achado 3): publica zero ate o lateral
+        ficar dentro de nudge_settle_eps por nudge_settle_min_s (criterio em
+        _OdomSettle), teto nudge_settle_max_s. Devolve True se assentou,
+        False no teto (sem odometria nova tambem cai no teto). guarded=False
+        = so espera parar, sem guardas nem feedback (depois de um abort, quando
+        elas ja dispararam) — a referencia e zero, nada anda."""
+        eps = float(self.get_parameter("nudge_settle_eps").value)
+        min_s = float(self.get_parameter("nudge_settle_min_s").value)
+        max_s = float(self.get_parameter("nudge_settle_max_s").value)
+        tracker = _OdomSettle(eps, min_s)
+        x0, y0, yaw0 = origin
+        start_s = self.get_clock().now().nanoseconds * 1e-9
+        last_rx = -1
+        while rclpy.ok():
+            if guarded:
+                self._check_guards(goal_handle, deadline, deadline)
+            self._publish_cmd(0.0, 0.0, 0.0)
+            if guarded:
+                self._feedback(goal_handle, "assentando", 0.0, 0.0, 0.0)
+            odom = self._odom
+            if odom is not None and odom[3] != last_rx:
+                last_rx = odom[3]
+                lat = _lateral_displacement(x0, y0, yaw0, odom[0], odom[1])
+                if tracker.update(odom[3] * 1e-9, lat):
+                    return True
+            if self.get_clock().now().nanoseconds * 1e-9 - start_s > max_s:
+                self.get_logger().warn(
+                    f"nudge_base: assentamento por odometria estourou o teto "
+                    f"({max_s:.1f} s) — meco assim mesmo")
+                return False
+            rate.sleep()
+        return False
 
     def _abort(self, goal_handle, result, message):
         self.get_logger().warn(message)

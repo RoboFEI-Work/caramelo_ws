@@ -31,7 +31,17 @@ BT::PortsList PickTagBT::providedPorts()
 		BT::InputPort<std::string>("tag_frame"),
 		// Opcional: mesa da estacao ("Mesa15", "MesaSh"...). Vazio = mesa
 		// comum. A prateleira tem sequencia propria no no de pick.
-		BT::InputPort<std::string>("table_pose")
+		BT::InputPort<std::string>("table_pose"),
+		// 2026-08-28 (fila de alcance): tentativa FINAL na estacao? Porta
+		// AUSENTE => true (XML antigo = comportamento de sempre). Dentro de
+		// uma <ReachQueue> vem de {rq_<g>_final} e comeca em false: alvo visto
+		// sem IK faz o server sair cedo com unreachable=true.
+		BT::InputPort<bool>("final_attempt", true, "tentativa final (ausente = true)"),
+		// Saidas do resultado (2026-08-28) — quem decide o que fazer e o
+		// ReachQueue; este no continua devolvendo SUCCESS em todo success=true.
+		BT::OutputPort<bool>("unreachable"),
+		BT::OutputPort<double>("suggested_base_shift_m"),
+		BT::OutputPort<bool>("skipped")
 	};
 }
 
@@ -43,15 +53,31 @@ BT::NodeStatus PickTagBT::onStart()
 		RCLCPP_ERROR(rclcpp::get_logger("PickTagBT"), "Missing input port: tag_frame");
 		return BT::NodeStatus::FAILURE;
 	}
+	tag_frame_ = tag_frame;
 
 	std::string table_pose;
 	getInput("table_pose", table_pose);   // opcional: ausente = mesa comum
 
+	// Porta ausente (ou sem valor no blackboard) => true: comportamento antigo.
+	final_attempt_ = true;
+	if (!getInput("final_attempt", final_attempt_)) {
+		final_attempt_ = true;
+	}
+
+	// Zera as saidas ANTES de mandar o goal: um ReachQueue le estas chaves
+	// depois do SUCCESS e nao pode herdar o resultado da passada anterior.
+	// setOutput devolve erro (nao lanca) quando a porta nao esta remapeada
+	// no XML — caso do XML antigo, fora da fila — e e ignorado de proposito.
+	setOutput("unreachable", false);
+	setOutput("suggested_base_shift_m", 0.0);
+	setOutput("skipped", false);
+
 	RCLCPP_INFO(
 		rclcpp::get_logger("PickTagBT"),
-		"Sending PICK goal: tag_frame=%s table_pose=%s",
+		"Sending PICK goal: tag_frame=%s table_pose=%s final_attempt=%s",
 		tag_frame.c_str(),
-		table_pose.empty() ? "<mesa comum>" : table_pose.c_str());
+		table_pose.empty() ? "<mesa comum>" : table_pose.c_str(),
+		final_attempt_ ? "true" : "false");
 
 	// Item 3.5: respeita o server_wait_timeout do blackboard (mesmo padrao do
 	// GoToWSBT) em vez de 10s cravados — o pick/place respawna com delay de
@@ -72,6 +98,7 @@ BT::NodeStatus PickTagBT::onStart()
 	PickTag::Goal goal_msg;
 	goal_msg.tag_frame = tag_frame;
 	goal_msg.table_pose = table_pose;
+	goal_msg.final_attempt = final_attempt_;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de
 	// stage. Acao saudavel publica stage o tempo todo — nunca e cancelada.
@@ -160,15 +187,36 @@ BT::NodeStatus PickTagBT::onRunning()
 		return BT::NodeStatus::FAILURE;
 	}
 
-	// Item 2.5 (auditoria 2026-08-07): skip agora e campo do contrato — sem
-	// matching de substring. A causa vem em fail_reason.
-	if (wrapped_result.result->skipped) {
+	// 2026-08-28 (fila de alcance): publica o veredito do server nas portas de
+	// saida ANTES de devolver SUCCESS — o ReachQueue le {unreachable} e
+	// {suggested_base_shift_m} pelo blackboard para decidir adiar/ajustar.
+	const auto & res = *wrapped_result.result;
+	setOutput("unreachable", res.unreachable);
+	setOutput("suggested_base_shift_m", static_cast<double>(res.suggested_base_shift_m));
+	setOutput("skipped", res.skipped);
+
+	if (res.unreachable) {
+		RCLCPP_WARN(
+			rclcpp::get_logger("PickTagBT"),
+			"PICK FORA DE ALCANCE (%s): alvo x=%.2f y=%.2f em manip_base_link, "
+			"sugestao lateral %+.2f m%s — %s",
+			tag_frame_.c_str(),
+			static_cast<double>(res.target_x),
+			static_cast<double>(res.target_y),
+			static_cast<double>(res.suggested_base_shift_m),
+			final_attempt_ ? " (tentativa final: objeto pulado)" : " (a fila de alcance decide)",
+			res.message.c_str());
+	}
+	if (res.skipped) {
+		// Item 2.5 (auditoria 2026-08-07): skip agora e campo do contrato — sem
+		// matching de substring. A causa vem em fail_reason. (Linha estavel:
+		// vale tambem para o skip por alcance da passada final.)
 		RCLCPP_WARN(
 			rclcpp::get_logger("PickTagBT"),
 			"PICK PULADO (causa: %s): %s — missao continua sem este objeto.",
-			wrapped_result.result->fail_reason.c_str(),
-			wrapped_result.result->message.c_str());
-	} else {
+			res.fail_reason.c_str(),
+			res.message.c_str());
+	} else if (!res.unreachable) {
 		RCLCPP_INFO(rclcpp::get_logger("PickTagBT"), "PICK action completed successfully");
 	}
 	return BT::NodeStatus::SUCCESS;

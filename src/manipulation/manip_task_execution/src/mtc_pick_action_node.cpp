@@ -22,6 +22,7 @@
 #include <chrono>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <future>
 #include <memory>
@@ -41,6 +42,7 @@
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
+#include "manip_task_execution/reach_shift.hpp"
 #include "my_robot_msgs/action/pick_tag.hpp"
 
 namespace mtc = moveit::task_constructor;
@@ -334,19 +336,45 @@ public:
         shelf_ik_reference_frame_ = this->declare_parameter<std::string>(
             "shelf_ik_reference_frame", "manip_base_link");
 
-        // Depuracao de campo do ladder da mesa: 0 = automatico (1 down,
-        // 2 frente, 3+ MoveIt); 1/2/3 forca o mesmo degrau em TODAS as
-        // tentativas (torna o teste do degrau 2/3 deterministico).
+        // Depuracao de campo do ladder da mesa: 0 = automatico (1-2 down,
+        // 3+ MoveIt); 1/2 forca a IK custom por cima e 3 forca o MoveIt em
+        // TODAS as tentativas (torna o teste de um degrau deterministico).
+        // 2026-08-28: a pega FRONTAL (antigo degrau 2, 90 graus) foi
+        // REMOVIDA a pedido do operador — o valor 2 continua aceito por
+        // compatibilidade com launches salvos, mas vale o mesmo que 1.
         force_table_ik_strategy_ = this->declare_parameter<int>(
             "force_table_ik_strategy", 0);
+        if (force_table_ik_strategy_ == 2) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "force_table_ik_strategy=2 (pega frontal) nao existe mais "
+                "desde 2026-08-28: tratado como 1 (IK custom por cima).");
+        }
         // 2026-08-24 (pedido do operador: "sempre pegar por cima"): a pegada
-        // top-down ESTRITA so alcanca ~0,365 m de raio (z ~0,04) e, alem
-        // disso, o degrau 1 falhava e o pick caia no degrau 2 = pela FRENTE
-        // (de lado). Antes de desistir do "por cima", o degrau 1 tenta a
-        // ferramenta inclinada (graus a partir da vertical, radialmente para
-        // fora) nesta escada: 0 e depois cada valor abaixo. Vazio = so 0.
+        // top-down ESTRITA so alcanca ~0,365 m de raio (z ~0,04). Antes de
+        // desistir do "por cima", cada tentativa custom tenta a ferramenta
+        // inclinada (graus a partir da vertical, radialmente para fora) nesta
+        // escada: 0 e depois cada valor abaixo. Vazio = so 0. 2026-08-28: e
+        // a UNICA escada da mesa comum (nao ha mais pega frontal) e tambem a
+        // que a busca de deslocamento da base usa (ver unreachable_*).
         table_down_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "table_down_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        // 2026-08-28 (fila de alcance): alvo VISTO mas sem IK em nenhuma
+        // inclinacao => com final_attempt=false o pick sai CEDO (sem
+        // tentativas 2/3 nem varredura) devolvendo unreachable=true e uma
+        // sugestao de deslocamento lateral da base verificada pela mesma IK
+        // (reach_shift). false = comportamento antigo (escada completa).
+        unreachable_bailout_enabled_ = this->declare_parameter<bool>(
+            "unreachable_bailout_enabled", true);
+        // |dy| candidatos (m, base_footprint), crescentes; o piso do ESC nao
+        // executa passos < ~0,10 m e o curso maximo e decisao do operador.
+        unreachable_shift_candidates_m_ = this->declare_parameter<std::vector<double>>(
+            "unreachable_shift_candidates_m",
+            std::vector<double>{0.10, 0.15, 0.20, 0.25});
+        // A base para um pouco antes do pedido: a busca testa o alvo com
+        // esse desconto para nao sugerir um passo que fique 1 cm curto.
+        unreachable_shift_margin_m_ = this->declare_parameter<double>(
+            "unreachable_shift_margin_m", 0.02);
         // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
         // graus estritos nao alcancam (ver solveShelfIk). false = so estrito.
         // 2026-08-24 (noite): operador pediu a shelf COMO NA 1a VALIDACAO (15/08,
@@ -590,6 +618,19 @@ private:
     std::string shelf_ik_reference_frame_;
     int force_table_ik_strategy_{0};
     std::vector<double> table_down_tilt_ladder_deg_;
+    // Fila de alcance (2026-08-28) — parametros.
+    bool unreachable_bailout_enabled_{true};
+    std::vector<double> unreachable_shift_candidates_m_{0.10, 0.15, 0.20, 0.25};
+    double unreachable_shift_margin_m_{0.02};
+    // Fila de alcance — estado POR GOAL (zerado em handle_goal): a escada
+    // custom da mesa viu o alvo e nenhuma inclinacao teve IK.
+    bool last_failure_unreachable_{false};
+    // Sugestao de deslocamento da base (base_footprint, + = esquerda; 0 =
+    // de lado nao resolve), so calculada no caminho de saida cedo.
+    double last_suggested_shift_m_{0.0};
+    // Alvo do TCP (manip_base_link) que a escada nao alcancou; vira
+    // target_x/target_y do result (diagnostico).
+    std::optional<Eigen::Vector3d> last_unreachable_target_;
     bool shelf_j4_free_{false};
     double shelf_free_max_dev_deg_{30.0};
     double shelf_free_j2_max_{1.2};
@@ -828,16 +869,18 @@ private:
         return "attempt_" + std::to_string(attempt);
     }
 
-    // 2026-08-17 — ladder de IK da MESA COMUM (pedido do operador): tentativa
-    // 1 = IK custom com a ferramenta para BAIXO (j5 alinhado ao yaw da tag;
-    // desde 2026-08-24 com escada de inclinacao 0/15/30 graus dentro da
-    // mesma tentativa — ver table_down_tilt_ladder_deg), tentativa 2 = IK
-    // custom pela FRENTE (j5 fixo), tentativa 3+ = caminho antigo do
-    // MoveIt/pick_ik, que ja funciona, como ultimo recurso.
+    // 2026-08-17 — ladder de IK da MESA COMUM (pedido do operador): tentativas
+    // 1 e 2 = IK custom com a ferramenta para BAIXO (j5 alinhado ao yaw da
+    // tag; desde 2026-08-24 com escada de inclinacao 0/15/30 graus dentro da
+    // mesma tentativa — ver table_down_tilt_ladder_deg), tentativa 3+ =
+    // caminho antigo do MoveIt/pick_ik, que ja funciona, como ultimo recurso.
+    // 2026-08-28: a pega pela FRENTE (antiga tentativa 2, ferramenta a 90
+    // graus, j5 fixo) foi REMOVIDA a pedido do operador — so topo 0 e
+    // inclinadas 15/30. A tentativa 2 repete a escada por cima com uma
+    // leitura NOVA da tag (a TF e ao vivo).
     enum class TableIkStrategy
     {
         kCustomDown,
-        kCustomForward,
         kMoveItPose,
     };
 
@@ -845,13 +888,24 @@ private:
     {
         const int effective =
             force_table_ik_strategy_ > 0 ? force_table_ik_strategy_ : attempt;
-        if (effective <= 1) {
+        if (effective <= 2) {
             return TableIkStrategy::kCustomDown;
         }
-        if (effective == 2) {
-            return TableIkStrategy::kCustomForward;
-        }
         return TableIkStrategy::kMoveItPose;
+    }
+
+    /// Escada de inclinacao da mesa comum em radianos: 0 (vertical estrita)
+    /// e depois cada valor valido de table_down_tilt_ladder_deg. E a mesma
+    /// lista que a busca de deslocamento da base (reach_shift) testa.
+    std::vector<double> tableDownTiltsRad() const
+    {
+        std::vector<double> tilts{0.0};
+        for (const double t : table_down_tilt_ladder_deg_) {
+            if (t > 0.0 && t < 90.0) {
+                tilts.push_back(t * M_PI / 180.0);
+            }
+        }
+        return tilts;
     }
 
     void configureArmInterface(const std::shared_ptr<MoveGroupInterface> & arm)
@@ -1166,9 +1220,15 @@ private:
         cancel_requested_.store(false);
         RCLCPP_INFO(
             this->get_logger(),
-            "Received goal tag=%s",
-            goal->tag_frame.c_str());
+            "Received goal tag=%s table_pose=%s final_attempt=%s",
+            goal->tag_frame.c_str(),
+            goal->table_pose.empty() ? "<vazio>" : goal->table_pose.c_str(),
+            goal->final_attempt ? "true" : "false");
         last_pick_failure_reason_.clear();
+        // Fila de alcance (2026-08-28): estado por goal.
+        last_failure_unreachable_ = false;
+        last_suggested_shift_m_ = 0.0;
+        last_unreachable_target_.reset();
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
     }
 
@@ -1585,9 +1645,8 @@ private:
     // O retorno faz o caminho inverso (fase 1 com a solucao de 45 graus).
     static constexpr double kShelfPhase1Joint3 = 2.3038;
     static constexpr double kShelfWristJoint5 = 1.5708;
-    // Punho da tentativa 2 da mesa (kForward), pedido do operador 2026-08-17;
-    // 2026-08-21: -1.5708 (pedido do operador). A shelf continua +1.5708.
-    static constexpr double kTableForwardWristJoint5 = -1.5708;
+    // (kTableForwardWristJoint5 removido em 2026-08-28 junto com a pega
+    // frontal da mesa; a shelf continua +1.5708.)
 
     enum class CustomIkOutcome { kOk, kNoTransform, kNoSolution };
 
@@ -1599,6 +1658,10 @@ private:
     /// plano XY da base do braco — usado para alinhar o j5 aos dedos.
     /// `tilt_from_vertical`: direcao da ferramenta como inclinacao continua a
     /// partir da vertical (0 = por cima, pi/4 = kMiddle, pi/2 = frente).
+    /// `target_out` (opcional, 2026-08-28): alvo montado no frame da base do
+    /// braco — preenchido assim que a TF chega, mesmo quando a IK nao acha
+    /// solucao (a fila de alcance precisa do alvo para sugerir o deslocamento
+    /// da base). Fica intocado em kNoTransform.
     CustomIkOutcome solveCustomIkForTag(
         const std::string & tag_frame,
         double tilt_from_vertical,
@@ -1611,7 +1674,8 @@ private:
             manip_task_execution::IkOptions{},
         const manip_task_execution::ArmModel & arm_model =
             manip_task_execution::ArmModel{},
-        double target_z_offset = 0.0)
+        double target_z_offset = 0.0,
+        Eigen::Vector3d * target_out = nullptr)
     {
         geometry_msgs::msg::TransformStamped tf_arm;
         try {
@@ -1631,6 +1695,9 @@ private:
             tf_arm.transform.translation.x,
             tf_arm.transform.translation.y,
             tf_arm.transform.translation.z + target_z_offset);
+        if (target_out) {
+            *target_out = target;
+        }
 
         if (!manip_task_execution::solveIk(
                 target,
@@ -1788,6 +1855,79 @@ private:
                 std::abs(erro) > 0.10 ? "  <-- FORA da tolerancia 0.10" : "");
         }
         return false;
+    }
+
+    /// Pedido do operador 2026-08-28: na PEGA a base do braco (j1) gira
+    /// PRIMEIRO ate o azimute da tag e so depois o resto desce; na VOLTA para
+    /// pegar_obj com o bloco, o braco recolhe antes e j1 gira por ULTIMO.
+    /// Assim o braco estendido nunca varre a mesa girando.
+    bool moveToJointTargetJoint1First(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_WARN(this->get_logger(), "[%s] sem estado atual - movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        const std::vector<double> cur = arm->getCurrentJointValues();
+        if (cur.size() < 5) {
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first{cur[0], cur[1], cur[2], cur[3], cur[4]};
+        first[0] = q[0];
+        if (std::abs(first[0] - cur[0]) > 1e-3) {
+            if (!moveToJointTarget(arm, first, label + " [so j1]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [resto]");
+    }
+
+    bool moveToJointTargetJoint1Last(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_WARN(this->get_logger(), "[%s] sem estado atual - movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        const std::vector<double> cur = arm->getCurrentJointValues();
+        if (cur.size() < 5) {
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first = q;
+        first[0] = cur[0];
+        bool others_move = false;
+        for (std::size_t i = 1; i < 5; ++i) {
+            others_move = others_move || std::abs(first[i] - cur[i]) > 1e-3;
+        }
+        if (others_move) {
+            if (!moveToJointTarget(arm, first, label + " [j1 parado]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [j1 por ultimo]");
+    }
+
+    /// Juntas j1..j5 de uma pose nomeada do SRDF (false se faltar alguma).
+    bool namedPoseJoints(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & name,
+        std::array<double, 5> & q) const
+    {
+        static const std::array<const char *, 5> kJoints{
+            "manip_joint1", "manip_joint2", "manip_joint3", "manip_joint4", "manip_joint5"};
+        const std::map<std::string, double> jv = arm->getNamedTargetValues(name);
+        for (std::size_t i = 0; i < kJoints.size(); ++i) {
+            const auto it = jv.find(kJoints[i]);
+            if (it == jv.end()) {
+                return false;
+            }
+            q[i] = it->second;
+        }
+        return true;
     }
 
     /// Sequencia de aproximacao da prateleira (fases 1 e 2).
@@ -1979,84 +2119,180 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // MESA COMUM pela IK custom (2026-08-17) — tentativas 1 (kDown, j5 pelo
-    // yaw da tag) e 2 (kForward, j5 fixo). Mesmo contrato da shelf: a tag e
-    // lida UMA vez (no lookup da IK), sem releitura nem verifyTcpArrival
-    // depois que o braco comeca a se mover — as juntas sao exatas e a
-    // protecao contra "pegar o vazio" e a verificacao de esforco da garra.
-    bool approachTableTargetCustomIk(
+    // MESA COMUM pela IK custom (2026-08-17) — tentativas 1 e 2 (por cima,
+    // j5 pelo yaw da tag, escada de inclinacao 0/15/30). Mesmo contrato da
+    // shelf: a tag e lida UMA vez por inclinacao (no lookup da IK), sem
+    // releitura nem verifyTcpArrival depois que o braco comeca a se mover —
+    // as juntas sao exatas e a protecao contra "pegar o vazio" e a
+    // verificacao de esforco da garra.
+    // 2026-08-28: a pega frontal (90 graus) foi removida; o desfecho virou
+    // enum para a fila de alcance distinguir "alvo visto sem IK"
+    // (kUnreachable, a base pode se deslocar) de "tag perdida" e de "falha
+    // de execucao" (ambas retentaveis como antes).
+    enum class TableApproachResult
+    {
+        kOk,
+        kNoTransform,   ///< TF da tag sumiu durante a aproximacao
+        kUnreachable,   ///< TODAS as inclinacoes deram kNoSolution (alvo guardado)
+        kMoveFailed,    ///< IK ok, mas o plano/execucao ate as juntas falhou
+    };
+
+    TableApproachResult approachTableTargetCustomIk(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & tag_frame,
-        TableIkStrategy strategy,
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
-        const bool down = strategy == TableIkStrategy::kCustomDown;
-        publish_stage(
-            goal_handle,
-            down ? "final_approach_custom_down" : "final_approach_custom_forward");
+        publish_stage(goal_handle, "final_approach_custom_down");
 
         std::array<double, 5> q{};
         double tag_yaw = 0.0;
         double tilt_used = 0.0;
         CustomIkOutcome outcome = CustomIkOutcome::kNoSolution;
+        std::optional<Eigen::Vector3d> target_seen;
 
-        if (down) {
-            // Escada "por cima": vertical estrita e depois inclinacoes
-            // crescentes (table_down_tilt_ladder_deg). So cai para a pegada
-            // frontal (degrau 2) se NENHUMA delas alcancar.
-            std::vector<double> tilts_deg{0.0};
-            for (const double t : table_down_tilt_ladder_deg_) {
-                if (t > 0.0 && t < 90.0) {
-                    tilts_deg.push_back(t);
-                }
-            }
-            for (const double tilt_deg : tilts_deg) {
-                const double tilt = tilt_deg * M_PI / 180.0;
-                outcome = solveCustomIkForTag(
-                    tag_frame, tilt, 0.0, "mesa", cycle_name, q, &tag_yaw);
-                if (outcome != CustomIkOutcome::kNoSolution) {
-                    tilt_used = tilt;
-                    break;
-                }
-            }
-        } else {
+        // Escada "por cima": vertical estrita e depois inclinacoes
+        // crescentes (table_down_tilt_ladder_deg). Nao ha mais degrau
+        // frontal: se NENHUMA alcancar, o alvo esta "fora de alcance".
+        for (const double tilt : tableDownTiltsRad()) {
+            Eigen::Vector3d target;
             outcome = solveCustomIkForTag(
-                tag_frame,
-                manip_task_execution::tiltFromVertical(
-                    manip_task_execution::ToolDirection::kForward),
-                kTableForwardWristJoint5,
-                "mesa",
-                cycle_name,
-                q,
-                nullptr);
+                tag_frame, tilt, 0.0, "mesa", cycle_name, q, &tag_yaw,
+                manip_task_execution::IkOptions{},
+                manip_task_execution::ArmModel{}, 0.0, &target);
+            if (outcome == CustomIkOutcome::kNoTransform) {
+                break;
+            }
+            target_seen = target;
+            if (outcome == CustomIkOutcome::kOk) {
+                tilt_used = tilt;
+                break;
+            }
         }
 
         if (outcome == CustomIkOutcome::kNoTransform) {
             speak("Falha: perdi a tag na aproximação");
-            return false;
+            return TableApproachResult::kNoTransform;
         }
         if (outcome == CustomIkOutcome::kNoSolution) {
-            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
-            return false;
+            // Quem fala e decide (sair cedo x escada completa) e o chamador
+            // (handleTableUnreachable).
+            last_unreachable_target_ = target_seen;
+            return TableApproachResult::kUnreachable;
         }
 
-        if (down) {
-            // O TCP fica no eixo do joint5: trocar q5 pos-solve nao move a
-            // ponta, so gira a linha dos dedos para o yaw da tag (formula
-            // generalizada para a ferramenta inclinada).
-            q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0], tilt_used);
-            RCLCPP_INFO(
-                this->get_logger(),
-                "[%s] mesa: pegada por cima a %.0f graus da vertical; j5 pela "
-                "orientacao da tag: yaw=%.4f -> q5=%.4f",
-                cycle_name.c_str(), tilt_used * 180.0 / M_PI, tag_yaw, q[4]);
-        }
+        // O TCP fica no eixo do joint5: trocar q5 pos-solve nao move a
+        // ponta, so gira a linha dos dedos para o yaw da tag (formula
+        // generalizada para a ferramenta inclinada).
+        q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0], tilt_used);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[%s] mesa: pegada por cima a %.0f graus da vertical; j5 pela "
+            "orientacao da tag: yaw=%.4f -> q5=%.4f",
+            cycle_name.c_str(), tilt_used * 180.0 / M_PI, tag_yaw, q[4]);
 
         speak("Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame));
-        return moveToJointTarget(
-            arm, q,
-            cycle_name + (down ? " mesa custom down" : " mesa custom forward"));
+        // j1 primeiro, depois o resto (pedido do operador 2026-08-28).
+        if (!moveToJointTargetJoint1First(arm, q, cycle_name + " mesa custom down")) {
+            return TableApproachResult::kMoveFailed;
+        }
+        return TableApproachResult::kOk;
+    }
+
+    /// Fila de alcance (2026-08-28): a escada custom VIU o alvo e nenhuma
+    /// inclinacao teve IK. Com o bailout ligado e o goal ainda nao sendo a
+    /// tentativa final da estacao, o pick sai cedo: pergunta a reach_shift
+    /// quantos cm de lado a base precisa andar (verificado pela mesma IK e
+    /// pela mesma escada) e devolve isso ao executor, SEM tentativas 2/3 nem
+    /// varredura. Na tentativa final (ou com o bailout desligado) o
+    /// comportamento e o de sempre: retentavel, escada completa, e os campos
+    /// de alcance ficam so como diagnostico no result.
+    void handleTableUnreachable(
+        const std::string & tag_frame,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        bool & retryable_failure)
+    {
+        const bool final_attempt = goal_handle->get_goal()->final_attempt;
+        const bool bailout = unreachable_bailout_enabled_ && !final_attempt;
+
+        if (!last_unreachable_target_) {
+            // Nao deveria acontecer (kUnreachable sempre guarda o alvo);
+            // trata como a falha de IK de antes.
+            retryable_failure = true;
+            last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
+            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            return;
+        }
+        const Eigen::Vector3d target = *last_unreachable_target_;
+
+        if (!bailout) {
+            // Escada completa como antes; o alvo fica guardado para o result.
+            // Revisao 2026-08-28: unreachable=true no result so como
+            // diagnostico da passada FINAL da estacao. Com o parametro
+            // desligado o skip normal sai com unreachable=false (igual ao
+            // place), senao o executor veria um "fora de alcance" que o
+            // servidor nunca tratou como tal.
+            last_failure_unreachable_ = final_attempt;
+            retryable_failure = true;
+            last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
+            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] mesa: alvo VISTO em [%.3f %.3f %.3f] (%s) sem IK em "
+                "nenhuma inclinacao; %s — seguindo a escada completa.",
+                cycle_name.c_str(), target.x(), target.y(), target.z(),
+                shelf_ik_reference_frame_.c_str(),
+                final_attempt ? "tentativa FINAL da estacao" :
+                "unreachable_bailout_enabled=false");
+            return;
+        }
+
+        publish_stage(goal_handle, "unreachable_check");
+        manip_task_execution::ReachShiftOptions opts;
+        opts.candidates_m = unreachable_shift_candidates_m_;
+        opts.tilts_rad = tableDownTiltsRad();
+        opts.q5_fixed = 0.0;
+        opts.lift_m = 0.0;
+        opts.undershoot_margin_m = unreachable_shift_margin_m_;
+        const manip_task_execution::ReachShiftResult shift =
+            manip_task_execution::findBaseShiftForReach(target, opts);
+
+        if (shift.reachable_now) {
+            // Contradicao (a mesma IK, com a mesma escada, resolveu o alvo
+            // sem mover a base): so pode ser leitura de TF diferente entre
+            // as inclinacoes. Nao adia o objeto — retenta como antes, a
+            // tentativa 2 le a tag de novo.
+            RCLCPP_WARN(
+                this->get_logger(),
+                "[%s] mesa: reach_shift resolve o alvo [%.3f %.3f %.3f] SEM "
+                "mover a base, mas a escada da aproximacao nao achou IK "
+                "(TF instavel?). Tratando como falha retentavel.",
+                cycle_name.c_str(), target.x(), target.y(), target.z());
+            retryable_failure = true;
+            last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
+            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            return;
+        }
+
+        last_failure_unreachable_ = true;
+        last_suggested_shift_m_ = shift.shift_m;
+        last_pick_failure_reason_ = "alvo_fora_de_alcance";
+        retryable_failure = false;  // sem tentativas 2/3 nem varredura
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "[%s] mesa: alvo VISTO em [%.3f %.3f %.3f] (%s) FORA DO ALCANCE "
+            "da escada por cima. Sugestao de deslocamento da base: %+.2f m "
+            "(%s; alvo deslocado [%.3f %.3f %.3f], inclinacao %.0f graus). "
+            "Saindo cedo: sem tentativas extras nem varredura (fila de "
+            "alcance).",
+            cycle_name.c_str(), target.x(), target.y(), target.z(),
+            shelf_ik_reference_frame_.c_str(), shift.shift_m,
+            shift.shift_m == 0.0 ? "de lado nao resolve" :
+            (shift.shift_m > 0.0 ? "esquerda" : "direita"),
+            shift.shifted_target.x(), shift.shifted_target.y(),
+            shift.shifted_target.z(), shift.tilt_rad * 180.0 / M_PI);
     }
 
     bool moveToTarget(
@@ -2235,10 +2471,20 @@ private:
         if (!is_shelf) {
             publish_stage(goal_handle, "returning_to_pegar_obj");
             speak("Bloco seguro. Voltando para a pose de transporte");
-            arm->setStartStateToCurrentState();
-            arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
-            if (!planAndExecute(arm, cycle_name + " return pegar_obj")) {
+            // Pedido do operador 2026-08-28: recolhe o braco (j2..j5) e so
+            // depois gira a base (j1) - o bloco nao varre a mesa girando.
+            std::array<double, 5> q_home{};
+            bool ok = false;
+            if (namedPoseJoints(arm, "pegar_obj", q_home)) {
+                ok = moveToJointTargetJoint1Last(arm, q_home, cycle_name + " return pegar_obj");
+            } else {
+                RCLCPP_WARN(this->get_logger(), "[%s] pegar_obj sem juntas nomeadas - retorno em movimento unico.", cycle_name.c_str());
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                arm->setNamedTarget("pegar_obj");
+                ok = planAndExecute(arm, cycle_name + " return pegar_obj");
+            }
+            if (!ok) {
                 return TransferOutcome::kFailHolding;
             }
         }
@@ -2486,14 +2732,34 @@ private:
                     last_pick_failure_reason_ = "ik_ou_execucao_falhou";
                     return false;
                 }
-            } else if (!approachTableTargetCustomIk(
-                    arm, tag_frame, strategy, cycle_name, goal_handle))
-            {
-                retryable_failure = true;
-                last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
-                arm->setMaxVelocityScalingFactor(1.0);
-                arm->setMaxAccelerationScalingFactor(1.0);
-                return false;
+            } else {
+                // Degraus 1-2: IK custom por cima. 2026-08-28: o desfecho
+                // distingue "alvo visto sem IK" (fila de alcance) das
+                // falhas retentaveis de sempre.
+                const TableApproachResult approach =
+                    approachTableTargetCustomIk(
+                        arm, tag_frame, cycle_name, goal_handle);
+                if (approach != TableApproachResult::kOk) {
+                    arm->setMaxVelocityScalingFactor(1.0);
+                    arm->setMaxAccelerationScalingFactor(1.0);
+                    switch (approach) {
+                        case TableApproachResult::kNoTransform:
+                            retryable_failure = true;
+                            last_pick_failure_reason_ = "tag_perdida_na_aproximacao";
+                            break;
+                        case TableApproachResult::kMoveFailed:
+                            retryable_failure = true;
+                            last_pick_failure_reason_ = "execucao_custom_falhou";
+                            break;
+                        case TableApproachResult::kUnreachable:
+                            handleTableUnreachable(
+                                tag_frame, cycle_name, goal_handle, retryable_failure);
+                            break;
+                        case TableApproachResult::kOk:
+                            break;
+                    }
+                    return false;
+                }
             }
         }
         arm->setMaxVelocityScalingFactor(1.0);
@@ -2596,11 +2862,33 @@ private:
         const auto goal = goal_handle->get_goal();
         auto result = std::make_shared<PickTag::Result>();
 
+        // Fila de alcance (2026-08-28): os campos de alcance saem preenchidos
+        // em TODOS os desfechos. unreachable so e verdadeiro sem sucesso —
+        // o executor adia o objeto quando o ve, e um pick concluido nunca
+        // pode ser adiado. target_x/y ficam como diagnostico sempre que a
+        // escada custom chegou a montar um alvo.
+        const auto fill_reach_fields = [this, &result](bool physical_success)
+            {
+                result->unreachable = !physical_success && last_failure_unreachable_;
+                result->suggested_base_shift_m =
+                    result->unreachable ?
+                    static_cast<float>(last_suggested_shift_m_) : 0.0f;
+                if (last_unreachable_target_) {
+                    result->target_x = static_cast<float>(last_unreachable_target_->x());
+                    result->target_y = static_cast<float>(last_unreachable_target_->y());
+                } else {
+                    result->target_x = 0.0f;
+                    result->target_y = 0.0f;
+                }
+            };
+
         const auto finish_failure =
-            [this, &goal_handle, &result, &execution_guard](const std::string & message)
+            [this, &goal_handle, &result, &execution_guard, &fill_reach_fields](
+                const std::string & message)
             {
                 result->success = false;
                 result->fail_reason = last_pick_failure_reason_;
+                fill_reach_fields(false);
                 execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
                     result->message = "Pick canceled: " + message;
@@ -2713,8 +3001,10 @@ private:
         bool cycle_success = false;
         bool retryable_failure = false;
         bool object_still_grasped = false;
+        int attempts_done = 0;
 
         for (int attempt = 1; attempt <= max_pick_attempts; ++attempt) {
+            attempts_done = attempt;
             const std::string cycle_name =
                 max_pick_attempts == 1 ?
                 "ACTION_CYCLE" :
@@ -2761,14 +3051,15 @@ private:
 
             if (attempt < max_pick_attempts) {
                 publish_stage(goal_handle, "preparing_next_pick_attempt");
-                // Mesa: 1->2 troca a ESTRATEGIA (down -> frente), nao as
-                // tolerancias; a frase antiga so vale entrando no degrau
+                // Mesa: 1->2 repete a escada por cima com uma leitura NOVA
+                // da tag (2026-08-28: nao ha mais pega frontal), sem mexer
+                // nas tolerancias; a frase antiga so vale entrando no degrau
                 // MoveIt (3+). Shelf mantem a frase historica.
                 if (!is_shelf &&
                     tableStrategyForAttempt(attempt + 1) !=
                         TableIkStrategy::kMoveItPose)
                 {
-                    speak("Vou tentar de outro jeito na próxima tentativa");
+                    speak("Vou ler a tag de novo e tentar por cima mais uma vez");
                 } else {
                     speak("Vou relaxar as tolerancias para a proxima tentativa");
                 }
@@ -2808,6 +3099,15 @@ private:
         }
 
         const bool success = cycle_success;
+        // Fila de alcance: saida cedo (alvo visto, sem IK, ainda nao e a
+        // tentativa final) — vira skip com unreachable=true MESMO com
+        // skip_failed_pick_after_retries=false, porque o executor vai
+        // deslocar a base e pedir este pick de novo.
+        // Nao e const: se o recolhimento do braco falhar (abaixo), a saida
+        // cedo e rebaixada a skip/abort normal sem unreachable.
+        bool unreachable_bailout =
+            !success && last_failure_unreachable_ &&
+            unreachable_bailout_enabled_ && !goal->final_attempt;
 
         // Verificacao adversarial 2026-08-10: gravar o container ANTES de
         // responder um cancel tardio — coleta concluida com cancel chegando
@@ -2836,6 +3136,7 @@ private:
             }
             result->success = true;
             result->message = "Pick completed (cancel recebido apos a coleta)";
+            fill_reach_fields(true);
             execution_guard.release();
             goal_handle->canceled(result);
             return;
@@ -2844,21 +3145,62 @@ private:
         // Pedido do operador (2026-08-07): apos a falha FINAL, voltar o braco
         // para a pose de transporte (melhor esforco) — a missao nunca segue
         // com o braco em posicao imprevisivel — e anunciar o desfecho.
+        // Fila de alcance: a saida cedo por "fora de alcance" tambem passa
+        // por aqui — o braco DEVE estar de volta em pegar_obj quando o
+        // executor deslocar a base e mandar este pick de novo.
         if (!cycle_success && arm) {
             RCLCPP_ERROR(
                 this->get_logger(),
-                "PICK de %s FALHOU em %d tentativa(s). Recolhendo o braco "
+                "PICK de %s %s em %d tentativa(s). Recolhendo o braco "
                 "para %s antes de seguir.",
-                goal->tag_frame.c_str(), max_pick_attempts, start_pose.c_str());
+                goal->tag_frame.c_str(),
+                unreachable_bailout ? "saiu cedo (alvo fora de alcance)" : "FALHOU",
+                attempts_done, start_pose.c_str());
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(start_pose);
-            (void)planAndExecute(arm, "recolher apos falha final do pick");
+            bool retracted = planAndExecute(arm, "recolher apos falha final do pick");
+
+            // Revisao 2026-08-28: na saida cedo por alcance o executor vai
+            // DESLOCAR A BASE logo em seguida - nunca com o braco estendido
+            // sobre a mesa. Se o recolhimento direto falhar, tenta o mesmo
+            // caminho de recuperacao via home usado no inicio do execute;
+            // persistindo a falha, o goal deixa de ser "fora de alcance"
+            // (vira skip/abort normal, sugestao 0) para a base ficar parada.
+            if (!retracted && unreachable_bailout) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "Recolhimento direto para %s falhou apos saida cedo por "
+                    "alcance. Tentando recuperar via home.",
+                    start_pose.c_str());
+                arm->setStartStateToCurrentState();
+                arm->setNamedTarget("home");
+                if (planAndExecute(arm, "home recovery apos saida cedo por alcance")) {
+                    arm->setStartStateToCurrentState();
+                    arm->setEndEffectorLink("tcp");
+                    arm->setNamedTarget(start_pose);
+                    retracted = planAndExecute(
+                        arm, start_pose + " apos home recovery (saida cedo por alcance)");
+                }
+                if (!retracted) {
+                    RCLCPP_ERROR(
+                        this->get_logger(),
+                        "PICK de %s: braco NAO voltou a %s (nem via home) apos "
+                        "saida cedo por alcance. A base NAO pode se mover com o "
+                        "braco fora da pose de transporte - rebaixando para "
+                        "skip/abort normal SEM unreachable (sugestao 0).",
+                        goal->tag_frame.c_str(), start_pose.c_str());
+                    last_failure_unreachable_ = false;
+                    last_suggested_shift_m_ = 0.0;
+                    unreachable_bailout = false;
+                }
+            }
         }
 
         // Item 2.9: sucesso FISICO manda — falha de I/O do yaml vira WARN +
         // flag na mensagem, nunca aborta uma coleta ja realizada.
         result->success = success;
+        fill_reach_fields(success);
         if (success && state_write_success) {
             result->message = "Pick completed";
         } else if (success && !state_write_success) {
@@ -2876,6 +3218,24 @@ private:
         if (result->success) {
             publish_stage(goal_handle, "done");
             speak("Coleta concluida com sucesso");
+            execution_guard.release();
+            goal_handle->succeed(result);
+        } else if (unreachable_bailout) {
+            // Fila de alcance: nao e falha — o executor desloca a base e
+            // volta. success=true + skipped=true + unreachable=true.
+            publish_stage(goal_handle, "skipped_unreachable");
+            result->success = true;
+            result->skipped = true;
+            result->fail_reason = last_pick_failure_reason_;
+            char shift_txt[32];
+            std::snprintf(
+                shift_txt, sizeof(shift_txt), "%+.2f", last_suggested_shift_m_);
+            result->message =
+                "Pick skipped: alvo visto mas fora de alcance (sugestao base " +
+                std::string(shift_txt) + " m)";
+            speak(
+                std::string("O bloco está fora do meu alcance") +
+                (last_suggested_shift_m_ != 0.0 ? ", vou precisar me mover" : ""));
             execution_guard.release();
             goal_handle->succeed(result);
         } else if (!cycle_success && skip_failed_pick_after_retries_) {
