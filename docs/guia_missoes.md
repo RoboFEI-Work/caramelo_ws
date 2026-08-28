@@ -199,6 +199,61 @@ Exemplo pronto: `missions/empilhar_ws4_ws6.yaml`. Casos inválidos (ciclo,
 objeto que não termina nessa estação, topo com duas bases) abortam o planner
 com mensagem clara.
 
+## 3c. AMT1 — Advanced Manipulation Task 1 (ordenar a mesa de precisão, 28/08)
+
+**O que é**: na mesa de precision placement (`PP_1` → pose `Mesa10`, dock `PP1`) há 6 cubos com
+tag em ordem aleatória; o robô deve deixá-los em **ordem crescente de id, da esquerda para a
+direita** (vista do robô docado). As 6 posições são onde as tags estão no início. O robô usa
+os containers de bordo como buffer (precisa de **2 livres** no mínimo: pega A, pega B, solta B
+onde estava A…).
+
+**Como o planner reconhece**: `name` contendo "advanced manipulation task 1" (sem distinguir
+maiúsculas) OU `task_id` começando com `AMT1`. Aí ele ignora o planejamento de transferências e
+emite só `goto PP_1` + `amt1_sort` (a rotina inteira roda no nó `/amt1_sort`). Exemplo
+completo em [missions/amt1_pp1.yaml](../missions/amt1_pp1.yaml): `active_service_areas: [PP_1]`
+(obrigatório — estação fora da lista é descartada), 6 objetos em `start_state.PP_1`,
+`finish_state` igual ao `start_state`.
+
+**O que o robô faz** (nó `amt1_sort_action_node`, `manip_task_execution`): prólogo `home` →
+dock na PP1 → observa a mesa de `pegar_obj`, `tag_esquerda` e `tag_direita` (TF das tags) →
+ordena as posições por x → fala "Ordem atual: 5, 2, 3, 1, 4, 6. Vou ordenar de 1 a 6" → publica os
+frames `tag_amt1_slot_k` (no `odom`, sob cada cubo) → executa a ordenação por ciclos com os
+picks/places normais (`/pick_tag`, `/place_tag` com `stack_on: tag_amt1_slot_k`) → se um alvo
+ficar fora do alcance, desloca a base (`nudge_base`), re-registra os slots e repete → volta a
+`pegar_obj` → `home` → FINISH. Menos de 6 tags vistas: ordena o que viu e avisa (`partial`).
+
+**Rodar**: `ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 --task
+/home/linux24-04/caramelo_ws/missions/amt1_pp1.yaml [--dry-run]` (o preflight passa a exigir
+`/amt1_sort`). Só observar e falar o plano sem mover cubo:
+`ros2 action send_goal /amt1_sort my_robot_msgs/action/Amt1Sort "{ws: PP_1, table_pose: Mesa10,
+expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
+
+**Parâmetros** (nó): `observe_poses`, `observe_dwell_s` 1.5, `min_seen_tags` 2 (parâmetro do nó;
+`max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios), `allow_partial` true,
+`nudge_enabled` true, `max_nudges` 6, `max_total_shift_m` 0.35, `reregister_after_nudge` true,
+`op_timeout_s` 300 (prazo de cada pick/place filho), `cube_height_m` 0.042, `observe_move_enabled`
+(false = bancada sem MoveIt). Executor: `amt1_timeout` 1800 s (prazo total da rotina; estourar só
+gera **um WARN** e a rotina segue) e `amt1_stage_timeout` 300 s (watchdog por feedback — o **único**
+que cancela o goal; 6 picks + 6 places levam 12–18 min).
+
+**Resultado** (`/amt1_sort`): `success` = tudo na ordem; `partial` = mesa consistente (nada a bordo)
+mas não totalmente ordenada; `fail_reason` ∈ buffer_insuficiente | poucas_tags_vistas |
+tag_nao_encontrada | fora_de_alcance | pick_falhou | place_falhou | nudge_falhou |
+container_inconsistente | observacao_falhou | cancelado. Falha "limpa" (alvo fora de alcance, tag
+não vista — garra vazia): o nó devolve os cubos a bordo aos slots livres (`recover_onboard`) e
+responde `partial=true`. Abort ou prazo estourado de um pick/place (`pick_falhou`/`place_falhou`): o
+cubo pode estar na garra, então o nó **não solta nada** — os cubos ficam nos containers (yaml
+preservado), `partial=false`, só o braço volta a `pegar_obj`; o operador resolve à mão antes de
+outro goal.
+
+**Bancada sem robô** (`ROS_DOMAIN_ID=99`): `src/manipulation/manip_bt/test/run_amt1_scenario.sh all`
+(planner + variantes AMT-1/"Test 1"/PP inativa, regressão AMT2/AMT10, dry-run + validação de
+`max_onboard`/`expected_tags`, main 5,2,3,1,4,6, dois ciclos, nudge, buffer 1, tag não vista, place
+fora de alcance com recuperação, place abortado sem recuperação, pick que estoura o prazo, cancel,
+missão completa, executor com fake: ok/abort/result/reject/watchdog/prazo total). gtest da biblioteca:
+`colcon test --packages-select manip_task_execution --ctest-args -R test_amt1` (inclui as 720
+permutações de 6).
+
 ## 4. ws_table_mapping.yaml — qual dos dois vale?
 
 Existem duas cópias, mas **só uma manda**:
@@ -364,6 +419,10 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   há menos de 1 s — protege contra alvo fantasma (TF velha com robô movido).
   Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
   campo de visão (não é erro de IK).
+- AMT1 (28/08, ver §3c): kind `amt1_sort` (`ws`, `table_pose`, `expected_tags: [ids]`,
+  `direction`, `max_onboard`) — exige um `goto` anterior, fecha a fila de alcance e roda a rotina
+  inteira no nó `/amt1_sort`; params do executor `amt1_timeout` (1800 s, prazo total — estourar só
+  avisa) e `amt1_stage_timeout` (300 s, watchdog por feedback — o único que cancela o goal).
 - Fila de alcance (28/08, ver §6d): `reach_queue_enabled` (true),
   `reach_queue_ws_prefixes` (`["WS_","PP_"]`), `reach_queue_max_nudges` (2),
   `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
@@ -419,7 +478,9 @@ comum, o executor embrulha os picks/places numa `<ReachQueue>`:
 **Uma fila por estação**: um `home` no meio da estação fecha a fila (o
 `NudgeBase` entra antes do `home`) e os picks/places seguintes da **mesma**
 estação ficam fora dela (XML antigo, `final_attempt=true`) — o orçamento de
-`reach_queue_max_nudges` (2) vale por estação, não por fila.
+`reach_queue_max_nudges` (2) vale por estação, não por fila. O kind `amt1_sort` (§3c) também
+fecha a fila de alcance da estação (o `NudgeBase` entra antes dele) e roda fora dela — o nó
+`/amt1_sort` faz os próprios ajustes de base.
 
 O acumulado dos ajustes vai em `/manip/base_shift_total` (Float64,
 transient_local; só o dock_align_node publica; zera a cada `align_to_dock`) e o

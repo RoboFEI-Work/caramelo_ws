@@ -1,0 +1,28 @@
+# AMT1 (Advanced Manipulation Task 1, 2026-08-28): ordenar os cubos com tag da
+# mesa de precision placement em ordem crescente de id, da esquerda para a
+# direita do robo, usando os containers de bordo como buffer. Servido por
+# amt1_sort_action_node (manip_task_execution) em /amt1_sort.
+string ws                # "PP_1"
+string table_pose        # "Mesa10" - repassado aos picks/places
+int32[] expected_tags    # ids esperados na mesa (6); vazio = tudo o que for visto
+string direction         # left_to_right (default) | right_to_left
+int32 max_onboard        # buffer (0..3); 0 = todos os containers vazios. Minimo util: 2
+bool observe_only        # so observa, planeja e fala; nao move cubo
+---
+bool success             # todas as tags esperadas na ordem alvo
+bool partial             # mesa consistente mas nao totalmente ordenada
+string message
+string fail_reason       # buffer_insuficiente | poucas_tags_vistas | tag_nao_encontrada |
+                         # fora_de_alcance | pick_falhou | place_falhou | nudge_falhou |
+                         # container_inconsistente | observacao_falhou | cancelado | ""
+int32[] observed_order   # ids da esquerda para a direita no inicio
+int32[] final_order      # ids da esquerda para a direita no fim (planejado/reconstruido)
+int32[] missing_tags     # esperadas e nunca vistas
+int32 picks
+int32 places
+int32 nudges
+float32 total_shift_m    # deslocamento lateral acumulado da base (+ = esquerda)
+---
+string current_stage     # texto livre; tambem serve de heartbeat (<= 5 s)
+int32 ops_done
+int32 ops_total

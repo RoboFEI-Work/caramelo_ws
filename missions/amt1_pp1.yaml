@@ -1,0 +1,43 @@
+# AMT1 - Advanced Manipulation Task 1 (2026-08-28): os 6 cubos com AprilTag da
+# mesa de precision placement (PP_1 -> Mesa10, dock PP1) estao em ordem
+# aleatoria; o robo deve deixa-los em ordem CRESCENTE de id, da esquerda para
+# a direita, usando os containers de bordo como buffer.
+#
+# O task_planner reconhece a task pelo task_id (prefixo AMT1) ou pelo name
+# (contem "advanced manipulation task 1") e gera SO duas acoes:
+#   goto PP_1 (Mesa10) + amt1_sort {expected_tags: [1..6], left_to_right, max 3}
+# A rotina inteira (observar, planejar os ciclos, picks/places nos slots,
+# nudge da base) roda no amt1_sort_action_node (/amt1_sort).
+#
+# Os objetos comecam e terminam na MESMA estacao (nada e transportado); a
+# PP_1 PRECISA estar em active_service_areas.
+#
+# Uso:
+#   ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
+#       --task missions/amt1_pp1.yaml --dry-run
+schema_version: 1
+task_id: AMT1
+name: Advanced Manipulation Task 1
+duration_min: 10
+active_service_areas: [PP_1]
+
+objects:
+  - {id: 01, type: ATTC}
+  - {id: 02, type: ATTC}
+  - {id: 03, type: ATTC}
+  - {id: 04, type: ATTC}
+  - {id: 05, type: ATTC}
+  - {id: 06, type: ATTC}
+containers: []
+
+start_state:
+  PP_1:
+    obj_ids: [01, 02, 03, 04, 05, 06]
+    cont_ids: []
+
+finish_state:
+  PP_1:
+    obj_ids: [01, 02, 03, 04, 05, 06]
+    cont_ids: []
+    constraints:
+      - objects in ascending id order from left to right

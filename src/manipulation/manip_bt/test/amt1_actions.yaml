@@ -1,0 +1,8 @@
+# Cenario de bancada da AMT1 (2026-08-28) — usado pelo run_amt1_scenario.sh
+# com os fakes em ROS_DOMAIN_ID=99 (fake_nav_actions.py para o goto,
+# fake_amt1_table.py + amt1_sort_action_node real OU fake_amt1_sort.py).
+# E o mesmo que o task_planner gera para missions/amt1_pp1.yaml.
+# Sem `home` (nao ha MoveIt na bancada) e sem epilogo (finish_dock_id vazio).
+actions:
+  - {kind: goto, ws: PP_1, mesa: Mesa10}
+  - {kind: amt1_sort, ws: PP_1, table_pose: Mesa10, expected_tags: [1, 2, 3, 4, 5, 6], direction: left_to_right, max_onboard: 3}

@@ -2776,6 +2776,39 @@ private:
                     {
                         return false;
                     }
+                    // AMT1 (2026-08-28): na precision placement (ws PP_*) o
+                    // stack_on e um slot registrado (tag_amt1_slot_k) e o
+                    // fallback na mesa (Mesa10) largaria o cubo em cima de
+                    // outro. Base nao vista / chegada fora da tolerancia /
+                    // fora de alcance sem bailout => NAO cai na mesa: sai
+                    // como unreachable com sugestao 0 — o caminho existente
+                    // (run_place_cycle) devolve o cubo ao container de
+                    // bordo e execute() responde skipped+unreachable; o no
+                    // AMT1 re-registra os slots e repete 1x. WS_* inalterado.
+                    if ((out == StackOutcome::kBaseNotSeen || out == StackOutcome::kNoIk ||
+                        out == StackOutcome::kUnreachable) &&
+                        normalizedWs(goal->ws).rfind("PP", 0) == 0)
+                    {
+                        last_place_failure_reason_ =
+                            out == StackOutcome::kBaseNotSeen ? "base_nao_vista" :
+                            out == StackOutcome::kNoIk ? "chegada_fora_da_tolerancia" :
+                            "alvo_fora_de_alcance";
+                        last_failure_unreachable_ = true;
+                        last_suggested_shift_m_ = 0.0;
+                        // Chegada reprovada: o braco esta na pre-pose acima
+                        // do slot — a devolucao passa por pegar_obj antes.
+                        if (out == StackOutcome::kNoIk) {
+                            stack_arm_moved_ = true;
+                        }
+                        RCLCPP_WARN(
+                            get_logger(),
+                            "[STACK] PP (%s): nao empilhei sobre %s (%s) e NAO vou soltar na mesa "
+                            "— devolvendo o bloco ao container de bordo (unreachable, sugestao 0).",
+                            goal->ws.c_str(), goal->stack_on.c_str(),
+                            last_place_failure_reason_.c_str());
+                        speak("Nao achei o lugar certo na mesa de precisao, vou guardar o bloco de volta");
+                        return false;
+                    }
                     if (out == StackOutcome::kMoveFailed || !stack_fallback_to_table_) {
                         last_place_failure_reason_ = "empilhar_falhou";
                         return false;

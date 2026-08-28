@@ -76,13 +76,15 @@ def _graph_actions() -> set:
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
-def _preflight(args) -> bool:
+def _preflight(args, actions=None) -> bool:
     """Espera os servidores da missao aparecerem no grafo, com progresso.
 
     Sem isso, o executor ficava pendurado EM SILENCIO esperando o move_group
     (minutos com o MoveIt subindo; para sempre com o stack desligado).
     IMPORTANTE: sonda so' o grafo (ros2 action list) — nunca `ros2 param get
     /move_group ...`, que pendura igual quando o MoveIt esta ocupado.
+    `actions` = plano gerado (lista de dicts): so exige o /amt1_sort quando a
+    missao tem uma acao amt1_sort (AMT1, 2026-08-28).
     """
     import time as _time
 
@@ -92,9 +94,13 @@ def _preflight(args) -> bool:
         # pelo mesmo dock_align_node do /align_to_dock.
         exigidos += ["/navigate_to_pose", "/dock_robot", "/undock_robot",
                      "/align_to_dock", "/nudge_base"]
+    if any(a.get("kind") == "amt1_sort" for a in (actions or [])):
+        # amt1_sort_action_node (manip_task_execution) so faz falta na AMT1.
+        exigidos.append("/amt1_sort")
 
     rotulos = {"/move_action": "move_group (MoveIt)",
-               "/nudge_base": "nudge_base (dock_align_node)"}
+               "/nudge_base": "nudge_base (dock_align_node)",
+               "/amt1_sort": "amt1_sort (rotina AMT1)"}
     print("Verificando os servidores da missao (pre-flight)...")
     inicio = _time.monotonic()
     pendentes = list(exigidos)
@@ -210,8 +216,12 @@ def _generate_actions(task_yaml: Path, apriltag_cfg: Path, map_folder: Path) -> 
     return out
 
 
-def _print_plan(actions_yaml: Path) -> None:
-    """Imprime o plano gerado (numero da acao, kind e demais campos)."""
+def _print_plan(actions_yaml: Path) -> list:
+    """Imprime o plano gerado (numero da acao, kind e demais campos).
+
+    Devolve a lista de acoes (dicts) — o pre-flight usa para saber quais
+    servidores a missao exige (2026-08-28: /amt1_sort so na AMT1).
+    """
     with actions_yaml.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     actions = data.get("actions") or []
@@ -220,8 +230,9 @@ def _print_plan(actions_yaml: Path) -> None:
         kind = action.get("kind", "?")
         campos = ", ".join(
             f"{k}={v}" for k, v in action.items() if k != "kind")
-        print(f"  {i:2d}. {kind:<6} {campos}")
+        print(f"  {i:2d}. {kind:<9} {campos}")
     print()
+    return actions
 
 
 def _executor_cmd(actions_yaml: Path, map_folder: Path, args, dry_run: bool):
@@ -279,7 +290,7 @@ def main(argv=None) -> int:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
 
-    _print_plan(actions_yaml)
+    actions = _print_plan(actions_yaml)
 
     if args.dry_run:
         return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=True))
@@ -290,7 +301,7 @@ def main(argv=None) -> int:
             print("Missao cancelada pelo operador.")
             return 0
 
-    if not _preflight(args):
+    if not _preflight(args, actions):
         return 1
 
     return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=False))

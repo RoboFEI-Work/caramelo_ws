@@ -12,6 +12,8 @@
   <depend>manip_moveit_config</depend>
   <depend>ament_index_cpp</depend>
   <depend>apriltag_msgs</depend>
+  <depend>caramelo_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>my_robot_msgs</depend>
   <depend>moveit_msgs</depend>
   <depend>moveit_ros_planning_interface</depend>

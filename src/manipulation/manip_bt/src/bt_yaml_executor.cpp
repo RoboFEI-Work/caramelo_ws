@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "manip_bt/amt1_sort_bt.hpp"
 #include "manip_bt/go_to_named_pose_bt.hpp"
 #include "manip_bt/go_to_ws_bt.hpp"
 #include "manip_bt/mission_map_config.hpp"
@@ -345,6 +346,7 @@ std::string buildTreeXmlFromActions(
 
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
   std::string current_station_ws;    // 'ws' do ultimo goto (p/ o place legado sem 'ws')
+  std::string current_station_mesa;  // mesa do ultimo goto (fallback do amt1_sort)
 
   // Bloco de estacao com skip (2026-08-18, pedido do operador): cada goto de
   // estacao dockavel abre um <Fallback><Inverter><GoToWS/></Inverter>
@@ -485,6 +487,7 @@ std::string buildTreeXmlFromActions(
       }
       current_station_dock = dock_id;
       current_station_ws = ws;
+      current_station_mesa = mesa;
       station_queue_eligible = ctx.reach_queue_enabled && use_docking &&
         wsHasReachQueuePrefix(ws, ctx.reach_queue_ws_prefixes);
       station_goto_index = i;
@@ -496,7 +499,7 @@ std::string buildTreeXmlFromActions(
       continue;
     }
 
-    if (kind == "pick" || kind == "place") {
+    if (kind == "pick" || kind == "place" || kind == "amt1_sort") {
       if (ctx.map_config && !current_station_dock.empty() &&
         !ctx.map_config->manipulationEnabled(current_station_dock))
       {
@@ -631,6 +634,154 @@ std::string buildTreeXmlFromActions(
       continue;
     }
 
+    // AMT1 (2026-08-28): ordenar as tags da mesa de precisao. UMA folha
+    // <Amt1Sort/> cliente do /amt1_sort (a rotina inteira — observar,
+    // planejar, picks/places nos slots e nudge — roda no server). Exige um
+    // goto anterior: a estacao e a do ultimo goto; fecha a fila de alcance
+    // ANTES (o ReachQueue exige NudgeBase como ultimo filho) e entra no bloco
+    // da estacao (goto falhou => estacao pulada, missao segue ao FINISH).
+    if (kind == "amt1_sort") {
+      if (current_station_ws.empty()) {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort sem goto anterior — a "
+                "ordenacao precisa da estacao (PP_1) do ultimo goto.");
+      }
+      std::string sort_ws;
+      if (action["ws"]) {
+        sort_ws = action["ws"].as<std::string>("");
+      }
+      if (sort_ws.empty()) {
+        sort_ws = current_station_ws;
+      } else if (sort_ws != current_station_ws) {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort ws=" + sort_ws +
+                " mas o ultimo goto foi para " + current_station_ws + ".");
+      }
+
+      std::string table_pose;
+      if (action["table_pose"]) {
+        table_pose = action["table_pose"].as<std::string>("");
+      }
+      if (table_pose.empty()) {
+        table_pose = current_station_mesa;
+      }
+      if (table_pose.empty()) {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort sem table_pose (nem o goto "
+                "anterior tem 'mesa').");
+      }
+
+      // expected_tags: lista de ints no yaml (task_planner) ou string "1,2,3".
+      // Vira a string "1,2,3" na blackboard — a folha converte para int32[].
+      // Qualquer erro de leitura sai com o indice da acao (achado 11).
+      std::vector<int> expected_tags;
+      const YAML::Node tags_node = action["expected_tags"];
+      try {
+        if (tags_node && tags_node.IsSequence()) {
+          for (const auto & t : tags_node) {
+            try {
+              expected_tags.push_back(t.as<int>());
+            } catch (const YAML::Exception &) {
+              throw std::runtime_error("'" + YAML::Dump(t) + "' nao e inteiro");
+            }
+          }
+        } else if (tags_node && tags_node.IsScalar()) {
+          for (const int id :
+            manip_bt::Amt1SortBT::parseExpectedTags(tags_node.as<std::string>()))
+          {
+            expected_tags.push_back(id);
+          }
+        } else if (tags_node && !tags_node.IsNull()) {
+          throw std::runtime_error("esperado lista de ints ou string \"1,2,3\"");
+        }
+      } catch (const std::exception & ex) {
+        // parseExpectedTags ja prefixa "expected_tags: " — nao duplicar.
+        std::string what = ex.what();
+        const std::string prefix = "expected_tags: ";
+        if (what.rfind(prefix, 0) == 0) {
+          what = what.substr(prefix.size());
+        }
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort expected_tags: " + what);
+      }
+      std::string expected_csv;
+      for (std::size_t k = 0; k < expected_tags.size(); ++k) {
+        if (expected_tags[k] < 0) {
+          throw std::runtime_error(
+                  "actions[" + std::to_string(i) + "] amt1_sort expected_tags com id negativo.");
+        }
+        if (std::find(expected_tags.begin(), expected_tags.begin() + k, expected_tags[k]) !=
+          expected_tags.begin() + k)
+        {
+          throw std::runtime_error(
+                  "actions[" + std::to_string(i) + "] amt1_sort expected_tags com id repetido " +
+                  std::to_string(expected_tags[k]) + ".");
+        }
+        expected_csv += (k == 0 ? "" : ",") + std::to_string(expected_tags[k]);
+      }
+      if (expected_tags.empty()) {
+        RCLCPP_WARN(
+          rclcpp::get_logger("bt_yaml_executor"),
+          "actions[%zu] amt1_sort sem expected_tags — o no ordena tudo o que vir na mesa.", i);
+      }
+
+      std::string direction = action["direction"].as<std::string>("left_to_right");
+      if (direction.empty()) {
+        direction = "left_to_right";
+      }
+      if (direction != "left_to_right" && direction != "right_to_left") {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort direction='" + direction +
+                "' invalida (left_to_right | right_to_left).");
+      }
+      // max_onboard: 0..3, como no Amt1Sort.action e no no (0 = todos os
+      // containers vazios). Chave ausente => 3. Valor nao-inteiro ("tres") e
+      // erro com o indice da acao — antes as<int>(3) engolia e virava 3 em
+      // silencio (achado 11).
+      int max_onboard = 3;
+      if (action["max_onboard"] && !action["max_onboard"].IsNull()) {
+        try {
+          max_onboard = action["max_onboard"].as<int>();
+        } catch (const YAML::Exception &) {
+          throw std::runtime_error(
+                  "actions[" + std::to_string(i) + "] amt1_sort max_onboard=" +
+                  YAML::Dump(action["max_onboard"]) + " nao e inteiro.");
+        }
+      }
+      if (max_onboard < 0 || max_onboard > 3) {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort max_onboard=" +
+                std::to_string(max_onboard) + " fora de 0..3 (0 = todos os containers vazios).");
+      }
+
+      close_reach_queue();
+
+      const std::string ws_key = actionBlackboardKey(i, "ws");
+      const std::string table_pose_key = actionBlackboardKey(i, "table_pose");
+      const std::string tags_key = actionBlackboardKey(i, "expected_tags");
+      const std::string direction_key = actionBlackboardKey(i, "direction");
+      const std::string max_onboard_key = actionBlackboardKey(i, "max_onboard");
+      setStringOnBlackboard(blackboard, i, "ws", sort_ws);
+      setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
+      setStringOnBlackboard(blackboard, i, "expected_tags", expected_csv);
+      setStringOnBlackboard(blackboard, i, "direction", direction);
+      blackboard->set(max_onboard_key, max_onboard);
+
+      xml << "      <Amt1Sort name=\"amt1_" << i
+          << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
+          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
+          << "\" expected_tags=\"" << escapeXmlAttr(blackboardPort(tags_key))
+          << "\" direction=\"" << escapeXmlAttr(blackboardPort(direction_key))
+          << "\" max_onboard=\"" << escapeXmlAttr(blackboardPort(max_onboard_key))
+          << "\" timeout=\"{amt1_timeout}\" stage_timeout=\"{amt1_stage_timeout}\"/>\n";
+      station_has_actions = station_has_actions || station_open;
+      ctx.plan_rows.push_back(
+        "[" + std::to_string(i) + "] amt1  ordenar " + std::to_string(expected_tags.size()) +
+        " tags na " + sort_ws + " (mesa=" + table_pose + ", " + direction +
+        ", max_onboard=" + std::to_string(max_onboard) + ")");
+      continue;
+    }
+
     throw std::runtime_error("actions[" + std::to_string(i) + "] has unsupported kind: " + kind);
   }
 
@@ -741,6 +892,18 @@ int main(int argc, char ** argv)
     // 2026-08-28 (fila de alcance): timeout do goal nudge_base (a base anda
     // <= 0,25 m; o servidor tem o proprio nudge_default_timeout quando 0).
     blackboard->set("nudge_timeout", node->declare_parameter<double>("nudge_timeout", 20.0));
+    // AMT1 (2026-08-28): prazo total do goal /amt1_sort e silencio maximo de
+    // feedback (o server manda heartbeat <= 5 s; um pick/place filho leva
+    // ate ~5 min com retries).
+    // amt1_timeout = 1800 s (achado 8): 6 picks + 6 places levam ~12-18 min,
+    // entao 900 s estourava no meio de um pick/place. Estourar o prazo total
+    // NAO cancela o goal: a folha Amt1SortBT so avisa (WARN, uma vez) e
+    // continua; o cancel de fato e SEMPRE e SO do watchdog de feedback
+    // (amt1_stage_timeout) — cancelar com cubo a bordo/braco no ar e pior
+    // que esperar o server terminar a op.
+    blackboard->set("amt1_timeout", node->declare_parameter<double>("amt1_timeout", 1800.0));
+    blackboard->set(
+      "amt1_stage_timeout", node->declare_parameter<double>("amt1_stage_timeout", 300.0));
     blackboard->set("docked", false);
     blackboard->set("current_dock_id", std::string(""));
     blackboard->set("current_dock_type", std::string(""));
@@ -808,6 +971,8 @@ int main(int argc, char ** argv)
     factory.registerNodeType<manip_bt::PickTagBT>("PickTag");
     factory.registerNodeType<manip_bt::PlaceTagBT>("PlaceTag");
     factory.registerNodeType<manip_bt::ReachQueueBT>("ReachQueue");
+    // Sempre real (tambem em simulate_navigation): a manipulacao nao e simulada.
+    factory.registerNodeType<manip_bt::Amt1SortBT>("Amt1Sort");
     if (simulate_navigation) {
       factory.registerNodeType<SimulatedGoToWSBT>("GoToWS");
       factory.registerNodeType<SimulatedNudgeBaseBT>("NudgeBase");

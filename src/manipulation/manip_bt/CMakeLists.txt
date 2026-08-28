@@ -26,6 +26,7 @@ add_executable(manip_bt_executor
 
 add_executable(bt_yaml_executor
   src/bt_yaml_executor.cpp
+  src/amt1_sort_bt.cpp
   src/go_to_named_pose_bt.cpp
   src/go_to_ws_bt.cpp
   src/mission_map_config.cpp

@@ -414,6 +414,33 @@ def generate_launch_description():
         }],
     )
 
+    # --- AMT1 (2026-08-28): ordenacao das tags da mesa de precision placement ---
+    # Servidor /amt1_sort. Cliente de /pick_tag e /place_tag (nao pega nem
+    # solta sozinho); so move o braco para OBSERVAR a mesa, por isso recebe
+    # os mesmos URDF/SRDF locais, o mesmo lock e o mesmo yaml dos containers.
+    # tag_frames = so as tag_* da lista do apriltag (os ct_* do detector de
+    # containers nao sao cubos).
+    amt1_sort_action = Node(
+        respawn=True,
+        respawn_delay=3.0,
+        package="manip_task_execution",
+        executable="amt1_sort_action_node",
+        output="screen",
+        condition=IfCondition(use_pick_place),
+        parameters=[{
+            "container_state_file": container_state_file,
+            "manipulator_lock_file": manipulator_lock_file,
+            "robot_description": primitive_robot_description,
+            "robot_description_semantic": robot_description_semantic_content,
+            "tag_frames": [
+                frame for frame in slot_obstacle_tag_frames if frame.startswith("tag_")
+            ],
+            # Altura do cubo: tampo = z da tag - cube_height_m (o place soma
+            # stack_place_z_offset ao soltar).
+            "cube_height_m": 0.042,
+        }],
+    )
+
     # --- Camera RealSense ---
     # publish_tf:=false: o TF da camera vem do URDF do Caramelo (RSP), nao do driver.
     # GroupAction scoped+forwarding=False: o rs_launch.py itera as launch
@@ -649,6 +676,7 @@ def generate_launch_description():
         reset_container_states_once,
         pick_action,
         place_action,
+        amt1_sort_action,
         realsense,
         perception_gate,
         renice_camera,

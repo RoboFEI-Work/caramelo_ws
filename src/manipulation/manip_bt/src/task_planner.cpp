@@ -168,6 +168,53 @@ void checkSchemaVersion(const YAML::Node & root)
   }
 }
 
+std::string toLower(std::string value)
+{
+  std::transform(
+    value.begin(), value.end(), value.begin(),
+    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value;
+}
+
+// ---- AMT1 (2026-08-28) ----------------------------------------------------
+// Advanced Manipulation Task 1: os cubos com tag da mesa de precisao (PP_*)
+// comecam e terminam na MESMA estacao, so mudam de ORDEM (crescente de id, da
+// esquerda para a direita). O fluxo normal descartava esses objetos em
+// silencio (0 acoes). A task e reconhecida SO pelo task_id ou pelo name;
+// qualquer outra task segue o fluxo antigo, intocado (que, quando parecer
+// AMT1, so AVISA — ver looksLikeAmt1 em main).
+//
+// Reconhecimento tolerante a escrita (achado 10, 2026-08-28):
+//   task_id: prefixo AMT1 sem distinguir maiusculas, aceitando separadores
+//            entre AMT e 1 (AMT-1, AMT_1, "AMT 1"); o caractere apos o 1 NAO
+//            pode ser digito (AMT10 / AMT11 nao sao AMT1).
+//   name:    contem "advanced manipulation task 1" OU "... test 1", sem
+//            distinguir maiusculas e com espacos multiplos; \b apos o 1
+//            (task 10 nao casa).
+bool isAmt1Task(const YAML::Node & root)
+{
+  static const std::regex kTaskId("^AMT[\\s_-]*1(?![0-9])");
+  static const std::regex kName("\\badvanced\\s+manipulation\\s+(task|test)\\s+1\\b");
+  const std::string task_id = toUpper(trim(root["task_id"].as<std::string>("")));
+  if (std::regex_search(task_id, kTaskId)) {
+    return true;
+  }
+  const std::string name = toLower(trim(root["name"].as<std::string>("")));
+  return std::regex_search(name, kName);
+}
+
+/// Erro unico (buildTransfers e AMT1) para ids sem frame no apriltag yaml.
+void throwIdsWithoutFrame(const std::vector<int> & ids_without_frame)
+{
+  std::string ids;
+  for (const int id : ids_without_frame) {
+    ids += (ids.empty() ? "" : ", ") + std::to_string(id);
+  }
+  throw std::runtime_error(
+          "Objetos sem frame de tag no apriltag yaml (tag.ids/frames/sizes): " + ids +
+          " — acrescentar em tags_36h11.yaml");
+}
+
 int parseObjectId(const YAML::Node & node)
 {
   if (!node) {
@@ -670,13 +717,7 @@ std::vector<TransferItem> buildTransfers(
   }
 
   if (!ids_without_frame.empty()) {
-    std::string ids;
-    for (const int id : ids_without_frame) {
-      ids += (ids.empty() ? "" : ", ") + std::to_string(id);
-    }
-    throw std::runtime_error(
-            "Objetos sem frame de tag no apriltag yaml (tag.ids/frames/sizes): " + ids +
-            " — acrescentar em tags_36h11.yaml");
+    throwIdsWithoutFrame(ids_without_frame);
   }
 
   std::sort(
@@ -1038,6 +1079,192 @@ YAML::Node buildOutput(
   return output;
 }
 
+// ---- AMT1 (2026-08-28) ----------------------------------------------------
+struct Amt1Station
+{
+  std::string ws;                 // "PP_1"
+  std::vector<int> expected_tags; // ids em ordem crescente (sem decoy)
+};
+
+bool isPpStation(const std::string & ws)
+{
+  return ws.rfind("PP", 0) == 0;
+}
+
+/// AMT1 disfarcada (achado 10): no fluxo antigo, TODOS os objetos nao-decoy
+/// do start_state comecam e terminam na MESMA estacao PP_* (e ha pelo menos
+/// um). Com 0 transferencias isso e a cara da AMT1 com task_id/name fora do
+/// padrao — main so avisa, nao muda o fluxo.
+bool looksLikeAmt1(
+  const std::map<int, std::string> & start_index,
+  const std::map<int, std::string> & finish_index,
+  const std::set<int> & ignored_object_ids)
+{
+  std::size_t counted = 0;
+  for (const auto & [obj_id, from_ws] : start_index) {
+    if (ignored_object_ids.count(obj_id) > 0) {
+      continue;
+    }
+    const auto to_it = finish_index.find(obj_id);
+    if (to_it == finish_index.end() || to_it->second != from_ws || !isPpStation(from_ws)) {
+      return false;
+    }
+    ++counted;
+  }
+  return counted > 0;
+}
+
+/// Estacao da AMT1: a PP_* do start_state com objetos (empate: a que tiver
+/// MAIS objetos). Se a PP com objetos existe mas NAO esta em
+/// active_service_areas -> erro claro (achado 9: nada de redirecionar em
+/// silencio para outra PP_* ativa). So sem NENHUMA PP_* com objetos no
+/// start_state cai no fallback: a 1a PP_* de active_service_areas (na ordem
+/// do yaml) com expected_tags = todos os objetos nao-decoy do bloco
+/// `objects:` (vazio = o no ordena tudo o que vir). A PP precisa estar em
+/// active_service_areas — o indice de estado descarta estacoes fora dela.
+Amt1Station resolveAmt1Station(
+  const YAML::Node & root,
+  const std::set<std::string> & active_areas,
+  const std::map<int, ObjectInfo> & objects,
+  const std::set<int> & ignored_object_ids,
+  const std::map<int, std::string> & id_to_frame)
+{
+  Amt1Station station;
+  std::vector<std::string> inactive_pp;
+
+  const YAML::Node start_state = root["start_state"];
+  if (start_state && start_state.IsMap()) {
+    std::size_t best_count = 0;
+    for (const auto & it : start_state) {
+      const std::string ws_name = trim(it.first.as<std::string>());
+      if (!isPpStation(ws_name)) {
+        continue;
+      }
+      const YAML::Node obj_ids = it.second["obj_ids"];
+      std::vector<int> ids;
+      if (obj_ids && obj_ids.IsSequence()) {
+        for (const auto & id_node : obj_ids) {
+          const int id = parseObjectId(id_node);
+          if (ignored_object_ids.count(id) == 0) {
+            ids.push_back(id);
+          }
+        }
+      }
+      if (ids.empty()) {
+        continue;
+      }
+      if (active_areas.count(ws_name) == 0) {
+        inactive_pp.push_back(ws_name);
+        continue;
+      }
+      if (ids.size() > best_count) {
+        best_count = ids.size();
+        station.ws = ws_name;
+        station.expected_tags = ids;
+      }
+    }
+  }
+
+  if (station.ws.empty() && !inactive_pp.empty()) {
+    // Achado 9: a PP com os cubos existe mas esta fora de
+    // active_service_areas. Erro AQUI, antes do fallback — senao a rotina
+    // rodaria em silencio numa PP_* ativa que nao tem os cubos.
+    std::string hint;
+    for (const auto & ws_name : inactive_pp) {
+      hint += (hint.empty() ? "" : ", ") + ws_name;
+    }
+    throw std::runtime_error(
+            "AMT1: start_state tem objetos em " + hint +
+            ", mas ela nao esta ativa — a mesa de precisao com os cubos precisa estar em "
+            "active_service_areas (nao vou redirecionar para outra PP_*)");
+  }
+
+  if (station.ws.empty()) {
+    // Fallback (so sem NENHUMA PP_* com objetos no start_state): 1a PP_*
+    // ativa, na ordem do yaml.
+    const YAML::Node areas = root["active_service_areas"];
+    if (areas && areas.IsSequence()) {
+      for (const auto & area : areas) {
+        const std::string ws_name = area.IsMap() ?
+          trim(area["id"].as<std::string>("")) : trim(area.as<std::string>(""));
+        if (isPpStation(ws_name) && active_areas.count(ws_name) > 0) {
+          station.ws = ws_name;
+          break;
+        }
+      }
+    }
+    if (station.ws.empty()) {
+      throw std::runtime_error(
+              "AMT1: nenhuma estacao PP_* em active_service_areas — a mesa de precisao "
+              "precisa estar em active_service_areas");
+    }
+    for (const auto & [obj_id, _] : objects) {
+      station.expected_tags.push_back(obj_id);
+    }
+    std::cerr << "[task_planner] AVISO: AMT1 sem objetos em start_state." << station.ws
+              << " — usando os " << station.expected_tags.size()
+              << " objeto(s) do bloco objects." << std::endl;
+  }
+
+  std::sort(station.expected_tags.begin(), station.expected_tags.end());
+  station.expected_tags.erase(
+    std::unique(station.expected_tags.begin(), station.expected_tags.end()),
+    station.expected_tags.end());
+
+  std::vector<int> ids_without_frame;
+  for (const int id : station.expected_tags) {
+    if (id_to_frame.count(id) == 0) {
+      ids_without_frame.push_back(id);
+    }
+  }
+  if (!ids_without_frame.empty()) {
+    throwIdsWithoutFrame(ids_without_frame);
+  }
+  return station;
+}
+
+/// AMT1: goto PP_x (sem `home` antes — o prologo do executor cobre) +
+/// UMA acao amt1_sort; a rotina inteira roda no amt1_sort_action_node.
+YAML::Node buildAmt1Output(
+  const Amt1Station & station,
+  const std::map<std::string, std::string> & ws_to_table_pose)
+{
+  YAML::Node output;
+  YAML::Node action_seq(YAML::NodeType::Sequence);
+  PlannerState state;
+  appendGotoIfNeeded(action_seq, state, station.ws, ws_to_table_pose);
+
+  YAML::Node sort;
+  sort["kind"] = "amt1_sort";
+  sort["ws"] = station.ws;
+  sort["table_pose"] = ws_to_table_pose.at(station.ws);
+  YAML::Node tags(YAML::NodeType::Sequence);
+  for (const int id : station.expected_tags) {
+    tags.push_back(id);
+  }
+  sort["expected_tags"] = tags;
+  sort["direction"] = "left_to_right";
+  sort["max_onboard"] = 3;
+  action_seq.push_back(sort);
+
+  output["actions"] = action_seq;
+  return output;
+}
+
+void writeOutputYaml(const YAML::Node & output, const std::string & output_yaml_path)
+{
+  YAML::Emitter out;
+  out << output;
+
+  std::ofstream fout(output_yaml_path);
+  if (!fout.is_open()) {
+    throw std::runtime_error("Could not open output file: " + output_yaml_path);
+  }
+  fout << out.c_str() << std::endl;
+
+  std::cout << "Wrote translation to " << output_yaml_path << std::endl;
+}
+
 std::string resolveApriltagPath(int argc, char ** argv)
 {
   if (argc >= 4) {
@@ -1172,6 +1399,21 @@ int main(int argc, char ** argv)
     const auto start_index = buildStateIndex(competition_root["start_state"], active_areas, "start_state");
     const auto finish_index = buildStateIndex(competition_root["finish_state"], active_areas, "finish_state");
     const auto id_to_frame = parseApriltagIdToFrame(apriltag_yaml_path);
+
+    // AMT1 (2026-08-28): ordenar as tags da mesa de precisao. Sai aqui — o
+    // fluxo de transferencias abaixo descartaria os objetos (mesma estacao
+    // no inicio e no fim) e geraria 0 acoes.
+    if (isAmt1Task(competition_root)) {
+      const Amt1Station station = resolveAmt1Station(
+        competition_root, active_areas, objects, ignored_object_ids, id_to_frame);
+      const auto output = buildAmt1Output(station, ws_to_table_pose);
+      std::cout << "[task_planner] AMT1: ordenar " << station.expected_tags.size()
+                << " tags na " << station.ws << " (" << ws_to_table_pose.at(station.ws)
+                << ", left_to_right, max 3 a bordo)" << std::endl;
+      writeOutputYaml(output, output_yaml_path);
+      return 0;
+    }
+
     const auto stack_assignments = parseStackAssignments(competition_root, finish_index);
     const auto transfers =
       buildTransfers(
@@ -1184,6 +1426,18 @@ int main(int argc, char ** argv)
         stack_assignments,
         !containers.empty());
     const auto output = buildOutput(competition_root, transfers, apriltag_yaml_path, ws_to_table_pose);
+
+    // Achado 10: AMT1 disfarcada — 0 transferencias e todos os objetos
+    // comecando e terminando na mesma PP_*. So avisa (o fluxo nao muda):
+    // o operador confere o task_id/name do yaml antes de rodar.
+    if (transfers.empty() && looksLikeAmt1(start_index, finish_index, ignored_object_ids)) {
+      std::cerr << "[task_planner] AVISO: parece AMT1 - task_id/name nao bateram (task_id="
+                << trim(competition_root["task_id"].as<std::string>("")) << ", name="
+                << trim(competition_root["name"].as<std::string>(""))
+                << "): todos os objetos comecam e terminam na mesma PP_* e nada sera "
+                << "transportado. Para a rotina de ordenacao use task_id AMT1 ou name "
+                << "'Advanced Manipulation Task 1'." << std::endl;
+    }
 
     // Resumo para o operador (run_mission.py repassa o stdout antes de confirmar).
     {
@@ -1207,16 +1461,7 @@ int main(int argc, char ** argv)
                 << n_stack << " empilhamento(s)." << std::endl;
     }
 
-    YAML::Emitter out;
-    out << output;
-
-    std::ofstream fout(output_yaml_path);
-    if (!fout.is_open()) {
-      throw std::runtime_error("Could not open output file: " + output_yaml_path);
-    }
-    fout << out.c_str() << std::endl;
-
-    std::cout << "Wrote translation to " << output_yaml_path << std::endl;
+    writeOutputYaml(output, output_yaml_path);
   } catch (const std::exception & e) {
     std::cerr << "Translation failed: " << e.what() << std::endl;
     return 1;
