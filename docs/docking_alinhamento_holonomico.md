@@ -206,3 +206,10 @@ está em curso, e o `execute` ainda tenta `acquire(blocking=False)` — se perde
   calibrar `nudge_odom_lateral_gain` (acima) e ajustar `nudge_accept_slack`/
   `center_coast_est`. Conferir no log `assentou=sim` (senão subir `nudge_settle_max_s`) e
   que `muro` por `nudge_front_drift_max` não dispara com a mesa perpendicular.
+
+### Recuo antes do lateral (29/08)
+Com o bico a menos de `lateral_min_front` (0,36 m; o docking para em 0,35–0,39), o `nudge_base`
+não recusa mais de cara: recua em x puro (`_nudge_backoff`, mesmo movimento do undock, corte
+descontando `nudge_backoff_coast` 0,06) até `lateral_min_front + nudge_backoff_margin` (0,03),
+limitado a `nudge_backoff_max` (0,12), re-mede a face e segue com o lateral. Desligar:
+`nudge_backoff_enabled:=false`. O recuo NÃO entra em `/manip/base_shift_total` (só o lateral).

@@ -2,12 +2,14 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -16,6 +18,34 @@ namespace
 // robot_description e' estatico durante a missao — buscar 1x basta.
 std::mutex g_description_mutex;
 std::string g_cached_robot_description;
+
+// 2026-08-29 (campo, notebook novo): o /robot_description tambem e' publicado
+// como TOPICO latched (robot_state_publisher, transient_local). Ler dele
+// dispensa a resposta GRANDE do servico de parametros do move_group, que o
+// FastRTPS perdia em rede carregada ("failed to send response ... timeout"
+// no move_group) -> executor esperando 121 s e falhando 2x seguidas.
+bool fetchRobotDescriptionFromTopic(
+  const rclcpp::Node::SharedPtr & node,
+  const std::string & topic,
+  const std::chrono::milliseconds timeout,
+  std::string & out)
+{
+  std::string got;
+  auto sub = node->create_subscription<std_msgs::msg::String>(
+    topic, rclcpp::QoS(1).transient_local().reliable(),
+    [&got](const std_msgs::msg::String::SharedPtr msg) {
+      if (got.empty()) {
+        got = msg->data;
+      }
+    });
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (got.empty() && rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+    rclcpp::spin_some(node);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  out = got;
+  return !got.empty();
+}
 
 // Busca o robot_description do move_group SEM pendurar mudo: a versao antiga
 // usava get_parameters SINCRONO sem timeout — se o move_group estivesse
@@ -45,6 +75,36 @@ bool ensureRobotDescription(
   const auto elapsed_s = [&start]() {
       return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     };
+
+  // 1) topico latched (rapido e sem servico); 2) servico de parametros.
+  {
+    const std::string topic = node->has_parameter("robot_description_topic") ?
+      node->get_parameter("robot_description_topic").as_string() :
+      node->declare_parameter<std::string>("robot_description_topic", "/robot_description");
+    const int topic_wait_ms = node->has_parameter("robot_description_topic_wait_ms") ?
+      static_cast<int>(node->get_parameter("robot_description_topic_wait_ms").as_int()) :
+      node->declare_parameter<int>("robot_description_topic_wait_ms", 5000);
+    std::string from_topic;
+    if (!topic.empty() && topic_wait_ms > 0 &&
+      fetchRobotDescriptionFromTopic(
+        node, topic, std::chrono::milliseconds(topic_wait_ms), from_topic))
+    {
+      {
+        std::lock_guard<std::mutex> lock(g_description_mutex);
+        g_cached_robot_description = from_topic;
+      }
+      node->declare_parameter<std::string>(parameter_name, from_topic);
+      RCLCPP_INFO(
+        node->get_logger(),
+        "robot_description obtido do topico '%s' em %.1f s (%zu bytes).",
+        topic.c_str(), elapsed_s(), from_topic.size());
+      return true;
+    }
+    RCLCPP_WARN(
+      node->get_logger(),
+      "robot_description nao veio pelo topico '%s' em %d ms — tentando o servico de parametros de '%s'.",
+      topic.c_str(), topic_wait_ms, source_node.c_str());
+  }
 
   auto client = std::make_shared<rclcpp::AsyncParametersClient>(node, source_node);
   while (!client->wait_for_service(std::chrono::seconds(2))) {

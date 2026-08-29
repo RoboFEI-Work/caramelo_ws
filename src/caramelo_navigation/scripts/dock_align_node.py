@@ -289,6 +289,14 @@ class DockAlignNode(Node):
         # 2026-08-24: alvo 0,38 (decisao do operador) -> pousos 0,37-0,39; o
         # retoque lateral na mesa precisa continuar valendo ate hard_min+0,01.
         self.declare_parameter("lateral_min_front", 0.36)
+        # 2026-08-29 (campo, AMT1): o docking para com o bico a ~0,35-0,39 m
+        # e o nudge era recusado (muito_perto_da_mesa). Em vez de recusar,
+        # RECUA em linha reta (mesmo movimento do undock) ate ter folga e
+        # so' entao anda de lado. Sem folga nem recuando: recusa como antes.
+        self.declare_parameter("nudge_backoff_enabled", True)
+        self.declare_parameter("nudge_backoff_margin", 0.03)   # folga acima de lateral_min_front
+        self.declare_parameter("nudge_backoff_max", 0.12)      # recuo maximo (m)
+        self.declare_parameter("nudge_backoff_coast", 0.06)    # coast da re (ESC retem ~0,5 s)
         # Esquadro no standoff: alvo 0.06 rad (3.4 graus), no maximo 4 s;
         # depois aceita ate a tolerancia de sucesso (yaw_tolerance).
         self.declare_parameter("standoff_yaw_tol", 0.06)
@@ -1711,6 +1719,48 @@ class DockAlignNode(Node):
                     "(nudge_require_scan=false) — assumo face perpendicular.")
                 face_yaw = 0.0
             front_proj = _front_after_lateral(front, mag, face_yaw)
+            if (front_proj < lateral_min - 1e-6
+                    and bool(self.get_parameter("nudge_backoff_enabled").value)):
+                margin = float(self.get_parameter("nudge_backoff_margin").value)
+                need = (lateral_min + margin) - front_proj
+                bmax = float(self.get_parameter("nudge_backoff_max").value)
+                if need <= bmax:
+                    # Alvo de FRENTE = front atual + o que falta na PROJECAO
+                    # (campo 29/08: passar lateral_min+margem como alvo so'
+                    # recuava 1 cm — a falta vem do yaw da face, nao da
+                    # frente). E o passo nunca fica abaixo do coast: o
+                    # _cut_drive cortaria antes do 1o comando e a base nem
+                    # sairia do lugar (recuo pedido 5,7 cm < coast 6 cm).
+                    coast_b = float(self.get_parameter("nudge_backoff_coast").value)
+                    step = max(need, coast_b + 0.01)
+                    target_front = front + step
+                    log(f"perto da mesa (front {front:.3f}, projetado "
+                        f"{front_proj:.3f} < {lateral_min:.2f}): recuo "
+                        f"{step:.3f} m antes do lateral (alvo front {target_front:.3f})")
+                    self._speak("Vou recuar um pouco antes de me mover de lado")
+                    # prazo proprio do recuo (o deadline do lateral so e
+                    # calculado mais abaixo)
+                    backoff_deadline = self.get_clock().now().nanoseconds * 1e-9 + float(timeout)
+                    try:
+                        self._nudge_backoff(goal_handle, rate, backoff_deadline,
+                                            target_front)
+                    except self._AttemptAbort as ab:
+                        self._publish_cmd(0.0, 0.0, 0.0)
+                        reason = {"canceled": "cancelado", "hard_stop": "muro",
+                                  "timeout": "timeout", "soft_timeout": "timeout"}.get(
+                            ab.outcome, "muro")
+                        log(f"recuo abortado: {ab.outcome} ({ab.info})")
+                        return fail(reason)
+                    front, npts, scan_age, face_yaw = self._front_wall_distance()
+                    if front is None:
+                        log("sem medicao do muro apos o recuo")
+                        return fail("sem_scan")
+                    if face_yaw is None:
+                        face_yaw = 0.0
+                    front_proj = _front_after_lateral(front, mag, face_yaw)
+                    log(f"apos o recuo: front {front:.3f} (projetado {front_proj:.3f})")
+                else:
+                    log(f"precisaria recuar {need:.3f} m > nudge_backoff_max {bmax:.2f}")
             if front_proj < lateral_min - 1e-6:
                 log(f"front={front:.3f} (projetado {front_proj:.3f} apos "
                     f"{mag:.2f} m a {math.degrees(face_yaw):+.1f} graus) "
@@ -1792,6 +1842,23 @@ class DockAlignNode(Node):
             goal_handle.succeed()
             return result
         return fail("curso_incompleto", travelled)
+
+    def _nudge_backoff(self, goal_handle, rate, deadline, target_front):
+        """Re em linha reta (eixo x puro, como o undock) ate o muro ler
+        >= target_front (o corte desconta o coast da re; o ESC retem a
+        referencia ~0,5 s). Guardas do docking valem (scan velha/cega,
+        cancel, prazo); muro nao dispara porque a frente so' cresce."""
+        coast = float(self.get_parameter("nudge_backoff_coast").value)
+        min_v = self.get_parameter("min_body_vel").value
+        max_s = (float(self.get_parameter("nudge_backoff_max").value) + coast) / max(min_v, 1e-3) + 2.0
+
+        def err_fn(front):
+            return None if front is None else (front - target_front)
+
+        # sign=-1 => corta quando (target_front - front) <= coast
+        self._cut_drive(goal_handle, rate, deadline, deadline, "x", -1.0,
+                        err_fn, coast, max_s, "nudge_backoff")
+        self._publish_cmd(0.0, 0.0, 0.0)
 
     def _nudge_drive(self, goal_handle, rate, deadline, sign, mag, origin,
                      coast, max_s, require_scan, odom_max_age, gain, period,

@@ -438,6 +438,10 @@ def generate_launch_description():
             # Altura do cubo: tampo = z da tag - cube_height_m (o place soma
             # stack_place_z_offset ao soltar).
             "cube_height_m": 0.042,
+            # Busca de tag que falta (2026-08-29, pedido do operador): gira
+            # SO a j1 ("j1"); "base" = anda de lado; "j1_then_base" = os dois.
+            "search_mode": "j1",
+            "search_j1_offsets_deg": [-30.0, 30.0, -60.0, 60.0],
         }],
     )
 

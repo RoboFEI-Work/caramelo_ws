@@ -238,9 +238,24 @@ como o `refine_desired_face_dist` do §1a); repetir com `dy: -0.20` e conferir q
 `/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
 coisa (a bancada não cobre isto: a mesa falsa não escorrega).
 
-**Busca lateral** (28/08, pedido do operador: na AMT1 as 6 tags são **obrigatórias**): se depois
+**Varredura só com a j1** (29/08, pedido do operador — modo padrão `search_mode: j1`): se depois
+das poses de observação faltar alguma tag de `expected_tags`, o robô fala "Vi as tags 1, 2, 3.
+Faltou a 4. Vou girar a câmera para procurar" e, da `transport_pose` (`pegar_obj`), gira **apenas a
+junta 1** pelas paradas de `search_j1_offsets_deg` (default `[-30, 30, -60, 60]`, + = esquerda,
+|offset| ≤ `search_j1_max_abs_deg` 75), lendo as tags `search_j1_dwell_s` (1 s) em cada parada e
+**acumulando**; primeiro a menor amplitude e, em cada par, o lado onde viu **menos** tags; para ao
+ver todas; volta a j1 de transporte. A base **não anda** (T0 e slots não mudam). Se o movimento
+de uma parada falha, a varredura é encerrada (WARN) e o braço volta à j1 de transporte; só essa
+volta falhar derruba a observação (`observacao_falhou`). Sem estado atual do braço a varredura é
+pulada (nota no resultado). Amostra fora do nível da mesa não conta como "vista".
+Se ainda faltar tag, segue para a ordenação parcial (`allow_partial`) — sem falar "não consigo me
+mover". Modos: `j1` (só varredura), `base` (só a busca lateral abaixo, comportamento de 28/08),
+`j1_then_base` (varredura e, se ainda faltar, a base). Estágios `search_j1_±NN`, `search_j1_return`.
+A bancada (`run_amt1_scenario.sh`) roda com `search_mode:=base` (sem braço não há varredura).
+
+**Busca lateral com a base** (28/08; só nos modos `base`/`j1_then_base`): se depois
 das poses de observação faltar alguma tag de `expected_tags` (e pelo menos `min_seen_tags` tags
-esperadas foram vistas — senão a base nem anda), o robô fala "Não vi todas as tags, vou me mover
+esperadas foram vistas — senão a base nem anda), o robô fala "Vi as tags … Faltou a … Vou me mover
 para procurar" e leva a base (sequência de `nudge_base`) até cada posição de `search_offsets_m`
 (default `[0.20, -0.20]` m, + = esquerda, **relativos ao `/manip/base_shift_total` do início do
 goal**), re-observando das `search_observe_poses` e **acumulando** as tags (o que já foi visto
@@ -289,6 +304,8 @@ expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
 **Parâmetros** (nó): `observe_poses`, `observe_dwell_s` 1.5, `min_seen_tags` 2 (parâmetro do nó;
 `max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios; abaixo disto a busca nem
 roda), `allow_partial` **false** (28/08; true = ordena o que viu quando falta tag), busca lateral:
+`search_mode` **j1** (29/08; `base` | `j1_then_base`), `search_j1_offsets_deg` [-30, 30, -60, 60],
+`search_j1_max_abs_deg` 75, `search_j1_dwell_s` 1.0 (varredura só com a j1);
 `search_enabled` true, `search_offsets_m` [0.20, -0.20], `search_observe_poses` (= `observe_poses`),
 `search_arrive_tol_m` 0.08 (|alvo − posição| abaixo disto = chegou; o nudge real recusa passos <
 0.08; o nó nunca deixa ficar abaixo de `min_shift_m`/2), `return_to_center_after_search` true,
@@ -343,6 +360,12 @@ permutações de 6).
 `nudge_base indisponivel` e, em vez de desistir, **ordena as tags que viu** (fala "Não consigo
 me mover para procurar. Vou ordenar as tags que vi"). Para testar a busca de verdade a
 navegação precisa estar no ar (o `nudge_base` aparece em `ros2 action list`).
+
+**Perto demais da mesa** (29/08, visto em campo): o docking para com o bico a ~0,35–0,39 m e o
+`nudge_base` recusava (`muito_perto_da_mesa`). Agora o `nudge_base` **recua em linha reta**
+(`nudge_backoff_*`: até 12 cm, fala "Vou recuar um pouco antes de me mover de lado") e só então
+anda de lado; se nem recuando houver folga, recusa. Na AMT1 uma recusa de segurança do nudge
+durante a busca vira "busca impossível" → ordena o que viu; `nudge_falhou` só para muro/timeout.
 
 ## 4. ws_table_mapping.yaml — qual dos dois vale?
 
@@ -522,6 +545,18 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto
   (`[resto]`); na volta a `pegar_obj` com o bloco, recolhe j2..j5 (`[j1 parado]`) e gira
   **j1 por último** (`[j1 por ultimo]`) — o braço estendido nunca varre a mesa girando.
+- **Garra larga ao chegar em `pegar_obj`** (29/08): em mesa comum, assim que o braço chega
+  em `pegar_obj` a garra vai para `gripper_full_open` (estágio `gripper_full_open_at_pegar_obj`)
+  antes do ciclo de pega; na prateleira não (dedos esbarrariam nas tábuas). Parâmetro
+  `pick_gripper_pose_at_pegar_obj` (default `gripper_full_open`; vazio desliga). Se a pose não
+  existir no SRDF vira WARN e o pick segue com a abertura normal. A pose larga serve **só para
+  enxergar as tags** (dedos fora da imagem na detecção e na re-detecção pós-j1): antes da
+  descida (`[resto]`) a garra volta a `gripper_open` (estágio `gripper_open_before_descent`);
+  se essa volta falhar o ciclo não desce de garra larga (falha da tentativa, entra no retry).
+- **Subida vertical pós-pega** (29/08): em mesa comum, com o bloco preso e verificado, o braço sobe
+  `pick_lift_after_grasp_m` (default 0,05; 0 desliga) na vertical — mesmo x,y, mesma inclinação e
+  punho da pega (IK custom; estágio `lifting_after_grasp`) — e só então recolhe para `pegar_obj`
+  com j1 por último. Sem IK na altura pedida tenta a metade; sem nada, recolhe como antes (WARN).
 - Re-detecção após a j1 (29/08): a câmera erra o ponto da tag quando ela está longe; com a
   j1 já apontada o pick espera `pick_recompute_ik_settle_ms` (300), lê uma TF **fresca** da tag
   e recalcula a IK **uma vez** (estágio `re_detecting_after_j1`, log `IK recalculada apos a j1:

@@ -241,7 +241,7 @@ start_node() {  # <caso> <params extra do no real>
   NODE_LOG="$LOG_DIR/$name.node.log"
   # shellcheck disable=SC2086
   "$NODE_BIN" --ros-args \
-    -p observe_move_enabled:=false -p speech_enabled:=false \
+    -p observe_move_enabled:=false -p speech_enabled:=false -p search_mode:=base \
     -p container_state_file:="$CONTAINER_YAML" -p manipulator_lock_file:="$LOCK_FILE" \
     -p observe_dwell_s:=1.0 $params > "$NODE_LOG" 2>&1 &
   NODE_PID="$!"
@@ -607,7 +607,7 @@ case_search() {
   expect_count "$NODE_LOG" 1 "busca_max_nudges=8 busca_em_observe_only=false"
   expect_count "$TABLE_LOG" 1 "view_x_max 0.25 m"
   expect_count "$NODE_LOG" 1 "[AMT1] busca lateral: faltam [5, 6] apos a observacao inicial — 2 posicao(oes) [+0.20, -0.20] m (base em +0.000 m, poses [pegar_obj, tag_esquerda, tag_direita])."
-  expect_count "$NODE_LOG" 1 "[SPEECH] Nao vi todas as tags, vou me mover para procurar"
+  expect_count "$NODE_LOG" 1 ". Vou me mover para procurar"
   expect_count "$NODE_LOG" 1 "[AMT1] busca 1/2: alvo +0.20 m (faltam [5, 6])."
   expect_count "$NODE_LOG" 1 "[AMT1] busca 2/2: alvo -0.20 m (faltam [6])."
   expect_search_trail "$NODE_LOG" "5 tag(s) acumulada(s), faltam [6]." "6 tag(s) acumulada(s), faltam []."
@@ -878,7 +878,9 @@ case_unseen() {
   # posicoes (4 nudges, as 5 tags vistas continuam acumuladas) e nao acha.
   # allow_partial=false (default desde 2026-08-28: na AMT1 as 6 tags sao
   # obrigatorias) => tag_nao_encontrada, missing [3], nenhum cubo movido.
-  start_bench unseen "$LAYOUT_MAIN" "-p unseen_tags:=['tag_3']" "" "-p nudge_slip:=0.85" || { settle; return; }
+  # 2026-08-29: allow_partial passou a true por default (operador: ordena o
+  # que viu); este caso cobre o modo ESTRITO, por isso forca false.
+  start_bench unseen "$LAYOUT_MAIN" "-p unseen_tags:=['tag_3']" "-p allow_partial:=false" "-p nudge_slip:=0.85" || { settle; return; }
   send_goal unseen "$GOAL"
   expect_exit "$GOAL_RC" 0 "send_goal"
   expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"

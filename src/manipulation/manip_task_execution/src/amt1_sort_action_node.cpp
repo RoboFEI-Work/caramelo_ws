@@ -176,7 +176,8 @@ public:
         min_seen_tags_ = this->declare_parameter<int>("min_seen_tags", 2);
         // 2026-08-28: default false - na AMT1 as 6 tags sao obrigatorias
         // (pedido do operador). true = ordena so o que viu quando falta tag.
-        allow_partial_ = this->declare_parameter<bool>("allow_partial", false);
+        // 2026-08-29 (operador): tenta a busca lateral; se AINDA faltar tag, ordena o que viu.
+        allow_partial_ = this->declare_parameter<bool>("allow_partial", true);
 
         // ---- Busca lateral (2026-08-28) ----
         // Faltou tag esperada depois das poses de observacao => a base anda
@@ -204,6 +205,25 @@ public:
         // observe_only so anda de lado para procurar tag com este param
         // ligado (default false: observar nao move a base).
         search_in_observe_only_ = this->declare_parameter<bool>("search_in_observe_only", false);
+
+        // ---- Varredura SO com a j1 (2026-08-29, pedido do operador) ----
+        // Faltou tag esperada apos a observacao => gira APENAS a junta 1 (o
+        // resto do braco fica na transport_pose) pelos offsets em graus
+        // (+ = esquerda, como tag_esquerda) e acumula as tags; a base NAO
+        // anda. search_mode: "j1" (so a varredura), "base" (so a busca
+        // lateral com a base) ou "j1_then_base" (varredura e, se ainda
+        // faltar tag, a base).
+        search_mode_ = this->declare_parameter<std::string>("search_mode", "j1");
+        if (search_mode_ != "j1" && search_mode_ != "base" && search_mode_ != "j1_then_base") {
+            RCLCPP_WARN(get_logger(), "[AMT1] search_mode '%s' invalido — usando 'j1'.", search_mode_.c_str());
+            search_mode_ = "j1";
+        }
+        search_j1_offsets_deg_ = this->declare_parameter<std::vector<double>>(
+            "search_j1_offsets_deg", std::vector<double>{-30.0, 30.0, -60.0, 60.0});
+        // Limite duro de |offset| (o braco estendido nao deve varrer para
+        // tras, sobre os containers de bordo).
+        search_j1_max_abs_deg_ = this->declare_parameter<double>("search_j1_max_abs_deg", 75.0);
+        search_j1_dwell_s_ = this->declare_parameter<double>("search_j1_dwell_s", 1.0);
 
         // ---- Alcance / nudge ----
         nudge_enabled_ = this->declare_parameter<bool>("nudge_enabled", true);
@@ -275,7 +295,7 @@ public:
             "[AMT1] /amt1_sort no ar: observe_move=%s poses=[%s] anchor=%s slots=%s* "
             "nudge=%s (max %d, total <= %.2f m) tag_frames=%zu allow_partial=%s "
             "busca=%s offsets=[%s] poses_busca=[%s] volta_ao_centro=%s busca_max_nudges=%d "
-            "busca_em_observe_only=%s",
+            "busca_em_observe_only=%s busca_modo=%s j1_offsets=[%s] graus (|max| %.0f, dwell %.1f s)",
             observe_move_enabled_ ? "true" : "false", join(observe_poses_).c_str(),
             anchor_frame_.c_str(), slot_frame_prefix_.c_str(),
             nudge_enabled_ ? "true" : "false", max_nudges_, max_total_shift_m_,
@@ -283,7 +303,8 @@ public:
             search_enabled_ ? "true" : "false", joinDoubles(search_offsets_m_).c_str(),
             join(search_observe_poses_).c_str(),
             return_to_center_after_search_ ? "true" : "false", search_max_nudges_,
-            search_in_observe_only_ ? "true" : "false");
+            search_in_observe_only_ ? "true" : "false", search_mode_.c_str(),
+            joinDoubles(search_j1_offsets_deg_).c_str(), search_j1_max_abs_deg_, search_j1_dwell_s_);
     }
 
 private:
@@ -396,6 +417,8 @@ private:
         double shift0{0.0};          ///< /manip/base_shift_total no inicio do goal (= centro)
         int search_positions{0};     ///< posicoes da busca lateral visitadas
         bool searched{false};        ///< a busca lateral rodou neste goal
+        bool searched_j1{false};     ///< a varredura j1 rodou neste goal
+        int j1_stops{0};             ///< paradas da varredura j1 executadas
         bool search_moved{false};    ///< a busca lateral moveu a base
         bool returned_to_center{false};  ///< a volta ao centro (shift0) chegou
         std::string search_note;     ///< por que a busca NAO rodou (vai para a message)
@@ -481,6 +504,11 @@ private:
     bool return_to_center_after_search_{true};
     int search_max_nudges_{8};
     bool search_in_observe_only_{false};
+    // Varredura j1 (2026-08-29).
+    std::string search_mode_{"j1"};
+    std::vector<double> search_j1_offsets_deg_;
+    double search_j1_max_abs_deg_{75.0};
+    double search_j1_dwell_s_{1.0};
 
     bool nudge_enabled_{true};
     int max_nudges_{6};
@@ -1621,9 +1649,50 @@ private:
         return out;
     }
 
+    /// Frase "vi X, faltou Y" para a fala antes de procurar (29/08: com a
+    /// lista vazia "Vi as tags ." soava como "vi todas").
+    static std::string seenMissingPhrase(const std::vector<int> & seen, const std::vector<int> & missing)
+    {
+        std::string out;
+        if (seen.empty()) {
+            out = "Nao vi nenhuma tag";
+        } else if (seen.size() == 1) {
+            out = "Vi a tag " + joinInts(seen);
+        } else {
+            out = "Vi as tags " + joinInts(seen);
+        }
+        if (!missing.empty()) {
+            out += missing.size() == 1 ? ". Faltou a " + joinInts(missing) : ". Faltaram as " + joinInts(missing);
+        }
+        return out;
+    }
+
+    /// Ids das tags ja vistas (ordem crescente) — para a fala antes da busca.
+    static std::vector<int> seenIdsSorted(const GoalState & gs)
+    {
+        std::vector<int> ids;
+        for (const auto & kv : gs.samples) {
+            ids.push_back(kv.first);
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    }
+
     /// Razoes do nudge_base que significam "a base NAO consegue ir"
     /// (2026-08-28): so elas viram kFailed; o resto, se a base andou, e
     /// passo PARCIAL (a odometria ja contou o que andou).
+    /// Recusa de SEGURANCA do nudge_base (a base nem saiu do lugar): na busca
+    /// lateral vira "busca impossivel" (ordena o que viu) em vez de matar o
+    /// goal (campo 2026-08-29: muito_perto_da_mesa apos o docking).
+    static bool isNudgeRefusal(const std::string & reason)
+    {
+        static const std::set<std::string> kRefusal = {
+            "muito_perto_da_mesa", "obstaculo_lateral", "sem_scan", "sem_odometria",
+            "abaixo_do_passo_minimo", "acima_do_curso_maximo", "pedido_invalido", "ocupado"};
+        // "abortado" sem motivo = o servidor estourou antes de mover (campo 29/08).
+        return reason.empty() || reason == "abortado" || kRefusal.count(reason) > 0;
+    }
+
     static bool isHardNudgeFailure(const std::string & reason)
     {
         static const std::set<std::string> kHard = {
@@ -1966,6 +2035,207 @@ private:
 
     enum class SearchOutcome { kOk, kCanceled, kNudgeFailed, kObserveFailed, kLockBusy };
 
+    /// Move o braco para um alvo de juntas (usado para girar SO a j1: o
+    /// vetor e' o estado atual com a junta 0 trocada).
+    bool moveJointTarget(
+        const std::shared_ptr<MoveGroupInterface> & arm, const std::vector<double> & q,
+        const std::string & label)
+    {
+        arm->setStartStateToCurrentState();
+        if (!arm->setJointValueTarget(q)) {
+            RCLCPP_ERROR(get_logger(), "[AMT1] %s: alvo de juntas invalido (fora dos limites?).", label.c_str());
+            return false;
+        }
+        return planAndExecute(arm, label);
+    }
+
+    /// Varredura SO com a j1 (2026-08-29, pedido do operador): da
+    /// transport_pose gira apenas a junta 1 pelos search_j1_offsets_deg,
+    /// le as tags em cada parada (acumulando) e volta a j1 de transporte.
+    /// A base NAO anda: T0, slots e amostras seguem comparaveis. Ordem das
+    /// paradas: menor |offset| primeiro; dentro do mesmo |offset|, primeiro
+    /// o lado onde ha MENOS tags vistas (as que faltam tendem a estar fora
+    /// do grupo visto). Um offset cujo movimento falha ENCERRA a varredura
+    /// (WARN, estado do braco desconhecido) e volta a j1 de transporte;
+    /// so' essa volta falhar derruba a observacao.
+    SearchOutcome sweepJ1ForMissingTags(GoalState & gs, std::string * why)
+    {
+        std::vector<int> missing = missingExpected(gs);
+        if (gs.expected.empty() || missing.empty()) {
+            return SearchOutcome::kOk;
+        }
+        if (!search_enabled_) {
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] faltam [%s] e a busca esta desligada (search_enabled=false): sem varredura j1.",
+                joinInts(missing).c_str());
+            gs.search_note = "sem varredura j1 (search_enabled=false)";
+            return SearchOutcome::kOk;
+        }
+        if (!observe_move_enabled_) {
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] faltam [%s] mas observe_move_enabled=false: sem varredura j1 (sem braco).",
+                joinInts(missing).c_str());
+            gs.search_note = "sem varredura j1 (observe_move_enabled=false)";
+            return SearchOutcome::kOk;
+        }
+        std::vector<double> offsets;
+        for (const double d : search_j1_offsets_deg_) {
+            if (std::isfinite(d) && std::abs(d) > 1e-6 && std::abs(d) <= search_j1_max_abs_deg_ + 1e-9) {
+                offsets.push_back(d);
+            } else {
+                RCLCPP_WARN(
+                    get_logger(), "[AMT1] search_j1_offsets_deg: offset %.1f ignorado (zero, nao finito ou |.| > %.0f).",
+                    d, search_j1_max_abs_deg_);
+            }
+        }
+        if (offsets.empty()) {
+            RCLCPP_WARN(get_logger(), "[AMT1] faltam [%s] e search_j1_offsets_deg nao tem offset valido: sem varredura j1.",
+                joinInts(missing).c_str());
+            gs.search_note = "sem varredura j1 (search_j1_offsets_deg vazio)";
+            return SearchOutcome::kOk;
+        }
+        // Lado preferido: onde ha menos tags vistas. x em T0: + = direita;
+        // j1 cresce para a ESQUERDA (tag_esquerda 2.16 > pegar_obj 1.57).
+        int seen_right = 0;
+        int seen_left = 0;
+        for (const auto & kv : gs.samples) {
+            if (kv.second.p_ref.x() >= 0.0) {
+                ++seen_right;
+            } else {
+                ++seen_left;
+            }
+        }
+        const double prefer = (seen_right > seen_left) ? +1.0 : -1.0;
+        std::stable_sort(
+            offsets.begin(), offsets.end(), [prefer](double a, double b) {
+                const double ma = std::abs(a);
+                const double mb = std::abs(b);
+                if (std::abs(ma - mb) > 1e-6) {
+                    return ma < mb;
+                }
+                return a * prefer > b * prefer;
+            });
+
+        if (!acquireLock()) {
+            if (why) {*why = "lock do braco ocupado";}
+            return cancellationRequested() ? SearchOutcome::kCanceled : SearchOutcome::kLockBusy;
+        }
+        auto arm = ensureArm();
+        if (!arm) {
+            releaseLock();
+            if (why) {*why = "move_group indisponivel";}
+            return SearchOutcome::kObserveFailed;
+        }
+        if (!arm_at_transport_) {
+            publishStage(gs, "search_j1_go_" + transport_pose_);
+            if (!goToNamedPose(arm, transport_pose_, "search j1 go " + transport_pose_)) {
+                arm_state_known_ = false;
+                releaseLock();
+                if (why) {*why = "braco nao chegou a " + transport_pose_;}
+                return cancellationRequested() ? SearchOutcome::kCanceled : SearchOutcome::kObserveFailed;
+            }
+            arm_at_transport_ = true;
+            arm_state_known_ = true;
+        }
+        // Leitura FRIA do estado (1a do goal: paga a assinatura de
+        // joint_states) — 5 s como no no de pick (revisao 29/08).
+        std::vector<double> base_q;
+        if (arm->getCurrentState(5.0)) {
+            base_q = arm->getCurrentJointValues();
+        }
+        if (base_q.size() < 5) {
+            // Revisao 29/08: a observacao ja deu certo; sem estado atual
+            // (monitor do move_group atrasado) a varredura e' PULADA, nao
+            // derruba o goal.
+            releaseLock();
+            RCLCPP_WARN(
+                get_logger(),
+                "[AMT1] varredura j1: sem estado atual do braco (%zu junta(s); joint_states?) — varredura pulada.",
+                base_q.size());
+            gs.search_note = "sem varredura j1 (sem estado atual do braco)";
+            return SearchOutcome::kOk;
+        }
+        const double j1_base = base_q[0];
+        gs.searched_j1 = true;
+        speak(seenMissingPhrase(seenIdsSorted(gs), missing) + ". Vou girar a camera para procurar");
+        RCLCPP_WARN(
+            get_logger(),
+            "[AMT1] varredura j1: faltam [%s] apos a observacao — paradas [%s] graus (j1 base %.3f rad, "
+            "primeiro o lado %s: %d vista(s) a esquerda, %d a direita).",
+            joinInts(missing).c_str(), joinDoubles(offsets).c_str(), j1_base,
+            prefer > 0.0 ? "ESQUERDO" : "DIREITO", seen_left, seen_right);
+        for (const double d : offsets) {
+            if (cancellationRequested()) {
+                releaseLock();
+                if (why) {*why = "cancelado";}
+                return SearchOutcome::kCanceled;
+            }
+            char tag[32];
+            std::snprintf(tag, sizeof(tag), "j1_%+.0f", d);
+            publishStage(gs, std::string("search_") + tag);
+            std::vector<double> q = base_q;
+            q[0] = j1_base + d * M_PI / 180.0;
+            arm_at_transport_ = false;
+            if (!moveJointTarget(arm, q, std::string("search ") + tag)) {
+                if (cancellationRequested()) {
+                    arm_state_known_ = false;
+                    releaseLock();
+                    if (why) {*why = "cancelado";}
+                    return SearchOutcome::kCanceled;
+                }
+                // Revisao 29/08: apos falha de execucao (ou prazo, com a
+                // chamada ainda em voo) nao emendar outra parada — encerra
+                // a varredura e volta a j1 de transporte (replaneja do
+                // estado atual).
+                arm_state_known_ = false;
+                RCLCPP_WARN(
+                    get_logger(), "[AMT1] varredura j1 %s: movimento falhou — encerro a varredura e volto a j1 de transporte.",
+                    tag);
+                break;
+            }
+            ++gs.j1_stops;
+            const rclcpp::Time arrival = this->get_clock()->now();
+            if (!dwellObserve(gs, search_j1_dwell_s_, arrival, tag)) {
+                releaseLock();
+                if (why) {*why = "cancelado";}
+                return SearchOutcome::kCanceled;
+            }
+            // Revisao 29/08: amostra fora do nivel da mesa nao conta como
+            // "vista" (senao para cedo e o filtro final a descarta).
+            filterSamplesByHeight(gs);
+            missing = missingExpected(gs);
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] varredura %s: %zu tag(s) acumulada(s), faltam [%s].",
+                tag, gs.samples.size(), joinInts(missing).c_str());
+            if (missing.empty()) {
+                RCLCPP_INFO(get_logger(), "[AMT1] varredura j1: todas as tags esperadas vistas — parando.");
+                break;
+            }
+        }
+        publishStage(gs, "search_j1_return");
+        {
+            std::vector<double> q = base_q;
+            q[0] = j1_base;
+            if (!moveJointTarget(arm, q, "search j1 return")) {
+                arm_state_known_ = false;
+                releaseLock();
+                if (why) {*why = "braco nao voltou a j1 de transporte";}
+                return cancellationRequested() ? SearchOutcome::kCanceled : SearchOutcome::kObserveFailed;
+            }
+        }
+        arm_at_transport_ = true;
+        arm_state_known_ = true;
+        releaseLock();
+        if (!missing.empty()) {
+            gs.search_note = "varredura j1 (" + std::to_string(gs.j1_stops) + " parada(s)) nao achou [" +
+                joinInts(missing) + "]";
+            RCLCPP_WARN(
+                get_logger(), "[AMT1] varredura j1 terminou (%d parada(s)): ainda faltam [%s].",
+                gs.j1_stops, joinInts(missing).c_str());
+        }
+        return SearchOutcome::kOk;
+    }
+
     /// Busca lateral: faltou tag esperada => para cada posicao de
     /// search_offsets_m (em ordem, relativa ao shift0 do goal; 2026-08-28)
     /// leva a base la (nudgeTo), re-observa das search_observe_poses
@@ -2056,7 +2326,7 @@ private:
                 gs.shift0);
         }
         gs.searched = true;
-        speak("Nao vi todas as tags, vou me mover para procurar");
+        speak(seenMissingPhrase(seenIdsSorted(gs), missing) + ". Vou me mover para procurar");
         if (gs.observe_only) {
             RCLCPP_WARN(
                 get_logger(),
@@ -2087,6 +2357,16 @@ private:
                 return SearchOutcome::kCanceled;
             }
             if (nt == NudgeToOutcome::kFailed) {
+                const std::string reason = why ? *why : std::string();
+                if (isNudgeRefusal(reason)) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[AMT1] busca %zu/%zu: nudge recusado (%s) — busca lateral impossivel; sigo com o que vi.",
+                        k + 1, search_offsets_m_.size(), reason.c_str());
+                    speak("Nao consigo me mover para procurar. Vou ordenar as tags que vi");
+                    gs.search_note = "busca lateral impossivel (" + reason + ")";
+                    return SearchOutcome::kOk;
+                }
                 return SearchOutcome::kNudgeFailed;
             }
             if (nt == NudgeToOutcome::kBudget && gs.nudges == nudges_at_call) {
@@ -2131,6 +2411,15 @@ private:
                 return SearchOutcome::kCanceled;
             }
             if (nt == NudgeToOutcome::kFailed) {
+                if (isNudgeRefusal(why_back)) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[AMT1] volta ao centro recusada (%s): sigo de onde estou (slots em odom).",
+                        why_back.c_str());
+                    gs.search_note += (gs.search_note.empty() ? "" : "; ") +
+                        std::string("volta ao centro recusada (") + why_back + ")";
+                    return SearchOutcome::kOk;
+                }
                 if (why) {*why = "volta ao centro: " + why_back;}
                 return SearchOutcome::kNudgeFailed;
             }
@@ -2955,11 +3244,40 @@ private:
         }
         filterSamplesByHeight(gs);
 
-        // 2b. Busca lateral (2026-08-28): faltou tag esperada => a base anda
-        // de lado e re-observa acumulando (as tags ja vistas ficam).
-        {
+        // 2a. Varredura j1 (2026-08-29): faltou tag esperada => gira SO a
+        // junta 1 e acumula (a base nao anda).
+        if (search_mode_ == "j1" || search_mode_ == "j1_then_base") {
             std::string why;
+            const SearchOutcome so = sweepJ1ForMissingTags(gs, &why);
+            if (so == SearchOutcome::kCanceled) {
+                gs.fail_reason = "cancelado";
+                gs.message = "cancelado na varredura j1";
+                finish(gs);
+                return;
+            }
+            if (so != SearchOutcome::kOk) {
+                gs.fail_reason = "observacao_falhou";
+                gs.message = so == SearchOutcome::kLockBusy ?
+                    "lock do braco ocupado: nao consegui fazer a varredura j1" :
+                    "braco nao completou a varredura j1 (" + why + ")";
+                finish(gs);
+                return;
+            }
+            if (gs.searched_j1) {
+                filterSamplesByHeight(gs);
+            }
+        }
+
+        // 2b. Busca lateral (2026-08-28): faltou tag esperada => a base anda
+        // de lado e re-observa acumulando (as tags ja vistas ficam). So nos
+        // modos "base" e "j1_then_base" (2026-08-29).
+        if (search_mode_ == "base" || search_mode_ == "j1_then_base") {
+            std::string why;
+            const std::string note_j1 = gs.search_note;  // preservada (revisao 29/08)
             const SearchOutcome so = searchMissingTags(gs, &why);
+            if (!note_j1.empty() && gs.search_note != note_j1) {
+                gs.search_note = note_j1 + "; " + gs.search_note;
+            }
             if (so == SearchOutcome::kCanceled) {
                 gs.fail_reason = "cancelado";
                 gs.message = "cancelado na busca lateral";
@@ -3019,25 +3337,38 @@ private:
         // 2026-08-29 (campo): sem nudge_base no ar a busca nem roda; desistir
         // sem mover nada vale zero. Quando a busca foi IMPOSSIVEL (e nao
         // "buscou e nao achou"), ordena o que viu mesmo com allow_partial=false.
+        // 2026-08-29 (revisao): "buscou" = busca lateral OU varredura j1; a
+        // base so conta como impossivel nos modos que a usam.
+        const bool base_search_in_mode = (search_mode_ == "base" || search_mode_ == "j1_then_base");
+        const bool any_search_ran = gs.searched || gs.searched_j1;
         const bool search_impossible =
-            !gs.assignment.missing_tags.empty() && !gs.searched && !gs.nudge_available &&
-            search_enabled_ && !gs.observe_only;
+            !gs.assignment.missing_tags.empty() && !any_search_ran &&
+            (!base_search_in_mode || !gs.nudge_available) && search_enabled_ && !gs.observe_only;
         if (search_impossible && !allow_partial_) {
             RCLCPP_ERROR(
                 get_logger(),
-                "[AMT1] faltam as tags [%s] e NAO consigo me mover para procurar (nudge_base indisponivel: "
-                "dock_align_node no ar? --simulate-nav?): ordenando as %zu tags vistas.",
-                joinInts(gs.assignment.missing_tags).c_str(), gs.assignment.observed_order.size());
-            speak("Nao consigo me mover para procurar. Vou ordenar as tags que vi");
+                "[AMT1] faltam as tags [%s] e NAO consegui procurar (%s): ordenando as %zu tags vistas.",
+                joinInts(gs.assignment.missing_tags).c_str(),
+                base_search_in_mode ? "nudge_base indisponivel: dock_align_node no ar? --simulate-nav?" :
+                (gs.search_note.empty() ? "varredura j1 nao rodou" : gs.search_note.c_str()),
+                gs.assignment.observed_order.size());
+            speak(base_search_in_mode ?
+                "Nao consigo me mover para procurar. Vou ordenar as tags que vi" :
+                "Nao consegui procurar as tags que faltam. Vou ordenar as tags que vi");
             gs.search_note += (gs.search_note.empty() ? "" : "; ") + std::string("ordenacao parcial forcada");
         }
         if (!gs.assignment.missing_tags.empty() && !allow_partial_ && !search_impossible) {
             // 2026-08-28: na AMT1 as tags sao obrigatorias: nenhum cubo e movido.
             gs.fail_reason = "tag_nao_encontrada";
-            gs.message = "faltam as tags [" + joinInts(gs.assignment.missing_tags) + "]" +
-                (gs.searched ?
-                    " mesmo apos a busca lateral (" + std::to_string(gs.search_positions) + " posicao(oes))" :
-                    " (" + (gs.search_note.empty() ? std::string("sem busca lateral") : gs.search_note) + ")") +
+            std::string how;
+            if (gs.searched) {
+                how = " mesmo apos a busca lateral (" + std::to_string(gs.search_positions) + " posicao(oes))";
+            } else if (gs.searched_j1) {
+                how = " mesmo apos a varredura j1 (" + std::to_string(gs.j1_stops) + " parada(s))";
+            } else {
+                how = " (" + (gs.search_note.empty() ? std::string("sem busca") : gs.search_note) + ")";
+            }
+            gs.message = "faltam as tags [" + joinInts(gs.assignment.missing_tags) + "]" + how +
                 " e allow_partial=false: nenhum cubo movido";
             RCLCPP_ERROR(get_logger(), "[AMT1] %s", gs.message.c_str());
             finish(gs);

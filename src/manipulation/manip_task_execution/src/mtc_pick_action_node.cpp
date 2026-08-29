@@ -379,6 +379,14 @@ public:
         // o resto das juntas.
         recompute_ik_after_j1_ = this->declare_parameter<bool>("pick_recompute_ik_after_j1", true);
         recompute_ik_settle_ms_ = this->declare_parameter<int>("pick_recompute_ik_settle_ms", 300);
+        // 2026-08-29 (pedido do operador): ao CHEGAR em pegar_obj na sequencia
+        // de pick a garra vai para a pose larga do SRDF (gripper_full_open).
+        // Vazio = desliga (fica so' o gripper_open de antes do movimento).
+        start_gripper_pose_ = this->declare_parameter<std::string>(
+            "pick_gripper_pose_at_pegar_obj", "gripper_full_open");
+        // 2026-08-29 (pedido do operador): com o bloco preso, subir na
+        // VERTICAL (mesmo x,y) antes de recolher para pegar_obj. 0 = desliga.
+        lift_after_grasp_m_ = this->declare_parameter<double>("pick_lift_after_grasp_m", 0.05);
         unreachable_shift_margin_m_ = this->declare_parameter<double>(
             "unreachable_shift_margin_m", 0.02);
         // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
@@ -1869,6 +1877,13 @@ private:
     /// Assim o braco estendido nunca varre a mesa girando.
     bool recompute_ik_after_j1_{true};
     int recompute_ik_settle_ms_{300};
+    std::string start_gripper_pose_;
+    bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
+    double lift_after_grasp_m_{0.05};
+    // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
+    std::optional<Eigen::Vector3d> last_table_grasp_target_;
+    double last_table_grasp_tilt_{0.0};
+    std::array<double, 5> last_table_grasp_q_{};
 
     bool moveToJointTargetJoint1First(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -2148,11 +2163,13 @@ private:
 
     TableApproachResult approachTableTargetCustomIk(
         const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string & tag_frame,
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
         publish_stage(goal_handle, "final_approach_custom_down");
+        last_table_grasp_target_.reset();
 
         std::array<double, 5> q{};
         double tag_yaw = 0.0;
@@ -2284,11 +2301,91 @@ private:
             }
         }
 
+        // 2026-08-29 (pedido do operador): full_open serve so' para ENXERGAR
+        // as tags (dedos fora da imagem). Antes de descer a garra volta a
+        // gripper_open, a pose normal da pega (dedos largos bateriam nos
+        // cubos vizinhos). So' quando ainda esta na pose larga.
+        if (gripper_wide_open_ && gripper) {
+            publish_stage(goal_handle, "gripper_open_before_descent");
+            gripper->setStartStateToCurrentState();
+            if (!gripper->setNamedTarget("gripper_open") ||
+                !planAndExecute(gripper, cycle_name + " gripper_open antes da descida"))
+            {
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[%s] garra nao voltou a gripper_open antes da descida - nao desco de garra larga.",
+                    cycle_name.c_str());
+                return TableApproachResult::kMoveFailed;
+            }
+            gripper_wide_open_ = false;
+        }
+
         // Fase 2: o resto das juntas (j1 pode ajustar um pouco se a IK mudou).
         if (!moveToJointTarget(arm, q, cycle_name + " mesa custom down [resto]")) {
             return TableApproachResult::kMoveFailed;
         }
+        last_table_grasp_target_ = target_seen;
+        last_table_grasp_tilt_ = tilt_used;
+        last_table_grasp_q_ = q;
         return TableApproachResult::kOk;
+    }
+
+    /// Pedido do operador 2026-08-29: com o bloco preso, SUBIR na vertical
+    /// (mesmo x,y da pega; so z + pick_lift_after_grasp_m) ANTES de recolher
+    /// para pegar_obj — a interpolacao em juntas do retorno arrastava o bloco
+    /// pelo tampo e esbarrava nos vizinhos. IK custom com a MESMA inclinacao
+    /// e o mesmo punho da pega (j1 nao muda: mesmo x,y). Sem solucao na
+    /// altura pedida tenta a metade; sem nada, segue como antes (WARN).
+    bool liftAfterGraspTable(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
+    {
+        if (lift_after_grasp_m_ <= 0.0 || !last_table_grasp_target_) {
+            return true;
+        }
+        publish_stage(goal_handle, "lifting_after_grasp");
+        for (const double lift : {lift_after_grasp_m_, lift_after_grasp_m_ * 0.5}) {
+            Eigen::Vector3d target = *last_table_grasp_target_;
+            target.z() += lift;
+            std::array<double, 5> q_lift{};
+            if (!manip_task_execution::solveIk(
+                    target, last_table_grasp_tilt_, 0.0, q_lift,
+                    manip_task_execution::ArmModel{}, manip_task_execution::IkOptions{}))
+            {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] subida pos-pega: sem IK a %.0f mm acima de [%.3f %.3f %.3f] (%.0f graus).",
+                    cycle_name.c_str(), lift * 1000.0, target.x(), target.y(), target.z(),
+                    last_table_grasp_tilt_ * 180.0 / M_PI);
+                continue;
+            }
+            // Mesmo x,y => mesmo j1 (guarda contra ramo diferente da IK) e o
+            // punho da pega (yaw da tag).
+            if (std::abs(q_lift[0] - last_table_grasp_q_[0]) > 0.02) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] subida pos-pega: IK mudou a j1 (%.3f -> %.3f rad); mantenho a da pega.",
+                    cycle_name.c_str(), last_table_grasp_q_[0], q_lift[0]);
+                q_lift[0] = last_table_grasp_q_[0];
+            }
+            q_lift[4] = last_table_grasp_q_[4];
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[%s] subida pos-pega: %.0f mm na vertical (mesmo x,y) antes de recolher.",
+                cycle_name.c_str(), lift * 1000.0);
+            if (moveToJointTarget(arm, q_lift, cycle_name + " lift after grasp")) {
+                return true;
+            }
+            RCLCPP_WARN(
+                this->get_logger(), "[%s] subida pos-pega: movimento falhou — recolho como antes.",
+                cycle_name.c_str());
+            return false;
+        }
+        RCLCPP_WARN(
+            this->get_logger(), "[%s] subida pos-pega: sem IK em nenhuma altura — recolho como antes.",
+            cycle_name.c_str());
+        return false;
     }
 
     /// Fila de alcance (2026-08-28): a escada custom VIU o alvo e nenhuma
@@ -2830,7 +2927,7 @@ private:
                 // falhas retentaveis de sempre.
                 const TableApproachResult approach =
                     approachTableTargetCustomIk(
-                        arm, tag_frame, cycle_name, goal_handle);
+                        arm, gripper, tag_frame, cycle_name, goal_handle);
                 if (approach != TableApproachResult::kOk) {
                     arm->setMaxVelocityScalingFactor(1.0);
                     arm->setMaxAccelerationScalingFactor(1.0);
@@ -2922,6 +3019,12 @@ private:
                 return false;
             }
             speak("A garra detectou o bloco");
+        }
+
+        // 2026-08-29 (pedido do operador): mesa comum — sobe na vertical com
+        // o bloco antes de recolher (falha nao e' fatal: o bloco esta preso).
+        if (!is_shelf) {
+            (void)liftAfterGraspTable(arm, cycle_name, goal_handle);
         }
 
         // Caminho inverso com o bloco na garra: fase 1 -> pegar_obj_sh.
@@ -3038,6 +3141,7 @@ private:
             finish_failure("Pick failed while opening gripper");
             return;
         }
+        gripper_wide_open_ = false;
 
         // 2026-08-12: a prateleira parte de uma pose propria e roda a
         // sequencia de duas fases com a IK custom. Mesa comum = caminho
@@ -3078,6 +3182,26 @@ private:
             if (!planAndExecute(arm, start_pose + " initial after home recovery")) {
                 finish_failure("Pick failed while moving to " + start_pose + " after home recovery");
                 return;
+            }
+        }
+
+        // 2026-08-29 (pedido do operador): chegou em pegar_obj -> garra na
+        // pose LARGA (gripper_full_open) antes do ciclo. So' mesa comum: na
+        // prateleira (pegar_obj_sh) os dedos abertos ao maximo esbarrariam
+        // nas tabuas. Falha aqui NAO derruba o pick (a garra ja esta aberta
+        // pelo gripper_open de antes do movimento).
+        if (!is_shelf && !start_gripper_pose_.empty()) {
+            publish_stage(goal_handle, "gripper_full_open_at_pegar_obj");
+            gripper->setStartStateToCurrentState();
+            if (!gripper->setNamedTarget(start_gripper_pose_) ||
+                !planAndExecute(gripper, start_gripper_pose_ + " em " + start_pose)) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "Garra nao foi para '%s' em %s (pose existe no SRDF?) — sigo com a abertura normal.",
+                    start_gripper_pose_.c_str(), start_pose.c_str());
+                gripper_wide_open_ = false;
+            } else {
+                gripper_wide_open_ = true;  // volta a gripper_open antes da descida
             }
         }
 

@@ -71,10 +71,10 @@
     </group_state>
     <group_state name="pegar_obj" group="arm">
         <joint name="manip_joint1" value="1.5708"/>
-        <joint name="manip_joint2" value="0.0873"/>
-        <joint name="manip_joint3" value="0.9599"/>
-        <joint name="manip_joint4" value="1.9373"/>
-        <joint name="manip_joint5" value="-1.4486"/>
+        <joint name="manip_joint2" value="-0.3839"/>
+        <joint name="manip_joint3" value="1.229"/>
+        <joint name="manip_joint4" value="2.19911"/>
+        <joint name="manip_joint5" value="-1.567"/>
     </group_state>
     <!-- Pose de partida do pick em PRATELEIRA (shelf), 2026-08-12.
          Graus: j1 90, j2 -56, j3 134, j4 80, j5 -90.
@@ -256,9 +256,9 @@
         <joint name="manip_joint6" value="-0.2265"/>
         <joint name="manip_joint7" value="-0.2265"/>
     </group_state>
-    <group_state name="gripper_half_open" group="gripper">
-        <joint name="manip_joint6" value="0"/>
-        <joint name="manip_joint7" value="0"/>
+    <group_state name="gripper_full_open" group="gripper">
+        <joint name="manip_joint6" value="-0.994838"/>
+        <joint name="manip_joint7" value="-0.994838"/>
     </group_state>
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="gripper" parent_link="link5" group="gripper" parent_group="arm"/>
