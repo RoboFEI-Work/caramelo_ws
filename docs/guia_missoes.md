@@ -338,6 +338,12 @@ total publicado com o parcial, como o `dock_align_node`). gtest da biblioteca:
 `colcon test --packages-select manip_task_execution --ctest-args -R test_amt1` (inclui as 720
 permutações de 6).
 
+**Sem `nudge_base` no ar** (29/08, visto em campo): a busca lateral precisa do `dock_align_node`
+(sobe com a navegação). Com `--simulate-nav`, ou com o `docking_server` desligado, o nó loga
+`nudge_base indisponivel` e, em vez de desistir, **ordena as tags que viu** (fala "Não consigo
+me mover para procurar. Vou ordenar as tags que vi"). Para testar a busca de verdade a
+navegação precisa estar no ar (o `nudge_base` aparece em `ros2 action list`).
+
 ## 4. ws_table_mapping.yaml — qual dos dois vale?
 
 Existem duas cópias, mas **só uma manda**:

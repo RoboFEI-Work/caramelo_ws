@@ -3016,7 +3016,22 @@ private:
             finish(gs);
             return;
         }
-        if (!gs.assignment.missing_tags.empty() && !allow_partial_) {
+        // 2026-08-29 (campo): sem nudge_base no ar a busca nem roda; desistir
+        // sem mover nada vale zero. Quando a busca foi IMPOSSIVEL (e nao
+        // "buscou e nao achou"), ordena o que viu mesmo com allow_partial=false.
+        const bool search_impossible =
+            !gs.assignment.missing_tags.empty() && !gs.searched && !gs.nudge_available &&
+            search_enabled_ && !gs.observe_only;
+        if (search_impossible && !allow_partial_) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[AMT1] faltam as tags [%s] e NAO consigo me mover para procurar (nudge_base indisponivel: "
+                "dock_align_node no ar? --simulate-nav?): ordenando as %zu tags vistas.",
+                joinInts(gs.assignment.missing_tags).c_str(), gs.assignment.observed_order.size());
+            speak("Nao consigo me mover para procurar. Vou ordenar as tags que vi");
+            gs.search_note += (gs.search_note.empty() ? "" : "; ") + std::string("ordenacao parcial forcada");
+        }
+        if (!gs.assignment.missing_tags.empty() && !allow_partial_ && !search_impossible) {
             // 2026-08-28: na AMT1 as tags sao obrigatorias: nenhum cubo e movido.
             gs.fail_reason = "tag_nao_encontrada";
             gs.message = "faltam as tags [" + joinInts(gs.assignment.missing_tags) + "]" +
