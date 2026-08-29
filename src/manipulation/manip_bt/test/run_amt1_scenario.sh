@@ -25,7 +25,35 @@
 #   sorted         1..6 -> 0 ops, "ja esta ordenada"
 #   nudge          cubos em x=+-0.35 com reach_x_max 0.28 -> 2 nudges + re-registro
 #   b1             max_onboard 1 -> buffer_insuficiente, 0 picks
-#   unseen         tag_3 nunca vista -> partial, missing [3], resto ordenado
+#   search         busca lateral (2026-08-28): tags em x=-0.35..+0.35 com campo
+#                  de visao view_x_max 0.25 -> ve 4, nudge ate +0.20 (ve a 5),
+#                  ate -0.20 (ve a 6), volta ao centro e re-registra; antes
+#                  do pick_5 e do pick_4 leva a base para onde viu cada tag
+#                  ("indo para onde vi a tag", orcamento da busca) -> final
+#                  1..6, missing [], 6 nudges (busca 6, ops 0)
+#   search_budget  search com search_max_nudges 4 e reach_x_max 0.28: a busca
+#                  gasta os 4 dela (ida, ida em 2 passos, volta), o "ir para
+#                  onde vi a tag" fica sem orcamento ("tento daqui") e as ops
+#                  usam o max_nudges (6) PROPRIO: 2 nudges de alcance ->
+#                  success, final 1..6, nudges 6 (busca 4, ops 2)
+#   search_pick_view  search com pick_respects_view na mesa falsa (o /pick_tag
+#                  responde tag_nao_encontrada com a tag fora do campo de
+#                  visao): so passa porque o no vai para onde viu a tag ANTES
+#                  do pick -> success; variante _nobudget (search_max_nudges
+#                  4): sem orcamento o pick nao ve a tag_5, o no repete 1x
+#                  (re-observa com o braco) e falha limpo: tag_nao_encontrada,
+#                  0 picks, mesa intacta
+#   short_course   nudge_short_course 1 no fake_nav: o 1o nudge aborta com
+#                  curso_incompleto (andou 80%, total publicado com o parcial)
+#                  -> o no le o result em ABORTED, conta o passo PARCIAL,
+#                  re-registra e repete a op -> success (2 nudges, como o caso
+#                  nudge); variante _search: o 1o nudge da busca e parcial ->
+#                  "sigo para o alvo", success com 6 nudges
+#   unseen         tag_3 nunca vista -> busca lateral (2 posicoes, 4 nudges)
+#                  nao acha -> allow_partial=false (default): fail_reason
+#                  tag_nao_encontrada, missing [3], 0 picks, mesa intacta;
+#                  variante unseen_partial (allow_partial:=true): busca e
+#                  depois ordena o que viu -> partial, missing [3], 3 picks
 #   fail_place     1o place responde skipped+unreachable sem sugestao 2x (ramo
 #                  PP do place real) -> re-registro + repete 1x, fora_de_alcance,
 #                  recoverOnboard devolve os 2 cubos: partial=true, 0 a bordo
@@ -90,6 +118,11 @@ LAYOUT_SORTED="['1:-0.25','2:-0.15','3:-0.05','4:0.05','5:0.15','6:0.25']"
 # Pontas fora do alcance (0.35 > reach_x_max 0.28): pick_6 pede nudge para a
 # esquerda, pick_5 pede para a direita (a mesa fica parada no odom).
 LAYOUT_NUDGE="['6:-0.35','2:-0.12','3:-0.04','1:0.04','4:0.12','5:0.35']"
+# Busca lateral (2026-08-28): mesma ordem do main, mas as pontas em x=+-0.35
+# ficam fora do campo de visao view_x_max 0.25 da mesa falsa. shift + =
+# esquerda => x_manip = x0 + shift cresce: tag_5 (x0 -0.35) aparece com a
+# base em +0.20 (x_manip -0.15) e tag_6 (x0 +0.35) com a base em -0.20.
+LAYOUT_SEARCH="['5:-0.35','2:-0.20','3:-0.05','1:0.05','4:0.20','6:0.35']"
 
 FAKE_PIDS=()
 # SIGINT (nao SIGTERM): os fakes fecham o rclpy direito, o participante DDS
@@ -512,23 +545,411 @@ case_b1() {
   expect_count "$TABLE_LOG" 0 "goal aceito em"
 }
 
+# Trilha da busca lateral com o fake_nav (slip 0.85, min 0.08, max 0.25),
+# search_offsets_m [+0.20, -0.20], search_arrive_tol_m 0.08 e volta ao
+# centro (shift0) — igual nos casos search/unseen/unseen_partial/
+# search_budget/search_pick_view:
+#   alvo +0.20: nudge +0.20 -> anda +0.170 (resta 0.030 < 0.08: chegou);
+#   alvo -0.20: nudge -0.25 -> -0.042; nudge -0.16 -> -0.176 (chegou);
+#   volta a 0:  nudge +0.18 -> -0.026.
+# Sao 4 nudges SO da busca, que tem contador PROPRIO (search_max_nudges,
+# 4o argumento, default 8; o max_nudges 6 das ops fica intacto); a base
+# termina em -0.026 m. Os "indo para onde vi a tag" das ops debitam desse
+# mesmo contador (caso search: 5/8 e 6/8).
+expect_search_trail() {  # <node log> <faltam na 1a posicao> <faltam na 2a posicao> [search_max_nudges]
+  local log="$1" miss1="$2" miss2="$3" max="${4:-8}"
+  expect_count "$log" 1 "[AMT1] search_nudge: base em +0.000 m, alvo +0.20 m (resta +0.200 m) — nudge +0.20 m (1/$max, total +0.00 m)."
+  expect_count "$log" 1 "[AMT1] nudge +0.20 m ok: andou +0.17"
+  expect_count "$log" 1 "[AMT1] search_nudge: base em +0.170 m, alvo +0.20 m (resta +0.030 m): chegou (1 passo(s))."
+  expect_count "$log" 1 "[AMT1] search_nudge: base em +0.170 m, alvo -0.20 m (resta -0.370 m) — nudge -0.25 m (2/$max, total +0.17 m)."
+  expect_count "$log" 1 "[AMT1] nudge -0.25 m ok: andou -0.21"
+  expect_count "$log" 1 "[AMT1] search_nudge: base em -0.042 m, alvo -0.20 m (resta -0.158 m) — nudge -0.16 m (3/$max, total -0.04 m)."
+  expect_count "$log" 1 "[AMT1] search_nudge: base em -0.176 m, alvo -0.20 m (resta -0.024 m): chegou (2 passo(s))."
+  expect_count "$log" 1 "[AMT1] search_nudge: base em -0.176 m, alvo +0.00 m (resta +0.176 m) — nudge +0.18 m (4/$max, total -0.18 m)."
+  expect_count "$log" 1 "[AMT1] search_nudge: base em -0.026 m, alvo +0.00 m (resta +0.026 m): chegou (1 passo(s))."
+  expect_count "$log" 1 "[AMT1] busca 1/2 em +0.170 m: $miss1"
+  expect_count "$log" 1 "[AMT1] busca 2/2 em -0.176 m: $miss2"
+  expect_count "$log" 1 "stage=searching_1"
+  expect_count "$log" 1 "stage=searching_2"
+  expect_count "$log" 1 "stage=search_nudge_+0.20"
+  expect_count "$log" 1 "stage=search_nudge_-0.25"
+  expect_count "$log" 2 "stage=search_observing_static"
+  expect_count "$log" 1 "stage=search_return_center"
+}
+
+case_search() {
+  # Campo de visao 0.25 na mesa falsa: do centro o no ve so [2, 3, 1, 4]
+  # (tag_5 em -0.35 e tag_6 em +0.35 nao entram no TF). Busca lateral:
+  # +0.20 -> tag_5 aparece (x_manip -0.18), tag_4 some (+0.37) mas a amostra
+  # dela FICA (acumula); -0.20 -> tag_6 aparece (+0.17), "Encontrei todas as
+  # tags"; volta ao centro (-0.026) e re-registra os slots pelas 4 tags
+  # intactas visiveis de la. Os slots vem do frame fixo T0 (ref(x=-0.350)
+  # para tag_5, vista com a base deslocada). Antes do pick_5 o no leva a
+  # base para onde viu a tag_5 (+0.170 -> chega em +0.141; 5/8 do contador
+  # da busca) e re-registra; antes do pick_4 volta para onde a viu (-0.026
+  # -> -0.001; 6/8). reach_x_max 0.40 para as ops nao precisarem de nudge
+  # de alcance: nudges 6 (busca 6, ops 0), base termina em -0.001 m.
+  # speech_enabled=true so para as falas da busca sairem no log (dominio 99).
+  start_bench search "$LAYOUT_SEARCH" "-p view_x_max:=0.25 -p reach_x_max:=0.40" \
+    "-p speech_enabled:=true" "-p nudge_slip:=0.85" || { settle; return; }
+  send_goal search "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: true"
+  expect_count "$GOAL_LOG" 1 "partial: false"
+  expect_count "$GOAL_LOG" 1 "picks: 3"
+  expect_count "$GOAL_LOG" 1 "places: 3"
+  expect_count "$GOAL_LOG" 1 "nudges: 6"
+  expect_count "$GOAL_LOG" 1 "missing_tags: []"
+  expect_count "$GOAL_LOG" 1 "current_stage: searching_1"
+  expect_count "$GOAL_LOG" 1 "current_stage: search_return_center"
+  expect_min "$GOAL_LOG" 1 "current_stage: pick_goto_seen_5"
+  expect_count "$NODE_LOG" 1 "busca_max_nudges=8 busca_em_observe_only=false"
+  expect_count "$TABLE_LOG" 1 "view_x_max 0.25 m"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral: faltam [5, 6] apos a observacao inicial — 2 posicao(oes) [+0.20, -0.20] m (base em +0.000 m, poses [pegar_obj, tag_esquerda, tag_direita])."
+  expect_count "$NODE_LOG" 1 "[SPEECH] Nao vi todas as tags, vou me mover para procurar"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca 1/2: alvo +0.20 m (faltam [5, 6])."
+  expect_count "$NODE_LOG" 1 "[AMT1] busca 2/2: alvo -0.20 m (faltam [6])."
+  expect_search_trail "$NODE_LOG" "5 tag(s) acumulada(s), faltam [6]." "6 tag(s) acumulada(s), faltam []."
+  expect_count "$NODE_LOG" 1 "[SPEECH] Encontrei todas as tags"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam []."
+  expect_count "$NODE_LOG" 1 "[AMT1] vistas 6 tag(s): ordem [5, 2, 3, 1, 4, 6] alvo [1, 2, 3, 4, 5, 6] faltam [] ignoradas []"
+  expect_count "$NODE_LOG" 0 "tags esperadas nao vistas"
+  # Referencia fixa T0: a tag_5 foi vista com a base em +0.17 m (x_manip
+  # -0.18) e a tag_6 em -0.176 m, mas os slots saem no x do inicio do goal.
+  expect_count "$NODE_LOG" 1 "[AMT1] slot 0 = tag_amt1_slot_0 <- tag_5  ref(x=-0.350 y=0.350 z=0.142)"
+  expect_count "$NODE_LOG" 1 "[AMT1] slot 4 = tag_amt1_slot_4 <- tag_4  ref(x=0.200 y=0.350 z=0.142)"
+  expect_count "$NODE_LOG" 1 "[AMT1] slot 5 = tag_amt1_slot_5 <- tag_6  ref(x=0.350 y=0.350 z=0.142)"
+  # Re-registro logo apos a volta ao centro (antes do plano): 4 ancoras
+  # (2, 3, 1, 4), delta ~0 porque a mesa falsa nao escorrega.
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral moveu a base (voltou ao centro, base em -0.026 m): re-registrando os slots pelas tags intactas."
+  expect_count "$NODE_LOG" 1 "[SPEECH] Ordem atual: 5, 2, 3, 1, 4, 6. Vou ordenar de 1 a 6"
+  expect_count "$NODE_LOG" 1 "[AMT1] plano: 6 op(s), 3 pick(s), 3 place(s), buffer 3: pick_5 pick_1 place_1_slot_0 pick_4 place_4_slot_3 place_5_slot_4"
+  # "Indo para onde vi a tag" (2026-08-28): tag_5 foi vista em +0.170 m e a
+  # base esta em -0.026 m (|delta| 0.196 > 0.12) => nudge +0.20 (5/8) antes
+  # do pick_5 + re-registro (4 ancoras: 5, 2, 3, 1); tag_4 foi vista pela
+  # ultima vez em -0.026 m (re-registro do centro) => nudge -0.17 (6/8)
+  # antes do pick_4 + re-registro (3 ancoras: 2, 3, 4).
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: indo para onde vi a tag_5: base em -0.026 m, tag vista em +0.170 m (|delta| 0.196 m > 0.12 m; nudges da busca 4/8)."
+  expect_count "$NODE_LOG" 1 "[AMT1] pick_goto_seen_5: base em -0.026 m, alvo +0.17 m (resta +0.196 m) — nudge +0.20 m (5/8, total -0.03 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] pick_goto_seen_5: base em +0.141 m, alvo +0.17 m (resta +0.029 m): chegou (1 passo(s))."
+  expect_count "$NODE_LOG" 1 "stage=pick_goto_seen_5 ("
+  expect_count "$NODE_LOG" 1 "stage=pick_goto_seen_5_+0.20"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: indo para onde vi a tag_4: base em +0.141 m, tag vista em -0.026 m (|delta| 0.167 m > 0.12 m; nudges da busca 5/8)."
+  expect_count "$NODE_LOG" 1 "[AMT1] pick_goto_seen_4: base em +0.141 m, alvo -0.03 m (resta -0.167 m) — nudge -0.17 m (6/8, total +0.14 m)."
+  expect_count "$NODE_LOG" 1 "stage=pick_goto_seen_4 ("
+  expect_count "$NODE_LOG" 2 "indo para onde vi a tag_"
+  expect_count "$NODE_LOG" 3 "[AMT1] re-registro aplicado: delta ("
+  expect_count "$NODE_LOG" 2 "m em odom com 4 ancora(s), espalhamento 0.000 m. Ancoras originais: 4"
+  expect_count "$NODE_LOG" 1 "m em odom com 3 ancora(s), espalhamento 0.000 m. Ancoras originais: 3"
+  expect_count "$NODE_LOG" 0 "re-registro NAO aplicado"
+  expect_count "$NODE_LOG" 0 "alvo fora de alcance"
+  expect_count "$NODE_LOG" 0 "pick nao viu"
+  expect_count "$NODE_LOG" 0 "nao consegui ir"
+  expect_count "$NODE_LOG" 1 "PickTag{tag_frame=tag_5"
+  expect_count "$NODE_LOG" 1 "PickTag{tag_frame=tag_4"
+  expect_count "$NODE_LOG" 1 "[AMT1] fim: success=true partial=false fail_reason='' observed=[5, 2, 3, 1, 4, 6] final=[1, 2, 3, 4, 5, 6] missing=[] picks=3 places=3 nudges=6 total=-0.00 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 6 (busca 6, ops 0)"
+  expect_count "$LOG_DIR/search.fake_nav.log" 6 "goal aceito em 'nudge'"
+  expect_count "$LOG_DIR/search.fake_nav.log" 1 "'nudge' concluido (fake): pedido +0.200 m, andou +0.170 m"
+  # goto-seen pede exatamente o que resta (+0.196; o no loga arredondado +0.20).
+  expect_count "$LOG_DIR/search.fake_nav.log" 1 "'nudge' concluido (fake): pedido +0.196 m, andou +0.167 m"
+  expect_count "$LOG_DIR/search.fake_nav.log" 1 "'nudge' concluido (fake): pedido -0.250 m, andou -0.212 m"
+  expect_count "$TABLE_LOG" 0 "FORA DE ALCANCE"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_5 ok (x_manip -0.209 m)"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_4 ok (x_manip +0.199 m)"
+  node_alive search
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  expect_count "$TABLE_LOG" 1 "shift -0.001 m"
+  containers_all_empty search
+}
+
+case_search_budget() {
+  # Orcamento PROPRIO da busca (2026-08-28): search_max_nudges 4 e
+  # reach_x_max 0.28 (default da mesa). A busca gasta os 4 dela (ida +0.20,
+  # ida -0.20 em 2 passos, volta ao centro em -0.026). O "ir para onde vi a
+  # tag" antes do pick_5 e do pick_4 ja nao tem orcamento da busca ("tento
+  # daqui") e o pick responde fora de alcance: as ops usam o max_nudges (6)
+  # PROPRIO — nudge +0.15 (tag_5: x -0.376 -> -0.249) e nudge -0.10 (tag_4:
+  # x +0.301 -> +0.216) —, com re-registro a cada passo. Sob o orcamento
+  # unico antigo (max_nudges 6 compartilhado) isto teria estourado.
+  start_bench search_budget "$LAYOUT_SEARCH" "-p view_x_max:=0.25" \
+    "-p search_max_nudges:=4" "-p nudge_slip:=0.85" || { settle; return; }
+  send_goal search_budget "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: true"
+  expect_count "$GOAL_LOG" 1 "partial: false"
+  expect_count "$GOAL_LOG" 1 "picks: 3"
+  expect_count "$GOAL_LOG" 1 "places: 3"
+  expect_count "$GOAL_LOG" 1 "nudges: 6"
+  expect_count "$GOAL_LOG" 1 "missing_tags: []"
+  expect_count "$NODE_LOG" 1 "busca_max_nudges=4"
+  expect_search_trail "$NODE_LOG" "5 tag(s) acumulada(s), faltam [6]." "6 tag(s) acumulada(s), faltam []." 4
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam []."
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral moveu a base (voltou ao centro, base em -0.026 m): re-registrando os slots pelas tags intactas."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: indo para onde vi a tag_5: base em -0.026 m, tag vista em +0.170 m (|delta| 0.196 m > 0.12 m; nudges da busca 4/4)."
+  expect_count "$NODE_LOG" 1 "[AMT1] pick_goto_seen_5: orcamento de nudges da busca esgotado (4/4; ops 0/6) com a base em -0.026 m (alvo +0.17 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: nao consegui ir para onde vi a tag_5 (search_max_nudges esgotado) — tento daqui (base em -0.026 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: alvo fora de alcance (sugestao +0.15 m) — nudge +0.15 m (1/6, total -0.03 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge +0.15 m ok: andou +0.12"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: indo para onde vi a tag_4: base em +0.101 m, tag vista em -0.026 m"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: nao consegui ir para onde vi a tag_4 (search_max_nudges esgotado) — tento daqui (base em +0.101 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: alvo fora de alcance (sugestao -0.10 m) — nudge -0.10 m (2/6, total +0.10 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge -0.10 m ok: andou -0.08"
+  expect_count "$NODE_LOG" 2 "PickTag{tag_frame=tag_5"
+  expect_count "$NODE_LOG" 2 "PickTag{tag_frame=tag_4"
+  # Re-registros: apos a volta da busca (4 ancoras: 2, 3, 1, 4), apos o
+  # nudge +0.15 (4: 5, 2, 3, 1) e apos o nudge -0.10 (3: 2, 3, 4 — a tag_1
+  # ja foi pousada pelo robo e a tag_5 esta a bordo).
+  expect_count "$NODE_LOG" 3 "[AMT1] re-registro aplicado: delta ("
+  expect_count "$NODE_LOG" 2 "m em odom com 4 ancora(s), espalhamento 0.000 m. Ancoras originais: 4"
+  expect_count "$NODE_LOG" 1 "m em odom com 3 ancora(s), espalhamento 0.000 m. Ancoras originais: 3"
+  expect_count "$NODE_LOG" 0 "re-registro NAO aplicado"
+  expect_count "$NODE_LOG" 0 "nudge_falhou"
+  expect_count "$NODE_LOG" 0 "pick nao viu"
+  expect_count "$NODE_LOG" 1 "[AMT1] fim: success=true partial=false fail_reason='' observed=[5, 2, 3, 1, 4, 6] final=[1, 2, 3, 4, 5, 6] missing=[] picks=3 places=3 nudges=6 total=+0.02 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 6 (busca 4, ops 2)"
+  expect_count "$LOG_DIR/search_budget.fake_nav.log" 6 "goal aceito em 'nudge'"
+  expect_count "$TABLE_LOG" 1 "'pick' FORA DE ALCANCE tag_5: x_manip -0.376 m (> 0.28) -> sugestao +0.15 m (final_attempt=false)."
+  expect_count "$TABLE_LOG" 1 "'pick' FORA DE ALCANCE tag_4: x_manip +0.301 m (> 0.28) -> sugestao -0.10 m (final_attempt=false)."
+  expect_count "$TABLE_LOG" 1 "'pick' tag_5 ok (x_manip -0.249 m)"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_4 ok (x_manip +0.216 m)"
+  node_alive search_budget
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  expect_count "$TABLE_LOG" 1 "shift +0.016 m"
+  containers_all_empty search_budget
+}
+
+case_search_pick_view() {
+  # pick_respects_view na mesa falsa: o /pick_tag responde tag_nao_encontrada
+  # (sem sugestao) se a tag esta fora do campo de visao (view 0.25) — como a
+  # varredura do pick real, que nao acha uma tag que so foi vista com a base
+  # deslocada. Do centro (-0.026) a tag_5 fica em x -0.376: o pick SO passa
+  # porque o no vai ANTES para onde a viu (+0.170 -> chega em +0.141, x
+  # -0.209); idem tag_4 (vista em -0.026, base em +0.141 -> -0.001).
+  # reach_x_max default 0.28: nenhum nudge de alcance (busca 6, ops 0).
+  start_bench search_pick_view "$LAYOUT_SEARCH" "-p view_x_max:=0.25 -p pick_respects_view:=true" \
+    "" "-p nudge_slip:=0.85" || { settle; return; }
+  send_goal search_pick_view "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: true"
+  expect_count "$GOAL_LOG" 1 "partial: false"
+  expect_count "$GOAL_LOG" 1 "picks: 3"
+  expect_count "$GOAL_LOG" 1 "places: 3"
+  expect_count "$GOAL_LOG" 1 "nudges: 6"
+  expect_count "$TABLE_LOG" 1 "pick_respects_view True"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam []."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: indo para onde vi a tag_5: base em -0.026 m, tag vista em +0.170 m"
+  expect_count "$NODE_LOG" 1 "[AMT1] pick_goto_seen_5: base em +0.141 m, alvo +0.17 m (resta +0.029 m): chegou (1 passo(s))."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: indo para onde vi a tag_4: base em +0.141 m, tag vista em -0.026 m"
+  expect_count "$NODE_LOG" 1 "PickTag{tag_frame=tag_5"
+  expect_count "$NODE_LOG" 1 "PickTag{tag_frame=tag_4"
+  expect_count "$NODE_LOG" 0 "pick nao viu"
+  expect_count "$NODE_LOG" 0 "nao consegui ir"
+  expect_count "$NODE_LOG" 0 "alvo fora de alcance"
+  expect_count "$NODE_LOG" 1 "final=[1, 2, 3, 4, 5, 6] missing=[] picks=3 places=3 nudges=6 total=-0.00 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 6 (busca 6, ops 0)"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_5 ok (x_manip -0.209 m)"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_4 ok (x_manip +0.199 m)"
+  expect_count "$TABLE_LOG" 0 "fora do campo de visao"
+  expect_count "$TABLE_LOG" 0 "FORA DE ALCANCE"
+  node_alive search_pick_view
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  containers_all_empty search_pick_view
+
+  # Variante SEM orcamento da busca (search_max_nudges 4, gasto na ida e na
+  # volta): o no nao consegue ir para onde viu a tag_5 ("tento daqui"), o
+  # pick nao a ve do centro (fora do campo de visao), o no tenta ir de novo
+  # (sem orcamento), re-observa 1x so com o braco (retry_not_seen 1) e falha
+  # LIMPO em 2 picks: tag_nao_encontrada, 0 picks, mesa intacta, sem laco.
+  start_bench search_pick_view_nobudget "$LAYOUT_SEARCH" "-p view_x_max:=0.25 -p pick_respects_view:=true" \
+    "-p search_max_nudges:=4" "-p nudge_slip:=0.85" || { settle; return; }
+  send_goal search_pick_view_nobudget "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal (search_max_nudges:=4)"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: false"
+  expect_count "$GOAL_LOG" 1 "partial: true"
+  expect_count "$GOAL_LOG" 1 "fail_reason: tag_nao_encontrada"
+  expect_count "$GOAL_LOG" 1 "picks: 0"
+  expect_count "$GOAL_LOG" 1 "places: 0"
+  expect_count "$GOAL_LOG" 1 "nudges: 4"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam []."
+  expect_count "$NODE_LOG" 3 "[AMT1] op_1/6_pick_5: indo para onde vi a tag_5: base em -0.026 m, tag vista em +0.170 m (|delta| 0.196 m > 0.12 m; nudges da busca 4/4)."
+  expect_count "$NODE_LOG" 3 "[AMT1] op_1/6_pick_5: nao consegui ir para onde vi a tag_5 (search_max_nudges esgotado) — tento daqui (base em -0.026 m)."
+  expect_count "$NODE_LOG" 2 "PickTag{tag_frame=tag_5"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: pick nao viu tag_5 (tag_nao_encontrada) — re-observando das poses laterais (1/1)."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: tag_5 tambem nao apareceu na re-observacao."
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5 falhou: tag_nao_encontrada — op_1/6_pick_5: tag_5 nao encontrada na mesa"
+  expect_count "$NODE_LOG" 0 "alvo fora de alcance"
+  expect_count "$NODE_LOG" 0 "recover_place"
+  expect_count "$NODE_LOG" 1 "nudges 4 (busca 4, ops 0)"
+  expect_count "$TABLE_LOG" 2 "'pick' PULADO tag_5: fora do campo de visao (x_manip -0.376 m, |x| > view_x_max 0.25; pick_respects_view)."
+  expect_count "$LOG_DIR/search_pick_view_nobudget.fake_nav.log" 4 "goal aceito em 'nudge'"
+  node_alive search_pick_view_nobudget
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [5, 2, 3, 1, 4, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  containers_all_empty search_pick_view_nobudget
+}
+
+case_short_course() {
+  # nudge_short_course 1 no fake_nav: o 1o nudge (pick_6, +0.15) aborta com
+  # reason curso_incompleto e travelled +0.120 (80%), total publicado com o
+  # parcial — como o dock_align_node real. O no le o result mesmo em
+  # ABORTED, conta o passo PARCIAL (1/6 ops), re-registra e repete a op; o
+  # 2o nudge (pick_5, -0.25) e normal. Mesmo layout/resultado do caso nudge.
+  start_bench short_course "$LAYOUT_NUDGE" "-p reach_x_max:=0.28" "" \
+    "-p nudge_slip:=0.85 -p nudge_short_course:=1" || { settle; return; }
+  send_goal short_course "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: true"
+  expect_count "$GOAL_LOG" 1 "nudges: 2"
+  expect_count "$LOG_DIR/short_course.fake_nav.log" 1 "nudge_short_course=1"
+  expect_count "$LOG_DIR/short_course.fake_nav.log" 1 "'nudge' CURSO INCOMPLETO (fake, nudge_short_course): pedido +0.150 m, andou +0.120 m -> abort com reason curso_incompleto."
+  expect_count "$LOG_DIR/short_course.fake_nav.log" 1 "'nudge' concluido (fake): pedido -0.250 m, andou -0.212 m"
+  expect_count "$LOG_DIR/short_course.fake_nav.log" 2 "goal aceito em 'nudge'"
+  expect_count "$NODE_LOG" 1 "op_1/8_pick_6: alvo fora de alcance (sugestao +0.15 m) — nudge +0.15 m (1/6, total +0.00 m)"
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge +0.15 m PARCIAL (curso_incompleto): andou +0.120 m (total +0.120 m, 1/6 ops"
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge +0.15 m parcial (curso_incompleto) mas a base andou +0.120 m: sigo com o re-registro e repito a op."
+  expect_count "$NODE_LOG" 0 "FALHOU"
+  expect_count "$NODE_LOG" 0 "nudge_falhou"
+  expect_count "$NODE_LOG" 1 "op_6/8_pick_5: alvo fora de alcance (sugestao -0.25 m) — nudge -0.25 m (2/6, total +0.12 m)"
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge -0.25 m ok: andou -0.21"
+  expect_count "$NODE_LOG" 2 "[AMT1] re-registro aplicado: delta ("
+  expect_count "$NODE_LOG" 2 "PickTag{tag_frame=tag_6"
+  expect_count "$NODE_LOG" 2 "PickTag{tag_frame=tag_5"
+  expect_count "$NODE_LOG" 1 "fail_reason='' observed=[6, 2, 3, 1, 4, 5] final=[1, 2, 3, 4, 5, 6] missing=[] picks=4 places=4 nudges=2 total=-0.09 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 2 (busca 0, ops 2)"
+  expect_count "$TABLE_LOG" 1 "'pick' FORA DE ALCANCE tag_6: x_manip -0.350 m"
+  expect_count "$TABLE_LOG" 1 "'pick' tag_6 ok (x_manip -0.230 m)"
+  node_alive short_course
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  expect_count "$TABLE_LOG" 1 "| shift -0.092 m"
+  containers_all_empty short_course
+
+  # Variante na busca: o 1o nudge da busca (+0.20) e parcial (+0.160): o
+  # nudgeTo conta o passo (1/8), "sigo para o alvo" e, como resta 0.040
+  # (< 0.08), da por chegado; a tag_5 aparece de +0.160 m. O resto segue
+  # como o caso search (6 nudges: 4 da busca + 2 indo para onde viu as tags).
+  start_bench short_course_search "$LAYOUT_SEARCH" "-p view_x_max:=0.25 -p reach_x_max:=0.40" \
+    "" "-p nudge_slip:=0.85 -p nudge_short_course:=1" || { settle; return; }
+  send_goal short_course_search "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal (busca com passo parcial)"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: true"
+  expect_count "$GOAL_LOG" 1 "nudges: 6"
+  expect_count "$GOAL_LOG" 1 "missing_tags: []"
+  expect_count "$LOG_DIR/short_course_search.fake_nav.log" 1 "'nudge' CURSO INCOMPLETO (fake, nudge_short_course): pedido +0.200 m, andou +0.160 m"
+  expect_count "$LOG_DIR/short_course_search.fake_nav.log" 6 "goal aceito em 'nudge'"
+  expect_count "$NODE_LOG" 1 "[AMT1] search_nudge: base em +0.000 m, alvo +0.20 m (resta +0.200 m) — nudge +0.20 m (1/8, total +0.00 m)."
+  expect_count "$NODE_LOG" 1 "[AMT1] nudge +0.20 m PARCIAL (curso_incompleto): andou +0.160 m (total +0.160 m, 1/8 busca"
+  expect_count "$NODE_LOG" 1 "[AMT1] search_nudge: passo PARCIAL (curso_incompleto): pedi +0.20 m, andou +0.160 m — sigo para o alvo +0.20 m."
+  expect_count "$NODE_LOG" 1 "[AMT1] search_nudge: base em +0.160 m, alvo +0.20 m (resta +0.040 m): chegou (1 passo(s))."
+  expect_count "$NODE_LOG" 1 "[AMT1] busca 1/2 em +0.160 m: 5 tag(s) acumulada(s), faltam [6]."
+  expect_count "$NODE_LOG" 1 "6 tag(s) acumulada(s), faltam []."
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s)"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_1/6_pick_5: indo para onde vi a tag_5:"
+  expect_count "$NODE_LOG" 1 "[AMT1] op_4/6_pick_4: indo para onde vi a tag_4:"
+  expect_count "$NODE_LOG" 0 "FALHOU"
+  expect_count "$NODE_LOG" 0 "nudge_falhou"
+  expect_count "$NODE_LOG" 0 "alvo fora de alcance"
+  expect_count "$NODE_LOG" 1 "final=[1, 2, 3, 4, 5, 6] missing=[] picks=3 places=3 nudges=6"
+  expect_count "$NODE_LOG" 1 "nudges 6 (busca 6, ops 0)"
+  node_alive short_course_search
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  containers_all_empty short_course_search
+}
+
 case_unseen() {
-  start_bench unseen "$LAYOUT_MAIN" "-p unseen_tags:=['tag_3']" "" || { settle; return; }
+  # tag_3 NUNCA entra no TF (unseen_tags): a busca lateral roda nas 2
+  # posicoes (4 nudges, as 5 tags vistas continuam acumuladas) e nao acha.
+  # allow_partial=false (default desde 2026-08-28: na AMT1 as 6 tags sao
+  # obrigatorias) => tag_nao_encontrada, missing [3], nenhum cubo movido.
+  start_bench unseen "$LAYOUT_MAIN" "-p unseen_tags:=['tag_3']" "" "-p nudge_slip:=0.85" || { settle; return; }
   send_goal unseen "$GOAL"
   expect_exit "$GOAL_RC" 0 "send_goal"
   expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
   expect_count "$GOAL_LOG" 1 "success: false"
   expect_count "$GOAL_LOG" 1 "partial: true"
-  expect_count "$GOAL_LOG" 1 "fail_reason: ''"
+  expect_count "$GOAL_LOG" 1 "fail_reason: tag_nao_encontrada"
+  expect_count "$GOAL_LOG" 1 "picks: 0"
+  expect_count "$GOAL_LOG" 1 "places: 0"
+  expect_count "$GOAL_LOG" 1 "nudges: 4"
+  expect_count "$GOAL_LOG" 1 "current_stage: searching_1"
+  expect_count "$GOAL_LOG" 1 "current_stage: search_return_center"
+  expect_count "$NODE_LOG" 1 "allow_partial=false busca=true offsets=[+0.20, -0.20]"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral: faltam [3] apos a observacao inicial — 2 posicao(oes) [+0.20, -0.20] m (base em +0.000 m, poses [pegar_obj, tag_esquerda, tag_direita])."
+  expect_search_trail "$NODE_LOG" "5 tag(s) acumulada(s), faltam [3]." "5 tag(s) acumulada(s), faltam [3]."
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam [3]."
   expect_count "$NODE_LOG" 1 "[AMT1] vistas 5 tag(s): ordem [5, 2, 1, 4, 6] alvo [1, 2, 4, 5, 6] faltam [3] ignoradas []"
   expect_count "$NODE_LOG" 1 "[AMT1] tags esperadas nao vistas: [3]."
+  expect_count "$NODE_LOG" 1 "[AMT1] faltam as tags [3] mesmo apos a busca lateral (2 posicao(oes)) e allow_partial=false: nenhum cubo movido"
+  expect_count "$NODE_LOG" 0 "[AMT1] plano:"
+  expect_count "$NODE_LOG" 0 "PickTag{"
+  expect_count "$NODE_LOG" 0 "recover_onboard"
+  expect_count "$NODE_LOG" 1 "fim: success=false partial=true fail_reason='tag_nao_encontrada' observed=[5, 2, 1, 4, 6] final=[] missing=[3] picks=0 places=0 nudges=4 total=-0.03 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 4 (busca 4, ops 0)"
+  expect_count "$NODE_LOG" 0 "re-registro"
+  expect_count "$LOG_DIR/unseen.fake_nav.log" 4 "goal aceito em 'nudge'"
+  node_alive unseen
+  settle
+  expect_count "$TABLE_LOG" 1 "ordem final: [5, 2, 3, 1, 4, 6]"
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  expect_count "$TABLE_LOG" 0 "goal aceito em 'pick'"
+  containers_all_empty unseen
+
+  # Variante allow_partial:=true: a busca roda do mesmo jeito (4 nudges) e
+  # depois o no ordena so o que viu, como antes de 2026-08-28. A base fica
+  # em -0.026 m (tag_5 em x_manip -0.276): reach_x_max 0.30 para nao
+  # depender do milimetro. Os slots continuam no x do inicio (T0). Como a
+  # busca moveu a base, o no re-registra os slots do centro (5 ancoras,
+  # todas visiveis) — e isso atualiza "onde vi" de todas as tags para
+  # -0.026 m, logo nenhum pick precisa ir a outro lugar (0 goto).
+  start_bench unseen_partial "$LAYOUT_MAIN" "-p unseen_tags:=['tag_3'] -p reach_x_max:=0.30" \
+    "-p allow_partial:=true" "-p nudge_slip:=0.85" || { settle; return; }
+  send_goal unseen_partial "$GOAL"
+  expect_exit "$GOAL_RC" 0 "send_goal (allow_partial:=true)"
+  expect_count "$GOAL_LOG" 1 "Goal finished with status: SUCCEEDED"
+  expect_count "$GOAL_LOG" 1 "success: false"
+  expect_count "$GOAL_LOG" 1 "partial: true"
+  expect_count "$GOAL_LOG" 1 "fail_reason: ''"
+  expect_count "$GOAL_LOG" 1 "picks: 3"
+  expect_count "$GOAL_LOG" 1 "places: 3"
+  expect_count "$GOAL_LOG" 1 "nudges: 4"
+  expect_count "$NODE_LOG" 1 "allow_partial=true busca=true offsets=[+0.20, -0.20]"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral terminada: 2 posicao(oes), 4 nudge(s), base em -0.026 m, faltam [3]."
+  expect_count "$NODE_LOG" 1 "[AMT1] vistas 5 tag(s): ordem [5, 2, 1, 4, 6] alvo [1, 2, 4, 5, 6] faltam [3] ignoradas []"
+  expect_count "$NODE_LOG" 1 "[AMT1] tags esperadas nao vistas: [3]."
+  expect_count "$NODE_LOG" 0 "nenhum cubo movido"
+  expect_count "$NODE_LOG" 1 "[AMT1] slot 0 = tag_amt1_slot_0 <- tag_5  ref(x=-0.250 y=0.350 z=0.142)"
+  expect_count "$NODE_LOG" 1 "[AMT1] busca lateral moveu a base (voltou ao centro, base em -0.026 m): re-registrando os slots pelas tags intactas."
+  expect_count "$NODE_LOG" 1 "m em odom com 5 ancora(s), espalhamento 0.000 m. Ancoras originais: 5"
+  expect_count "$NODE_LOG" 1 "[AMT1] re-registro aplicado: delta ("
+  expect_count "$NODE_LOG" 0 "indo para onde vi"
   expect_count "$NODE_LOG" 1 "[AMT1] plano: 6 op(s), 3 pick(s), 3 place(s), buffer 3: pick_5 pick_1 place_1_slot_0 pick_4 place_4_slot_2 place_5_slot_3"
-  expect_count "$NODE_LOG" 1 "fim: success=false partial=true fail_reason='' observed=[5, 2, 1, 4, 6] final=[1, 2, 4, 5, 6] missing=[3] picks=3 places=3 nudges=0"
+  expect_count "$NODE_LOG" 0 "alvo fora de alcance"
+  expect_count "$NODE_LOG" 1 "fim: success=false partial=true fail_reason='' observed=[5, 2, 1, 4, 6] final=[1, 2, 4, 5, 6] missing=[3] picks=3 places=3 nudges=4 total=-0.03 m braco=conhecido"
+  expect_count "$NODE_LOG" 1 "nudges 4 (busca 4, ops 0)"
   expect_count "$NODE_LOG" 1 "ordenadas as tags vistas; faltaram [3]"
+  node_alive unseen_partial
   settle
   # tag_3 fica parada em x=-0.05 entre o slot 1 (-0.15) e o slot 2 (+0.05).
   expect_count "$TABLE_LOG" 1 "ordem final: [1, 2, 3, 4, 5, 6]"
-  containers_all_empty unseen
+  expect_count "$TABLE_LOG" 1 "a bordo: []"
+  containers_all_empty unseen_partial
 }
 
 case_fail_place() {
@@ -850,7 +1271,8 @@ case_bench_deadline() {
 
 run_all() {
   case_planner; case_regression; case_dry_run
-  case_main; case_two_cycles; case_sorted; case_nudge; case_b1; case_unseen
+  case_main; case_two_cycles; case_sorted; case_nudge; case_b1; case_search
+  case_search_budget; case_search_pick_view; case_short_course; case_unseen
   case_fail_place; case_abort_place; case_timeout_child; case_cancel; case_mission
   case_bench_ok; case_bench_fail; case_bench_result; case_bench_reject; case_bench_watchdog
   case_bench_deadline
@@ -865,6 +1287,10 @@ case "$MODE" in
   sorted) case_sorted ;;
   nudge) case_nudge ;;
   b1) case_b1 ;;
+  search) case_search ;;
+  search_budget) case_search_budget ;;
+  search_pick_view) case_search_pick_view ;;
+  short_course) case_short_course ;;
   unseen) case_unseen ;;
   fail_place) case_fail_place ;;
   abort_place) case_abort_place ;;
@@ -879,7 +1305,7 @@ case "$MODE" in
   bench_deadline) case_bench_deadline ;;
   all) run_all ;;
   *)
-    echo "modo desconhecido: $MODE (all|planner|regression|dry_run|main|two_cycles|sorted|nudge|b1|unseen|fail_place|abort_place|timeout_child|cancel|mission|bench_ok|bench_fail|bench_result|bench_reject|bench_watchdog|bench_deadline)"
+    echo "modo desconhecido: $MODE (all|planner|regression|dry_run|main|two_cycles|sorted|nudge|b1|search|search_budget|search_pick_view|short_course|unseen|fail_place|abort_place|timeout_child|cancel|mission|bench_ok|bench_fail|bench_result|bench_reject|bench_watchdog|bench_deadline)"
     exit 2 ;;
 esac
 

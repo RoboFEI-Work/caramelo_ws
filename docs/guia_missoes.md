@@ -216,11 +216,69 @@ completo em [missions/amt1_pp1.yaml](../missions/amt1_pp1.yaml): `active_service
 
 **O que o robô faz** (nó `amt1_sort_action_node`, `manip_task_execution`): prólogo `home` →
 dock na PP1 → observa a mesa de `pegar_obj`, `tag_esquerda` e `tag_direita` (TF das tags) →
-ordena as posições por x → fala "Ordem atual: 5, 2, 3, 1, 4, 6. Vou ordenar de 1 a 6" → publica os
-frames `tag_amt1_slot_k` (no `odom`, sob cada cubo) → executa a ordenação por ciclos com os
-picks/places normais (`/pick_tag`, `/place_tag` com `stack_on: tag_amt1_slot_k`) → se um alvo
-ficar fora do alcance, desloca a base (`nudge_base`), re-registra os slots e repete → volta a
-`pegar_obj` → `home` → FINISH. Menos de 6 tags vistas: ordena o que viu e avisa (`partial`).
+**faltou tag esperada → busca lateral obrigatória** (28/08, ver abaixo) → ordena as posições por x
+→ fala "Ordem atual: 5, 2, 3, 1, 4, 6. Vou ordenar de 1 a 6" → publica os frames `tag_amt1_slot_k`
+(no `odom`, sob cada cubo) → executa a ordenação por ciclos com os picks/places normais
+(`/pick_tag`, `/place_tag` com `stack_on: tag_amt1_slot_k`) → se um alvo ficar fora do alcance,
+desloca a base (`nudge_base`), re-registra os slots e repete → volta a `pegar_obj` → `home` → FINISH.
+
+**Pré-requisito no robô — calibrar `nudge_odom_lateral_gain` com trena ANTES de confiar na
+busca**: a régua de tudo o que segue (posições da busca, volta ao centro, "indo para onde vi a
+tag") é o `/manip/base_shift_total` do `dock_align_node`, que soma o lateral medido pelo `/odom`
+do EKF — e o EKF só integra as rodas, **não vê o escorregamento lateral** (~18 % no campo: pedir
+0,20 m anda ~0,165 m real). Com o ganho em 1,0 (default) o erro se acumula a cada passo e o robô
+"volta ao centro" num lugar que não é o centro. Procedimento (docado na PP1, braço em
+`pegar_obj`): marcar a posição da base com fita, `ros2 action send_goal /nudge_base
+caramelo_msgs/action/NudgeBase "{dy: 0.20, timeout: 20.0}"`, medir com trena o deslocamento real,
+ganho = real / odom bruto (o `dock_align_node` loga `fim (...): lateral ... (odom bruto ... x
+ganho ...)`), esperado ~0,82; gravar ao vivo com `ros2 param set /dock_align_node
+nudge_odom_lateral_gain 0.82` e deixar permanente em
+`src/caramelo_navigation/launch/docking_server.launch.py` (lista `parameters` do `dock_align_node`,
+como o `refine_desired_face_dist` do §1a); repetir com `dy: -0.20` e conferir que o
+`/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
+coisa (a bancada não cobre isto: a mesa falsa não escorrega).
+
+**Busca lateral** (28/08, pedido do operador: na AMT1 as 6 tags são **obrigatórias**): se depois
+das poses de observação faltar alguma tag de `expected_tags` (e pelo menos `min_seen_tags` tags
+esperadas foram vistas — senão a base nem anda), o robô fala "Não vi todas as tags, vou me mover
+para procurar" e leva a base (sequência de `nudge_base`) até cada posição de `search_offsets_m`
+(default `[0.20, -0.20]` m, + = esquerda, **relativos ao `/manip/base_shift_total` do início do
+goal**), re-observando das `search_observe_poses` e **acumulando** as tags (o que já foi visto
+fica; a amostra vista do centro ganha da vista com a base deslocada; TF de antes do fim do
+último nudge é descartada). Para assim que vê todas ("Encontrei todas as tags") e, com
+`return_to_center_after_search`, volta ao shift inicial e **re-registra os slots** pelas tags
+intactas visíveis de lá. As posições das tags são guardadas num frame de referência fixo T0 (pose
+de `manip_base_link` em `odom` no início do goal), então tags vistas com a base deslocada ficam
+comparáveis com as vistas do centro (sem T0 o nó re-captura; se ainda não houver, não busca).
+**Orçamentos**: a busca tem contador **próprio**, `search_max_nudges` (8: ida, volta ao centro e
+os "indo para onde vi a tag"), separado do `max_nudges` (6) das operações; `max_total_shift_m`
+(0,35) é o curso físico e vale para os dois; `result.nudges` soma tudo e a `message` termina com
+`nudges N (busca a, ops b)`. Orçamento esgotado = fica onde deu (a busca para, a volta ao centro
+pode não acontecer e as ops rodam de onde a base ficou; o nó avisa). Se ainda faltar tag:
+`allow_partial` **false (default)** → `fail_reason: tag_nao_encontrada`, `missing_tags`
+preenchido, `partial: true`, **nenhum cubo movido**; `allow_partial: true` → ordena só o que viu
+(`partial: true`, `fail_reason: ''`). `observe_only: true` **não move a base** (28/08): a busca
+só roda com `search_in_observe_only: true` (o nó avisa "a base VAI ANDAR").
+
+**"Indo para onde vi a tag"** (28/08): cada tag guarda o shift da base em que a melhor amostra
+foi vista (atualizado a cada re-registro). Antes de cada pick, se a base está a mais de
+`search_arrive_tol_m + 0,04` m (0,12 m) desse shift, o nó leva a base até lá (estágio
+`pick_goto_seen_<tag>`, log `indo para onde vi a tag_N: base em ... m, tag vista em ... m`,
+conta no orçamento da busca) e re-registra os slots. Se mesmo assim o pick responder
+`tag_nao_encontrada`, o nó vai para onde a viu (1x por op) e repete; já estando lá, re-observa só
+com o braço (`retry_not_seen`) e depois desiste (`tag_nao_encontrada`, cubos a bordo devolvidos).
+Um pick "fora de alcance" (viu a tag, não alcançou) atualiza esse shift para a posição atual, e o
+goto só acontece na 1ª tentativa da op (depois do nudge de alcance o pick é a autoridade — sem
+pingue-pongue). Sem orçamento da busca o nó tenta o pick de onde está ("tento daqui") e o pick
+fora de alcance ainda tem o `max_nudges` das ops. Uma tag vista **só** na posição deslocada
+continua dependendo desse goto (ou da varredura do pick real) para ser pega — por isso o
+orçamento da busca é maior que o das ops.
+
+**Passo parcial** (28/08): `nudge_base` que aborta com `curso_incompleto` (ou falha não física
+que andou > 2 cm — o `dock_align_node` sempre devolve `travelled`) conta como nudge **parcial**:
+o nó soma o `travelled` da odometria (slots e `total_shift_m`), continua a sequência (busca) ou
+re-registra e repete a op; só as falhas físicas (`muro`, `obstaculo_lateral`, `timeout`,
+`sem_odometria`, `sem_scan`, `muito_perto_da_mesa`, `cancelado`...) viram `nudge_falhou`.
 
 **Rodar**: `ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 --task
 /home/linux24-04/caramelo_ws/missions/amt1_pp1.yaml [--dry-run]` (o preflight passa a exigir
@@ -229,28 +287,54 @@ ficar fora do alcance, desloca a base (`nudge_base`), re-registra os slots e rep
 expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
 
 **Parâmetros** (nó): `observe_poses`, `observe_dwell_s` 1.5, `min_seen_tags` 2 (parâmetro do nó;
-`max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios), `allow_partial` true,
-`nudge_enabled` true, `max_nudges` 6, `max_total_shift_m` 0.35, `reregister_after_nudge` true,
-`op_timeout_s` 300 (prazo de cada pick/place filho), `cube_height_m` 0.042, `observe_move_enabled`
-(false = bancada sem MoveIt). Executor: `amt1_timeout` 1800 s (prazo total da rotina; estourar só
+`max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios; abaixo disto a busca nem
+roda), `allow_partial` **false** (28/08; true = ordena o que viu quando falta tag), busca lateral:
+`search_enabled` true, `search_offsets_m` [0.20, -0.20], `search_observe_poses` (= `observe_poses`),
+`search_arrive_tol_m` 0.08 (|alvo − posição| abaixo disto = chegou; o nudge real recusa passos <
+0.08; o nó nunca deixa ficar abaixo de `min_shift_m`/2), `return_to_center_after_search` true,
+`search_max_nudges` 8 (orçamento **próprio** da busca + "indo para onde vi a tag"),
+`search_in_observe_only` false (true = `observe_only` também anda de lado); `nudge_enabled` true,
+`max_nudges` 6 (só as ops), `min_shift_m` 0.10, `max_shift_m` 0.25, `max_total_shift_m` 0.35 (curso
+físico, compartilhado com a busca), `reregister_after_nudge` true (vale também para a volta da
+busca e para o goto antes do pick), `retry_not_seen` 1, `op_timeout_s` 300 (prazo de cada
+pick/place filho), `cube_height_m` 0.042,
+`observe_move_enabled` (false = bancada sem MoveIt). Executor: `amt1_timeout` 1800 s (prazo total da rotina; estourar só
 gera **um WARN** e a rotina segue) e `amt1_stage_timeout` 300 s (watchdog por feedback — o **único**
 que cancela o goal; 6 picks + 6 places levam 12–18 min).
 
 **Resultado** (`/amt1_sort`): `success` = tudo na ordem; `partial` = mesa consistente (nada a bordo)
 mas não totalmente ordenada; `fail_reason` ∈ buffer_insuficiente | poucas_tags_vistas |
 tag_nao_encontrada | fora_de_alcance | pick_falhou | place_falhou | nudge_falhou |
-container_inconsistente | observacao_falhou | cancelado. Falha "limpa" (alvo fora de alcance, tag
-não vista — garra vazia): o nó devolve os cubos a bordo aos slots livres (`recover_onboard`) e
-responde `partial=true`. Abort ou prazo estourado de um pick/place (`pick_falhou`/`place_falhou`): o
+container_inconsistente | observacao_falhou | cancelado. `tag_nao_encontrada` antes de qualquer
+pick = faltou tag mesmo após a busca lateral com `allow_partial=false` (`missing_tags` diz quais,
+`picks: 0`, mesa intacta, `nudges` conta os da busca). Falha "limpa" (alvo fora de alcance, tag
+não vista no pick — garra vazia): o nó devolve os cubos a bordo aos slots livres (`recover_onboard`)
+e responde `partial=true`. Abort ou prazo estourado de um pick/place (`pick_falhou`/`place_falhou`): o
 cubo pode estar na garra, então o nó **não solta nada** — os cubos ficam nos containers (yaml
 preservado), `partial=false`, só o braço volta a `pegar_obj`; o operador resolve à mão antes de
 outro goal.
 
 **Bancada sem robô** (`ROS_DOMAIN_ID=99`): `src/manipulation/manip_bt/test/run_amt1_scenario.sh all`
 (planner + variantes AMT-1/"Test 1"/PP inativa, regressão AMT2/AMT10, dry-run + validação de
-`max_onboard`/`expected_tags`, main 5,2,3,1,4,6, dois ciclos, nudge, buffer 1, tag não vista, place
+`max_onboard`/`expected_tags`, main 5,2,3,1,4,6, dois ciclos, nudge, buffer 1, **busca lateral**
+(`search`: mesa falsa com campo de visão `view_x_max` 0.25 e pontas em ±0.35 → vê 4, anda até +0.20 e
+−0.20, acha as duas, volta ao centro, re-registra e, antes do pick_5 e do pick_4, vai para onde viu
+cada tag → ordena tudo com 6 nudges: busca 6, ops 0), **orçamentos separados** (`search_budget`:
+`search_max_nudges` 4 esgotado na busca, "tento daqui" e as ops ainda usam 2 dos 6 nudges de alcance
+delas → success), **pick que respeita o campo de visão** (`search_pick_view`: mesa falsa com
+`pick_respects_view` → o pick da tag_5 só passa porque o nó foi antes para onde a viu; variante
+`_nobudget` → sem orçamento da busca o nó repete 1x com o braço e falha limpo, 0 picks), **passo
+parcial** (`short_course`: `fake_nav_actions.py -p nudge_short_course:=1` → 1º nudge aborta com
+`curso_incompleto` e `travelled` = 80 % → o nó conta o passo, re-registra e repete; variante
+`_search` com o passo parcial na busca), tag nunca vista (`unseen`: busca sem achar →
+`tag_nao_encontrada`, 0 picks; `unseen_partial` com `allow_partial:=true` → ordena o que viu), place
 fora de alcance com recuperação, place abortado sem recuperação, pick que estoura o prazo, cancel,
-missão completa, executor com fake: ok/abort/result/reject/watchdog/prazo total). gtest da biblioteca:
+missão completa, executor com fake: ok/abort/result/reject/watchdog/prazo total). A mesa falsa
+(`fake_amt1_table.py`) aceita `view_x_max` (tag só entra no TF enquanto |x0 + shift| ≤
+`view_x_max`; shift + = esquerda faz o x das tags crescer) e `pick_respects_view` (o `/pick_tag`
+também responde `tag_nao_encontrada` fora do campo de visão); o `fake_nav_actions.py` aceita
+`nudge_short_course` (N primeiros nudges abortam com `curso_incompleto`, `travelled` = dy×0,8 e o
+total publicado com o parcial, como o `dock_align_node`). gtest da biblioteca:
 `colcon test --packages-select manip_task_execution --ctest-args -R test_amt1` (inclui as 720
 permutações de 6).
 
@@ -432,6 +516,11 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto
   (`[resto]`); na volta a `pegar_obj` com o bloco, recolhe j2..j5 (`[j1 parado]`) e gira
   **j1 por último** (`[j1 por ultimo]`) — o braço estendido nunca varre a mesa girando.
+- Re-detecção após a j1 (29/08): a câmera erra o ponto da tag quando ela está longe; com a
+  j1 já apontada o pick espera `pick_recompute_ik_settle_ms` (300), lê uma TF **fresca** da tag
+  e recalcula a IK **uma vez** (estágio `re_detecting_after_j1`, log `IK recalculada apos a j1:
+  alvo moveu dx dy dz`). Sem TF fresca mantém a primeira IK; se de perto não houver IK, vira
+  "fora de alcance" (fila de alcance). Desligar: `pick_recompute_ik_after_j1:=false`.
 
 ## 6c. Raspberry NOVA (ou reinstalada): restaurar o SSH sem senha
 

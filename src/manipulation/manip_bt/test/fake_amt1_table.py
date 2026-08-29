@@ -17,12 +17,31 @@ TF difundida a rate_hz (stamp = agora):
   base_footprint -> base_link           (0, 0, 0.096)
   base_link -> manip_base_link          (0.217, 0, 0.083) yaw -1.57 (URDF real)
   manip_base_link -> tag_N              (x0 + shift, y_front, z) SO das tags
-                                        que estao na mesa e nao sao "unseen"
+                                        que estao na mesa, nao sao "unseen" e
+                                        estao dentro do campo de visao
   manip_base_link -> camera_color_optical_frame   estatico (olhando para baixo)
+
+Campo de visao lateral (view_x_max, 2026-08-28, bancada da busca lateral):
+  uma tag da mesa so e difundida enquanto |x0 + shift| <= view_x_max, isto
+  e, enquanto o x dela em manip_base_link ATUAL cabe no que as poses de
+  observacao enxergam. Default 9.0 = tudo visivel (comportamento antigo).
+  Sinal: shift + = base para a ESQUERDA => o x_manip de todas as tags CRESCE
+  (x0 + shift), logo uma tag a esquerda (x0 negativo, ex. -0.35) entra no
+  campo de visao quando shift > 0 e uma a direita (x0 positivo) quando
+  shift < 0. Por default so o TF respeita view_x_max: /pick_tag e
+  /place_tag continuam com a regra de alcance (reach_x_max), como o pick
+  real, que varre a mesa com o braco antes de desistir.
+  pick_respects_view (bool, default false; 2026-08-28): com true o
+  /pick_tag tambem respeita o campo de visao: tag com |x0 + shift| >
+  view_x_max responde success=true, skipped=true, unreachable=false,
+  fail_reason tag_nao_encontrada (a varredura do pick real nao a enxerga
+  desta posicao da base) — bancada do "indo para onde vi a tag" do no AMT1.
 
 /pick_tag (PickTag):
   tag em unseen_tags ou fora da mesa -> success=true, skipped=true,
       fail_reason tag_nao_encontrada (a camera nao viu);
+  pick_respects_view=true e |x0 + shift| > view_x_max -> idem
+      (tag_nao_encontrada, unreachable=false), ANTES da regra de alcance;
   |x_manip atual| > reach_x_max e final_attempt=false -> success=true,
       skipped=true, unreachable=true, suggested_base_shift_m quantizado
       (sinal que reduz |x|, mira |x| = reach_x_max - reach_margin, passos de
@@ -58,6 +77,10 @@ Uso:
   python3 fake_amt1_table.py --ros-args -p "layout:=['5:-0.25','2:-0.15','3:-0.05','1:0.05','4:0.15','6:0.25']" \\
       -p container_state_file:=/tmp/amt1_bench/container_states.yaml
   python3 fake_amt1_table.py --ros-args -p "unseen_tags:=['tag_3']" -p fail_stage:=place
+  python3 fake_amt1_table.py --ros-args -p "layout:=['5:-0.35','2:-0.20','3:-0.05','1:0.05','4:0.20','6:0.35']" \\
+      -p view_x_max:=0.25    # tag_5 e tag_6 so aparecem depois de um nudge
+  python3 fake_amt1_table.py --ros-args -p view_x_max:=0.25 -p pick_respects_view:=true
+      # o pick tambem falha (tag_nao_encontrada) com a tag fora do campo de visao
 """
 import math
 import os
@@ -159,6 +182,13 @@ class FakeAmt1Table(Node):
         self.declare_parameter("reset_container_state", True)
         self.declare_parameter("rate_hz", 10.0)
         self.declare_parameter("max_tf_age_sec", 1.0)
+        # Campo de visao lateral (2026-08-28): tag com |x0 + shift| > view_x_max
+        # fica fora do TF (a camera nao a ve dessa posicao da base). 9.0 =
+        # tudo visivel.
+        self.declare_parameter("view_x_max", 9.0)
+        # 2026-08-28: o pick tambem respeita o campo de visao (tag fora ->
+        # skipped + tag_nao_encontrada, sem sugestao de deslocamento).
+        self.declare_parameter("pick_respects_view", False)
 
         self._lock = threading.Lock()
         # Leitura-modificacao-escrita do yaml dos containers e atomica entre
@@ -227,6 +257,8 @@ class FakeAmt1Table(Node):
             "Mesa falsa no ar: /pick_tag, /place_tag, TF odom->...->manip_base_link->tag_N. "
             f"ordem inicial: {self._order_text()} | nunca vistas: {sorted(self._unseen)} | "
             f"reach_x_max {float(self._param('reach_x_max')):.2f} m | "
+            f"view_x_max {float(self._param('view_x_max')):.2f} m | "
+            f"pick_respects_view {bool(self._param('pick_respects_view'))} | "
             f"fail_stage '{stage}' x{self._fails_left.get(stage, 0)} modo {self._fail_mode} | "
             f"containers em {self._state_file}")
 
@@ -348,6 +380,7 @@ class FakeAmt1Table(Node):
         stamp = self.get_clock().now().to_msg()
         y_front = float(self._param("y_front"))
         z = float(self._param("z"))
+        view = float(self._param("view_x_max"))
         with self._lock:
             shift = self._shift
             table = dict(self._table)
@@ -358,6 +391,10 @@ class FakeAmt1Table(Node):
         ]
         for tag, x0 in table.items():
             if tag in self._unseen:
+                continue
+            # Fora do campo de visao dessa posicao da base (2026-08-28): a
+            # camera nao ve a tag, logo ela nao entra no TF.
+            if abs(x0 + shift) > view:
                 continue
             msgs.append(make_tf(
                 stamp, "manip_base_link", f"tag_{tag}", (x0 + shift, y_front, z), (0.0, 0.0, 0.0, 1.0)))
@@ -469,6 +506,20 @@ class FakeAmt1Table(Node):
             return self._fill(
                 result, True, True, "tag_nao_encontrada",
                 f"fake: a camera nao viu {tag_frame}")
+
+        # 2026-08-28: fora do campo de visao desta posicao da base, a
+        # varredura do pick real nao acha a tag -> tag_nao_encontrada (sem
+        # unreachable/sugestao): e o no AMT1 que precisa levar a base ate
+        # onde a viu ("indo para onde vi a tag").
+        view = float(self._param("view_x_max"))
+        if bool(self._param("pick_respects_view")) and abs(x_now) > view:
+            goal_handle.succeed()
+            self.get_logger().warn(
+                f"'pick' PULADO {tag_frame}: fora do campo de visao (x_manip {x_now:+.3f} m, "
+                f"|x| > view_x_max {view:.2f}; pick_respects_view).")
+            return self._fill(
+                result, True, True, "tag_nao_encontrada",
+                f"fake: a camera nao viu {tag_frame} desta posicao da base (x={x_now:+.3f} m fora do campo de visao)")
 
         reach = float(self._param("reach_x_max"))
         if abs(x_now) > reach:

@@ -373,6 +373,12 @@ public:
             std::vector<double>{0.10, 0.15, 0.20, 0.25});
         // A base para um pouco antes do pedido: a busca testa o alvo com
         // esse desconto para nao sugerir um passo que fique 1 cm curto.
+        // 2026-08-29 (pedido do operador): a camera erra o ponto da tag quando
+        // ela esta longe. Na pega por cima: gira SO a j1 (camera apontada para
+        // a tag), re-detecta a tag e recalcula a IK UMA vez, e so entao desce
+        // o resto das juntas.
+        recompute_ik_after_j1_ = this->declare_parameter<bool>("pick_recompute_ik_after_j1", true);
+        recompute_ik_settle_ms_ = this->declare_parameter<int>("pick_recompute_ik_settle_ms", 300);
         unreachable_shift_margin_m_ = this->declare_parameter<double>(
             "unreachable_shift_margin_m", 0.02);
         // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
@@ -1861,6 +1867,9 @@ private:
     /// PRIMEIRO ate o azimute da tag e so depois o resto desce; na VOLTA para
     /// pegar_obj com o bloco, o braco recolhe antes e j1 gira por ULTIMO.
     /// Assim o braco estendido nunca varre a mesa girando.
+    bool recompute_ik_after_j1_{true};
+    int recompute_ik_settle_ms_{300};
+
     bool moveToJointTargetJoint1First(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::array<double, 5> & q,
@@ -2154,21 +2163,27 @@ private:
         // Escada "por cima": vertical estrita e depois inclinacoes
         // crescentes (table_down_tilt_ladder_deg). Nao ha mais degrau
         // frontal: se NENHUMA alcancar, o alvo esta "fora de alcance".
-        for (const double tilt : tableDownTiltsRad()) {
-            Eigen::Vector3d target;
-            outcome = solveCustomIkForTag(
-                tag_frame, tilt, 0.0, "mesa", cycle_name, q, &tag_yaw,
-                manip_task_execution::IkOptions{},
-                manip_task_execution::ArmModel{}, 0.0, &target);
-            if (outcome == CustomIkOutcome::kNoTransform) {
-                break;
+        auto solve_ladder = [&](std::array<double, 5> & q_out, double & yaw_out,
+                                double & tilt_out, std::optional<Eigen::Vector3d> & seen_out) {
+            CustomIkOutcome out = CustomIkOutcome::kNoSolution;
+            for (const double tilt : tableDownTiltsRad()) {
+                Eigen::Vector3d target;
+                out = solveCustomIkForTag(
+                    tag_frame, tilt, 0.0, "mesa", cycle_name, q_out, &yaw_out,
+                    manip_task_execution::IkOptions{},
+                    manip_task_execution::ArmModel{}, 0.0, &target);
+                if (out == CustomIkOutcome::kNoTransform) {
+                    break;
+                }
+                seen_out = target;
+                if (out == CustomIkOutcome::kOk) {
+                    tilt_out = tilt;
+                    break;
+                }
             }
-            target_seen = target;
-            if (outcome == CustomIkOutcome::kOk) {
-                tilt_used = tilt;
-                break;
-            }
-        }
+            return out;
+        };
+        outcome = solve_ladder(q, tag_yaw, tilt_used, target_seen);
 
         if (outcome == CustomIkOutcome::kNoTransform) {
             speak("Falha: perdi a tag na aproximação");
@@ -2192,8 +2207,85 @@ private:
             cycle_name.c_str(), tilt_used * 180.0 / M_PI, tag_yaw, q[4]);
 
         speak("Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame));
-        // j1 primeiro, depois o resto (pedido do operador 2026-08-28).
-        if (!moveToJointTargetJoint1First(arm, q, cycle_name + " mesa custom down")) {
+
+        // Fase 1: SO a j1 (pedido do operador 2026-08-28): a base do braco
+        // gira ate o azimute da tag com o resto parado.
+        std::vector<double> cur;
+        if (arm->getCurrentState(2.0)) {
+            cur = arm->getCurrentJointValues();
+        }
+        if (cur.size() >= 5) {
+            std::array<double, 5> first{cur[0], cur[1], cur[2], cur[3], cur[4]};
+            first[0] = q[0];
+            if (std::abs(first[0] - cur[0]) > 1e-3 &&
+                !moveToJointTarget(arm, first, cycle_name + " mesa custom down [so j1]"))
+            {
+                return TableApproachResult::kMoveFailed;
+            }
+        } else {
+            RCLCPP_WARN(this->get_logger(), "[%s] sem estado atual - aproximacao em movimento unico.", cycle_name.c_str());
+        }
+
+        // Re-deteccao UMA vez (pedido do operador 2026-08-29): com a camera
+        // ja apontada para a tag, le uma TF FRESCA e recalcula a IK. De
+        // longe a camera erra o ponto; de perto acerta. Sem TF fresca,
+        // segue com a primeira solucao (WARN). Se de perto nao houver IK, o
+        // alvo esta mesmo fora de alcance.
+        if (recompute_ik_after_j1_ && cur.size() >= 5) {
+            publish_stage(goal_handle, "re_detecting_after_j1");
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
+                return TableApproachResult::kMoveFailed;
+            }
+            geometry_msgs::msg::TransformStamped fresh;
+            if (!waitForTagTransform(
+                    shelf_ik_reference_frame_, tag_frame, fresh,
+                    std::chrono::milliseconds(1500), std::chrono::milliseconds(100),
+                    cycle_name + " re_detect_after_j1"))
+            {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] re-deteccao apos a j1: sem TF fresca da %s - mantenho a primeira IK.",
+                    cycle_name.c_str(), tag_frame.c_str());
+            } else {
+                std::array<double, 5> q2{};
+                double yaw2 = 0.0;
+                double tilt2 = 0.0;
+                std::optional<Eigen::Vector3d> seen2;
+                const CustomIkOutcome out2 = solve_ladder(q2, yaw2, tilt2, seen2);
+                if (out2 == CustomIkOutcome::kOk) {
+                    Eigen::Vector3d d = Eigen::Vector3d::Zero();
+                    if (seen2 && target_seen) {
+                        d = *seen2 - *target_seen;
+                    }
+                    q2[4] = manip_task_execution::computeWristForTagYaw(yaw2, q2[0], tilt2);
+                    RCLCPP_INFO(
+                        this->get_logger(),
+                        "[%s] IK recalculada apos a j1: alvo moveu dx=%+.1f dy=%+.1f dz=%+.1f cm "
+                        "(inclinacao %.0f -> %.0f graus, j1 %+.3f rad)",
+                        cycle_name.c_str(), d.x() * 100.0, d.y() * 100.0, d.z() * 100.0,
+                        tilt_used * 180.0 / M_PI, tilt2 * 180.0 / M_PI, q2[0] - q[0]);
+                    q = q2;
+                    tag_yaw = yaw2;
+                    tilt_used = tilt2;
+                    target_seen = seen2;
+                } else if (out2 == CustomIkOutcome::kNoSolution) {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "[%s] re-deteccao apos a j1: de perto a IK NAO resolve - alvo fora de alcance.",
+                        cycle_name.c_str());
+                    last_unreachable_target_ = seen2 ? seen2 : target_seen;
+                    return TableApproachResult::kUnreachable;
+                } else {
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "[%s] re-deteccao apos a j1: TF da %s sumiu - mantenho a primeira IK.",
+                        cycle_name.c_str(), tag_frame.c_str());
+                }
+            }
+        }
+
+        // Fase 2: o resto das juntas (j1 pode ajustar um pouco se a IK mudou).
+        if (!moveToJointTarget(arm, q, cycle_name + " mesa custom down [resto]")) {
             return TableApproachResult::kMoveFailed;
         }
         return TableApproachResult::kOk;

@@ -2,12 +2,25 @@
 # mesa de precision placement em ordem crescente de id, da esquerda para a
 # direita do robo, usando os containers de bordo como buffer. Servido por
 # amt1_sort_action_node (manip_task_execution) em /amt1_sort.
+# Busca lateral (2026-08-28): faltou tag de expected_tags depois das poses de
+# observacao => a base anda de lado (nudge_base) ate cada search_offsets_m,
+# re-observa acumulando e volta ao centro; se ainda faltar, com allow_partial
+# false (default) nenhum cubo e movido (fail_reason tag_nao_encontrada).
+# A busca tem orcamento proprio (search_max_nudges) separado do max_nudges
+# das operacoes; max_total_shift_m (curso fisico) vale para os dois. Cada tag
+# guarda o shift da base em que foi vista: antes de cada pick a base vai ate
+# la se estiver longe (estagio pick_goto_seen_<tag>, "indo para onde vi a
+# tag"), tambem debitando do orcamento da busca. Exige pelo menos
+# min_seen_tags tags esperadas vistas (senao a base nao anda).
 string ws                # "PP_1"
 string table_pose        # "Mesa10" - repassado aos picks/places
 int32[] expected_tags    # ids esperados na mesa (6); vazio = tudo o que for visto
+                         # (e sem busca lateral: nao ha o que procurar)
 string direction         # left_to_right (default) | right_to_left
 int32 max_onboard        # buffer (0..3); 0 = todos os containers vazios. Minimo util: 2
-bool observe_only        # so observa, planeja e fala; nao move cubo
+bool observe_only        # so observa, planeja e fala; nao move cubo nem a base:
+                         # a busca lateral so roda com o parametro
+                         # search_in_observe_only=true do no (default false)
 ---
 bool success             # todas as tags esperadas na ordem alvo
 bool partial             # mesa consistente mas nao totalmente ordenada
@@ -15,13 +28,21 @@ string message
 string fail_reason       # buffer_insuficiente | poucas_tags_vistas | tag_nao_encontrada |
                          # fora_de_alcance | pick_falhou | place_falhou | nudge_falhou |
                          # container_inconsistente | observacao_falhou | cancelado | ""
+                         # tag_nao_encontrada com picks=0: faltou tag mesmo apos a
+                         # busca lateral e allow_partial=false (mesa intacta)
 int32[] observed_order   # ids da esquerda para a direita no inicio
-int32[] final_order      # ids da esquerda para a direita no fim (planejado/reconstruido)
-int32[] missing_tags     # esperadas e nunca vistas
+int32[] final_order      # ids da esquerda para a direita no fim (planejado/reconstruido);
+                         # vazio quando nenhum cubo foi movido por falta de tag
+int32[] missing_tags     # esperadas e nunca vistas (nem na busca lateral)
 int32 picks
 int32 places
-int32 nudges
-float32 total_shift_m    # deslocamento lateral acumulado da base (+ = esquerda)
+int32 nudges             # total: busca lateral (ida, volta ao centro e os "indo
+                         # para onde vi a tag") + nudges de alcance das operacoes;
+                         # passos PARCIAIS (curso_incompleto) tambem contam. A
+                         # message termina com "nudges N (busca a, ops b)"
+float32 total_shift_m    # deslocamento lateral acumulado da base (+ = esquerda),
+                         # busca incluida (~0 se voltou ao centro); soma o que a
+                         # odometria mediu mesmo nos passos parciais
 ---
 string current_stage     # texto livre; tambem serve de heartbeat (<= 5 s)
 int32 ops_done

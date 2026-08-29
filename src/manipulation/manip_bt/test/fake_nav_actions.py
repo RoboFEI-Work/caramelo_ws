@@ -17,6 +17,12 @@ Parametros:
                pouco antes, como o ESC real).
   nudge_min_travel / nudge_max_travel (0.08 / 0.25): |dy| fora da faixa ->
                abort com reason abaixo_do_passo_minimo / acima_do_curso_maximo.
+  nudge_short_course (int, default 0; 2026-08-28): os primeiros N nudges
+               aceitos (dentro da faixa e sem fail_stage) terminam como o
+               dock_align_node real quando o curso fica curto: abort() COM
+               result (success=false, reason curso_incompleto, travelled =
+               dy*0.8) e o total publicado ja com o parcial — o no AMT1 le
+               o result mesmo em ABORTED e trata o passo como PARCIAL.
 
 Topicos (como o dock_align_node real):
   /manip/base_shift_total (std_msgs/Float64, transient_local, + = esquerda):
@@ -29,6 +35,7 @@ Todos os servers aceitam cancel (checado a cada 0.1 s durante a espera).
 Uso:
   python3 fake_nav_actions.py --ros-args -p latency_sec:=0.5 -p fail_stage:=align
   python3 fake_nav_actions.py --ros-args -p fail_stage:=nudge -p nudge_slip:=0.85
+  python3 fake_nav_actions.py --ros-args -p nudge_short_course:=1   # 1o nudge parcial
 """
 import threading
 import time
@@ -67,9 +74,12 @@ class FakeNavActions(Node):
         self.declare_parameter("nudge_slip", 0.85)
         self.declare_parameter("nudge_min_travel", 0.08)
         self.declare_parameter("nudge_max_travel", 0.25)
+        # 2026-08-28: quantos nudges ainda vao terminar com curso_incompleto.
+        self.declare_parameter("nudge_short_course", 0)
 
         self._lock = threading.Lock()
         self._base_shift_total = 0.0
+        self._short_course_left = max(0, int(self._param("nudge_short_course")))
         latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -118,6 +128,10 @@ class FakeNavActions(Node):
             self.get_logger().warn(
                 "caramelo_msgs/NudgeBase nao encontrada: subindo SEM o nudge_base.")
         self.get_logger().info(f"Servers falsos no ar: {names}.")
+        if self._short_course_left > 0:
+            self.get_logger().warn(
+                f"nudge_short_course={self._short_course_left}: os primeiros "
+                f"{self._short_course_left} nudge(s) terminam com curso_incompleto (travelled = dy*0.8).")
 
     # -- helpers ---------------------------------------------------------------
     def _param(self, name):
@@ -210,6 +224,27 @@ class FakeNavActions(Node):
             result.travelled = 0.0
             result.reason = "obstaculo_lateral"
             self.get_logger().error("'nudge' abortado (fail_stage).")
+            return result
+
+        # 2026-08-28: curso curto como no dock_align_node real — a base andou
+        # (travelled = dy*0.8), o total e publicado com o parcial e o goal
+        # aborta COM result (reason curso_incompleto).
+        with self._lock:
+            short = self._short_course_left > 0
+            if short:
+                self._short_course_left -= 1
+        if short:
+            travelled = dy * 0.8
+            with self._lock:
+                self._base_shift_total += travelled
+            self.get_logger().warn(
+                f"'nudge' CURSO INCOMPLETO (fake, nudge_short_course): pedido {dy:+.3f} m, "
+                f"andou {travelled:+.3f} m -> abort com reason curso_incompleto.")
+            self._publish_shift_total()
+            goal_handle.abort()
+            result.success = False
+            result.travelled = float(travelled)
+            result.reason = "curso_incompleto"
             return result
 
         travelled = dy * float(self._param("nudge_slip"))
