@@ -247,10 +247,12 @@ na imagem e pré-alinhamento pelas poses `tag_esquerda/direita/cima` (31/08: ap�
 no robô, `pick_point_j1_at_stale_tag` e `pick_align_j1_only` voltaram a **false** por default —
 religáveis por parâmetro; o buffer TF segue com `tf_cache_sec` 120 s). A sequência normal do pick
 continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` → pega → subida vertical.
-- **Parada em `tcp2` antes da pega** (31/08): após o alinhamento, o braço vai à pose nomeada
-  `pick_pre_ik_pose` (default `tcp2`; vazio desliga; estágio `going_tcp2`), re-detecta a tag dali e a
-  escada de IK usa a TF fresca. Pose ausente no SRDF → WARN e segue como antes. Só mesa comum —
-  **a pose `tcp2` precisa existir no SRDF** (criar no MoveIt Setup Assistant / à mão).
+- **Pré-ponto TCP2 antes da pega** (31/08): a IK é resolvida primeiro com o **frame `tcp2`**
+  (URDF: `link5` + 0,30 m no eixo da ferramenta) como ponta — o braço para com a garra ~13 cm antes
+  do alvo (estágios `pre_ik_tcp2` → `re_detecting_at_tcp2`), a câmera re-detecta a tag de perto, e a
+  escada normal (com o `tcp`, 0,17) desce e pega da TF fresca. Params `pick_pre_ik_tcp2` (true) e
+  `pick_pre_ik_tcp2_z` (0.30). Sem solução/movimento do pré-ponto → WARN e a pega segue como antes.
+  Só mesa comum.
 
 **Precisão do place** (29/08, pedido do operador "maior precisão possível"), três camadas:
 1. **Mediana das leituras**: em cada parada de observação todas as leituras frescas de cada tag

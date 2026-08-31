@@ -400,11 +400,13 @@ public:
         point_j1_at_stale_tag_ = this->declare_parameter<bool>("pick_point_j1_at_stale_tag", false);
         stale_tag_point_max_age_s_ = this->declare_parameter<double>("pick_stale_tag_point_max_age_s", 110.0);
         align_j1_only_ = this->declare_parameter<bool>("pick_align_j1_only", false);
-        // 2026-08-31 (pedido do operador): antes de pegar, ir a pose nomeada
-        // pick_pre_ik_pose (default "tcp2"), re-detectar a tag dali e so
-        // entao aproximar (a IK e' recalculada da TF fresca). Vazio = desliga;
-        // pose ausente no SRDF = WARN e segue como antes. So mesa comum.
-        pre_ik_pose_ = this->declare_parameter<std::string>("pick_pre_ik_pose", "tcp2");
+        // 2026-08-31 (pedido do operador): antes de pegar, resolver a IK com
+        // o TCP2 como ferramenta (frame tcp2 do URDF: link5 + 0,30 m no eixo
+        // da ferramenta, vs 0,17 do tcp) — o braco para com a garra ~13 cm
+        // ANTES do alvo, re-detecta a tag dali, e so entao a IK normal (tcp)
+        // desce e pega. So mesa comum; falha do pre-ponto nao e' fatal.
+        pre_ik_tcp2_ = this->declare_parameter<bool>("pick_pre_ik_tcp2", true);
+        pre_ik_tcp2_z_ = this->declare_parameter<double>("pick_pre_ik_tcp2_z", 0.30);
         j1_point_max_abs_rad_ = this->declare_parameter<double>("pick_j1_point_max_abs_deg", 75.0) * M_PI / 180.0;
         if (stale_tag_point_max_age_s_ > tf_cache_sec_ - 5.0) {
             RCLCPP_WARN(
@@ -2014,7 +2016,8 @@ private:
     bool point_j1_at_stale_tag_{false};
     double stale_tag_point_max_age_s_{110.0};
     bool align_j1_only_{false};
-    std::string pre_ik_pose_{"tcp2"};
+    bool pre_ik_tcp2_{true};
+    double pre_ik_tcp2_z_{0.30};
     double j1_point_max_abs_rad_{75.0 * M_PI / 180.0};
     // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
     std::optional<Eigen::Vector3d> last_table_grasp_target_;
@@ -2306,6 +2309,67 @@ private:
     {
         publish_stage(goal_handle, "final_approach_custom_down");
         last_table_grasp_target_.reset();
+
+        // Fase 0 (2026-08-31, pedido do operador): IK com o TCP2 como
+        // ferramenta (tcp_z = pick_pre_ik_tcp2_z) — a garra para ~13 cm antes
+        // do alvo, a camera re-detecta a tag de perto e a escada normal (tcp)
+        // parte de uma TF fresca. Sem solucao/movimento: WARN e segue.
+        if (pre_ik_tcp2_ && pre_ik_tcp2_z_ > 0.0) {
+            manip_task_execution::ArmModel tcp2_model{};
+            tcp2_model.tcp_z = pre_ik_tcp2_z_;
+            std::array<double, 5> q_pre{};
+            double yaw_pre = 0.0;
+            CustomIkOutcome out_pre =
+                CustomIkOutcome::kNoSolution;
+            double tilt_pre = 0.0;
+            for (const double tilt : tableDownTiltsRad()) {
+                out_pre = solveCustomIkForTag(
+                    tag_frame, tilt, 0.0, "pre_tcp2", cycle_name, q_pre, &yaw_pre,
+                    manip_task_execution::IkOptions{}, tcp2_model);
+                if (out_pre == CustomIkOutcome::kNoTransform) {
+                    break;
+                }
+                if (out_pre == CustomIkOutcome::kOk) {
+                    tilt_pre = tilt;
+                    break;
+                }
+            }
+            if (out_pre == CustomIkOutcome::kOk) {
+                q_pre[4] = manip_task_execution::computeWristForTagYaw(yaw_pre, q_pre[0], tilt_pre);
+                publish_stage(goal_handle, "pre_ik_tcp2");
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "[%s] pre-ponto TCP2 (tcp_z %.2f, %.0f graus): garra ~%.0f mm antes do alvo para re-detectar.",
+                    cycle_name.c_str(), pre_ik_tcp2_z_, tilt_pre * 180.0 / M_PI,
+                    (pre_ik_tcp2_z_ - manip_task_execution::ArmModel{}.tcp_z) * 1000.0);
+                if (!moveToJointTargetJoint1First(arm, q_pre, cycle_name + " pre_tcp2")) {
+                    RCLCPP_WARN(
+                        this->get_logger(), "[%s] pre-ponto TCP2: movimento falhou — sigo para a aproximacao normal.",
+                        cycle_name.c_str());
+                } else {
+                    publish_stage(goal_handle, "re_detecting_at_tcp2");
+                    if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
+                        return TableApproachResult::kMoveFailed;
+                    }
+                    geometry_msgs::msg::TransformStamped fresh;
+                    if (!waitForTagTransform(
+                            shelf_ik_reference_frame_, tag_frame, fresh,
+                            std::chrono::milliseconds(1500), std::chrono::milliseconds(100),
+                            cycle_name + " re_detect_tcp2"))
+                    {
+                        RCLCPP_WARN(
+                            this->get_logger(),
+                            "[%s] pre-ponto TCP2: sem TF fresca da %s — a escada usa a ultima vista.",
+                            cycle_name.c_str(), tag_frame.c_str());
+                    }
+                }
+            } else {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] pre-ponto TCP2 sem solucao de IK — sigo para a aproximacao normal.",
+                    cycle_name.c_str());
+            }
+        }
 
         std::array<double, 5> q{};
         double tag_yaw = 0.0;
@@ -3038,27 +3102,6 @@ private:
                 speak("Falha: não consegui alinhar a câmera com a tag");
                 last_pick_failure_reason_ = "align_camera_falhou";
                 return false;
-            }
-        }
-
-        // 2026-08-31 (pedido do operador): parada em pick_pre_ik_pose
-        // ("tcp2") antes da aproximacao — a re-deteccao logo abaixo passa a
-        // ser feita DESSA pose e a escada de IK usa a TF fresca dali.
-        if (!is_shelf && !pre_ik_pose_.empty()) {
-            publish_stage(goal_handle, "going_" + pre_ik_pose_);
-            arm->setStartStateToCurrentState();
-            arm->setEndEffectorLink("tcp");
-            if (!arm->setNamedTarget(pre_ik_pose_) ||
-                !planAndExecute(arm, cycle_name + " " + pre_ik_pose_))
-            {
-                RCLCPP_WARN(
-                    this->get_logger(),
-                    "[%s] nao fui para '%s' (pose existe no SRDF?) — sigo direto para a aproximacao.",
-                    cycle_name.c_str(), pre_ik_pose_.c_str());
-            } else {
-                RCLCPP_INFO(
-                    this->get_logger(), "[%s] em %s: re-detectando a %s para recalcular a IK.",
-                    cycle_name.c_str(), pre_ik_pose_.c_str(), tag_frame.c_str());
             }
         }
 
