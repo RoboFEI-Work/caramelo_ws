@@ -242,13 +242,15 @@ coisa (a bancada não cobre isto: a mesa falsa não escorrega).
 `observe_poses`/`reobserve_poses` = `[tag_direita, tag_esquerda]`, com **j2 = 0** nessas duas poses
 no SRDF — assim as duas vistas cobrem todas as 6 tags. O que ainda faltar é procurado girando
 **só a j1** (abaixo). No pick, se a tag não está na imagem, o nó de
-pick primeiro **aponta a j1** para a última posição conhecida dela (`pick_point_j1_at_stale_tag`,
-TF de até `pick_stale_tag_point_max_age_s` 110 s — o buffer TF do pick agora guarda `tf_cache_sec`
-120 s; giro limitado a `pick_j1_point_max_abs_deg` 75; não na prateleira; só se a base **não andou**
-(> 3 cm / 2°) desde aquela vista; se não re-detectar, a j1 volta ao centro antes da varredura) e re-detecta; só depois
-varre (±0,3/±0,6 rad). O pré-alinhamento da câmera (`camera_xy_alignment`) também virou **só j1**
-(`pick_align_j1_only`): gira a j1 para a tag em vez de ir a `tag_esquerda/direita/cima`. A sequência
-normal do pick já é j1 primeiro → re-detecção → IK recalculada → pega.
+pick usa o fluxo **validado ao vivo em 29/08**: varredura j1 (±0,3/±0,6 rad) quando a tag não está
+na imagem e pré-alinhamento pelas poses `tag_esquerda/direita/cima` (31/08: após os picks falharem
+no robô, `pick_point_j1_at_stale_tag` e `pick_align_j1_only` voltaram a **false** por default —
+religáveis por parâmetro; o buffer TF segue com `tf_cache_sec` 120 s). A sequência normal do pick
+continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` → pega → subida vertical.
+- **Parada em `tcp2` antes da pega** (31/08): após o alinhamento, o braço vai à pose nomeada
+  `pick_pre_ik_pose` (default `tcp2`; vazio desliga; estágio `going_tcp2`), re-detecta a tag dali e a
+  escada de IK usa a TF fresca. Pose ausente no SRDF → WARN e segue como antes. Só mesa comum —
+  **a pose `tcp2` precisa existir no SRDF** (criar no MoveIt Setup Assistant / à mão).
 
 **Precisão do place** (29/08, pedido do operador "maior precisão possível"), três camadas:
 1. **Mediana das leituras**: em cada parada de observação todas as leituras frescas de cada tag

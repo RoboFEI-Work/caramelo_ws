@@ -392,14 +392,19 @@ public:
         // 2026-08-29 (pedido do operador): com o bloco preso, subir na
         // VERTICAL (mesmo x,y) antes de recolher para pegar_obj. 0 = desliga.
         lift_after_grasp_m_ = this->declare_parameter<double>("pick_lift_after_grasp_m", 0.05);
-        // 2026-08-29 (pedido do operador): tag fora de vista => antes de
-        // varrer, aponta SO a j1 para onde a tag foi vista pela ultima vez
-        // (TF velha vale para a direcao: a base nao andou) e re-detecta.
-        point_j1_at_stale_tag_ = this->declare_parameter<bool>("pick_point_j1_at_stale_tag", true);
+        // 2026-08-31 (pedido do operador: apos os picks falharem no robo,
+        // "volte as mudancas da IK"): apontar a j1 pela TF velha e o
+        // alinhamento so-j1 voltam DESLIGADOS por default — o fluxo de pega
+        // e' o validado ao vivo em 29/08 (alinhamento pelas poses
+        // tag_esquerda/direita/cima + varredura). Religaveis por parametro.
+        point_j1_at_stale_tag_ = this->declare_parameter<bool>("pick_point_j1_at_stale_tag", false);
         stale_tag_point_max_age_s_ = this->declare_parameter<double>("pick_stale_tag_point_max_age_s", 110.0);
-        // 2026-08-29 (pedido do operador): pre-alinhamento da camera SO com a
-        // j1 (sem as poses tag_esquerda/tag_direita/tag_cima).
-        align_j1_only_ = this->declare_parameter<bool>("pick_align_j1_only", true);
+        align_j1_only_ = this->declare_parameter<bool>("pick_align_j1_only", false);
+        // 2026-08-31 (pedido do operador): antes de pegar, ir a pose nomeada
+        // pick_pre_ik_pose (default "tcp2"), re-detectar a tag dali e so
+        // entao aproximar (a IK e' recalculada da TF fresca). Vazio = desliga;
+        // pose ausente no SRDF = WARN e segue como antes. So mesa comum.
+        pre_ik_pose_ = this->declare_parameter<std::string>("pick_pre_ik_pose", "tcp2");
         j1_point_max_abs_rad_ = this->declare_parameter<double>("pick_j1_point_max_abs_deg", 75.0) * M_PI / 180.0;
         if (stale_tag_point_max_age_s_ > tf_cache_sec_ - 5.0) {
             RCLCPP_WARN(
@@ -2006,9 +2011,10 @@ private:
     std::string start_gripper_pose_;
     bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
     double lift_after_grasp_m_{0.05};
-    bool point_j1_at_stale_tag_{true};
+    bool point_j1_at_stale_tag_{false};
     double stale_tag_point_max_age_s_{110.0};
-    bool align_j1_only_{true};
+    bool align_j1_only_{false};
+    std::string pre_ik_pose_{"tcp2"};
     double j1_point_max_abs_rad_{75.0 * M_PI / 180.0};
     // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
     std::optional<Eigen::Vector3d> last_table_grasp_target_;
@@ -3032,6 +3038,27 @@ private:
                 speak("Falha: não consegui alinhar a câmera com a tag");
                 last_pick_failure_reason_ = "align_camera_falhou";
                 return false;
+            }
+        }
+
+        // 2026-08-31 (pedido do operador): parada em pick_pre_ik_pose
+        // ("tcp2") antes da aproximacao — a re-deteccao logo abaixo passa a
+        // ser feita DESSA pose e a escada de IK usa a TF fresca dali.
+        if (!is_shelf && !pre_ik_pose_.empty()) {
+            publish_stage(goal_handle, "going_" + pre_ik_pose_);
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            if (!arm->setNamedTarget(pre_ik_pose_) ||
+                !planAndExecute(arm, cycle_name + " " + pre_ik_pose_))
+            {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] nao fui para '%s' (pose existe no SRDF?) — sigo direto para a aproximacao.",
+                    cycle_name.c_str(), pre_ik_pose_.c_str());
+            } else {
+                RCLCPP_INFO(
+                    this->get_logger(), "[%s] em %s: re-detectando a %s para recalcular a IK.",
+                    cycle_name.c_str(), pre_ik_pose_.c_str(), tag_frame.c_str());
             }
         }
 
