@@ -11,6 +11,11 @@ string table_pose
 # comportamento de sempre (escada completa + skip / fallback na mesa).
 # Ignorado na prateleira (MesaSh).
 bool final_attempt
+# 2026-08-31: POSE INICIAL GRAVADA — frame TF de reserva (ex. tag_amt1_slot_k,
+# difundido pelo no AMT1 com a pose em que a tag foi vista na observacao).
+# Se a tag sumir da camera (deteccao + varredura falham), as tentativas
+# seguintes pegam por este frame. Vazio = comportamento de sempre.
+string fallback_frame
 
 ---
 bool success
@@ -28,6 +33,9 @@ float32 suggested_base_shift_m
 # Alvo do TCP que falhou, em manip_base_link (diagnostico).
 float32 target_x
 float32 target_y
+# 2026-08-31: juntas do braco NO FECHAMENTO da garra (mesa comum; vazio na
+# prateleira/falha) — memoria para o place por juntas do no AMT1.
+float64[] grasp_joints
 
 ---
 string current_stage

@@ -22,6 +22,11 @@ string container_color
 # comportamento de sempre (escada completa + skip / fallback na mesa).
 # Ignorado na prateleira (MesaSh).
 bool final_attempt
+# 2026-08-31: JUNTAS GRAVADAS — se nao vazio (5 valores), o place do stack_on
+# vai DIRETO para estas juntas (a configuracao em que a garra fechou na pega
+# daquele slot) em vez de resolver a IK do ponto xyz. So vale se a base nao
+# se moveu desde a pega (quem chama garante). Vazio = IK normal.
+float64[] place_joints
 
 ---
 bool success

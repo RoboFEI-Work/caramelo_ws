@@ -2018,6 +2018,7 @@ private:
     bool align_j1_only_{false};
     bool pre_ik_tcp2_{true};
     double pre_ik_tcp2_z_{0.30};
+    std::vector<double> last_grasp_joints_;  ///< juntas no fechamento da garra (31/08)
     double j1_point_max_abs_rad_{75.0 * M_PI / 180.0};
     // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
     std::optional<Eigen::Vector3d> last_table_grasp_target_;
@@ -3257,6 +3258,18 @@ private:
             speak("A garra detectou o bloco");
         }
 
+        // 2026-08-31 (pedido do operador): juntas NO FECHAMENTO da garra —
+        // memoria para o place por juntas do no AMT1 (so mesa comum).
+        if (!is_shelf) {
+            last_grasp_joints_.clear();
+            if (arm->getCurrentState(2.0)) {
+                last_grasp_joints_ = arm->getCurrentJointValues();
+                RCLCPP_INFO(
+                    this->get_logger(), "[%s] juntas da pega gravadas [%zu] para o place por juntas.",
+                    cycle_name.c_str(), last_grasp_joints_.size());
+            }
+        }
+
         // 2026-08-29 (pedido do operador): mesa comum — sobe na vertical com
         // o bloco antes de recolher (falha nao e' fatal: o bloco esta preso).
         if (!is_shelf) {
@@ -3292,6 +3305,7 @@ private:
         publishPickActive(true);
         const auto goal = goal_handle->get_goal();
         auto result = std::make_shared<PickTag::Result>();
+        last_grasp_joints_.clear();
 
         // Fila de alcance (2026-08-28): os campos de alcance saem preenchidos
         // em TODOS os desfechos. unreachable so e verdadeiro sem sucesso —
@@ -3455,6 +3469,10 @@ private:
         bool object_still_grasped = false;
         int attempts_done = 0;
 
+        // 2026-08-31 (pedido do operador): frame efetivo da pega — pode
+        // trocar para a pose inicial gravada (fallback_frame) se a tag sumir.
+        std::string frame_to_pick = goal->tag_frame;
+        bool fallback_used = false;
         for (int attempt = 1; attempt <= max_pick_attempts; ++attempt) {
             attempts_done = attempt;
             const std::string cycle_name =
@@ -3476,7 +3494,7 @@ private:
             cycle_success = run_pick_cycle(
                 arm,
                 gripper,
-                goal->tag_frame,
+                frame_to_pick,
                 container_pose,
                 cycle_name,
                 goal_handle,
@@ -3495,6 +3513,22 @@ private:
 
             if (cancellationRequested() || goal_handle->is_canceling()) {
                 break;
+            }
+
+            // 2026-08-31 (pedido do operador): a tag da ponta some da camera
+            // — com fallback_frame (pose INICIAL gravada, frame difundido
+            // pelo no AMT1), as tentativas seguintes pegam por ele.
+            if (!fallback_used && !goal->fallback_frame.empty() &&
+                last_pick_failure_reason_ == "tag_nao_encontrada")
+            {
+                fallback_used = true;
+                frame_to_pick = goal->fallback_frame;
+                retryable_failure = true;
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "PICK de %s: tag nao vista — usando a POSE INICIAL gravada (%s) nas proximas tentativas.",
+                    goal->tag_frame.c_str(), frame_to_pick.c_str());
+                speak("Nao vejo a tag. Vou usar a posicao inicial guardada");
             }
 
             if (!retryable_failure || attempt >= max_pick_attempts) {
@@ -3652,6 +3686,9 @@ private:
         // Item 2.9: sucesso FISICO manda — falha de I/O do yaml vira WARN +
         // flag na mensagem, nunca aborta uma coleta ja realizada.
         result->success = success;
+        if (success) {
+            result->grasp_joints.assign(last_grasp_joints_.begin(), last_grasp_joints_.end());
+        }
         fill_reach_fields(success);
         if (success && state_write_success) {
             result->message = "Pick completed";

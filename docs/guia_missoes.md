@@ -247,6 +247,19 @@ na imagem e pré-alinhamento pelas poses `tag_esquerda/direita/cima` (31/08: ap�
 no robô, `pick_point_j1_at_stale_tag` e `pick_align_j1_only` voltaram a **false** por default —
 religáveis por parâmetro; o buffer TF segue com `tf_cache_sec` 120 s). A sequência normal do pick
 continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` → pega → subida vertical.
+- **Pose inicial como reserva do pick** (31/08): o goal do PickTag leva `fallback_frame` =
+  `tag_amt1_slot_k` do slot de origem (o nó AMT1 difunde a pose da observação a 10 Hz). Se a tag
+  não for vista (detecção + varredura falham), as tentativas seguintes pegam por esse frame
+  (log "usando a POSE INICIAL gravada"; fala "Não vejo a tag. Vou usar a posição inicial guardada");
+  a verificação de esforço na garra segue valendo. `pick_fallback_slot_frame` (true) no nó AMT1.
+- **Place por juntas gravadas** (31/08): quando a garra **fecha** num slot (pick de mesa comum), as
+  juntas do braço são gravadas no resultado (`grasp_joints`) e o nó AMT1 as guarda por slot com o
+  base shift do momento. O place **naquele slot** manda `place_joints` no goal e o nó de place vai
+  **direto para essas juntas** (pré-pose `stack_pre_lift_m` acima via IK; estágios
+  `stack_joints_pre_pose` → `stack_joints_final`; sem IK do ponto, sem câmera, sem checagem de
+  chegada — juntas são exatas). Só se a base não se moveu desde a pega
+  (`place_joints_shift_tol_m` 0.01) e fora do passe de ajuste; senão, IK do ponto como antes
+  (`place_joints_enabled` desliga). O re-registro local é pulado quando as juntas serão usadas.
 - **Pré-ponto TCP2 antes da pega** (31/08): a IK é resolvida primeiro com o **frame `tcp2`**
   (URDF: `link5` + 0,30 m no eixo da ferramenta) como ponta — o braço para com a garra ~13 cm antes
   do alvo (estágios `pre_ik_tcp2` → `re_detecting_at_tcp2`), a câmera re-detecta a tag de perto, e a

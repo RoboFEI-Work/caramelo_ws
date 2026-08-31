@@ -246,6 +246,11 @@ public:
         verify_tol_m_ = this->declare_parameter<double>("verify_tol_m", 0.015);
         refine_max_ops_ = this->declare_parameter<int>("refine_max_ops", 3);
         verify_final_report_ = this->declare_parameter<bool>("verify_final_report", true);
+        // 31/08 (pedido do operador): place por JUNTAS gravadas na pega do
+        // slot (em vez da IK do ponto) e pick de reserva pela pose inicial.
+        place_joints_enabled_ = this->declare_parameter<bool>("place_joints_enabled", true);
+        place_joints_shift_tol_m_ = this->declare_parameter<double>("place_joints_shift_tol_m", 0.01);
+        pick_fallback_slot_frame_ = this->declare_parameter<bool>("pick_fallback_slot_frame", true);
 
         // ---- Alcance / nudge ----
         nudge_enabled_ = this->declare_parameter<bool>("nudge_enabled", true);
@@ -394,6 +399,7 @@ private:
         std::string fail_reason;
         std::string message;
         double suggested_shift_m{0.0};
+        std::vector<double> grasp_joints;  ///< juntas no fechamento da garra (pick, 31/08)
     };
 
     enum class ObserveOutcome { kOk, kCanceled, kArmFailed, kLockBusy };
@@ -451,6 +457,11 @@ private:
         bool searched{false};        ///< a busca lateral rodou neste goal
         bool searched_j1{false};     ///< a varredura j1 rodou neste goal
         std::string refine_failure;  ///< passe de ajuste falhou (nao derruba o sort; 29/08)
+        bool refining{false};        ///< passe de ajuste em curso (place nao usa juntas gravadas)
+        /// 31/08: por SLOT, as juntas em que a garra FECHOU + o base shift do
+        /// momento — o place naquele slot repete as juntas (sem IK do ponto)
+        /// se a base nao se moveu desde entao.
+        std::map<int, std::pair<std::vector<double>, double>> slot_grasp;
         int j1_stops{0};             ///< paradas da varredura j1 executadas
         bool search_moved{false};    ///< a busca lateral moveu a base
         bool returned_to_center{false};  ///< a volta ao centro (shift0) chegou
@@ -553,6 +564,9 @@ private:
     double verify_tol_m_{0.015};
     int refine_max_ops_{3};
     bool verify_final_report_{true};
+    bool place_joints_enabled_{true};
+    double place_joints_shift_tol_m_{0.01};
+    bool pick_fallback_slot_frame_{true};
 
     bool nudge_enabled_{true};
     int max_nudges_{6};
@@ -1696,15 +1710,21 @@ private:
         }
     }
 
-    ChildResult doPick(GoalState & gs, int tag, const std::string & label)
+    ChildResult doPick(GoalState & gs, int tag, int slot, const std::string & label)
     {
         PickTag::Goal goal;
         goal.tag_frame = tagFrameForId(tag);
         goal.table_pose = gs.table_pose;
         goal.final_attempt = false;
+        // 31/08: pose INICIAL gravada como reserva — o frame do slot de
+        // origem e' difundido por este no; a tag da ponta que sumir da
+        // camera ainda e' pega pela posicao da observacao.
+        if (pick_fallback_slot_frame_ && slot >= 0) {
+            goal.fallback_frame = slotFrame(slot);
+        }
         RCLCPP_INFO(
-            get_logger(), "[AMT1] %s: PickTag{tag_frame=%s table_pose=%s final_attempt=false}",
-            label.c_str(), goal.tag_frame.c_str(), goal.table_pose.c_str());
+            get_logger(), "[AMT1] %s: PickTag{tag_frame=%s table_pose=%s fallback=%s final_attempt=false}",
+            label.c_str(), goal.tag_frame.c_str(), goal.table_pose.c_str(), goal.fallback_frame.c_str());
         const auto run = runChild<PickTag>(gs, pick_client_, goal, label, op_timeout_s_);
         ChildResult out;
         if (fillCommonOutcome(run, cancellationRequested(), out)) {
@@ -1715,6 +1735,7 @@ private:
         out.fail_reason = r.fail_reason;
         out.message = r.message;
         out.suggested_shift_m = static_cast<double>(r.suggested_base_shift_m);
+        out.grasp_joints.assign(r.grasp_joints.begin(), r.grasp_joints.end());
         if (r.success && !r.skipped) {
             out.outcome = ChildOutcome::kOk;
         } else if (r.skipped && r.unreachable) {
@@ -1729,6 +1750,17 @@ private:
         return out;
     }
 
+    /// 31/08: o place deste slot pode repetir as JUNTAS da pega (exatas)?
+    bool slotJointsUsable(const GoalState & gs, int slot) const
+    {
+        if (!place_joints_enabled_ || gs.refining) {
+            return false;
+        }
+        const auto it = gs.slot_grasp.find(slot);
+        return it != gs.slot_grasp.end() && it->second.first.size() >= 5 &&
+               std::abs(currentBaseShift(gs) - it->second.second) <= place_joints_shift_tol_m_;
+    }
+
     ChildResult doPlace(GoalState & gs, int tag, int slot, const std::string & label)
     {
         PlaceTag::Goal goal;
@@ -1737,6 +1769,20 @@ private:
         goal.ws = gs.ws;
         goal.stack_on = slotFrame(slot);
         goal.final_attempt = false;
+        if (slotJointsUsable(gs, slot)) {
+            const auto & j = gs.slot_grasp.at(slot);
+            goal.place_joints.assign(j.first.begin(), j.first.end());
+            RCLCPP_INFO(
+                get_logger(),
+                "[AMT1] %s: place por JUNTAS gravadas do slot %d (shift na pega %+.3f, agora %+.3f).",
+                label.c_str(), slot, j.second, currentBaseShift(gs));
+        } else if (place_joints_enabled_ && gs.slot_grasp.count(slot)) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[AMT1] %s: juntas do slot %d NAO usadas (%s) — place pela IK do ponto.",
+                label.c_str(), slot,
+                gs.refining ? "passe de ajuste" : "base se moveu desde a pega");
+        }
         RCLCPP_INFO(
             get_logger(),
             "[AMT1] %s: PlaceTag{tag_frame=%s table_pose=%s ws=%s stack_on=%s final_attempt=false}",
@@ -3040,7 +3086,7 @@ private:
                 }
             }
             publishStage(gs, label);
-            const ChildResult r = is_pick ? doPick(gs, op.tag, label) : doPlace(gs, op.tag, op.slot, label);
+            const ChildResult r = is_pick ? doPick(gs, op.tag, op.slot, label) : doPlace(gs, op.tag, op.slot, label);
             const std::string kind = is_pick ? "pick" : "place";
             const std::string failed_reason = is_pick ? "pick_falhou" : "place_falhou";
 
@@ -3058,6 +3104,14 @@ private:
                         gs.onboard.push_back(op.tag);
                         gs.touched.insert(op.tag);
                         ++gs.picks;
+                        // 31/08: juntas em que a garra fechou NESTE slot —
+                        // o place aqui repete a configuracao exata.
+                        if (!r.grasp_joints.empty()) {
+                            gs.slot_grasp[op.slot] = {r.grasp_joints, currentBaseShift(gs)};
+                            RCLCPP_INFO(
+                                get_logger(), "[AMT1] juntas da pega gravadas para o slot %d (shift %+.3f).",
+                                op.slot, currentBaseShift(gs));
+                        }
                     } else {
                         const auto it = std::find(gs.onboard.begin(), gs.onboard.end(), op.tag);
                         if (it != gs.onboard.end()) {
@@ -3885,7 +3939,9 @@ private:
                     const amt1::SortOp & op = ops[i];
                     const std::string label =
                         prefix + std::to_string(i + 1) + "/" + std::to_string(ops.size()) + "_" + amt1::describeOp(op);
-                    if (op.type == amt1::SortOpType::kPlace && !localReregisterForSlot(gs, op.slot)) {
+                    if (op.type == amt1::SortOpType::kPlace && !slotJointsUsable(gs, op.slot) &&
+                        !localReregisterForSlot(gs, op.slot))
+                    {
                         gs.fail_reason = "cancelado";
                         gs.message = "cancelado no re-registro local antes de " + label;
                         return false;
@@ -3971,11 +4027,13 @@ private:
                             std::to_string(static_cast<int>(std::lround(e.err * 1000.0))) + " mm)";
                     }
                     gs.ops_total += static_cast<int>(refine.size());
+                    gs.refining = true;
                     RCLCPP_WARN(
                         get_logger(), "[AMT1] verificacao: %zu tag(s) fora da tolerancia de %.0f mm: %s — ajustando.",
                         bad.size(), verify_tol_m_ * 1000.0, txt.c_str());
                     speak("Vou ajustar " + std::to_string(bad.size()) + (bad.size() == 1 ? " tag" : " tags"));
                     ops_ok = run_ops(refine, "ajuste_");
+                    gs.refining = false;
                     if (!ops_ok && gs.fail_reason != "cancelado" && !cancellationRequested()) {
                         // Revisao 29/08: o sort principal JA terminou; a falha
                         // do ajuste vira nota (apos a recuperacao dos cubos a

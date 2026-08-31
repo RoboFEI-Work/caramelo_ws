@@ -2183,8 +2183,54 @@ private:
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & base_frame,
         const std::string & table_pose,
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::vector<double> & place_joints = {})
     {
+        // 2026-08-31 (pedido do operador): JUNTAS GRAVADAS na pega deste slot
+        // — vai direto para elas (mesma configuracao em que a garra fechou),
+        // sem IK do ponto e sem depender da camera. Pre-pose = mesmo ponto
+        // stack_pre_lift_m acima (IK; sem solucao = descida direta). Chegada
+        // por FK dispensada: juntas sao exatas.
+        if (place_joints.size() >= 5) {
+            std::array<double, 5> qj{
+                place_joints[0], place_joints[1], place_joints[2], place_joints[3], place_joints[4]};
+            Eigen::Vector3d fk_pos;
+            Eigen::Matrix3d fk_rot;
+            manip_task_execution::forwardKinematics(
+                qj, manip_task_execution::ArmModel{}, fk_pos, fk_rot);
+            const double tilt = std::acos(std::max(-1.0, std::min(1.0, -fk_rot.col(2).z())));
+            std::array<double, 5> q_lift2{};
+            bool lift_ok = manip_task_execution::solveIk(
+                fk_pos + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_), tilt, 0.0, q_lift2);
+            if (lift_ok) {
+                q_lift2[4] = qj[4];
+            } else {
+                RCLCPP_WARN(
+                    get_logger(), "[STACK] juntas gravadas: sem IK para a pre-pose %.0f mm acima — descida direta.",
+                    stack_pre_lift_m_ * 1000.0);
+                q_lift2 = qj;
+            }
+            RCLCPP_INFO(
+                get_logger(),
+                "[STACK] place por JUNTAS gravadas em %s: alvo FK [%.3f %.3f %.3f] (%.0f graus) j "
+                "[%.3f %.3f %.3f %.3f %.3f]",
+                base_frame.c_str(), fk_pos.x(), fk_pos.y(), fk_pos.z(), tilt * 180.0 / M_PI,
+                qj[0], qj[1], qj[2], qj[3], qj[4]);
+            publish_stage(goal_handle, "stack_joints_pre_pose");
+            speak("Colocando o bloco na posicao gravada");
+            stack_arm_moved_ = true;
+            if (!moveToJointTarget(arm, q_lift2, "stack joints pre-pose " + base_frame)) {
+                return StackOutcome::kMoveFailed;
+            }
+            stack_lift_q_ = q_lift2;  // subida apos soltar
+            publish_stage(goal_handle, "stack_joints_final");
+            if (!moveToJointTarget(arm, qj, "stack joints replay " + base_frame)) {
+                return StackOutcome::kMoveFailed;
+            }
+            last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, fk_pos, 0.0};
+            return StackOutcome::kOk;
+        }
+
         publish_stage(goal_handle, "stack_detecting_base");
         speak("Procurando o bloco de baixo " + spokenTargetName(base_frame));
         waitForCameraStream("PLACE");
@@ -2763,7 +2809,8 @@ private:
                         table_pose.c_str());
                 } else {
                     const StackOutcome out = placeStackedOnFrame(
-                        arm, goal->stack_on, table_pose, goal_handle);
+                        arm, goal->stack_on, table_pose, goal_handle,
+                        std::vector<double>(goal->place_joints.begin(), goal->place_joints.end()));
                     if (out == StackOutcome::kOk) {
                         return true;
                     }
