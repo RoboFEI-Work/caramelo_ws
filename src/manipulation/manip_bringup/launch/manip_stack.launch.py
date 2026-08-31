@@ -442,10 +442,10 @@ def generate_launch_description():
             # SO a j1 ("j1"); "base" = anda de lado; "j1_then_base" = os dois.
             "search_mode": "j1",
             "search_j1_offsets_deg": [-30.0, 30.0, -60.0, 60.0],
-            # 2026-08-29 (pedido do operador): so pegar_obj + j1; sem
-            # tag_esquerda/tag_direita nesta task.
-            "observe_poses": ["pegar_obj"],
-            "reobserve_poses": ["pegar_obj"],
+            # 2026-08-31 (pedido do operador, validado em teste): observa de
+            # tag_direita e depois tag_esquerda (j2=0 no SRDF nas duas).
+            "observe_poses": ["tag_direita", "tag_esquerda"],
+            "reobserve_poses": ["tag_direita", "tag_esquerda"],
             # Precisao do place (2026-08-29): re-registro local antes de cada
             # place e passe de verificacao/ajuste (tolerancia 15 mm).
             "place_local_reregister": True,

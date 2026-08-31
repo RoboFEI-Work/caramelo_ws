@@ -97,7 +97,7 @@
     </group_state>
     <group_state name="tag_direita" group="arm">
         <joint name="manip_joint1" value="0.9599"/>
-        <joint name="manip_joint2" value="0.2618"/>
+        <joint name="manip_joint2" value="0"/>
         <joint name="manip_joint3" value="0.7854"/>
         <joint name="manip_joint4" value="1.9373"/>
         <joint name="manip_joint5" value="-2.1468"/>
@@ -111,7 +111,7 @@
     </group_state>
     <group_state name="tag_esquerda" group="arm">
         <joint name="manip_joint1" value="2.1642"/>
-        <joint name="manip_joint2" value="0.2618"/>
+        <joint name="manip_joint2" value="0"/>
         <joint name="manip_joint3" value="0.7854"/>
         <joint name="manip_joint4" value="1.9373"/>
         <joint name="manip_joint5" value="-1.2217"/>

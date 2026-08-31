@@ -238,9 +238,10 @@ como o `refine_desired_face_dist` do §1a); repetir com `dy: -0.20` e conferir q
 `/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
 coisa (a bancada não cobre isto: a mesa falsa não escorrega).
 
-**Observação só de `pegar_obj`** (29/08, pedido do operador): `observe_poses`/`reobserve_poses`
-= `[pegar_obj]` — as poses `tag_esquerda`/`tag_direita` saíram desta task; o que não aparece de
-`pegar_obj` é procurado girando **só a j1** (abaixo). No pick, se a tag não está na imagem, o nó de
+**Observação de `tag_direita` → `tag_esquerda`** (31/08, pedido do operador, validado em teste):
+`observe_poses`/`reobserve_poses` = `[tag_direita, tag_esquerda]`, com **j2 = 0** nessas duas poses
+no SRDF — assim as duas vistas cobrem todas as 6 tags. O que ainda faltar é procurado girando
+**só a j1** (abaixo). No pick, se a tag não está na imagem, o nó de
 pick primeiro **aponta a j1** para a última posição conhecida dela (`pick_point_j1_at_stale_tag`,
 TF de até `pick_stale_tag_point_max_age_s` 110 s — o buffer TF do pick agora guarda `tf_cache_sec`
 120 s; giro limitado a `pick_j1_point_max_abs_deg` 75; não na prateleira; só se a base **não andou**

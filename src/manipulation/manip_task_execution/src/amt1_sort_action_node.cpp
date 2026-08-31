@@ -144,13 +144,14 @@ public:
         // false = bancada sem MoveIt: nao constroi o MoveGroupInterface e le
         // as TFs parado (as tags precisam estar no TF de qualquer forma).
         observe_move_enabled_ = this->declare_parameter<bool>("observe_move_enabled", true);
-        // 2026-08-29 (pedido do operador): SEM tag_esquerda/tag_direita —
-        // observa so de pegar_obj e identifica o resto girando apenas a j1
-        // (sweepJ1ForMissingTags); o pick aponta a j1 e recalcula a IK.
+        // 2026-08-31 (pedido do operador, validado em teste): observa indo a
+        // tag_direita e depois tag_esquerda (com j2=0 no SRDF as duas poses
+        // enxergam todas as tags). A varredura j1 continua de reserva para
+        // tag que ainda falte; o pick segue apontando a j1 e recalculando a IK.
         observe_poses_ = this->declare_parameter<std::vector<std::string>>(
-            "observe_poses", std::vector<std::string>{"pegar_obj"});
+            "observe_poses", std::vector<std::string>{"tag_direita", "tag_esquerda"});
         reobserve_poses_ = this->declare_parameter<std::vector<std::string>>(
-            "reobserve_poses", std::vector<std::string>{"pegar_obj"});
+            "reobserve_poses", std::vector<std::string>{"tag_direita", "tag_esquerda"});
         observe_dwell_s_ = this->declare_parameter<double>("observe_dwell_s", 1.5);
         // true = para de visitar poses assim que todas as esperadas foram vistas.
         observe_stop_early_ = this->declare_parameter<bool>("observe_stop_early", false);
