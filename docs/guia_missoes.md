@@ -238,6 +238,43 @@ como o `refine_desired_face_dist` do §1a); repetir com `dy: -0.20` e conferir q
 `/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
 coisa (a bancada não cobre isto: a mesa falsa não escorrega).
 
+**Observação só de `pegar_obj`** (29/08, pedido do operador): `observe_poses`/`reobserve_poses`
+= `[pegar_obj]` — as poses `tag_esquerda`/`tag_direita` saíram desta task; o que não aparece de
+`pegar_obj` é procurado girando **só a j1** (abaixo). No pick, se a tag não está na imagem, o nó de
+pick primeiro **aponta a j1** para a última posição conhecida dela (`pick_point_j1_at_stale_tag`,
+TF de até `pick_stale_tag_point_max_age_s` 110 s — o buffer TF do pick agora guarda `tf_cache_sec`
+120 s; giro limitado a `pick_j1_point_max_abs_deg` 75; não na prateleira; só se a base **não andou**
+(> 3 cm / 2°) desde aquela vista; se não re-detectar, a j1 volta ao centro antes da varredura) e re-detecta; só depois
+varre (±0,3/±0,6 rad). O pré-alinhamento da câmera (`camera_xy_alignment`) também virou **só j1**
+(`pick_align_j1_only`): gira a j1 para a tag em vez de ir a `tag_esquerda/direita/cima`. A sequência
+normal do pick já é j1 primeiro → re-detecção → IK recalculada → pega.
+
+**Precisão do place** (29/08, pedido do operador "maior precisão possível"), três camadas:
+1. **Mediana das leituras**: em cada parada de observação todas as leituras frescas de cada tag
+   são acumuladas e a melhor (eixo óptico) vira a mediana, eixo a eixo, das leituras a ≤
+   `sample_merge_radius_m` (2 cm) dela, com ≥ `sample_merge_min` (3) leituras — log
+   `tag_N em <pose>: mediana de K leitura(s)`.
+2. **Re-registro local antes de cada place** (`place_local_reregister`, estágio
+   `place_local_reregister_slot_k`): aponta só a j1 para o slot alvo, lê `place_local_dwell_s` (1 s),
+   e corrige **só o slot alvo** pelo delta médio das âncoras originais intactas a ≤
+   `place_local_anchor_radius_m` (0,30) — 1 âncora já vale, espalhamento ≤ `reregister_max_spread_m`,
+   |delta| ≤ `place_local_max_shift_m` (3 cm). A correção fica num campo separado do slot
+   (`local_dx/dy`), **sobrescrita** a cada medida (nunca acumula), entra só no frame difundido e é
+   zerada no re-registro global. Corrige deriva do odom e o viés câmera→braço perto do alvo.
+3. **Verificação/ajuste** (`verify_after_sort`): terminado o plano, observa de novo (pegar_obj +
+   varredura silenciosa só pelas tags que deveriam estar na mesa), mede o erro 2D de cada tag
+   contra o slot base **relativo às âncoras intactas vistas na mesma observação** (o delta médio
+   delas é subtraído — deriva do odom/viés do ponto de vista não viram "erro"; log
+   `verify: referência = K âncora(s), delta (...)` e `verify: tag_N no slot j: erro X mm`); só cubos
+   que o **robô pousou**
+   com erro > `verify_tol_m` (15 mm) são pegos e recolocados (até `refine_max_ops` = 3, ops
+   `ajuste_i/N_...`, com o re-registro local); tags intactas fora da tolerância são só informativas.
+   Falha no ajuste **não rebaixa** o sort (vira nota "ajuste falhou (...)") **só** se nenhum cubo ficou a
+   bordo, o filho não abortou/estourou prazo e o braço está em estado conhecido; verificação
+   incompleta (tag pousada não vista) não fala "tudo no lugar" — WARN e nota. A correção local é
+   re-medida quando um place é repetido após re-registro global, e zerada quando a medida é rejeitada. Depois, relatório final (`verify_final: ... pior erro X mm`). Fala "Conferi a mesa: tudo
+   no lugar" ou "Vou ajustar N tags". Custo: ~10 s de medida + ~60 s por tag ajustada.
+
 **Varredura só com a j1** (29/08, pedido do operador — modo padrão `search_mode: j1`): se depois
 das poses de observação faltar alguma tag de `expected_tags`, o robô fala "Vi as tags 1, 2, 3.
 Faltou a 4. Vou girar a câmera para procurar" e, da `transport_pose` (`pegar_obj`), gira **apenas a
@@ -304,6 +341,10 @@ expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
 **Parâmetros** (nó): `observe_poses`, `observe_dwell_s` 1.5, `min_seen_tags` 2 (parâmetro do nó;
 `max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios; abaixo disto a busca nem
 roda), `allow_partial` **false** (28/08; true = ordena o que viu quando falta tag), busca lateral:
+`observe_poses` **[pegar_obj]** (29/08), `reobserve_poses` [pegar_obj], precisão: `sample_merge_min` 3,
+`sample_merge_radius_m` 0.02, `place_local_reregister` true, `place_local_dwell_s` 1.0,
+`place_local_anchor_radius_m` 0.30, `place_local_max_shift_m` 0.03, `verify_after_sort` true,
+`verify_tol_m` 0.015, `refine_max_ops` 3, `verify_final_report` true;
 `search_mode` **j1** (29/08; `base` | `j1_then_base`), `search_j1_offsets_deg` [-30, 30, -60, 60],
 `search_j1_max_abs_deg` 75, `search_j1_dwell_s` 1.0 (varredura só com a j1);
 `search_enabled` true, `search_offsets_m` [0.20, -0.20], `search_observe_poses` (= `observe_poses`),

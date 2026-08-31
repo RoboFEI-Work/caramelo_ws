@@ -144,10 +144,13 @@ public:
         // false = bancada sem MoveIt: nao constroi o MoveGroupInterface e le
         // as TFs parado (as tags precisam estar no TF de qualquer forma).
         observe_move_enabled_ = this->declare_parameter<bool>("observe_move_enabled", true);
+        // 2026-08-29 (pedido do operador): SEM tag_esquerda/tag_direita —
+        // observa so de pegar_obj e identifica o resto girando apenas a j1
+        // (sweepJ1ForMissingTags); o pick aponta a j1 e recalcula a IK.
         observe_poses_ = this->declare_parameter<std::vector<std::string>>(
-            "observe_poses", std::vector<std::string>{"pegar_obj", "tag_esquerda", "tag_direita"});
+            "observe_poses", std::vector<std::string>{"pegar_obj"});
         reobserve_poses_ = this->declare_parameter<std::vector<std::string>>(
-            "reobserve_poses", std::vector<std::string>{"tag_esquerda", "tag_direita"});
+            "reobserve_poses", std::vector<std::string>{"pegar_obj"});
         observe_dwell_s_ = this->declare_parameter<double>("observe_dwell_s", 1.5);
         // true = para de visitar poses assim que todas as esperadas foram vistas.
         observe_stop_early_ = this->declare_parameter<bool>("observe_stop_early", false);
@@ -225,6 +228,24 @@ public:
         search_j1_max_abs_deg_ = this->declare_parameter<double>("search_j1_max_abs_deg", 75.0);
         search_j1_dwell_s_ = this->declare_parameter<double>("search_j1_dwell_s", 1.0);
 
+        // ---- Precisao do place (2026-08-29, pedido do operador) ----
+        // (1) mediana das leituras de cada parada (ruido da tag);
+        // (2) re-registro LOCAL antes de cada place: j1 apontada para o
+        //     slot, ancoras intactas num raio, delta so no slot alvo
+        //     (deriva do odom + vies camera->braco perto do alvo);
+        // (3) passe de verificacao: observa de novo, tag com erro > tolerancia
+        //     e' pega e recolocada (ate refine_max_ops), e relatorio final.
+        sample_merge_min_ = this->declare_parameter<int>("sample_merge_min", 3);
+        sample_merge_radius_m_ = this->declare_parameter<double>("sample_merge_radius_m", 0.02);
+        place_local_reregister_ = this->declare_parameter<bool>("place_local_reregister", true);
+        place_local_dwell_s_ = this->declare_parameter<double>("place_local_dwell_s", 1.0);
+        place_local_anchor_radius_m_ = this->declare_parameter<double>("place_local_anchor_radius_m", 0.30);
+        place_local_max_shift_m_ = this->declare_parameter<double>("place_local_max_shift_m", 0.03);
+        verify_after_sort_ = this->declare_parameter<bool>("verify_after_sort", true);
+        verify_tol_m_ = this->declare_parameter<double>("verify_tol_m", 0.015);
+        refine_max_ops_ = this->declare_parameter<int>("refine_max_ops", 3);
+        verify_final_report_ = this->declare_parameter<bool>("verify_final_report", true);
+
         // ---- Alcance / nudge ----
         nudge_enabled_ = this->declare_parameter<bool>("nudge_enabled", true);
         max_nudges_ = this->declare_parameter<int>("max_nudges", 6);
@@ -295,7 +316,9 @@ public:
             "[AMT1] /amt1_sort no ar: observe_move=%s poses=[%s] anchor=%s slots=%s* "
             "nudge=%s (max %d, total <= %.2f m) tag_frames=%zu allow_partial=%s "
             "busca=%s offsets=[%s] poses_busca=[%s] volta_ao_centro=%s busca_max_nudges=%d "
-            "busca_em_observe_only=%s busca_modo=%s j1_offsets=[%s] graus (|max| %.0f, dwell %.1f s)",
+            "busca_em_observe_only=%s busca_modo=%s j1_offsets=[%s] graus (|max| %.0f, dwell %.1f s) "
+            "precisao: mediana>=%d/%.0fmm reregistro_local=%s(raio %.2f, max %.0f mm) verificacao=%s(tol %.0f mm, "
+            "ate %d ajuste(s))",
             observe_move_enabled_ ? "true" : "false", join(observe_poses_).c_str(),
             anchor_frame_.c_str(), slot_frame_prefix_.c_str(),
             nudge_enabled_ ? "true" : "false", max_nudges_, max_total_shift_m_,
@@ -304,7 +327,10 @@ public:
             join(search_observe_poses_).c_str(),
             return_to_center_after_search_ ? "true" : "false", search_max_nudges_,
             search_in_observe_only_ ? "true" : "false", search_mode_.c_str(),
-            joinDoubles(search_j1_offsets_deg_).c_str(), search_j1_max_abs_deg_, search_j1_dwell_s_);
+            joinDoubles(search_j1_offsets_deg_).c_str(), search_j1_max_abs_deg_, search_j1_dwell_s_,
+            sample_merge_min_, sample_merge_radius_m_ * 1000.0, place_local_reregister_ ? "on" : "off",
+            place_local_anchor_radius_m_, place_local_max_shift_m_ * 1000.0, verify_after_sort_ ? "on" : "off",
+            verify_tol_m_ * 1000.0, refine_max_ops_);
     }
 
 private:
@@ -339,8 +365,13 @@ private:
         /// no goal (nudges, busca incluida); so para ordenar a recuperacao.
         double x_manip{0.0};
         double y_manip{0.0};
-        geometry_msgs::msg::Transform tf_anchor;  ///< anchor -> slot (z do tampo, so yaw)
+        geometry_msgs::msg::Transform tf_anchor;  ///< anchor -> slot (z do tampo, so yaw) — BASE
         double shift_seen{0.0};                   ///< base shift da amostra que gerou o slot (2026-08-28)
+        /// Correcao LOCAL do place (2026-08-29, revisao): SOBRESCRITA a cada
+        /// medida, nunca acumulada; entra so no frame difundido. Zerada no
+        /// re-registro global. A verificacao compara com a BASE.
+        double local_dx{0.0};
+        double local_dy{0.0};
     };
 
     enum class ChildOutcome
@@ -418,6 +449,7 @@ private:
         int search_positions{0};     ///< posicoes da busca lateral visitadas
         bool searched{false};        ///< a busca lateral rodou neste goal
         bool searched_j1{false};     ///< a varredura j1 rodou neste goal
+        std::string refine_failure;  ///< passe de ajuste falhou (nao derruba o sort; 29/08)
         int j1_stops{0};             ///< paradas da varredura j1 executadas
         bool search_moved{false};    ///< a busca lateral moveu a base
         bool returned_to_center{false};  ///< a volta ao centro (shift0) chegou
@@ -509,6 +541,17 @@ private:
     std::vector<double> search_j1_offsets_deg_;
     double search_j1_max_abs_deg_{75.0};
     double search_j1_dwell_s_{1.0};
+    // Precisao do place (2026-08-29).
+    int sample_merge_min_{3};
+    double sample_merge_radius_m_{0.02};
+    bool place_local_reregister_{true};
+    double place_local_dwell_s_{1.0};
+    double place_local_anchor_radius_m_{0.30};
+    double place_local_max_shift_m_{0.03};
+    bool verify_after_sort_{true};
+    double verify_tol_m_{0.015};
+    int refine_max_ops_{3};
+    bool verify_final_report_{true};
 
     bool nudge_enabled_{true};
     int max_nudges_{6};
@@ -1068,6 +1111,8 @@ private:
                 msg.header.frame_id = anchor_frame_;
                 msg.child_frame_id = slot.frame;
                 msg.transform = slot.tf_anchor;
+                msg.transform.translation.x += slot.local_dx;
+                msg.transform.translation.y += slot.local_dy;
                 msgs.push_back(msg);
             }
         }
@@ -1096,6 +1141,10 @@ private:
         // 2026-08-28: a base nao anda durante a observacao: um shift por dwell.
         const double shift_now = currentBaseShift(gs);
         const bool now_center = isCenterShift(gs, shift_now);
+        // 2026-08-29 (precisao): todas as leituras frescas desta parada
+        // (dedupe por stamp) — mediana no fim (mergeSamplesMedian).
+        std::map<int, std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>>> collected;
+        std::map<int, rclcpp::Time> collected_stamp;
         while (true) {
             const rclcpp::Time now = this->get_clock()->now();
             for (const std::string & frame : tag_frames_) {
@@ -1171,6 +1220,17 @@ private:
                 if (p_ref.y() < observe_min_radial_m_) {
                     continue;  // encostado no eixo do braco / atras: nao e mesa
                 }
+                {
+                    auto cs = collected_stamp.find(id);
+                    if (cs == collected_stamp.end() || stamp > cs->second) {
+                        collected_stamp[id] = stamp;
+                        collected[id].emplace_back(
+                            p_ref,
+                            Eigen::Vector3d(
+                                anchor_tf.transform.translation.x, anchor_tf.transform.translation.y,
+                                anchor_tf.transform.translation.z));
+                    }
+                }
 
                 auto it = gs.samples.find(id);
                 if (it != gs.samples.end()) {
@@ -1211,7 +1271,61 @@ private:
                 return false;
             }
         }
+        mergeSamplesMedian(gs, collected, pose_name, shift_now);
         return true;
+    }
+
+    /// 2026-08-29 (precisao): a melhor amostra de uma parada (eixo optico)
+    /// vira a MEDIANA, eixo a eixo, das leituras da mesma parada a ate
+    /// sample_merge_radius_m dela (>= sample_merge_min leituras). Reduz o
+    /// ruido da pose da tag sem deixar uma leitura torta puxar a media.
+    void mergeSamplesMedian(
+        GoalState & gs,
+        const std::map<int, std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>>> & collected,
+        const std::string & pose_name, double shift_now)
+    {
+        const std::size_t min_n = static_cast<std::size_t>(std::max(1, sample_merge_min_));
+        for (const auto & kv : collected) {
+            auto it = gs.samples.find(kv.first);
+            if (it == gs.samples.end() || it->second.pose_name != pose_name ||
+                std::abs(it->second.shift_seen - shift_now) > 1e-6 || kv.second.size() < min_n)
+            {
+                continue;
+            }
+            TagSample & best = it->second;
+            std::vector<double> xs, ys, zs, ax, ay, az;
+            for (const auto & pr : kv.second) {
+                const Eigen::Vector3d & p = pr.first;
+                if (std::hypot(p.x() - best.p_ref.x(), p.y() - best.p_ref.y()) > sample_merge_radius_m_) {
+                    continue;
+                }
+                xs.push_back(p.x()); ys.push_back(p.y()); zs.push_back(p.z());
+                ax.push_back(pr.second.x()); ay.push_back(pr.second.y()); az.push_back(pr.second.z());
+            }
+            if (xs.size() < min_n) {
+                continue;
+            }
+            auto median = [](std::vector<double> v) {
+                    std::sort(v.begin(), v.end());
+                    const std::size_t n = v.size();
+                    return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+                };
+            // Revisao 29/08: a mediana e' tomada em UM frame (anchor) e o
+            // p_ref e' derivado dela (mesmo ponto nos dois frames).
+            const Eigen::Vector3d old_ref = best.p_ref;
+            best.tf_anchor.translation.x = median(ax);
+            best.tf_anchor.translation.y = median(ay);
+            best.tf_anchor.translation.z = median(az);
+            if (gs.ref_valid) {
+                best.p_ref = (gs.ref_inv * toIsometry(best.tf_anchor)).translation();
+            } else {
+                best.p_ref = Eigen::Vector3d(median(xs), median(ys), median(zs));
+            }
+            const double moved = std::hypot(best.p_ref.x() - old_ref.x(), best.p_ref.y() - old_ref.y());
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] tag_%d em %s: mediana de %zu leitura(s) (melhor leitura corrigida em %.1f mm).",
+                kv.first, pose_name.c_str(), xs.size(), moved * 1000.0);
+        }
     }
 
     bool allExpectedSeen(const GoalState & gs) const
@@ -2058,7 +2172,7 @@ private:
     /// do grupo visto). Um offset cujo movimento falha ENCERRA a varredura
     /// (WARN, estado do braco desconhecido) e volta a j1 de transporte;
     /// so' essa volta falhar derruba a observacao.
-    SearchOutcome sweepJ1ForMissingTags(GoalState & gs, std::string * why)
+    SearchOutcome sweepJ1ForMissingTags(GoalState & gs, std::string * why, bool quiet = false)
     {
         std::vector<int> missing = missingExpected(gs);
         if (gs.expected.empty() || missing.empty()) {
@@ -2068,14 +2182,14 @@ private:
             RCLCPP_INFO(
                 get_logger(), "[AMT1] faltam [%s] e a busca esta desligada (search_enabled=false): sem varredura j1.",
                 joinInts(missing).c_str());
-            gs.search_note = "sem varredura j1 (search_enabled=false)";
+            if (!quiet) {gs.search_note = "sem varredura j1 (search_enabled=false)";}
             return SearchOutcome::kOk;
         }
         if (!observe_move_enabled_) {
             RCLCPP_INFO(
                 get_logger(), "[AMT1] faltam [%s] mas observe_move_enabled=false: sem varredura j1 (sem braco).",
                 joinInts(missing).c_str());
-            gs.search_note = "sem varredura j1 (observe_move_enabled=false)";
+            if (!quiet) {gs.search_note = "sem varredura j1 (observe_move_enabled=false)";}
             return SearchOutcome::kOk;
         }
         std::vector<double> offsets;
@@ -2091,7 +2205,7 @@ private:
         if (offsets.empty()) {
             RCLCPP_WARN(get_logger(), "[AMT1] faltam [%s] e search_j1_offsets_deg nao tem offset valido: sem varredura j1.",
                 joinInts(missing).c_str());
-            gs.search_note = "sem varredura j1 (search_j1_offsets_deg vazio)";
+            if (!quiet) {gs.search_note = "sem varredura j1 (search_j1_offsets_deg vazio)";}
             return SearchOutcome::kOk;
         }
         // Lado preferido: onde ha menos tags vistas. x em T0: + = direita;
@@ -2152,12 +2266,14 @@ private:
                 get_logger(),
                 "[AMT1] varredura j1: sem estado atual do braco (%zu junta(s); joint_states?) — varredura pulada.",
                 base_q.size());
-            gs.search_note = "sem varredura j1 (sem estado atual do braco)";
+            if (!quiet) {gs.search_note = "sem varredura j1 (sem estado atual do braco)";}
             return SearchOutcome::kOk;
         }
         const double j1_base = base_q[0];
         gs.searched_j1 = true;
-        speak(seenMissingPhrase(seenIdsSorted(gs), missing) + ". Vou girar a camera para procurar");
+        if (!quiet) {
+            speak(seenMissingPhrase(seenIdsSorted(gs), missing) + ". Vou girar a camera para procurar");
+        }
         RCLCPP_WARN(
             get_logger(),
             "[AMT1] varredura j1: faltam [%s] apos a observacao — paradas [%s] graus (j1 base %.3f rad, "
@@ -2226,7 +2342,7 @@ private:
         arm_at_transport_ = true;
         arm_state_known_ = true;
         releaseLock();
-        if (!missing.empty()) {
+        if (!missing.empty() && !quiet) {
             gs.search_note = "varredura j1 (" + std::to_string(gs.j1_stops) + " parada(s)) nao achou [" +
                 joinInts(missing) + "]";
             RCLCPP_WARN(
@@ -2510,6 +2626,8 @@ private:
             for (Slot & slot : slots_) {
                 slot.tf_anchor.translation.x += reg.dx;
                 slot.tf_anchor.translation.y += reg.dy;
+                slot.local_dx = 0.0;  // deriva absorvida na base; vies local e' re-medido no proximo place
+                slot.local_dy = 0.0;
             }
         }
         RCLCPP_INFO(
@@ -2589,6 +2707,300 @@ private:
     /// => se ainda nao esta la vai e repete, senao re-observa das poses
     /// laterais e repete (retry_not_seen).
     /// Devolve true no sucesso; senao preenche gs.fail_reason/message.
+    /// 2026-08-29 (precisao): antes de um place, aponta SO a j1 para o slot
+    /// alvo, le as tags por place_local_dwell_s e corrige o slot alvo pelo
+    /// delta medio das ancoras INTACTAS num raio (registrationDelta com 1
+    /// ancora ja vale; espalhamento <= reregister_max_spread_m; |delta| <=
+    /// place_local_max_shift_m). So o slot alvo muda. Devolve false so em
+    /// cancelamento.
+    bool localReregisterForSlot(GoalState & gs, int slot_index)
+    {
+        if (!place_local_reregister_ || !observe_move_enabled_ || !gs.ref_valid) {
+            return true;
+        }
+        const std::vector<Slot> slots = slotsSnapshot();
+        const Slot * target = nullptr;
+        for (const Slot & s : slots) {
+            if (s.index == slot_index) {
+                target = &s;
+            }
+        }
+        if (!target) {
+            return true;
+        }
+        geometry_msgs::msg::TransformStamped ref_T_anchor;
+        try {
+            ref_T_anchor = tf_buffer_->lookupTransform(ik_reference_frame_, anchor_frame_, tf2::TimePointZero);
+        } catch (const tf2::TransformException & ex) {
+            RCLCPP_WARN(get_logger(), "[AMT1] re-registro local: sem TF %s <- %s (%s) — pulado.",
+                ik_reference_frame_.c_str(), anchor_frame_.c_str(), ex.what());
+            return true;
+        }
+        const IsometryU T = toIsometry(ref_T_anchor.transform) * toIsometry(target->tf_anchor);
+        const Eigen::Vector3d p = T.translation();
+        const double j1_target = std::atan2(p.y(), p.x());
+
+        if (!acquireLock()) {
+            return !cancellationRequested();
+        }
+        auto arm = ensureArm();
+        if (!arm) {
+            releaseLock();
+            return true;
+        }
+        if (!arm_at_transport_) {
+            if (!goToNamedPose(arm, transport_pose_, "local reregister go " + transport_pose_)) {
+                arm_state_known_ = false;
+                releaseLock();
+                return !cancellationRequested();
+            }
+            arm_at_transport_ = true;
+            arm_state_known_ = true;
+        }
+        std::vector<double> base_q;
+        if (arm->getCurrentState(5.0)) {
+            base_q = arm->getCurrentJointValues();
+        }
+        if (base_q.size() < 5) {
+            releaseLock();
+            RCLCPP_WARN(get_logger(), "[AMT1] re-registro local: sem estado atual do braco — pulado.");
+            return true;
+        }
+        double delta = j1_target - base_q[0];
+        while (delta > M_PI) {delta -= 2.0 * M_PI;}
+        while (delta < -M_PI) {delta += 2.0 * M_PI;}
+        const double max_abs = search_j1_max_abs_deg_ * M_PI / 180.0;
+        delta = std::max(-max_abs, std::min(max_abs, delta));
+        publishStage(gs, "place_local_reregister_slot_" + std::to_string(slot_index));
+        std::vector<double> q = base_q;
+        q[0] = base_q[0] + delta;
+        bool moved = false;
+        if (std::abs(delta) > 0.03) {
+            arm_at_transport_ = false;
+            if (!moveJointTarget(arm, q, "local reregister j1")) {
+                arm_state_known_ = false;
+                releaseLock();
+                RCLCPP_WARN(get_logger(), "[AMT1] re-registro local: j1 nao girou — pulado.");
+                return !cancellationRequested();
+            }
+            moved = true;
+        }
+        GoalState tmp = gs;
+        tmp.samples.clear();
+        const rclcpp::Time arrival = this->get_clock()->now();
+        if (!dwellObserve(tmp, place_local_dwell_s_, arrival, "place_local")) {
+            releaseLock();
+            return false;
+        }
+        if (moved) {
+            q[0] = base_q[0];
+            if (!moveJointTarget(arm, q, "local reregister return")) {
+                arm_state_known_ = false;
+                releaseLock();
+                return !cancellationRequested();
+            }
+        }
+        arm_at_transport_ = true;
+        arm_state_known_ = true;
+        releaseLock();
+
+        std::vector<amt1::AnchorDelta> deltas;
+        for (const Slot & s : slots) {
+            const std::size_t k = static_cast<std::size_t>(s.index);
+            if (s.index == slot_index || k >= gs.table.size()) {
+                continue;
+            }
+            const int tag_here = gs.table[k];
+            if (tag_here <= 0 || tag_here != s.initial_tag || gs.touched.count(tag_here)) {
+                continue;  // so ancora ORIGINAL intacta
+            }
+            const double dist = std::hypot(
+                s.tf_anchor.translation.x - target->tf_anchor.translation.x,
+                s.tf_anchor.translation.y - target->tf_anchor.translation.y);
+            if (dist > place_local_anchor_radius_m_) {
+                continue;
+            }
+            auto it = tmp.samples.find(tag_here);
+            if (it == tmp.samples.end()) {
+                continue;
+            }
+            amt1::AnchorDelta d;
+            d.id = tag_here;
+            d.dx = it->second.tf_anchor.translation.x - s.tf_anchor.translation.x;
+            d.dy = it->second.tf_anchor.translation.y - s.tf_anchor.translation.y;
+            deltas.push_back(d);
+        }
+        // Sem medida valida: a correcao anterior do slot NAO fica (sobrescrita
+        // = zero), senao o frame difundido carregaria um valor velho.
+        auto clear_local = [&]() {
+                std::lock_guard<std::mutex> lock(slots_mutex_);
+                for (Slot & sl : slots_) {
+                    if (sl.index == slot_index) {
+                        sl.local_dx = 0.0;
+                        sl.local_dy = 0.0;
+                    }
+                }
+            };
+        if (deltas.empty()) {
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] re-registro local do slot %d: nenhuma ancora intacta vista a ate %.2f m — sem correcao (zerada).",
+                slot_index, place_local_anchor_radius_m_);
+            clear_local();
+            return true;
+        }
+        const amt1::RegistrationResult reg = amt1::registrationDelta(deltas, 1, reregister_max_spread_m_);
+        if (!reg.ok) {
+            RCLCPP_WARN(
+                get_logger(), "[AMT1] re-registro local do slot %d: %s (%zu ancora(s), espalhamento %.3f m) — sem correcao (zerada).",
+                slot_index, reg.reason.c_str(), reg.used, reg.spread);
+            clear_local();
+            return true;
+        }
+        if (std::hypot(reg.dx, reg.dy) > place_local_max_shift_m_) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[AMT1] re-registro local do slot %d: delta (%+.3f, %+.3f) m acima de place_local_max_shift_m %.3f — ignorado (zerada).",
+                slot_index, reg.dx, reg.dy, place_local_max_shift_m_);
+            clear_local();
+            return true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(slots_mutex_);
+            for (Slot & sl : slots_) {
+                if (sl.index == slot_index) {
+                    sl.local_dx = reg.dx;  // sobrescreve (idempotente)
+                    sl.local_dy = reg.dy;
+                }
+            }
+        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[AMT1] re-registro local do slot %d: correcao (%+.1f, %+.1f) mm com %zu ancora(s) (espalhamento %.1f mm) — so no frame difundido.",
+            slot_index, reg.dx * 1000.0, reg.dy * 1000.0, reg.used, reg.spread * 1000.0);
+        return true;
+    }
+
+    struct PlacementError
+    {
+        int id{0};
+        int slot{0};
+        double dx{0.0};
+        double dy{0.0};
+        double err{0.0};
+    };
+
+    /// 2026-08-29 (precisao): observa a mesa (pegar_obj + varredura j1
+    /// silenciosa) e mede, para cada tag esperada vista, o erro 2D (em odom)
+    /// entre onde ela esta e o slot ALVO dela (target_order[j] -> slot j).
+    /// Devolve false so em cancelamento.
+    /// `complete` = observacao OK e toda tag tocada (pousada pelo robo) foi
+    /// medida; so entao "tudo no lugar" e' afirmavel. Os erros sao medidos
+    /// RELATIVOS as ancoras intactas vistas na MESMA observacao (delta medio
+    /// subtraido): deriva do odom/vies do ponto de vista nao viram "erro".
+    bool measurePlacementErrors(GoalState & gs, const char * stage, std::vector<PlacementError> & out,
+        bool * complete = nullptr)
+    {
+        out.clear();
+        if (complete) {*complete = false;}
+        gs.samples.clear();
+        const ObserveOutcome o = observeTable(gs, observe_poses_, observe_dwell_s_, stage);
+        if (o == ObserveOutcome::kCanceled) {
+            return false;
+        }
+        if (o != ObserveOutcome::kOk) {
+            RCLCPP_WARN(get_logger(), "[AMT1] %s: observacao falhou — sem medida.", stage);
+            return true;
+        }
+        if (search_mode_ != "base") {
+            // Revisao 29/08: so procura o que DEVERIA estar na mesa (gs.table),
+            // nao tags que o goal ja deu como ausentes; gs.expected e'
+            // estreitado temporariamente para a varredura.
+            std::vector<int> on_table;
+            for (const int t : gs.table) {
+                if (t > 0 && gs.samples.count(t) == 0) {
+                    on_table.push_back(t);
+                }
+            }
+            if (!on_table.empty()) {
+                const std::vector<int> saved = gs.expected;
+                gs.expected = on_table;
+                std::string why;
+                const SearchOutcome so = sweepJ1ForMissingTags(gs, &why, true);
+                gs.expected = saved;
+                if (so == SearchOutcome::kCanceled) {
+                    return false;
+                }
+            }
+        }
+        filterSamplesByHeight(gs);
+        const std::vector<Slot> slots = slotsSnapshot();
+        // Referencia da medida: delta medio das ancoras intactas NESTA observacao.
+        double ref_dx = 0.0;
+        double ref_dy = 0.0;
+        {
+            std::vector<amt1::AnchorDelta> anchors;
+            for (const Slot & sl : slots) {
+                const std::size_t k = static_cast<std::size_t>(sl.index);
+                if (k >= gs.table.size()) {continue;}
+                const int tag_here = gs.table[k];
+                if (tag_here <= 0 || tag_here != sl.initial_tag || gs.touched.count(tag_here)) {continue;}
+                auto it = gs.samples.find(tag_here);
+                if (it == gs.samples.end()) {continue;}
+                amt1::AnchorDelta d;
+                d.id = tag_here;
+                d.dx = it->second.tf_anchor.translation.x - sl.tf_anchor.translation.x;
+                d.dy = it->second.tf_anchor.translation.y - sl.tf_anchor.translation.y;
+                anchors.push_back(d);
+            }
+            const amt1::RegistrationResult reg = amt1::registrationDelta(anchors, 1, reregister_max_spread_m_);
+            if (reg.ok) {
+                ref_dx = reg.dx;
+                ref_dy = reg.dy;
+                RCLCPP_INFO(
+                    get_logger(), "[AMT1] %s: referencia = %zu ancora(s) intacta(s), delta (%+.1f, %+.1f) mm (espalhamento %.1f mm).",
+                    stage, reg.used, reg.dx * 1000.0, reg.dy * 1000.0, reg.spread * 1000.0);
+            } else {
+                RCLCPP_WARN(
+                    get_logger(), "[AMT1] %s: sem referencia de ancoras (%s) — erros medidos contra a base em odom.",
+                    stage, reg.reason.c_str());
+            }
+        }
+        bool all_touched_measured = true;
+        for (std::size_t j = 0; j < gs.assignment.target_order.size(); ++j) {
+            const int id = gs.assignment.target_order[j];
+            auto it = gs.samples.find(id);
+            const Slot * s = nullptr;
+            for (const Slot & sl : slots) {
+                if (sl.index == static_cast<int>(j)) {
+                    s = &sl;
+                }
+            }
+            if (!s) {
+                continue;
+            }
+            if (it == gs.samples.end()) {
+                RCLCPP_WARN(get_logger(), "[AMT1] %s: tag_%d (slot %zu) nao vista — sem medida.", stage, id, j);
+                if (gs.touched.count(id)) {
+                    all_touched_measured = false;
+                }
+                continue;
+            }
+            PlacementError e;
+            e.id = id;
+            e.slot = static_cast<int>(j);
+            e.dx = it->second.tf_anchor.translation.x - s->tf_anchor.translation.x - ref_dx;
+            e.dy = it->second.tf_anchor.translation.y - s->tf_anchor.translation.y - ref_dy;
+            e.err = std::hypot(e.dx, e.dy);
+            RCLCPP_INFO(
+                get_logger(), "[AMT1] %s: tag_%d no slot %zu: erro %.1f mm (dx %+.1f, dy %+.1f)%s.",
+                stage, id, j, e.err * 1000.0, e.dx * 1000.0, e.dy * 1000.0,
+                gs.touched.count(id) ? " [pousada pelo robo]" : "");
+            out.push_back(e);
+        }
+        if (complete) {*complete = all_touched_measured;}
+        return true;
+    }
+
     bool runWithReachRetries(GoalState & gs, const amt1::SortOp & op, const std::string & label)
     {
         int reregister_only = 0;
@@ -2753,6 +3165,20 @@ private:
                             gs.message = label + " cancelado na re-observacao";
                             return false;
                         }
+                        // 2026-08-29: sem poses laterais, a re-observacao e'
+                        // pegar_obj + varredura so com a j1.
+                        if (gs.samples.count(op.tag) == 0 && search_mode_ != "base") {
+                            std::string why_sweep;
+                            const std::vector<int> saved_expected = gs.expected;
+                            gs.expected = {op.tag};  // para cedo ao ver a tag da op
+                            const SearchOutcome so_sweep = sweepJ1ForMissingTags(gs, &why_sweep, true);
+                            gs.expected = saved_expected;
+                            if (so_sweep == SearchOutcome::kCanceled) {
+                                gs.fail_reason = "cancelado";
+                                gs.message = label + " cancelado na varredura da re-observacao";
+                                return false;
+                            }
+                        }
                         if (gs.samples.count(op.tag) == 0) {
                             RCLCPP_WARN(
                                 get_logger(), "[AMT1] %s: tag_%d tambem nao apareceu na re-observacao.",
@@ -2804,6 +3230,13 @@ private:
                             gs.message = label + " cancelado no re-registro";
                             return false;
                         }
+                        // Revisao 29/08: o re-registro global zera a correcao
+                        // local; re-mede antes de repetir o place.
+                        if (op.type == amt1::SortOpType::kPlace && !localReregisterForSlot(gs, op.slot)) {
+                            gs.fail_reason = "cancelado";
+                            gs.message = label + " cancelado no re-registro local";
+                            return false;
+                        }
                         continue;
                     }
                     if (std::abs(suggestion) < 1e-6 && reregister_only < 1) {
@@ -2815,6 +3248,11 @@ private:
                         if (!reregisterSlots(gs)) {
                             gs.fail_reason = "cancelado";
                             gs.message = label + " cancelado no re-registro";
+                            return false;
+                        }
+                        if (op.type == amt1::SortOpType::kPlace && !localReregisterForSlot(gs, op.slot)) {
+                            gs.fail_reason = "cancelado";
+                            gs.message = label + " cancelado no re-registro local";
                             return false;
                         }
                         continue;
@@ -3439,26 +3877,126 @@ private:
             return;
         }
 
-        // 5. Execucao.
-        for (std::size_t i = 0; i < plan.ops.size(); ++i) {
-            const amt1::SortOp & op = plan.ops[i];
-            const std::string label =
-                "op_" + std::to_string(i + 1) + "/" + std::to_string(plan.ops.size()) + "_" + amt1::describeOp(op);
-            if (!runWithReachRetries(gs, op, label)) {
-                RCLCPP_ERROR(
-                    get_logger(), "[AMT1] %s falhou: %s — %s", label.c_str(), gs.fail_reason.c_str(),
-                    gs.message.c_str());
-                break;
-            }
-            ++gs.ops_done;
-            publishStage(gs, label + ":done");
-            // Cancel que chegou com o filho ja concluido: o modelo da mesa
-            // foi atualizado acima; a sequencia para aqui.
-            if (cancellationRequested()) {
+        // 5. Execucao. (2026-08-29: corpo em lambda para o passe de ajuste;
+        // antes de cada place, re-registro LOCAL do slot alvo.)
+        auto run_ops = [&](const std::vector<amt1::SortOp> & ops, const std::string & prefix) {
+                for (std::size_t i = 0; i < ops.size(); ++i) {
+                    const amt1::SortOp & op = ops[i];
+                    const std::string label =
+                        prefix + std::to_string(i + 1) + "/" + std::to_string(ops.size()) + "_" + amt1::describeOp(op);
+                    if (op.type == amt1::SortOpType::kPlace && !localReregisterForSlot(gs, op.slot)) {
+                        gs.fail_reason = "cancelado";
+                        gs.message = "cancelado no re-registro local antes de " + label;
+                        return false;
+                    }
+                    if (!runWithReachRetries(gs, op, label)) {
+                        RCLCPP_ERROR(
+                            get_logger(), "[AMT1] %s falhou: %s — %s", label.c_str(), gs.fail_reason.c_str(),
+                            gs.message.c_str());
+                        return false;
+                    }
+                    ++gs.ops_done;
+                    publishStage(gs, label + ":done");
+                    // Cancel que chegou com o filho ja concluido: o modelo da mesa
+                    // foi atualizado acima; a sequencia para aqui.
+                    if (cancellationRequested()) {
+                        gs.fail_reason = "cancelado";
+                        gs.message = "cancelado apos " + label;
+                        RCLCPP_WARN(get_logger(), "[AMT1] %s", gs.message.c_str());
+                        return false;
+                    }
+                }
+                return true;
+            };
+        bool ops_ok = run_ops(plan.ops, "op_");
+
+        // 5b. Passe de verificacao/ajuste (2026-08-29, precisao): mede o erro
+        // de cada tag no slot alvo; as piores (> verify_tol_m) sao pegas e
+        // recolocadas (ate refine_max_ops), com o re-registro local. Depois,
+        // relatorio final (so medida).
+        if (ops_ok && gs.fail_reason.empty() && verify_after_sort_ && !gs.observe_only &&
+            gs.onboard.empty())
+        {
+            std::vector<PlacementError> errs;
+            bool verify_complete = false;
+            if (!measurePlacementErrors(gs, "verify", errs, &verify_complete)) {
                 gs.fail_reason = "cancelado";
-                gs.message = "cancelado apos " + label;
-                RCLCPP_WARN(get_logger(), "[AMT1] %s", gs.message.c_str());
-                break;
+                gs.message = "cancelado na verificacao";
+            } else if (!verify_complete) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[AMT1] verificacao INCOMPLETA: observacao falhou ou alguma tag pousada pelo robo nao foi vista (%zu medida(s)) — sem ajuste.",
+                    errs.size());
+                gs.search_note += (gs.search_note.empty() ? "" : "; ") + std::string("verificacao incompleta");
+            } else {
+                std::vector<PlacementError> bad;
+                for (const PlacementError & e : errs) {
+                    // Revisao 29/08: so cubos que o ROBO pousou; os intactos
+                    // sao referencia (e uma leitura torta nao os move).
+                    if (e.err > verify_tol_m_ && gs.touched.count(e.id)) {
+                        bad.push_back(e);
+                    } else if (e.err > verify_tol_m_) {
+                        RCLCPP_INFO(
+                            get_logger(), "[AMT1] verificacao: tag_%d (intacta) com %.1f mm — so informativo.",
+                            e.id, e.err * 1000.0);
+                    }
+                }
+                std::sort(bad.begin(), bad.end(), [](const PlacementError & a, const PlacementError & b) {
+                        return a.err > b.err;
+                    });
+                if (bad.size() > static_cast<std::size_t>(std::max(0, refine_max_ops_))) {
+                    bad.resize(static_cast<std::size_t>(std::max(0, refine_max_ops_)));
+                }
+                if (bad.empty()) {
+                    RCLCPP_INFO(
+                        get_logger(), "[AMT1] verificacao: %zu tag(s) medida(s), todas dentro de %.0f mm.",
+                        errs.size(), verify_tol_m_ * 1000.0);
+                    speak("Conferi a mesa: tudo no lugar");
+                } else {
+                    std::vector<amt1::SortOp> refine;
+                    std::string txt;
+                    for (const PlacementError & e : bad) {
+                        amt1::SortOp pk;
+                        pk.type = amt1::SortOpType::kPick;
+                        pk.tag = e.id;
+                        pk.slot = e.slot;
+                        amt1::SortOp pl;
+                        pl.type = amt1::SortOpType::kPlace;
+                        pl.tag = e.id;
+                        pl.slot = e.slot;
+                        refine.push_back(pk);
+                        refine.push_back(pl);
+                        txt += (txt.empty() ? "" : ", ") + std::to_string(e.id) + " (" +
+                            std::to_string(static_cast<int>(std::lround(e.err * 1000.0))) + " mm)";
+                    }
+                    gs.ops_total += static_cast<int>(refine.size());
+                    RCLCPP_WARN(
+                        get_logger(), "[AMT1] verificacao: %zu tag(s) fora da tolerancia de %.0f mm: %s — ajustando.",
+                        bad.size(), verify_tol_m_ * 1000.0, txt.c_str());
+                    speak("Vou ajustar " + std::to_string(bad.size()) + (bad.size() == 1 ? " tag" : " tags"));
+                    ops_ok = run_ops(refine, "ajuste_");
+                    if (!ops_ok && gs.fail_reason != "cancelado" && !cancellationRequested()) {
+                        // Revisao 29/08: o sort principal JA terminou; a falha
+                        // do ajuste vira nota (apos a recuperacao dos cubos a
+                        // bordo, abaixo), nao rebaixa o resultado.
+                        gs.refine_failure = gs.fail_reason + " — " + gs.message;
+                    }
+                    if (ops_ok && gs.fail_reason.empty() && verify_final_report_) {
+                        std::vector<PlacementError> final_errs;
+                        if (!measurePlacementErrors(gs, "verify_final", final_errs)) {
+                            gs.fail_reason = "cancelado";
+                            gs.message = "cancelado na verificacao final";
+                        } else {
+                            double worst = 0.0;
+                            for (const PlacementError & e : final_errs) {
+                                worst = std::max(worst, e.err);
+                            }
+                            RCLCPP_INFO(
+                                get_logger(), "[AMT1] verificacao final: %zu tag(s), pior erro %.1f mm.",
+                                final_errs.size(), worst * 1000.0);
+                        }
+                    }
+                }
             }
         }
 
@@ -3504,11 +4042,26 @@ private:
                 }
             }
         }
+        if (!gs.refine_failure.empty() && !gs.fail_reason.empty() && gs.fail_reason != "cancelado" &&
+            !cancellationRequested() && gs.onboard.empty() && !gs.child_aborted && !gs.unknown &&
+            (arm_state_known_ || !observe_move_enabled_))
+        {
+            gs.ops_total = gs.ops_done;  // ops de ajuste nao executadas saem da conta
+            // Ajuste falhou mas todos os cubos estao na mesa: o resultado do
+            // sort principal vale; a falha vira nota na mensagem.
+            RCLCPP_WARN(
+                get_logger(), "[AMT1] ajuste falhou (%s) mas nenhum cubo ficou a bordo: mantenho o sort como valido.",
+                gs.refine_failure.c_str());
+            gs.fail_reason.clear();
+        }
         if (gs.fail_reason.empty()) {
             gs.message = gs.assignment.missing_tags.empty() ?
                 "mesa ordenada" :
                 "ordenadas as tags vistas; faltaram [" + joinInts(gs.assignment.missing_tags) + "]" +
                 (gs.search_note.empty() ? "" : " (" + gs.search_note + ")");
+            if (!gs.refine_failure.empty()) {
+                gs.message += "; ajuste falhou (" + gs.refine_failure + ")";
+            }
         }
         finish(gs);
     }

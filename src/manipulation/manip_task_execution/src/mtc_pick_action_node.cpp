@@ -13,6 +13,7 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/buffer.h>
+#include <tf2/utils.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -72,6 +73,10 @@ public:
         // braco — uma tag vista ha segundos (buffer TF) vira alvo fantasma se a
         // base/braco se moveu. Exigir deteccao RECENTE ("tag vista AGORA").
         max_tag_age_sec_ = this->declare_parameter<double>("max_tag_age_sec", 1.0);
+        // 2026-08-29 (revisao): cache do TF maior que os 10 s default — a
+        // ultima pose da tag (e a cadeia das juntas naquele instante) precisa
+        // sobreviver ate o pick apontar a j1 para ela.
+        tf_cache_sec_ = this->declare_parameter<double>("tf_cache_sec", 120.0);
 
         const auto default_container_state_file = getDefaultContainerStatePath();
         container_state_file_ = this->declare_parameter<std::string>(
@@ -300,7 +305,7 @@ public:
 
         tf_buffer_ =
             std::make_shared<tf2_ros::Buffer>(
-                this->get_clock());
+                this->get_clock(), tf2::durationFromSec(std::max(10.0, tf_cache_sec_)));
 
         tf_listener_ =
             std::make_shared<tf2_ros::TransformListener>(
@@ -387,6 +392,22 @@ public:
         // 2026-08-29 (pedido do operador): com o bloco preso, subir na
         // VERTICAL (mesmo x,y) antes de recolher para pegar_obj. 0 = desliga.
         lift_after_grasp_m_ = this->declare_parameter<double>("pick_lift_after_grasp_m", 0.05);
+        // 2026-08-29 (pedido do operador): tag fora de vista => antes de
+        // varrer, aponta SO a j1 para onde a tag foi vista pela ultima vez
+        // (TF velha vale para a direcao: a base nao andou) e re-detecta.
+        point_j1_at_stale_tag_ = this->declare_parameter<bool>("pick_point_j1_at_stale_tag", true);
+        stale_tag_point_max_age_s_ = this->declare_parameter<double>("pick_stale_tag_point_max_age_s", 110.0);
+        // 2026-08-29 (pedido do operador): pre-alinhamento da camera SO com a
+        // j1 (sem as poses tag_esquerda/tag_direita/tag_cima).
+        align_j1_only_ = this->declare_parameter<bool>("pick_align_j1_only", true);
+        j1_point_max_abs_rad_ = this->declare_parameter<double>("pick_j1_point_max_abs_deg", 75.0) * M_PI / 180.0;
+        if (stale_tag_point_max_age_s_ > tf_cache_sec_ - 5.0) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "pick_stale_tag_point_max_age_s %.0f > tf_cache_sec %.0f - 5: limitando a %.0f s (o buffer TF nao guarda mais que isso).",
+                stale_tag_point_max_age_s_, tf_cache_sec_, std::max(0.0, tf_cache_sec_ - 5.0));
+            stale_tag_point_max_age_s_ = std::max(0.0, tf_cache_sec_ - 5.0);
+        }
         unreachable_shift_margin_m_ = this->declare_parameter<double>(
             "unreachable_shift_margin_m", 0.02);
         // 2026-08-24 (pedido do operador): shelf com J4 LIVRE quando os 45
@@ -1385,6 +1406,7 @@ private:
     }
 
     double max_tag_age_sec_{1.0};
+    double tf_cache_sec_{120.0};
 
     // ---- Deadlines client-side (auditoria 2026-08-07, item 1.1) ----
     // MoveGroupInterface::plan()/execute() bloqueiam em `while(!done) sleep(1ms)`
@@ -1515,6 +1537,110 @@ private:
         }
 
         return true;
+    }
+
+    /// 2026-08-29: a tag nao esta na imagem agora, mas o TF buffer guarda a
+    /// ultima pose dela (a base nao andou). Gira SO a j1 para atan2(y, x)
+    /// dessa pose e espera uma deteccao fresca. false = nao deu (quem chama
+    /// cai na varredura).
+    bool pointJ1AtLastSeenTag(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & tag_frame,
+        geometry_msgs::msg::TransformStamped & out_tf,
+        const std::string & cycle_name,
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        bool is_shelf)
+    {
+        if (!point_j1_at_stale_tag_ || is_shelf) {
+            return false;  // prateleira: pose propria, nao gira a j1 solto
+        }
+        geometry_msgs::msg::TransformStamped old_tf;
+        try {
+            // atan2(y, x) = j1 SO em manip_base_link (mesma convencao da IK custom).
+            old_tf = tf_buffer_->lookupTransform(
+                "manip_base_link", tag_frame, tf2::TimePointZero, tf2::durationFromSec(0.2));
+        } catch (const tf2::TransformException &) {
+            return false;  // nunca vista: so a varredura
+        }
+        // Revisao 29/08: a pose velha e' relativa a base DAQUELE instante; se a
+        // base andou/girou desde entao (dock, nudge), a direcao nao vale.
+        try {
+            const auto then = tf_buffer_->lookupTransform("odom", "base_footprint", old_tf.header.stamp);
+            const auto now_tf = tf_buffer_->lookupTransform("odom", "base_footprint", tf2::TimePointZero);
+            const double moved = std::hypot(
+                now_tf.transform.translation.x - then.transform.translation.x,
+                now_tf.transform.translation.y - then.transform.translation.y);
+            const double yaw_then = tf2::getYaw(then.transform.rotation);
+            const double yaw_now = tf2::getYaw(now_tf.transform.rotation);
+            double dyaw = yaw_now - yaw_then;
+            while (dyaw > M_PI) {dyaw -= 2.0 * M_PI;}
+            while (dyaw < -M_PI) {dyaw += 2.0 * M_PI;}
+            if (moved > 0.03 || std::abs(dyaw) > 2.0 * M_PI / 180.0) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] base andou %.0f mm / girou %.1f graus desde a ultima vista da %s — nao aponto; varredura.",
+                    cycle_name.c_str(), moved * 1000.0, dyaw * 180.0 / M_PI, tag_frame.c_str());
+                return false;
+            }
+        } catch (const tf2::TransformException &) {
+            // sem odom no buffer: segue com a pose velha (comportamento anterior)
+        }
+        const double age = (this->get_clock()->now() - rclcpp::Time(old_tf.header.stamp)).seconds();
+        if (age > stale_tag_point_max_age_s_) {
+            RCLCPP_WARN(
+                this->get_logger(), "[%s] ultima pose da %s tem %.0f s (> %.0f) — nao aponto a j1.",
+                cycle_name.c_str(), tag_frame.c_str(), age, stale_tag_point_max_age_s_);
+            return false;
+        }
+        const double x = old_tf.transform.translation.x;
+        const double y = old_tf.transform.translation.y;
+        if (std::hypot(x, y) < 0.05 || y < 0.05) {
+            return false;  // em cima do eixo ou atras da base: nao e mesa
+        }
+        const double j1_target = std::atan2(y, x);
+        std::vector<double> joints = arm->getCurrentJointValues();
+        if (joints.size() < 5) {
+            return false;
+        }
+        double delta = j1_target - joints[0];
+        while (delta > M_PI) {delta -= 2.0 * M_PI;}
+        while (delta < -M_PI) {delta += 2.0 * M_PI;}
+        if (std::abs(delta) > j1_point_max_abs_rad_) {
+            RCLCPP_WARN(
+                this->get_logger(), "[%s] %s exigiria girar a j1 %+.2f rad (> %.2f) — nao aponto; varredura.",
+                cycle_name.c_str(), tag_frame.c_str(), delta, j1_point_max_abs_rad_);
+            return false;
+        }
+        if (std::abs(delta) <= 0.03) {
+            return false;  // ja aponta para la e a deteccao acabou de falhar: varredura
+        }
+        publish_stage(goal_handle, "pointing_j1_at_last_seen");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[%s] %s vista ha %.0f s em [%.3f %.3f]: aponto a j1 (%+.2f rad) e re-detecto.",
+            cycle_name.c_str(), tag_frame.c_str(), age, x, y, delta);
+        const double j1_center = joints[0];
+        joints[0] = j1_target;
+        arm->setStartStateToCurrentState();
+        if (!arm->setJointValueTarget(joints) || !planAndExecute(arm, cycle_name + " point j1")) {
+            RCLCPP_WARN(this->get_logger(), "[%s] nao consegui apontar a j1 — varredura.", cycle_name.c_str());
+            return false;
+        }
+        if (waitForTagTransform(
+                "base_footprint", tag_frame, out_tf,
+                std::chrono::milliseconds(1500), std::chrono::milliseconds(100),
+                cycle_name + " point_j1_detect"))
+        {
+            return true;
+        }
+        // Nao viu: volta a j1 ao centro de partida para a varredura (+-0,3/+-0,6)
+        // continuar centrada em pegar_obj, nao na direcao velha.
+        joints[0] = j1_center;
+        arm->setStartStateToCurrentState();
+        if (!arm->setJointValueTarget(joints) || !planAndExecute(arm, cycle_name + " point j1 return")) {
+            RCLCPP_WARN(this->get_logger(), "[%s] nao consegui voltar a j1 ao centro apos apontar.", cycle_name.c_str());
+        }
+        return false;
     }
 
     // Varredura de busca da tag (2026-08-07): o robo pode docar com alguns
@@ -1880,6 +2006,10 @@ private:
     std::string start_gripper_pose_;
     bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
     double lift_after_grasp_m_{0.05};
+    bool point_j1_at_stale_tag_{true};
+    double stale_tag_point_max_age_s_{110.0};
+    bool align_j1_only_{true};
+    double j1_point_max_abs_rad_{75.0 * M_PI / 180.0};
     // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
     std::optional<Eigen::Vector3d> last_table_grasp_target_;
     double last_table_grasp_tilt_{0.0};
@@ -2777,6 +2907,41 @@ private:
         const double tag_x = tag_tf.transform.translation.x;
         const double tag_y = tag_tf.transform.translation.y;
 
+        if (align_j1_only_) {
+            // 2026-08-29 (pedido do operador): so a j1 aponta para a tag; o
+            // resto do braco fica onde esta (sem tag_esquerda/direita/cima).
+            std::vector<double> joints;
+            if (arm->getCurrentState(2.0)) {
+                joints = arm->getCurrentJointValues();
+            }
+            if (joints.size() < 5) {
+                RCLCPP_WARN(this->get_logger(), "[%s] alinhamento j1: sem estado atual do braco — falha retentavel.", cycle_name.c_str());
+                return false;
+            }
+            if (tag_y < 0.05) {
+                RCLCPP_WARN(this->get_logger(), "[%s] alinhamento j1: tag em y=%.3f (atras/no eixo do braco) — sem giro.", cycle_name.c_str(), tag_y);
+                return true;
+            }
+            double delta = std::atan2(tag_y, tag_x) - joints[0];
+            while (delta > M_PI) {delta -= 2.0 * M_PI;}
+            while (delta < -M_PI) {delta += 2.0 * M_PI;}
+            if (std::abs(delta) < 0.03) {
+                speak("A camera ja esta alinhada com a tag");
+                return true;
+            }
+            delta = std::max(-j1_point_max_abs_rad_, std::min(j1_point_max_abs_rad_, delta));
+            joints[0] += delta;
+            arm->setStartStateToCurrentState();
+            if (!arm->setJointValueTarget(joints) || !planAndExecute(arm, cycle_name + " align j1")) {
+                speak("Falhei ao alinhar a camera com a tag");
+                return false;
+            }
+            RCLCPP_INFO(
+                this->get_logger(), "[%s] camera alinhada girando so a j1 (%+.2f rad) para a %s.",
+                cycle_name.c_str(), delta, tag_frame.c_str());
+            return sleepInterruptibly(std::chrono::milliseconds(120));
+        }
+
         std::string target;
         if (std::abs(tag_x) > kTagXNearZero) {
             if (tag_x > 0.0) {
@@ -2842,6 +3007,7 @@ private:
                 std::chrono::milliseconds(900),
                 std::chrono::milliseconds(100),
                 cycle_name + " detect_tag")
+            && !pointJ1AtLastSeenTag(arm, tag_frame, tag_tf, cycle_name, goal_handle, is_shelf)
             && !sweepForTag(arm, tag_frame, tag_tf, cycle_name, goal_handle))
         {
             retryable_failure = true;
