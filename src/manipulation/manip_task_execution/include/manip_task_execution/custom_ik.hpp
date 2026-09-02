@@ -156,6 +156,11 @@ double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1);
 /// computeWristForTagYaw (mesma linha dos dedos, a menos de pi).
 double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1, double tilt_from_vertical);
 
+/// CUBO (2026-08-31): 0/90/180/270 graus sao equivalentes — devolve o punho
+/// de MENOR giro entre alinhar os dedos ao yaw da tag ou ao yaw+90.
+double computeWristForCubeYaw(double tag_yaw_in_arm_base, double q1);
+double computeWristForCubeYaw(double tag_yaw_in_arm_base, double q1, double tilt_from_vertical);
+
 /// Yaw do eixo X de uma rotacao (frame alvo em manip_base_link), projetado
 /// no plano XY. atan2 de colunas e mais robusto que getRPY para tag
 /// Z-up/Z-down; se o X estiver quase vertical (nao deve ocorrer com tag

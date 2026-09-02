@@ -2336,7 +2336,7 @@ private:
                 }
             }
             if (out_pre == CustomIkOutcome::kOk) {
-                q_pre[4] = manip_task_execution::computeWristForTagYaw(yaw_pre, q_pre[0], tilt_pre);
+                q_pre[4] = manip_task_execution::computeWristForCubeYaw(yaw_pre, q_pre[0], tilt_pre);
                 publish_stage(goal_handle, "pre_ik_tcp2");
                 RCLCPP_INFO(
                     this->get_logger(),
@@ -2417,7 +2417,7 @@ private:
         // O TCP fica no eixo do joint5: trocar q5 pos-solve nao move a
         // ponta, so gira a linha dos dedos para o yaw da tag (formula
         // generalizada para a ferramenta inclinada).
-        q[4] = manip_task_execution::computeWristForTagYaw(tag_yaw, q[0], tilt_used);
+        q[4] = manip_task_execution::computeWristForCubeYaw(tag_yaw, q[0], tilt_used);
         RCLCPP_INFO(
             this->get_logger(),
             "[%s] mesa: pegada por cima a %.0f graus da vertical; j5 pela "
@@ -2475,7 +2475,7 @@ private:
                     if (seen2 && target_seen) {
                         d = *seen2 - *target_seen;
                     }
-                    q2[4] = manip_task_execution::computeWristForTagYaw(yaw2, q2[0], tilt2);
+                    q2[4] = manip_task_execution::computeWristForCubeYaw(yaw2, q2[0], tilt2);
                     RCLCPP_INFO(
                         this->get_logger(),
                         "[%s] IK recalculada apos a j1: alvo moveu dx=%+.1f dy=%+.1f dz=%+.1f cm "

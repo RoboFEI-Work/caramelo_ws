@@ -179,6 +179,11 @@ public:
         // continua sob verify_grasp_effort.
         verify_container_grasp_ =
             this->declare_parameter<bool>("place_verify_container_grasp", false);
+        // 2026-08-31 (pedido do operador): EMPILHAR com a mesma pre-
+        // aproximacao do pick — IK com o frame tcp2 (link5+0,30) como
+        // ferramenta, re-deteccao da base dali, e so entao a descida.
+        stack_pre_ik_tcp2_ = this->declare_parameter<bool>("place_pre_ik_tcp2", true);
+        stack_pre_ik_tcp2_z_ = this->declare_parameter<double>("place_pre_ik_tcp2_z", 0.30);
         grasp_min_effort_nm_ =
             this->declare_parameter<double>("grasp_min_effort_nm", 0.15);
         grasp_min_effort_increase_nm_ =
@@ -491,6 +496,8 @@ private:
     bool skip_missing_place_tag_{true};
     bool verify_grasp_effort_{true};
     bool verify_container_grasp_{false};
+    bool stack_pre_ik_tcp2_{true};
+    double stack_pre_ik_tcp2_z_{0.30};
     double grasp_min_effort_nm_{0.15};
     double grasp_min_effort_increase_nm_{0.05};
     double grasp_effort_sample_duration_{0.8};
@@ -1197,7 +1204,7 @@ private:
                 target_tf.transform.rotation.x,
                 target_tf.transform.rotation.y,
                 target_tf.transform.rotation.z).toRotationMatrix());
-        q[4] = manip_task_execution::computeWristForTagYaw(target_yaw, q[0]);
+        q[4] = manip_task_execution::computeWristForCubeYaw(target_yaw, q[0]);
 
         RCLCPP_INFO(
             get_logger(),
@@ -2296,16 +2303,77 @@ private:
             return StackOutcome::kBaseNotSeen;
         }
 
-        const Eigen::Vector3d target(
+        Eigen::Vector3d target(
             base_tf.transform.translation.x,
             base_tf.transform.translation.y,
             base_tf.transform.translation.z + stack_place_z_offset_);
-        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
-        const double base_yaw = manip_task_execution::projectedFrameYaw(
+        double base_yaw = manip_task_execution::projectedFrameYaw(
             Eigen::Quaterniond(
                 base_tf.transform.rotation.w, base_tf.transform.rotation.x,
                 base_tf.transform.rotation.y, base_tf.transform.rotation.z)
             .toRotationMatrix());
+
+        // Fase TCP2 (2026-08-31, pedido do operador): mesma pre-aproximacao
+        // do pick — IK com o frame tcp2 como ferramenta (a garra para ~13 cm
+        // antes do alvo), re-detecta a base dali e recalcula alvo/yaw da TF
+        // fresca. Falha nao e' fatal (WARN e segue com a ultima vista).
+        if (stack_pre_ik_tcp2_ && stack_pre_ik_tcp2_z_ > 0.0) {
+            manip_task_execution::ArmModel tcp2_model{};
+            tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
+            std::array<double, 5> q_pre{};
+            bool pre_ok = false;
+            double tilt_pre = 0.0;
+            for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
+                if (manip_task_execution::solveIk(target, tilt, 0.0, q_pre, tcp2_model)) {
+                    pre_ok = true;
+                    tilt_pre = tilt;
+                    break;
+                }
+            }
+            if (pre_ok) {
+                q_pre[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_pre[0], tilt_pre);
+                publish_stage(goal_handle, "stack_pre_ik_tcp2");
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[STACK] pre-ponto TCP2 (tcp_z %.2f, %.0f graus): garra ~%.0f mm antes do alvo para re-detectar.",
+                    stack_pre_ik_tcp2_z_, tilt_pre * 180.0 / M_PI,
+                    (stack_pre_ik_tcp2_z_ - manip_task_execution::ArmModel{}.tcp_z) * 1000.0);
+                stack_arm_moved_ = true;
+                if (!moveToJointTarget(arm, q_pre, "stack pre tcp2 " + base_frame)) {
+                    return StackOutcome::kMoveFailed;
+                }
+                publish_stage(goal_handle, "stack_re_detecting_at_tcp2");
+                if (!sleepInterruptibly(std::chrono::milliseconds(300))) {
+                    return StackOutcome::kMoveFailed;
+                }
+                geometry_msgs::msg::TransformStamped fresh;
+                if (waitForTagTransform(
+                        ik_reference_frame_, base_frame, fresh,
+                        std::chrono::milliseconds(1500), std::chrono::milliseconds(150),
+                        "stack re_detect_tcp2 " + base_frame))
+                {
+                    base_tf = fresh;
+                    target = Eigen::Vector3d(
+                        base_tf.transform.translation.x,
+                        base_tf.transform.translation.y,
+                        base_tf.transform.translation.z + stack_place_z_offset_);
+                    base_yaw = manip_task_execution::projectedFrameYaw(
+                        Eigen::Quaterniond(
+                            base_tf.transform.rotation.w, base_tf.transform.rotation.x,
+                            base_tf.transform.rotation.y, base_tf.transform.rotation.z)
+                        .toRotationMatrix());
+                } else {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] pre-ponto TCP2: sem TF fresca de %s — sigo com a ultima vista.",
+                        base_frame.c_str());
+                }
+            } else {
+                RCLCPP_WARN(
+                    get_logger(), "[STACK] pre-ponto TCP2 sem solucao de IK — sigo direto para a descida.");
+            }
+        }
+        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
 
         // Escada de inclinacao (0, depois stack_tilt_ladder_deg): pre-pose e
         // pegada precisam resolver na MESMA inclinacao para a descida ser
@@ -2335,8 +2403,8 @@ private:
             last_unreachable_targets_ = {target};
             return StackOutcome::kUnreachable;
         }
-        q_final[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_final[0], tilt_used);
-        q_lift[4] = manip_task_execution::computeWristForTagYaw(base_yaw, q_lift[0], tilt_used);
+        q_final[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_final[0], tilt_used);
+        q_lift[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_lift[0], tilt_used);
         RCLCPP_INFO(
             get_logger(),
             "[STACK] alvo [%.3f %.3f %.3f] (base z=%.3f + %.3f), ferramenta a %.0f graus, "

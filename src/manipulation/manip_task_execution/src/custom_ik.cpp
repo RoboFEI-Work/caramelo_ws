@@ -289,6 +289,23 @@ double computeWristForTagYaw(double tag_yaw_in_arm_base, double q1, double tilt_
   return std::remainder(std::atan2(std::sin(d), -std::cos(d) / c), M_PI);
 }
 
+double computeWristForCubeYaw(double tag_yaw_in_arm_base, double q1)
+{
+  // Cubo (2026-08-31, pedido do operador): pegar a 0/90/180/270 graus e'
+  // equivalente — escolhe a linha de dedos (yaw ou yaw+90) de MENOR giro
+  // do punho.
+  const double a = computeWristForTagYaw(tag_yaw_in_arm_base, q1);
+  const double b = computeWristForTagYaw(tag_yaw_in_arm_base + M_PI / 2.0, q1);
+  return std::abs(b) < std::abs(a) ? b : a;
+}
+
+double computeWristForCubeYaw(double tag_yaw_in_arm_base, double q1, double tilt_from_vertical)
+{
+  const double a = computeWristForTagYaw(tag_yaw_in_arm_base, q1, tilt_from_vertical);
+  const double b = computeWristForTagYaw(tag_yaw_in_arm_base + M_PI / 2.0, q1, tilt_from_vertical);
+  return std::abs(b) < std::abs(a) ? b : a;
+}
+
 double projectedFrameYaw(const Eigen::Matrix3d & rotation)
 {
   const Eigen::Vector3d x_axis = rotation.col(0);

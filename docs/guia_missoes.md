@@ -264,6 +264,15 @@ continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` →
   chegada — juntas são exatas). Só se a base não se moveu desde a pega
   (`place_joints_shift_tol_m` 0.01) e fora do passe de ajuste; senão, IK do ponto como antes
   (`place_joints_enabled` desliga). O re-registro local é pulado quando as juntas serão usadas.
+- **Yaw de cubo normalizado** (31/08, pedido do operador): pegar/soltar a 0/90/180/270° é
+  equivalente — `computeWristForCubeYaw` escolhe a linha de dedos (yaw ou yaw+90°) de **menor giro
+  do punho**. Vale no pick (3 pontos), no place de mesa e no empilhamento; o place em **container**
+  segue o eixo longo (não normaliza).
+- **Empilhar com a pré-aproximação do pick** (31/08): antes da descida do `stack_on` (caminho por
+  IK), fase TCP2 — IK com o frame `tcp2` como ferramenta (garra ~13 cm antes do alvo, estágios
+  `stack_pre_ik_tcp2` → `stack_re_detecting_at_tcp2`), re-detecção da base dali e alvo/yaw
+  recalculados da TF fresca. Params `place_pre_ik_tcp2` (true) / `place_pre_ik_tcp2_z` (0.30);
+  sem IK/TF fresca → WARN e segue como antes. (O caminho por **juntas gravadas** não passa por aqui.)
 - **Pré-ponto TCP2 antes da pega** (31/08): a IK é resolvida primeiro com o **frame `tcp2`**
   (URDF: `link5` + 0,30 m no eixo da ferramenta) como ponta — o braço para com a garra ~13 cm antes
   do alvo (estágios `pre_ik_tcp2` → `re_detecting_at_tcp2`), a câmera re-detecta a tag de perto, e a
