@@ -3124,7 +3124,7 @@ private:
         }
 
         arm->setMaxVelocityScalingFactor(1.0);
-        arm->setMaxAccelerationScalingFactor(0.8);
+        arm->setMaxAccelerationScalingFactor(1.0);
 
         // PRATELEIRA: sequencia propria em espaco de juntas, com a IK custom.
         // MESA COMUM: caminho cartesiano de sempre, intocado.
