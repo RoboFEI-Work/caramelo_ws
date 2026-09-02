@@ -102,20 +102,28 @@ class HealthMonitor(Node):
         self._nav_cli = self.create_client(Trigger, f"/{mgr}/is_active")
         self._ctrl_cache = None   # lista de (nome, estado)
         self._nav_cache = None    # bool ou None
+        # AUDITORIA 31/08 (vazamento): servico "pronto" no grafo mas mudo
+        # empilhava um call_async por tick para sempre. 1 pendente por vez.
+        self._ctrl_fut = None
+        self._nav_fut = None
 
         self.create_timer(self._period, self._tick)
         self.get_logger().info("caramelo_health_monitor publicando em /diagnostics")
 
     # ------------------------------------------------------------- servicos
     def _poll_services(self):
-        if self._ctrl_cli.service_is_ready():
-            fut = self._ctrl_cli.call_async(ListControllers.Request())
-            fut.add_done_callback(self._on_controllers)
+        if self._ctrl_fut is not None and not self._ctrl_fut.done():
+            self._ctrl_cache = None  # resposta pendente: nao empilhar outra
+        elif self._ctrl_cli.service_is_ready():
+            self._ctrl_fut = self._ctrl_cli.call_async(ListControllers.Request())
+            self._ctrl_fut.add_done_callback(self._on_controllers)
         else:
             self._ctrl_cache = None
-        if self._nav_cli.service_is_ready():
-            fut = self._nav_cli.call_async(Trigger.Request())
-            fut.add_done_callback(self._on_nav)
+        if self._nav_fut is not None and not self._nav_fut.done():
+            self._nav_cache = None
+        elif self._nav_cli.service_is_ready():
+            self._nav_fut = self._nav_cli.call_async(Trigger.Request())
+            self._nav_fut.add_done_callback(self._on_nav)
         else:
             self._nav_cache = None
 

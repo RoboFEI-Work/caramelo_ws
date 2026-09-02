@@ -247,6 +247,10 @@ na imagem e pré-alinhamento pelas poses `tag_esquerda/direita/cima` (31/08: ap�
 no robô, `pick_point_j1_at_stale_tag` e `pick_align_j1_only` voltaram a **false** por default —
 religáveis por parâmetro; o buffer TF segue com `tf_cache_sec` 120 s). A sequência normal do pick
 continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` → pega → subida vertical.
+- **Sem verificação de pega no container do place** (31/08, pedido do operador): ao buscar o cubo no
+  container de bordo durante o place, a checagem de esforço ("garra_vazia_no_container" — reprovava
+  pega válida com um dedo só) está **desligada** por default; religa com
+  `place_verify_container_grasp:=true`. A checagem da devolução (RETURN-CUBE) continua.
 - **Pose inicial como reserva do pick** (31/08): o goal do PickTag leva `fallback_frame` =
   `tag_amt1_slot_k` do slot de origem (o nó AMT1 difunde a pose da observação a 10 Hz). Se a tag
   não for vista (detecção + varredura falham), as tentativas seguintes pegam por esse frame

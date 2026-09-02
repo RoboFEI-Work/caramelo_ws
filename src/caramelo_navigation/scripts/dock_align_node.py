@@ -489,6 +489,10 @@ class DockAlignNode(Node):
             self._odom_cb, qos_profile_sensor_data, callback_group=self._cb_group,
         )
         self._speech_pub = self.create_publisher(String, "/manip/speech", 10)
+        # AUDITORIA 31/08 (vazamento): create_rate por goal deixava um Timer
+        # de 20 Hz vivo para SEMPRE no caminho do align (o do nudge era
+        # destruido). Um Rate persistente por frequencia serve aos dois.
+        self._rate_cache = None
         # Total lateral acumulado desde o ultimo align_to_dock (+ = esquerda).
         # LATCHED (transient_local, depth 1): o place node pode assinar
         # depois e ainda recebe o ultimo valor. SO este no publica aqui.
@@ -1419,6 +1423,18 @@ class DockAlignNode(Node):
             self._publish_cmd(0.0, 0.0, 0.0)
             self._motion_lock.release()
 
+    def _shared_rate(self, period):
+        """Rate persistente (auditoria 31/08): nao criar/vazar um por goal."""
+        hz = 1.0 / float(period)
+        if self._rate_cache is None or abs(self._rate_cache[0] - hz) > 1e-6:
+            if self._rate_cache is not None:
+                try:
+                    self.destroy_rate(self._rate_cache[1])
+                except Exception:  # noqa: BLE001
+                    pass
+            self._rate_cache = (hz, self.create_rate(hz))
+        return self._rate_cache[1]
+
     def _execute_align(self, goal_handle):
         """Orquestrador: N tentativas de aproximacao; entre elas, RECUO ate a
         folga de pre-docking. v5: uma tentativa por padrao (approach_retries 0
@@ -1431,7 +1447,7 @@ class DockAlignNode(Node):
         yaw_tol = g.yaw_tolerance or self.get_parameter("default_yaw_tolerance").value
         timeout = g.timeout or self.get_parameter("default_timeout").value
         period = 1.0 / float(self.get_parameter("control_frequency").value)
-        rate = self.create_rate(1.0 / period)
+        rate = self._shared_rate(period)
 
         try:
             bx, by, byaw, face_dist, staging_offset = self._load_dock_pose(
@@ -1630,10 +1646,9 @@ class DockAlignNode(Node):
 
         if not self._motion_lock.acquire(blocking=False):
             return fail("ocupado")
-        rate = None
         try:
             period = 1.0 / float(self.get_parameter("control_frequency").value)
-            rate = self.create_rate(1.0 / period)
+            rate = self._shared_rate(period)
             return self._run_nudge(goal_handle, g, result, fail, rate)
         finally:
             # Zero final SO se a fase de movimento comecou (goal rejeitado
@@ -1641,11 +1656,6 @@ class DockAlignNode(Node):
             if self._nudge_origin is not None:
                 self._publish_cmd(0.0, 0.0, 0.0)
             self._nudge_origin = None
-            if rate is not None:
-                try:
-                    self.destroy_rate(rate)
-                except Exception:  # noqa: BLE001
-                    pass
             self._motion_lock.release()
 
     def _run_nudge(self, goal_handle, g, result, fail, rate):

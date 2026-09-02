@@ -361,6 +361,21 @@ bool ContainerStateStore::addTableSlotUsed(
       list = slots[ws];
     }
 
+    // AUDITORIA 31/08 (vazamento em disco): a lista era append-only (o TTL
+    // valia so na leitura). Poda tudo com mais de 1 h — bem acima do TTL de
+    // leitura (900 s) — antes de gravar.
+    {
+      YAML::Node pruned(YAML::NodeType::Sequence);
+      for (const auto & e : list) {
+        const double st = e["stamp"].as<double>(0.0);
+        if (record.stamp_sec - st <= 3600.0) {
+          pruned.push_back(e);
+        }
+      }
+      slots[ws] = pruned;
+      list.reset(slots[ws]);
+    }
+
     YAML::Node entry(YAML::NodeType::Map);
     entry.SetStyle(YAML::EmitterStyle::Flow);
     entry["slot"] = record.slot;

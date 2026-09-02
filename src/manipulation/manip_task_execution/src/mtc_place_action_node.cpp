@@ -172,6 +172,13 @@ public:
         // pick; CALIBRAR no robo real.
         verify_grasp_effort_ =
             this->declare_parameter<bool>("verify_grasp_effort", true);
+        // 2026-08-31 (pedido do operador): a verificacao de esforco ao pegar
+        // o cubo NO CONTAINER durante o place ("garra_vazia_no_container",
+        // que ja reprovou pega valida com um dedo so) sai por default.
+        // Religavel por parametro; a checagem da DEVOLUCAO (RETURN-CUBE)
+        // continua sob verify_grasp_effort.
+        verify_container_grasp_ =
+            this->declare_parameter<bool>("place_verify_container_grasp", false);
         grasp_min_effort_nm_ =
             this->declare_parameter<double>("grasp_min_effort_nm", 0.15);
         grasp_min_effort_increase_nm_ =
@@ -483,6 +490,7 @@ private:
     bool speech_enabled_{true};
     bool skip_missing_place_tag_{true};
     bool verify_grasp_effort_{true};
+    bool verify_container_grasp_{false};
     double grasp_min_effort_nm_{0.15};
     double grasp_min_effort_increase_nm_{0.05};
     double grasp_effort_sample_duration_{0.8};
@@ -587,7 +595,10 @@ private:
     void releaseExecutionResources()
     {
         publishPlaceActive(false);
-        clearActiveInterfaces();
+        // AUDITORIA 31/08 (espelho do pick, item 2.6): NAO zerar os MGIs —
+        // manter um vivo preserva o CurrentStateMonitor aquecido e evita, a
+        // CADA goal, re-parse do URDF (MBs) + ~10 endpoints DDS criados e
+        // destruidos que TODOS os peers (Pi incluida) precisam rastrear.
         cancel_requested_.store(false);
         execution_lock_->release();
     }
@@ -3695,7 +3706,7 @@ private:
         }
 
         std::optional<GripperEffortSample> effort_before_close;
-        if (verify_grasp_effort_) {
+        if (verify_grasp_effort_ && verify_container_grasp_) {
             effort_before_close = waitForFreshGripperEffort(
                 std::chrono::milliseconds(600));
             if (!effort_before_close) {
@@ -3716,7 +3727,7 @@ private:
 
         // Item 2.4: garra fechou no VAZIO dentro do container? Reabrir e
         // falhar com causa distinta — sem sucesso fantasma e sem setEmpty.
-        if (verify_grasp_effort_) {
+        if (verify_grasp_effort_ && verify_container_grasp_) {
             publish_stage(goal_handle, "verifying_grasp");
             speak("Verificando o bloco pela forca da garra");
             if (!verifyGraspByEffort(*effort_before_close, "PLACE")) {

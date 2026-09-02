@@ -26,7 +26,10 @@ container_detector:
     # Gravacao do que o detector ve durante o place: <ts>_raw.png + <ts>_overlay.png
     # + log.txt (status por frame). "" = desligado. Ligado em 27/08 para diagnosticar
     # o vermelho — esvaziar a pasta de tempos em tempos (~1 MB/s de place).
-    save_debug_dir: /home/linux24-04/caramelo_ws/missions/fotos_containers/debug
+    # AUDITORIA 31/08 (vazamento): ligado, grava ~3,5 GB/h SEM limite e enche
+    # o disco. DESLIGADO por default; religar so para diagnostico pontual:
+    #   save_debug_dir: /home/linux24-04/caramelo_ws/missions/fotos_containers/debug
+    save_debug_dir: ""
     save_debug_every_s: 1.0
 
     # --- frames / plano ---
