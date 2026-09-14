@@ -115,14 +115,17 @@ controller_server:
       # na Pi corta a metade traseira). Dar re e andar cego — houve colisao
       # traseira real em teste. Se um dia houver sensor traseiro, reavaliar.
       min_vel_x: 0.0 # Velocidade minima em x (sem re).
-      # 0.20 -> 0.70 (operador, 2026-09-14). Fundo de escala do ESC = 20.06 rad/s
-      # de roda = 1.003 m/s de corpo em eixo puro, entao 0.70 reto usa 70% do
-      # motor. ATENCAO: na DIAGONAL o modulo 0.70 (vx=vy=0.495) ja pede 19.8
-      # rad/s = 98.7% do FS; somando giro o driver SATURA e o clamp e' POR RODA
-      # (nao proporcional) -> o robo sai da direcao comandada.
-      max_vel_x: 0.70 # Velocidade maxima em x.
-      min_vel_y: -0.70 # Velocidade minima lateral (simetrico com max_vel_y).
-      max_vel_y: 0.70 # Velocidade maxima lateral.
+      # 0.20 -> 0.40 (operador, 2026-09-14; 0.70 foi testado e ficou rapido
+      # demais). Fundo de escala do ESC = 20.06 rad/s de roda = 1.003 m/s de
+      # corpo em eixo puro. A 0.40 o pior caso fica FOLGADO: eixo puro 8.0 rad/s
+      # (40% do FS), diagonal de modulo 0.40 11.3 rad/s (56%), e diagonal com
+      # giro maximo junto 15.2 rad/s (76%). Ou seja, nao satura em combinacao
+      # nenhuma — o que a 0.70 acontecia (118% do FS na diagonal com giro), e
+      # como o clamp do driver e' POR RODA e nao proporcional, saturar fazia o
+      # robo sair da direcao comandada.
+      max_vel_x: 0.40 # Velocidade maxima em x.
+      min_vel_y: -0.40 # Velocidade minima lateral (simetrico com max_vel_y).
+      max_vel_y: 0.40 # Velocidade maxima lateral.
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
       # Pisos casados com o ESC (2026-08-03, firmware novo: piso 650rpm =
       # 0.1215 m/s / 0.315 rad/s de corpo, EXECUTADO exato apos o fix do mapa).
@@ -130,15 +133,16 @@ controller_server:
       # nao consiga executar (abaixo disso as rodas zeravam e o robo congelava
       # com "Failed to make progress").
       min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s.
-      # Sobe junto com max_vel_x/y: este e' o limite do MODULO e, se ficasse em
-      # 0.20, os tetos por eixo acima nao teriam efeito nenhum.
-      max_speed_xy: 0.70 # Limite do modulo da velocidade linear.
+      # Casado com max_vel_x/y: este e' o limite do MODULO e, se ficasse no valor
+      # antigo, os tetos por eixo acima nao teriam efeito nenhum.
+      max_speed_xy: 0.40 # Limite do modulo da velocidade linear.
       min_speed_theta: 0.34 # 1.08 x piso fisico 0.315 rad/s.
-      # 0.35 -> 0.70 e -0.45 -> -0.90 (operador, 2026-09-14), acompanhando o teto
-      # de 0.70 m/s. Com os valores antigos o robo levava 2,0 s e 0,70 m so' para
-      # chegar na velocidade de cruzeiro e mais 0,54 m para parar — em perna curta
-      # de arena ele nunca chegaria la'. Agora: 1,0 s / 0,35 m para acelerar e
-      # 0,78 s / 0,27 m para parar. Razao decel/acel (1,29) mantida.
+      # 0.35 -> 0.70 e -0.45 -> -0.90 (operador, 2026-09-14). MANTIDOS quando o
+      # teto caiu de 0.70 para 0.40 m/s: o que incomodava era a velocidade de
+      # cruzeiro, nao a resposta. Com 0.70 m/s2 o robo chega aos 0.40 em 0,57 s /
+      # 0,11 m — exatamente a mesma prontidao que a config original tinha para
+      # chegar aos 0.20 (0,57 s), agora com o dobro da velocidade final. Freada:
+      # 0,44 s / 0,09 m. Razao decel/acel (1,29) mantida.
       # LIMITE REAL: o PI de velocidade do ESC entrega ~1 A dos 4 A disponiveis
       # (KI=10 no firmware). Rampa mais agressiva que isto so' faz o comando
       # descolar da velocidade executada — o destravamento de verdade e' o

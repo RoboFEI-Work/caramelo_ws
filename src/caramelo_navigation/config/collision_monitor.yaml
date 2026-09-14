@@ -31,12 +31,14 @@ collision_monitor:
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
-      # 1.2 -> 1.5 s (2026-09-14). Este e' o HEADWAY: o monitor projeta o
-      # footprint pela velocidade atual por este tempo e freia se preve toque.
-      # A 0.70 m/s o robo leva 0,78 s / 0,27 m para parar (decel 0.90); somando
-      # a latencia do smoother a 20 Hz, 1,2 s ficava sem folga. Com 1,5 s a
-      # projecao e' de 1,05 m contra 0,27 m de parada — margem de ~4x.
-      time_before_collision: 1.5
+      # HEADWAY: o monitor projeta o footprint pela velocidade atual por este
+      # tempo e freia se preve toque. Subiu para 1.5 quando o teto era 0.70 m/s
+      # (0,78 s so' de frenagem deixava 1.2 sem folga) e VOLTOU para 1.2 com o
+      # teto em 0.40: agora a parada leva 0,44 s e, com a latencia do smoother a
+      # 20 Hz (~0,15 s), 1.2 s da' o dobro do tempo necessario — 0,48 m de
+      # projecao contra 0,09 m de parada. Manter 1.5 aqui so' faria o robo
+      # comecar a frear cedo demais perto de mesa e parede.
+      time_before_collision: 1.2
       simulation_time_step: 0.1
       min_points: 6
       visualize: true
