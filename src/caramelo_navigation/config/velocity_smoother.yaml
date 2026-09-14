@@ -17,10 +17,20 @@ velocity_smoother:
     #   min_speed_xy, eixos < 0.1215) viram (0,0). O piso fisico e POR RODA e
     #   quem o aplica certo e o driver (clamp-up por roda); sustentado sub-piso
     #   ja e bloqueado pelo min_speed do DWB.
-    max_velocity: [0.20, 0.16, 0.50]
-    min_velocity: [-0.16, -0.16, -0.50]
-    max_accel: [0.35, 0.35, 2.0]
-    max_decel: [-0.45, -0.45, -2.0]
+    # x,y: 0.20/0.16 -> 0.70 (operador, 2026-09-14). Tem que acompanhar o DWB:
+    # o smoother e' o ULTIMO clamp antes do cmd_vel, entao um teto velho aqui
+    # anularia o aumento. wz MANTIDO em 0.50 (pedido do operador).
+    max_velocity: [0.70, 0.70, 0.50]
+    # x fica em -0.16: re' so' existe para o BackUp dos BTs (0.13), nao para
+    # navegar (scan cobre so' a frente). y vai a -0.70 para a lateral ser
+    # simetrica nos dois sentidos.
+    min_velocity: [-0.16, -0.70, -0.50]
+    # x,y dobrados junto com o DWB (2026-09-14). E' AQUI que a rampa acontece de
+    # fato: o DWB usa o StandardTrajectoryGenerator, que amostra a faixa inteira
+    # de velocidade e so' usa a aceleracao para SIMULAR a trajetoria — quem ramp
+    # o /cmd_vel de verdade e' este no. Angular MANTIDO (giro nao muda).
+    max_accel: [0.70, 0.70, 2.0]
+    max_decel: [-0.90, -0.90, -2.0]
     deadband_velocity: [0.005, 0.005, 0.01]
 
     odom_topic: "/odom"
