@@ -94,12 +94,12 @@ public:
         // Base nao vista / IK sem solucao -> place normal no table_pose
         // (stack_fallback_to_table) em vez de abortar com o bloco na garra.
         stack_place_z_offset_ =
-            this->declare_parameter<double>("stack_place_z_offset", 0.05);
-        stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.05);
+            this->declare_parameter<double>("stack_place_z_offset", 0.07);
+        stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
         stack_arrival_tolerance_m_ =
-            this->declare_parameter<double>("stack_arrival_tolerance_m", 0.03);
+            this->declare_parameter<double>("stack_arrival_tolerance_m", 0.01);
         stack_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "stack_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
         // 2026-08-25 — CONTAINER POR COR na MESA (NAO confundir com os potes a
