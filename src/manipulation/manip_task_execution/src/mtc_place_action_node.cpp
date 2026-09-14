@@ -94,7 +94,7 @@ public:
         // Base nao vista / IK sem solucao -> place normal no table_pose
         // (stack_fallback_to_table) em vez de abortar com o bloco na garra.
         stack_place_z_offset_ =
-            this->declare_parameter<double>("stack_place_z_offset", 0.07);
+            this->declare_parameter<double>("stack_place_z_offset", 0.05);
         stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
@@ -102,6 +102,18 @@ public:
             this->declare_parameter<double>("stack_arrival_tolerance_m", 0.01);
         stack_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "stack_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        // Precisao da medida da base (2026-09-14): o alvo da pilha vinha de UMA
+        // leitura de AprilTag. Agora vem da MEDIANA de varias leituras
+        // DISTINTAS, colhidas depois que o braco parou. stack_tag_samples=0
+        // volta ao comportamento antigo (uma leitura so).
+        stack_tag_samples_ = this->declare_parameter<int>("stack_tag_samples", 5);
+        stack_tag_dwell_ms_ = this->declare_parameter<int>("stack_tag_dwell_ms", 700);
+        stack_tag_max_spread_m_ =
+            this->declare_parameter<double>("stack_tag_max_spread_m", 0.02);
+        // Tempo entre o braco chegar e a primeira leitura valer: cobre o
+        // assentamento mecanico e a latencia de exposicao da camera. Era 300 ms
+        // fixos na re-deteccao do TCP2 — curto para 15 fps.
+        stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 600);
         // 2026-08-25 — CONTAINER POR COR na MESA (NAO confundir com os potes a
         // bordo container1..3 / container_state_store). PlaceTag.goal.
         // container_color = RED|BLUE. O container_detector publica os frames
@@ -435,6 +447,10 @@ private:
     bool stack_fallback_to_table_{true};
     double stack_arrival_tolerance_m_{0.03};
     std::vector<double> stack_tilt_ladder_deg_;
+    int stack_tag_samples_{5};
+    int stack_tag_dwell_ms_{700};
+    double stack_tag_max_spread_m_{0.02};
+    int stack_settle_ms_{600};
     /// Juntas da pre-pose acima da pilha do ciclo atual (subida apos soltar).
     std::optional<std::array<double, 5>> stack_lift_q_;
 
@@ -1157,6 +1173,170 @@ private:
     }
 
     double max_tag_age_sec_{1.0};
+
+    /// Leitura da tag por MEDIANA de varias deteccoes (2026-09-14).
+    ///
+    /// POR QUE: o empilhamento derivava o alvo de UMA transform
+    /// (waitForTagTransform devolve a primeira leitura com idade <=
+    /// max_tag_age_sec_). Todo o ruido daquele quadro de AprilTag — que e'
+    /// maior em z e no yaw do que em x/y — entrava direto na cota da pilha,
+    /// sem nenhuma chance de ser filtrado depois: o passo seguinte ja e' a
+    /// descida e a soltura.
+    ///
+    /// O QUE MUDA:
+    ///  - junta leituras DISTINTAS (dedupe por stamp) numa janela `dwell`;
+    ///  - `not_before` descarta o que foi visto ANTES de o braco parar. Sem
+    ///    isso a "re-deteccao" de perto podia devolver, legitimamente, a
+    ///    medida tirada de longe: uma leitura de ate 1 s atras passa no teste
+    ///    de idade. Mesma defesa que observeTableObstacles ja usa;
+    ///  - mediana por componente (imune a outlier, ao contrario da media);
+    ///  - a rotacao devolvida e' a da amostra cujo yaw e' a mediana dos yaws
+    ///    (medoide), para nao inventar uma orientacao que nenhuma leitura viu
+    ///    e preservar a normalizacao de yaw feita rio abaixo;
+    ///  - dispersao acima de `max_spread` = tag sendo vista mal (angulo
+    ///    rasante, borrao, oclusao parcial): recusa em vez de entregar um
+    ///    numero ruim com cara de bom.
+    ///
+    /// Devolve false em cancelamento, timeout ou dispersao alta.
+    bool sampleTagTransformMedian(
+        const std::string & reference_frame,
+        const std::string & tag_frame,
+        geometry_msgs::msg::TransformStamped & out_tf,
+        const std::chrono::milliseconds timeout,
+        const std::chrono::milliseconds dwell,
+        const std::optional<rclcpp::Time> & not_before,
+        const std::size_t min_samples,
+        const double max_spread_m,
+        const std::string & cycle_name)
+    {
+        std::vector<geometry_msgs::msg::TransformStamped> samples;
+        rclcpp::Time last_stamp(0, 0, this->get_clock()->get_clock_type());
+
+        // `timeout` e' a espera ate a tag APARECER; `dwell` e' a janela de
+        // coleta que comeca na primeira leitura valida. Sem essa separacao,
+        // uma tag que demora a ser vista gastaria a janela inteira esperando.
+        const auto hard_deadline = std::chrono::steady_clock::now() + timeout;
+        std::optional<std::chrono::steady_clock::time_point> collect_until;
+        while (std::chrono::steady_clock::now() < hard_deadline) {
+            if (cancellationRequested()) {
+                RCLCPP_WARN(get_logger(), "[%s] cancelado durante a amostragem da tag", cycle_name.c_str());
+                return false;
+            }
+            try {
+                const geometry_msgs::msg::TransformStamped tf =
+                    getTagTransform(reference_frame, tag_frame);
+                const rclcpp::Time stamp(tf.header.stamp);
+                const double age = (this->get_clock()->now() - stamp).seconds();
+                const bool nova = samples.empty() || stamp > last_stamp;
+                const bool recente = age <= max_tag_age_sec_;
+                const bool pos_parada = !not_before || stamp >= *not_before;
+                if (nova && recente && pos_parada) {
+                    samples.push_back(tf);
+                    last_stamp = stamp;
+                    if (!collect_until) {
+                        collect_until = std::chrono::steady_clock::now() + dwell;
+                    }
+                }
+            } catch (const tf2::TransformException &) {
+                // sem TF ainda: continua tentando ate o fim da espera
+            }
+            if (collect_until && std::chrono::steady_clock::now() >= *collect_until) {
+                break;
+            }
+            if (!sleepInterruptibly(std::chrono::milliseconds(30))) {
+                return false;
+            }
+        }
+
+        if (samples.size() < min_samples) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] so %zu leitura(s) distinta(s) de %s em %ld ms de janela (minimo %zu) — "
+                "medida nao confiavel.",
+                cycle_name.c_str(), samples.size(), tag_frame.c_str(),
+                static_cast<long>(dwell.count()), min_samples);
+            return false;
+        }
+
+        auto median = [](std::vector<double> v) {
+                std::sort(v.begin(), v.end());
+                const std::size_t n = v.size();
+                return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+            };
+
+        std::vector<double> xs, ys, zs, yaws;
+        xs.reserve(samples.size());
+        ys.reserve(samples.size());
+        zs.reserve(samples.size());
+        yaws.reserve(samples.size());
+        for (const auto & tf : samples) {
+            xs.push_back(tf.transform.translation.x);
+            ys.push_back(tf.transform.translation.y);
+            zs.push_back(tf.transform.translation.z);
+            yaws.push_back(
+                manip_task_execution::projectedFrameYaw(
+                    Eigen::Quaterniond(
+                        tf.transform.rotation.w, tf.transform.rotation.x,
+                        tf.transform.rotation.y, tf.transform.rotation.z)
+                    .toRotationMatrix()));
+        }
+        const double mx = median(xs);
+        const double my = median(ys);
+        const double mz = median(zs);
+
+        // Dispersao: maior afastamento de uma leitura em relacao a mediana.
+        double spread_xy = 0.0;
+        double spread_z = 0.0;
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            spread_xy = std::max(spread_xy, std::hypot(xs[i] - mx, ys[i] - my));
+            spread_z = std::max(spread_z, std::abs(zs[i] - mz));
+        }
+        if (max_spread_m > 0.0 && std::max(spread_xy, spread_z) > max_spread_m) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] %s com dispersao alta (xy %.1f mm, z %.1f mm > %.1f mm) em %zu leituras — "
+                "a camera esta vendo a tag mal.",
+                cycle_name.c_str(), tag_frame.c_str(), spread_xy * 1000.0, spread_z * 1000.0,
+                max_spread_m * 1000.0, samples.size());
+            return false;
+        }
+
+        // Yaw: mediana desembrulhada em torno da primeira leitura (evita que
+        // +179 e -179 graus produzam uma mediana no lado oposto do circulo).
+        const double yaw_ref = yaws.front();
+        std::vector<double> yaw_unwrapped;
+        yaw_unwrapped.reserve(yaws.size());
+        for (const double y : yaws) {
+            double d = y - yaw_ref;
+            while (d > M_PI) { d -= 2.0 * M_PI; }
+            while (d < -M_PI) { d += 2.0 * M_PI; }
+            yaw_unwrapped.push_back(d);
+        }
+        const double yaw_med = yaw_ref + median(yaw_unwrapped);
+
+        std::size_t medoid = 0;
+        double best_dy = std::numeric_limits<double>::max();
+        for (std::size_t i = 0; i < yaws.size(); ++i) {
+            double d = std::abs(yaw_ref + yaw_unwrapped[i] - yaw_med);
+            if (d < best_dy) {
+                best_dy = d;
+                medoid = i;
+            }
+        }
+
+        out_tf = samples[medoid];
+        out_tf.transform.translation.x = mx;
+        out_tf.transform.translation.y = my;
+        out_tf.transform.translation.z = mz;
+
+        RCLCPP_INFO(
+            get_logger(),
+            "[%s] %s por MEDIANA de %zu leituras: [%.4f %.4f %.4f] yaw=%.3f "
+            "(dispersao xy %.1f mm, z %.1f mm)",
+            cycle_name.c_str(), tag_frame.c_str(), samples.size(), mx, my, mz, yaw_med,
+            spread_xy * 1000.0, spread_z * 1000.0);
+        return true;
+    }
 
     // moveToTarget (setPoseTarget + fallback setApproximateJointValueTarget)
     // REMOVIDO em 2026-08-17: o fallback aproximado e o anti-padrao que ja
@@ -2197,6 +2377,36 @@ private:
         return tilts;
     }
 
+    /// Le a base da pilha pela MEDIANA e, se nao juntar leituras suficientes
+    /// (ou a dispersao reprovar), cai para UMA leitura — degradado, mas ainda
+    /// respeitando idade e `not_before`, para nunca voltar a usar a medida
+    /// tirada de longe. `stack_tag_samples` <= 1 desliga a mediana.
+    bool stackReadBase(
+        const std::string & base_frame,
+        geometry_msgs::msg::TransformStamped & out_tf,
+        const std::optional<rclcpp::Time> & not_before,
+        const std::string & cycle_name)
+    {
+        const auto timeout = std::chrono::milliseconds(5000);
+        if (stack_tag_samples_ > 1) {
+            if (sampleTagTransformMedian(
+                    ik_reference_frame_, base_frame, out_tf, timeout,
+                    std::chrono::milliseconds(std::max(100, stack_tag_dwell_ms_)),
+                    not_before, static_cast<std::size_t>(stack_tag_samples_),
+                    stack_tag_max_spread_m_, cycle_name))
+            {
+                return true;
+            }
+            RCLCPP_WARN(
+                get_logger(),
+                "[%s] sem mediana confiavel — caindo para leitura unica (menos precisa).",
+                cycle_name.c_str());
+        }
+        return sampleTagTransformMedian(
+            ik_reference_frame_, base_frame, out_tf, timeout,
+            std::chrono::milliseconds(0), not_before, 1, 0.0, cycle_name + " (1 leitura)");
+    }
+
     StackOutcome placeStackedOnFrame(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & base_frame,
@@ -2254,11 +2464,7 @@ private:
         waitForCameraStream("PLACE");
 
         geometry_msgs::msg::TransformStamped base_tf;
-        if (!waitForTagTransform(
-                ik_reference_frame_, base_frame, base_tf,
-                std::chrono::milliseconds(5000), std::chrono::milliseconds(200),
-                "stack detect " + base_frame))
-        {
+        if (!stackReadBase(base_frame, base_tf, std::nullopt, "stack detect " + base_frame)) {
             return StackOutcome::kBaseNotSeen;
         }
         RCLCPP_INFO(
@@ -2281,13 +2487,12 @@ private:
             if (!planAndExecute(arm, "stack go tag_lateral")) {
                 return StackOutcome::kMoveFailed;
             }
-            if (!sleepInterruptibly(std::chrono::milliseconds(1000))) {
+            const rclcpp::Time parou_lateral = this->get_clock()->now();
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
                 return StackOutcome::kMoveFailed;
             }
-            if (!waitForTagTransform(
-                    ik_reference_frame_, base_frame, base_tf,
-                    std::chrono::milliseconds(3000), std::chrono::milliseconds(200),
-                    "stack final " + base_frame))
+            if (!stackReadBase(
+                    base_frame, base_tf, parou_lateral, "stack final " + base_frame))
             {
                 return StackOutcome::kBaseNotSeen;
             }
@@ -2343,14 +2548,15 @@ private:
                     return StackOutcome::kMoveFailed;
                 }
                 publish_stage(goal_handle, "stack_re_detecting_at_tcp2");
-                if (!sleepInterruptibly(std::chrono::milliseconds(300))) {
+                // not_before = instante em que o braco parou: proibe que a
+                // "re-deteccao de perto" devolva a leitura tirada de longe.
+                const rclcpp::Time parou_tcp2 = this->get_clock()->now();
+                if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
                     return StackOutcome::kMoveFailed;
                 }
                 geometry_msgs::msg::TransformStamped fresh;
-                if (waitForTagTransform(
-                        ik_reference_frame_, base_frame, fresh,
-                        std::chrono::milliseconds(1500), std::chrono::milliseconds(150),
-                        "stack re_detect_tcp2 " + base_frame))
+                if (stackReadBase(
+                        base_frame, fresh, parou_tcp2, "stack re_detect_tcp2 " + base_frame))
                 {
                     base_tf = fresh;
                     target = Eigen::Vector3d(
