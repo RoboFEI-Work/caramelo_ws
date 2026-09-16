@@ -99,7 +99,7 @@ public:
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
         stack_arrival_tolerance_m_ =
-            this->declare_parameter<double>("stack_arrival_tolerance_m", 0.01);
+            this->declare_parameter<double>("stack_arrival_tolerance_m", 0.0);
         stack_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
             "stack_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
         // Precisao da medida da base (2026-09-14): o alvo da pilha vinha de UMA
@@ -2615,7 +2615,7 @@ private:
         // ponto; de perto acerta"). Aqui a escada abaixo faz o mesmo, usando o
         // stackReadBase (mediana) como fonte da TF.
         // =================================================================
-        enum class Ladder { kOk, kNoSolution, kNoTransform };
+        enum class Ladder { kOk, kNoSolution };
         std::array<double, 5> q_final{};
         std::array<double, 5> q_lift{};
         double tilt_used = 0.0;
@@ -2625,18 +2625,38 @@ private:
                 double & yaw_out, Eigen::Vector3d & target_out,
                 const std::optional<rclcpp::Time> & not_before, const std::string & label) -> Ladder {
                 geometry_msgs::msg::TransformStamped tf_now;
-                if (!stackReadBase(base_frame, tf_now, not_before, label)) {
-                    return Ladder::kNoTransform;
+                if (stackReadBase(base_frame, tf_now, not_before, label)) {
+                    target_out = Eigen::Vector3d(
+                        tf_now.transform.translation.x,
+                        tf_now.transform.translation.y,
+                        tf_now.transform.translation.z + stack_place_z_offset_);
+                    yaw_out = manip_task_execution::projectedFrameYaw(
+                        Eigen::Quaterniond(
+                            tf_now.transform.rotation.w, tf_now.transform.rotation.x,
+                            tf_now.transform.rotation.y, tf_now.transform.rotation.z)
+                        .toRotationMatrix());
+                } else {
+                    // Sem leitura nova: segue com a ULTIMA MEDIDA BOA em vez de
+                    // abortar (2026-09-16).
+                    //
+                    // Abortar aqui derrubava o empilhamento inteiro para o
+                    // fallback da mesa, e este e' justamente o pior momento para
+                    // exigir uma leitura: a garra esta a ~13 cm da base COM O
+                    // CUBO CARREGADO, que entra na frente da camera do punho. A
+                    // re-deteccao do TCP2 ja tratava isso ("sigo com a ultima
+                    // vista"); a escada nao tratava.
+                    //
+                    // REGRA: tentar reler e' uma MELHORIA oportunista. Falhar em
+                    // reler nunca pode deixar o resultado PIOR que o
+                    // comportamento antigo, que nem tentava.
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] %s: sem leitura nova de %s — sigo com a ultima medida boa "
+                        "[%.3f %.3f %.3f].",
+                        label.c_str(), base_frame.c_str(), target.x(), target.y(), target.z());
+                    target_out = target;
+                    yaw_out = base_yaw;
                 }
-                target_out = Eigen::Vector3d(
-                    tf_now.transform.translation.x,
-                    tf_now.transform.translation.y,
-                    tf_now.transform.translation.z + stack_place_z_offset_);
-                yaw_out = manip_task_execution::projectedFrameYaw(
-                    Eigen::Quaterniond(
-                        tf_now.transform.rotation.w, tf_now.transform.rotation.x,
-                        tf_now.transform.rotation.y, tf_now.transform.rotation.z)
-                    .toRotationMatrix());
                 const Eigen::Vector3d lift =
                     target_out + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
                 for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
@@ -2650,13 +2670,9 @@ private:
                 return Ladder::kNoSolution;
             };
 
-        const Ladder first_pass =
+        const bool solved =
             solve_ladder(q_final, q_lift, tilt_used, base_yaw, target, std::nullopt,
-                         "stack ladder " + base_frame);
-        if (first_pass == Ladder::kNoTransform) {
-            return StackOutcome::kBaseNotSeen;
-        }
-        const bool solved = first_pass == Ladder::kOk;
+                         "stack ladder " + base_frame) == Ladder::kOk;
         if (!solved) {
             // Base VISTA, sem IK em nenhuma inclinacao, braco ainda longe da
             // pilha: fora de alcance (fila de alcance, 2026-08-28). O
@@ -2731,17 +2747,12 @@ private:
                     manip_task_execution::computeWristForCubeYaw(base_yaw, q_final[0], tilt_used);
                 q_lift[4] =
                     manip_task_execution::computeWristForCubeYaw(base_yaw, q_lift[0], tilt_used);
-            } else if (pass2 == Ladder::kNoSolution) {
+            } else {
                 RCLCPP_WARN(
                     get_logger(),
                     "[STACK] apos a j1, de perto a IK NAO resolve — alvo fora de alcance.");
                 last_unreachable_targets_ = {target2};
                 return StackOutcome::kUnreachable;
-            } else {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[STACK] apos a j1: sem leitura nova de %s — mantenho a primeira IK.",
-                    base_frame.c_str());
             }
         } else {
             RCLCPP_WARN(get_logger(), "[STACK] sem estado atual — aproximacao em movimento unico.");
@@ -2761,14 +2772,34 @@ private:
             return StackOutcome::kMoveFailed;
         }
 
-        // Conferencia de chegada pela FK (como nos slots): longe demais do
-        // alvo = soltar derrubaria a pilha. Sobe de volta e deixa o chamador
-        // decidir (fallback para a mesa).
+        // Conferencia de chegada DESLIGADA por padrao (2026-09-16, pedido do
+        // operador — e ela estava errada por construcao).
+        //
+        // O QUE ACONTECIA: o robo descia, encostava um cubo no outro e ENTAO
+        // dizia que nao tinha conseguido empilhar. Quando o cubo toca o de
+        // baixo o braco PARA — nao alcanca as juntas comandadas — e o erro de
+        // FK sobe. O check lia esse erro como "nao cheguei" e recusava soltar,
+        // subia de volta e caia no fallback da mesa. Ou seja: reprovava
+        // exatamente o sinal de SUCESSO, o contato.
+        //
+        // E, mesmo sem o contato, ele nunca teve como validar a pilha: o
+        // tcpErrorByFk compara as juntas COMANDADAS com as EXECUTADAS, isto e',
+        // mede o rastreamento do braco — nao onde o cubo esta. Apertar essa
+        // tolerancia (0.03 -> 0.01 em 14/09) nao melhorava a precisao da pilha,
+        // so aumentava a chance de desistir de uma pilha que ia dar certo.
+        //
+        // O numero continua no log, como informacao. stack_arrival_tolerance_m
+        // maior que 0 religa a recusa.
         Eigen::Vector3d actual = target;
         const double err = tcpErrorByFk(arm, target, &actual);
-        // err < 0 = sem joint_states: nao da para conferir — em cima de uma
-        // pilha, nao soltar as cegas (recua e cai no fallback da mesa).
-        if (err < 0.0 || err > stack_arrival_tolerance_m_) {
+        if (err >= 0.0) {
+            RCLCPP_INFO(
+                get_logger(),
+                "[STACK] erro de FK na chegada: %.1f cm (informativo; contato com o cubo de "
+                "baixo faz este numero subir e isso e' esperado).",
+                err * 100.0);
+        }
+        if (stack_arrival_tolerance_m_ > 0.0 && (err < 0.0 || err > stack_arrival_tolerance_m_)) {
             RCLCPP_WARN(
                 get_logger(),
                 "[STACK] chegada %s (tolerancia %.1f cm) — nao solto em cima da pilha.",
@@ -2782,8 +2813,7 @@ private:
 
         last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, target, 0.0};
         RCLCPP_INFO(
-            get_logger(), "[STACK] em posicao sobre %s (erro FK %.1f cm) — soltando.",
-            base_frame.c_str(), err * 100.0);
+            get_logger(), "[STACK] em posicao sobre %s — soltando.", base_frame.c_str());
         return StackOutcome::kOk;
     }
 
