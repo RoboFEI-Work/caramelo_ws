@@ -1503,6 +1503,31 @@ private:
     /// ULTIMO a se mover — primeiro j1/j3/j4/j5 com o ombro parado (o braco se
     /// arruma por cima da mesa), depois so o j2 desce ate o alvo. Sem estado
     /// atual, cai no movimento unico.
+    /// Espelho do moveToJointTargetJoint1First do pick: a base do braco gira
+    /// ate o azimute do alvo com o resto parado, e so depois o resto segue.
+    bool moveToJointTargetJoint1First(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        const std::vector<double> cur = arm->getCurrentJointValues();
+        if (cur.size() < 5) {
+            return moveToJointTarget(arm, q, label);
+        }
+        std::array<double, 5> first{cur[0], cur[1], cur[2], cur[3], cur[4]};
+        first[0] = q[0];
+        if (std::abs(first[0] - cur[0]) > 1e-3) {
+            if (!moveToJointTarget(arm, first, label + " [so j1]")) {
+                return false;
+            }
+        }
+        return moveToJointTarget(arm, q, label + " [resto]");
+    }
+
     bool moveToJointTargetJoint2Last(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::array<double, 5> & q,
@@ -2579,24 +2604,59 @@ private:
                     get_logger(), "[STACK] pre-ponto TCP2 sem solucao de IK — sigo direto para a descida.");
             }
         }
-        const Eigen::Vector3d target_lift = target + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
-
-        // Escada de inclinacao (0, depois stack_tilt_ladder_deg): pre-pose e
-        // pegada precisam resolver na MESMA inclinacao para a descida ser
-        // vertical.
+        // =================================================================
+        // MESMA LOGICA DO PICK (2026-09-16, pedido do operador).
+        //
+        // O que o pick faz e o empilhamento nao fazia: a IK LE A TF NA HORA
+        // (solveCustomIkForTag faz o lookup dentro dela), entao a solucao sai
+        // sempre da ultima vista da tag — nao de um alvo congelado. Depois ele
+        // gira SO A J1 para o azimute do alvo, re-le a TF com a camera ja
+        // apontada e RECALCULA a IK antes de descer ("de longe a camera erra o
+        // ponto; de perto acerta"). Aqui a escada abaixo faz o mesmo, usando o
+        // stackReadBase (mediana) como fonte da TF.
+        // =================================================================
+        enum class Ladder { kOk, kNoSolution, kNoTransform };
         std::array<double, 5> q_final{};
         std::array<double, 5> q_lift{};
-        bool solved = false;
         double tilt_used = 0.0;
-        for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
-            if (manip_task_execution::solveIk(target, tilt, 0.0, q_final) &&
-                manip_task_execution::solveIk(target_lift, tilt, 0.0, q_lift))
-            {
-                solved = true;
-                tilt_used = tilt;
-                break;
-            }
+
+        auto solve_ladder =
+            [&](std::array<double, 5> & q_f, std::array<double, 5> & q_l, double & tilt_out,
+                double & yaw_out, Eigen::Vector3d & target_out,
+                const std::optional<rclcpp::Time> & not_before, const std::string & label) -> Ladder {
+                geometry_msgs::msg::TransformStamped tf_now;
+                if (!stackReadBase(base_frame, tf_now, not_before, label)) {
+                    return Ladder::kNoTransform;
+                }
+                target_out = Eigen::Vector3d(
+                    tf_now.transform.translation.x,
+                    tf_now.transform.translation.y,
+                    tf_now.transform.translation.z + stack_place_z_offset_);
+                yaw_out = manip_task_execution::projectedFrameYaw(
+                    Eigen::Quaterniond(
+                        tf_now.transform.rotation.w, tf_now.transform.rotation.x,
+                        tf_now.transform.rotation.y, tf_now.transform.rotation.z)
+                    .toRotationMatrix());
+                const Eigen::Vector3d lift =
+                    target_out + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+                for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
+                    if (manip_task_execution::solveIk(target_out, tilt, 0.0, q_f) &&
+                        manip_task_execution::solveIk(lift, tilt, 0.0, q_l))
+                    {
+                        tilt_out = tilt;
+                        return Ladder::kOk;
+                    }
+                }
+                return Ladder::kNoSolution;
+            };
+
+        const Ladder first_pass =
+            solve_ladder(q_final, q_lift, tilt_used, base_yaw, target, std::nullopt,
+                         "stack ladder " + base_frame);
+        if (first_pass == Ladder::kNoTransform) {
+            return StackOutcome::kBaseNotSeen;
         }
+        const bool solved = first_pass == Ladder::kOk;
         if (!solved) {
             // Base VISTA, sem IK em nenhuma inclinacao, braco ainda longe da
             // pilha: fora de alcance (fila de alcance, 2026-08-28). O
@@ -2620,6 +2680,72 @@ private:
             stack_place_z_offset_, tilt_used * 180.0 / M_PI, base_yaw,
             q_lift[0], q_lift[1], q_lift[2], q_lift[3], q_lift[4],
             q_final[0], q_final[1], q_final[2], q_final[3], q_final[4]);
+
+        // --- Fase j1 + recalculo, igual ao pick ---
+        // Gira SO a j1 ate o azimute da base (resto parado) e, com a camera ja
+        // apontada, le a TF de novo e refaz a IK. Aqui o `not_before` importa
+        // ainda mais que no pick: sem ele a "re-leitura" poderia devolver a
+        // medida de antes de a j1 girar, e o recalculo nao mudaria nada.
+        std::vector<double> cur_j;
+        if (arm->getCurrentState(2.0)) {
+            cur_j = arm->getCurrentJointValues();
+        }
+        if (cur_j.size() >= 5) {
+            std::array<double, 5> so_j1{cur_j[0], cur_j[1], cur_j[2], cur_j[3], cur_j[4]};
+            so_j1[0] = q_final[0];
+            if (std::abs(so_j1[0] - cur_j[0]) > 1e-3) {
+                publish_stage(goal_handle, "stack_j1_aim");
+                stack_arm_moved_ = true;
+                if (!moveToJointTarget(arm, so_j1, "stack aim j1 " + base_frame)) {
+                    return StackOutcome::kMoveFailed;
+                }
+            }
+
+            publish_stage(goal_handle, "stack_re_detecting_after_j1");
+            const rclcpp::Time parou_j1 = this->get_clock()->now();
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+                return StackOutcome::kMoveFailed;
+            }
+            std::array<double, 5> q_f2{};
+            std::array<double, 5> q_l2{};
+            double tilt2 = 0.0;
+            double yaw2 = 0.0;
+            Eigen::Vector3d target2 = target;
+            const Ladder pass2 = solve_ladder(
+                q_f2, q_l2, tilt2, yaw2, target2, parou_j1,
+                "stack re_detect_after_j1 " + base_frame);
+            if (pass2 == Ladder::kOk) {
+                const Eigen::Vector3d d = target2 - target;
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[STACK] IK recalculada apos a j1: alvo moveu dx=%+.1f dy=%+.1f dz=%+.1f mm "
+                    "(inclinacao %.0f -> %.0f graus)",
+                    d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0,
+                    tilt_used * 180.0 / M_PI, tilt2 * 180.0 / M_PI);
+                q_final = q_f2;
+                q_lift = q_l2;
+                tilt_used = tilt2;
+                base_yaw = yaw2;
+                target = target2;
+                q_final[4] =
+                    manip_task_execution::computeWristForCubeYaw(base_yaw, q_final[0], tilt_used);
+                q_lift[4] =
+                    manip_task_execution::computeWristForCubeYaw(base_yaw, q_lift[0], tilt_used);
+            } else if (pass2 == Ladder::kNoSolution) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[STACK] apos a j1, de perto a IK NAO resolve — alvo fora de alcance.");
+                last_unreachable_targets_ = {target2};
+                return StackOutcome::kUnreachable;
+            } else {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[STACK] apos a j1: sem leitura nova de %s — mantenho a primeira IK.",
+                    base_frame.c_str());
+            }
+        } else {
+            RCLCPP_WARN(get_logger(), "[STACK] sem estado atual — aproximacao em movimento unico.");
+        }
 
         publish_stage(goal_handle, "stack_pre_pose");
         speak("Levando o bloco para cima da pilha");
