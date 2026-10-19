@@ -1,0 +1,85 @@
+# Mapa top-down da MESA com a RealSense do punho — workstation_surface_node.py
+# (2026-10-19). Consumido pelo mtc_place_action_node (surface_place_planner):
+# e' ele que acha o ponto livre que respeita o rulebook 4.4.
+#
+# Como funciona: imagem -> pixels BRANCOS (tampo) / nao brancos -> regiao da
+# mesa = casco convexo das manchas brancas grandes; nao-branco DENTRO dela =
+# objeto; fora = chao/parede. Cada celula de 1 cm do plano do tampo (cota em
+# /manip/table_plane_z, frame manip_base_link) e' projetada na imagem e recebe
+# o rotulo do pixel. Varias vistas (pegar_obj, tag_direita, tag_esquerda) sao
+# fundidas por votos enquanto /manip/surface_observe for true.
+#
+# Calibrar sem robo:
+#   ros2 run manip_bringup workstation_surface_node.py --image foto.png \
+#       --config src/manipulation/manip_bringup/config/workstation_surface.yaml \
+#       --gripper-yaml src/manipulation/manip_bringup/config/container_detector.yaml \
+#       --out overlay.png            # verde=tampo, vermelho=objeto, azul=fora, cinza=desconhecido
+#   ... --probe u,v                  # HSV de um pixel
+# Ao vivo: ros2 param set /workstation_surface white_v_min 90
+#          ros2 topic echo /manip/workstation_surface/status
+#          rqt_image_view /manip/workstation_surface/debug_image (ou grid_image)
+#          RViz: OccupancyGrid em /manip/workstation_surface/grid (frame manip_base_link)
+workstation_surface:
+  ros__parameters:
+    # --- ativacao / custo ---
+    rate_hz: 3.0
+    always_on: false               # true = processa sempre (calibracao); false = so na observacao do place
+    image_topic: /camera/camera/color/image_raw
+    camera_info_topic: /camera/camera/color/camera_info
+    observe_topic: /manip/surface_observe
+    plane_z_topic: /manip/table_plane_z
+    grid_topic: /manip/workstation_surface/grid
+    debug_image: true              # publica debug_image/grid_image so com assinante
+    save_debug_dir: ""             # ex.: /home/linux24-04/caramelo_ws/missions/fotos_mesa/debug (cuidado com o disco)
+    save_debug_every_s: 1.0
+
+    # --- frames / plano ---
+    base_frame: manip_base_link    # frame da IK custom (+X direita do robo, +Y frente)
+    camera_frame: ""               # vazio = frame_id do CameraInfo (camera_color_optical_frame)
+    plane_z_default: -0.029        # tampo da mesa de 15 cm sem o place publicar (FK Mesa15 - cubo)
+    tf_timeout_s: 0.0
+    reject_when_camera_moving: true
+    camera_motion_max_m: 0.005
+    camera_motion_max_deg: 1.0
+    # Poligonos da garra: fonte unica = container_detector.yaml (o launch passa o caminho).
+    gripper_mask_yaml: ""
+    joint_states_topic: /joint_states
+
+    # --- grade no plano da mesa (m) ---
+    grid_x_min: -0.60              # mesa de 80 cm + folga para o deslocamento lateral da base
+    grid_x_max: 0.60
+    grid_y_min: 0.05               # frente esperada em y~0.16 (docking a 0,38 m do bico)
+    grid_y_max: 0.75
+    resolution: 0.01
+
+    # --- segmentacao (OpenCV HSV: S/V 0-255) ---
+    process_scale: 0.5
+    white_s_max: 70                # tampo branco: pouca saturacao...
+    white_v_min: 100               # ...e brilho alto (sombra do braco chega a V~120)
+    table_component_min_frac: 0.02 # mancha branca precisa ter >= 2% da imagem para contar como mesa
+    table_min_frac: 0.05           # uniao das manchas >= 5% da imagem = "vi a mesa"
+    white_open_px: 3
+    obstacle_open_px: 3            # tira pontinhos
+    obstacle_close_px: 5           # fecha o desenho da tag dentro de um cubo
+    hole_max_frac: 0.03            # buraco branco fechado por nao-branco (etiqueta) = objeto
+    obstacle_dilate_px: 2          # margem (px escalados) em volta de cada objeto
+    exclusion_dilate_px: 4         # margem em volta dos dedos/cubo carregado (-> desconhecido)
+
+    # --- projecao ---
+    max_ray_length_m: 1.2
+    min_ray_elevation_deg: 18.0    # raio rasante demais = desconhecido (projecao imprecisa)
+    image_border_px: 2
+
+    # --- fusao de vistas (maioria por celula; empate = nao-branco) ---
+    free_min_votes: 1
+
+    # --- retas de BORDA no plano da mesa (so' o que fica alem delas e' "fora") ---
+    edge_inlier_m: 0.012
+    edge_min_length_m: 0.20        # cubo 4 cm e container 17 cm nunca viram borda
+    edge_min_coverage: 0.5         # trechos de 2 cm com ponto / extensao
+    edge_max_lines: 4
+    edge_ransac_iters: 300
+    edge_outside_min_frac: 0.7     # de fora >= 70% nao-branco; de dentro <= 30%
+    edge_band_m: 0.06
+    edge_outside_check_m: 0.25     # alem de uma borda real nao pode haver tampo branco...
+    edge_outside_max_white_frac: 0.10   # ...(dois containers alinhados fizeram reta de 39 cm em 25/08)

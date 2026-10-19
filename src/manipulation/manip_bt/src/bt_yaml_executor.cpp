@@ -617,6 +617,48 @@ std::string buildTreeXmlFromActions(
       const std::string container_color_key = actionBlackboardKey(i, "container_color");
       setStringOnBlackboard(blackboard, i, "container_color", container_color);
 
+      // 2026-10-19: SUPERFICIE LIVRE — paredes ao lado da mesa (rulebook 4.4:
+      // 10 cm da parede). Preferencia: `wall_sides` da propria acao (lista ou
+      // string "left,right"); senao o bloco ws_walls do ws_table_mapping.yaml
+      // do mapa para a estacao do place; senao vazio (sem parede).
+      std::string wall_sides;
+      if (action["wall_sides"]) {
+        if (action["wall_sides"].IsSequence()) {
+          for (const auto & t : action["wall_sides"]) {
+            const std::string tok = t.as<std::string>("");
+            if (!tok.empty()) {
+              wall_sides += (wall_sides.empty() ? "" : ",") + tok;
+            }
+          }
+        } else {
+          wall_sides = action["wall_sides"].as<std::string>("");
+        }
+      } else if (ctx.map_config && !place_ws.empty()) {
+        wall_sides = ctx.map_config->wallSidesForWs(place_ws);
+      }
+      {
+        std::string lowered = wall_sides;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+          [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+        std::string tok;
+        for (const char c : lowered + ",") {
+          if (c == ',' || c == ';' || c == ' ') {
+            if (!tok.empty() && tok != "left" && tok != "right" && tok != "esquerda" &&
+              tok != "direita" && tok != "both" && tok != "none")
+            {
+              throw std::runtime_error(
+                      "action[" + std::to_string(i) + "]: wall_sides='" + wall_sides +
+                      "' invalido (esperado left|right|left,right)");
+            }
+            tok.clear();
+          } else {
+            tok += c;
+          }
+        }
+      }
+      const std::string wall_sides_key = actionBlackboardKey(i, "wall_sides");
+      setStringOnBlackboard(blackboard, i, "wall_sides", wall_sides);
+
       open_reach_queue_if_needed();
       xml << "      <PlaceTag" << reach_leaf_name("place", i)
           << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
@@ -624,13 +666,15 @@ std::string buildTreeXmlFromActions(
           << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
           << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key))
           << "\" container_color=\"" << escapeXmlAttr(blackboardPort(container_color_key))
+          << "\" wall_sides=\"" << escapeXmlAttr(blackboardPort(wall_sides_key))
           << "\"" << reach_leaf_attrs(i) << "/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
         (place_ws.empty() ? "" : " ws=" + place_ws) +
         (stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on) +
-        (container_color.empty() ? "" : " NO CONTAINER " + container_color));
+        (container_color.empty() ? "" : " NO CONTAINER " + container_color) +
+        (wall_sides.empty() ? "" : " PAREDE " + wall_sides));
       continue;
     }
 

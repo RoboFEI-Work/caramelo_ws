@@ -37,6 +37,9 @@ BT::PortsList PlaceTagBT::providedPorts()
 		// Opcional (2026-08-25): "RED"|"BLUE" = soltar dentro do container
 		// dessa cor visto na mesa; vazio = mesa.
 		BT::InputPort<std::string>("container_color"),
+		// Opcional (2026-10-19, superficie livre): lados da mesa com PAREDE
+		// ("left" | "right" | "left,right"); vazio = sem parede declarada.
+		BT::InputPort<std::string>("wall_sides"),
 		// 2026-08-28 (fila de alcance): tentativa FINAL na estacao? Porta
 		// AUSENTE => true (XML antigo = comportamento de sempre). Dentro de
 		// uma <ReachQueue> vem de {rq_<g>_final} e comeca em false: alvo visto
@@ -73,6 +76,8 @@ BT::NodeStatus PlaceTagBT::onStart()
 	getInput("stack_on", stack_on);   // opcional: vazio = nao empilha
 	std::string container_color;
 	getInput("container_color", container_color);   // opcional: vazio = mesa
+	std::string wall_sides;
+	getInput("wall_sides", wall_sides);   // opcional: vazio = sem parede
 
 	// Porta ausente (ou sem valor no blackboard) => true: comportamento antigo.
 	final_attempt_ = true;
@@ -89,12 +94,13 @@ BT::NodeStatus PlaceTagBT::onStart()
 	RCLCPP_INFO(
 		rclcpp::get_logger("PlaceTagBT"),
 		"Sending PLACE goal: tag_frame=%s table_pose=%s ws=%s stack_on=%s container_color=%s "
-		"final_attempt=%s",
+		"wall_sides=%s final_attempt=%s",
 		tag_frame.c_str(),
 		table_pose.c_str(),
 		ws.empty() ? "<sem ws>" : ws.c_str(),
 		stack_on.empty() ? "<nao>" : stack_on.c_str(),
 		container_color.empty() ? "<mesa>" : container_color.c_str(),
+		wall_sides.empty() ? "<sem parede>" : wall_sides.c_str(),
 		final_attempt_ ? "true" : "false");
 
 	// Item 3.5: mesmo tratamento do PickTagBT — timeout vem do blackboard.
@@ -117,6 +123,7 @@ BT::NodeStatus PlaceTagBT::onStart()
 	goal_msg.ws = ws;
 	goal_msg.stack_on = stack_on;
 	goal_msg.container_color = container_color;
+	goal_msg.wall_sides = wall_sides;
 	goal_msg.final_attempt = final_attempt_;
 
 	// Watchdog (auditoria 2026-08-07, item 1.5): rearma a cada feedback de

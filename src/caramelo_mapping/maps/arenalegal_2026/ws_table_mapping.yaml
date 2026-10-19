@@ -22,3 +22,11 @@ ws_to_dock_id:
   WS_6: WS6
   SH_1: SH1
   PP_1: PP1
+# 2026-10-19 (superficie livre): lados da mesa encostados numa PAREDE, vistos
+# pelo ROBO docado de frente para a mesa (rulebook 4.4: a zona de manipulacao
+# comeca a 10 cm da parede). O executor manda isto no goal do place
+# (wall_sides); sem a estacao aqui = sem parede. Valores: [left], [right],
+# [left, right]. Exemplo (DESCOMENTAR e ajustar quando a arena tiver parede):
+# ws_walls:
+#   WS_3: [left]
+#   WS_6: [right]

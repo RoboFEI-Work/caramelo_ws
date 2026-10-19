@@ -122,7 +122,69 @@ MissionMapConfig::MissionMapConfig(const std::string & map_folder)
         ws_to_dock_id_[entry.first.as<std::string>()] = entry.second.as<std::string>();
       }
     }
+    // 2026-10-19: paredes ao lado das mesas (rulebook 4.4: zona de manipulacao
+    // comeca a 10 cm da parede). Lista ("[left, right]") ou string ("left").
+    const YAML::Node walls = mapping["ws_walls"];
+    if (walls && walls.IsMap()) {
+      for (const auto & entry : walls) {
+        std::vector<std::string> tokens;
+        if (entry.second.IsSequence()) {
+          for (const auto & t : entry.second) {
+            tokens.push_back(t.as<std::string>(""));
+          }
+        } else if (entry.second.IsScalar()) {
+          std::string raw = entry.second.as<std::string>("");
+          std::string tok;
+          for (const char c : raw + ",") {
+            if (c == ',' || c == ';' || c == ' ') {
+              if (!tok.empty()) {tokens.push_back(tok); tok.clear();}
+            } else {
+              tok += c;
+            }
+          }
+        }
+        bool left = false, right = false;
+        for (std::string t : tokens) {
+          std::transform(t.begin(), t.end(), t.begin(),
+            [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+          if (t == "left" || t == "esquerda" || t == "l" || t == "e") {left = true;}
+          else if (t == "right" || t == "direita" || t == "r" || t == "d") {right = true;}
+          else if (t == "both" || t == "ambos" || t == "ambas") {left = right = true;}
+          else if (t == "none" || t == "nenhuma" || t == "nenhum" || t.empty()) {}
+          else {
+            throw std::runtime_error(
+                    "ws_walls." + entry.first.as<std::string>() + ": lado '" + t +
+                    "' invalido em " + mapping_path.string() + " (use left/right)");
+          }
+        }
+        std::string value;
+        if (left) {value = "left";}
+        if (right) {value += (value.empty() ? "" : ",") + std::string("right");}
+        std::string key;
+        try {
+          key = normalizeDockId(entry.first.as<std::string>());
+        } catch (const std::exception &) {
+          key = entry.first.as<std::string>();
+        }
+        ws_walls_[key] = value;
+      }
+    }
   }
+}
+
+std::string MissionMapConfig::wallSidesForWs(const std::string & task_ws) const
+{
+  if (task_ws.empty()) {
+    return "";
+  }
+  std::string key;
+  try {
+    key = normalizeDockId(task_ws);
+  } catch (const std::exception &) {
+    key = task_ws;
+  }
+  const auto it = ws_walls_.find(key);
+  return it == ws_walls_.end() ? "" : it->second;
 }
 
 bool MissionMapConfig::hasDock(const std::string & dock_id) const

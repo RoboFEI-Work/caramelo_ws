@@ -44,6 +44,8 @@ def generate_launch_description():
     launch_pick_telemetry = LaunchConfiguration("launch_pick_telemetry")
     use_container_detector = LaunchConfiguration("use_container_detector")
     container_detector_always_on = LaunchConfiguration("container_detector_always_on")
+    use_surface_detector = LaunchConfiguration("use_surface_detector")
+    surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
 
     manip_bringup_share = get_package_share_directory("manip_bringup")
     moveit_config_share = get_package_share_directory("manip_moveit_config")
@@ -90,6 +92,34 @@ def generate_launch_description():
             "container_detector_always_on",
             default_value="false",
             description="Detector processa sempre (calibracao/bag), nao so durante o place",
+        ),
+        # --- Superficie livre (2026-10-19) ---
+        DeclareLaunchArgument(
+            "use_surface_detector",
+            default_value="true",
+            description=(
+                "Mapa top-down da mesa pela RealSense (workstation_surface_node.py): o place "
+                "escolhe um ponto livre que respeita o rulebook (bordas, objetos, parede). "
+                "So processa imagem durante a observacao do place."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "surface_detector_always_on",
+            default_value="false",
+            description="Mapa da mesa processa sempre (calibracao/bag), nao so na observacao",
+        ),
+        DeclareLaunchArgument(
+            "place_surface_planner",
+            default_value="true",
+            description=(
+                "false = kill-switch: o place volta as 3 poses fixas (MesaX/.1/.2) sem olhar o "
+                "tampo. Tambem: ros2 param set /place_action_server surface_place_enabled false"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "place_surface_wall_lidar",
+            default_value="false",
+            description="Detecta parede ao lado da mesa pelo /scan (opt-in; so acrescenta paredes)",
         ),
         # --- Composicao ---
         DeclareLaunchArgument(
@@ -411,6 +441,11 @@ def generate_launch_description():
             "slot_obstacle_tag_frames": slot_obstacle_tag_frames,
             "max_pose_error_m": ParameterValue(
                 LaunchConfiguration("max_pose_error_m"), value_type=float),
+            # Superficie livre (2026-10-19).
+            "surface_place_enabled": ParameterValue(
+                LaunchConfiguration("place_surface_planner"), value_type=bool),
+            "surface_wall_lidar_enabled": ParameterValue(
+                LaunchConfiguration("place_surface_wall_lidar"), value_type=bool),
         }],
     )
 
@@ -535,6 +570,31 @@ def generate_launch_description():
         parameters=[
             os.path.join(manip_bringup_share, "config", "container_detector.yaml"),
             {"always_on": ParameterValue(container_detector_always_on, value_type=bool)},
+        ],
+    )
+
+    # --- Mapa da mesa (superficie livre, 2026-10-19) ---
+    # Segmenta o tampo branco e projeta cada celula de 1 cm no plano do tampo
+    # (cota em /manip/table_plane_z, do place). Publica nav_msgs/OccupancyGrid
+    # em /manip/workstation_surface/grid (frame manip_base_link) enquanto
+    # /manip/surface_observe for true. Poligonos da garra = os do
+    # container_detector.yaml (fonte unica). nice +15 como o apriltag.
+    workstation_surface = Node(
+        package="manip_bringup",
+        executable="workstation_surface_node.py",
+        name="workstation_surface",
+        output="screen",
+        prefix="nice -n 15",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_surface_detector),
+        parameters=[
+            os.path.join(manip_bringup_share, "config", "workstation_surface.yaml"),
+            {
+                "always_on": ParameterValue(surface_detector_always_on, value_type=bool),
+                "gripper_mask_yaml": os.path.join(
+                    manip_bringup_share, "config", "container_detector.yaml"),
+            },
         ],
     )
 
@@ -695,6 +755,7 @@ def generate_launch_description():
         renice_camera,
         apriltag,
         container_detector,
+        workstation_surface,
         speech,
         pick_telemetry,
         rviz,

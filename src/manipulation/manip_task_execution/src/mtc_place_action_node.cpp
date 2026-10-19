@@ -7,6 +7,8 @@
 #include <std_msgs/msg/float64.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit_msgs/action/move_group.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -45,6 +47,7 @@
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
 #include "manip_task_execution/reach_shift.hpp"
+#include "manip_task_execution/surface_place_planner.hpp"
 #include "my_robot_msgs/action/place_tag.hpp"
 
 class PlaceActionServer : public rclcpp::Node
@@ -319,6 +322,104 @@ public:
             "respawnar; kill-switch persistente = place_slot_selection:=false no launch)",
             slot_selection_enabled_ ? "true" : "false");
 
+        // ---- SUPERFICIE LIVRE (2026-10-19) ----
+        // O place em mesa comum deixa de escolher entre 3 poses fixas: a
+        // RealSense do punho monta um mapa top-down do tampo (workstation_
+        // surface_node: tampo livre / objeto / fora da mesa / nao visto) e o
+        // surface_place_planner acha um ponto (x, y) que respeita o rulebook
+        // 4.4 — 2 cm da borda e dos objetos, 10 cm da parede, dentro de
+        // 20 cm da frente. A IK propria valida o ponto e o braco desce na
+        // vertical a partir de uma pose de elevacao, como no container.
+        // Sem o no de superficie no ar / mesa nao vista / sem espaco: cai nas
+        // poses fixas (comportamento de 2026-08-21). Todos os surface_* sao
+        // relidos a cada goal (ros2 param set vale na arena).
+        this->declare_parameter<bool>("surface_place_enabled", true);
+        // Poses de observacao, na ordem. A 1a "pegar_obj" nao move (o braco
+        // ja esta la com o bloco). Com surface_observe_lazy, para na 1a vista
+        // que ja da um plano completo (frente vista, candidato livre, paredes
+        // declaradas com borda vista).
+        this->declare_parameter<std::vector<std::string>>(
+            "surface_observe_poses",
+            std::vector<std::string>{"pegar_obj", "tag_direita", "tag_esquerda"});
+        this->declare_parameter<bool>("surface_observe_lazy", true);
+        this->declare_parameter<int>("surface_observe_settle_ms", 600);
+        this->declare_parameter<double>("surface_observe_timeout_sec", 5.0);
+        this->declare_parameter<int>("surface_min_frames", 2);
+        this->declare_parameter<std::string>(
+            "surface_grid_topic", "/manip/workstation_surface/grid");
+        this->declare_parameter<std::string>("surface_observe_topic", "/manip/surface_observe");
+        this->declare_parameter<std::string>("surface_table_plane_topic", "/manip/table_plane_z");
+        // Regras do rulebook (m).
+        this->declare_parameter<double>("surface_cube_size_m", 0.041);
+        this->declare_parameter<double>("surface_footprint_radius_m", 0.029);
+        this->declare_parameter<double>("surface_edge_clearance_m", 0.02);
+        this->declare_parameter<double>("surface_object_clearance_m", 0.02);
+        this->declare_parameter<double>("surface_wall_clearance_m", 0.10);
+        this->declare_parameter<double>("surface_zone_depth_m", 0.20);
+        this->declare_parameter<double>("surface_safety_margin_m", 0.005);
+        // Frente da mesa quando a camera nao a ve: o docking para com a face
+        // da mesa a refine_desired_face_dist (0,38 m) do base_footprint e a
+        // base do braco esta 0,217 m a frente => y ~ 0,163 em manip_base_link.
+        this->declare_parameter<bool>("surface_front_fallback_enabled", true);
+        this->declare_parameter<double>("surface_front_fallback_y_m", 0.163);
+        // Frente pelo LiDAR: a face da mesa e' uma linha de pontos do /scan
+        // perpendicular ao robo, logo a frente (y da borda do tampo = y da
+        // face, +-1 cm). Mede na hora, independe do erro de docking. Vale
+        // como fallback e como PRIOR para validar a frente vista pela camera.
+        this->declare_parameter<bool>("surface_front_lidar_enabled", true);
+        this->declare_parameter<double>("surface_front_lidar_half_width_m", 0.25);
+        this->declare_parameter<double>("surface_front_lidar_max_dev_m", 0.12);
+        this->declare_parameter<double>("surface_front_prior_tolerance_m", 0.06);
+        // Paredes: do goal (wall_sides, via ws_walls do mapa) ou deste default.
+        this->declare_parameter<std::string>("surface_wall_sides_default", "");
+        // Deteccao de parede pelo /scan (linha de pontos ao lado da mesa).
+        // OPT-IN ate ser validado na arena: so' ACRESCENTA paredes.
+        this->declare_parameter<bool>("surface_wall_lidar_enabled", false);
+        this->declare_parameter<std::string>("surface_scan_topic", "/scan");
+        // Aproximacao: escada de inclinacao (0 primeiro), elevacao antes da
+        // descida vertical, tolerancia de chegada (xy decide; z afunda ~2,5 cm
+        // com o braco estendido, por isso propria), candidatos testados na IK.
+        this->declare_parameter<std::vector<double>>(
+            "surface_tilt_ladder_deg", std::vector<double>{15.0, 30.0});
+        this->declare_parameter<double>("surface_pre_lift_m", 0.05);
+        this->declare_parameter<double>("surface_drop_clearance_m", 0.0);
+        this->declare_parameter<double>("surface_arrival_xy_tolerance_m", 0.02);
+        this->declare_parameter<double>("surface_arrival_z_tolerance_m", 0.06);
+        this->declare_parameter<int>("surface_max_ik_candidates", 12);
+        this->declare_parameter<double>("surface_candidate_spacing_m", 0.02);
+        this->declare_parameter<double>("surface_max_reach_radius_m", 0.45);
+        // Pesos da pontuacao (ver SurfacePlannerOptions).
+        this->declare_parameter<double>("surface_weight_obstacle", 1.0);
+        this->declare_parameter<double>("surface_weight_edge", 0.5);
+        this->declare_parameter<double>("surface_weight_preferred", 0.6);
+        this->declare_parameter<double>("surface_clearance_cap_m", 0.06);
+        // Sem plano (mesa nao vista / sem espaco / no fora do ar): poses fixas.
+        this->declare_parameter<bool>("surface_fallback_legacy_slots", true);
+        reloadSurfaceParameters();
+        surface_grid_subscription_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            surface_grid_topic_, rclcpp::QoS(1).transient_local().reliable(),
+            [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+                std::lock_guard<std::mutex> lock(surface_mutex_);
+                latest_surface_grid_ = msg;
+                ++surface_grid_count_;
+            });
+        surface_observe_pub_ = this->create_publisher<std_msgs::msg::Bool>(
+            surface_observe_topic_, rclcpp::QoS(1).transient_local().reliable());
+        publishSurfaceObserve(false);
+        table_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
+            surface_table_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
+        scan_subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+            surface_scan_topic_, rclcpp::SensorDataQoS(),
+            [this](sensor_msgs::msg::LaserScan::ConstSharedPtr msg) {
+                std::lock_guard<std::mutex> lock(surface_mutex_);
+                latest_scan_ = msg;
+            });
+        RCLCPP_WARN(
+            get_logger(),
+            "[SUPERFICIE] surface_place_enabled=%s (grade em %s; poses %zu; parede LiDAR %s)",
+            surface_place_enabled_ ? "true" : "false", surface_grid_topic_.c_str(),
+            surface_observe_poses_.size(), surface_wall_lidar_enabled_ ? "on" : "off");
+
         camera_info_topic_ = this->declare_parameter<std::string>(
             "camera_info_topic", "/camera/camera/color/camera_info");
         perception_warmup_timeout_ = this->declare_parameter<double>(
@@ -499,6 +600,56 @@ private:
     /// O braco saiu de pegar_obj durante placeStackedOnFrame (pre-alinhamento
     /// lateral) — a devolucao do cubo passa por pegar_obj antes.
     bool stack_arm_moved_{false};
+
+    // ---- Superficie livre (2026-10-19), ver placeWithSurfacePlanner ----
+    bool surface_place_enabled_{true};
+    std::vector<std::string> surface_observe_poses_;
+    bool surface_observe_lazy_{true};
+    int surface_observe_settle_ms_{600};
+    double surface_observe_timeout_sec_{5.0};
+    int surface_min_frames_{2};
+    std::string surface_grid_topic_;
+    std::string surface_observe_topic_;
+    std::string surface_table_plane_topic_;
+    double surface_cube_size_m_{0.041};
+    double surface_footprint_radius_m_{0.029};
+    double surface_edge_clearance_m_{0.02};
+    double surface_object_clearance_m_{0.02};
+    double surface_wall_clearance_m_{0.10};
+    double surface_zone_depth_m_{0.20};
+    double surface_safety_margin_m_{0.005};
+    bool surface_front_fallback_enabled_{true};
+    double surface_front_fallback_y_m_{0.163};
+    std::string surface_wall_sides_default_;
+    bool surface_front_lidar_enabled_{true};
+    double surface_front_lidar_half_width_m_{0.25};
+    double surface_front_lidar_max_dev_m_{0.12};
+    double surface_front_prior_tolerance_m_{0.06};
+    bool surface_wall_lidar_enabled_{false};
+    std::string surface_scan_topic_;
+    std::vector<double> surface_tilt_ladder_deg_{15.0, 30.0};
+    double surface_pre_lift_m_{0.05};
+    double surface_drop_clearance_m_{0.0};
+    double surface_arrival_xy_tolerance_m_{0.02};
+    double surface_arrival_z_tolerance_m_{0.06};
+    int surface_max_ik_candidates_{12};
+    double surface_candidate_spacing_m_{0.02};
+    double surface_max_reach_radius_m_{0.45};
+    double surface_weight_obstacle_{1.0};
+    double surface_weight_edge_{0.5};
+    double surface_weight_preferred_{0.6};
+    double surface_clearance_cap_m_{0.06};
+    bool surface_fallback_legacy_slots_{true};
+    /// O braco saiu de pegar_obj para observar (tag_direita/esquerda).
+    bool surface_arm_moved_{false};
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr surface_grid_subscription_;
+    rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr surface_observe_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr table_plane_z_pub_;
+    std::mutex surface_mutex_;
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_surface_grid_;
+    sensor_msgs::msg::LaserScan::ConstSharedPtr latest_scan_;
+    std::uint64_t surface_grid_count_{0};
     /// Deslocamento lateral acumulado da base (m, + = esquerda), do
     /// /manip/base_shift_total (dock_align_node). 0 sem publicacao.
     std::atomic<double> base_shift_total_{0.0};
@@ -618,6 +769,7 @@ private:
     void releaseExecutionResources()
     {
         publishPlaceActive(false);
+        publishSurfaceObserve(false);
         // AUDITORIA 31/08 (espelho do pick, item 2.6): NAO zerar os MGIs —
         // manter um vivo preserva o CurrentStateMonitor aquecido e evita, a
         // CADA goal, re-parse do URDF (MBs) + ~10 endpoints DDS criados e
@@ -2370,6 +2522,616 @@ private:
     }
 
     // =====================================================================
+    // SUPERFICIE LIVRE (2026-10-19): soltar num ponto (x, y) livre do tampo,
+    // escolhido pela camera + regras do rulebook 4.4 (ver
+    // surface_place_planner.hpp e workstation_surface_node.py).
+    //
+    // Fluxo (braco em pegar_obj com o bloco):
+    //   1. publica a cota do tampo (/manip/table_plane_z) e liga a observacao
+    //      (/manip/surface_observe = true zera a grade do no de superficie);
+    //   2. para cada pose de observacao: para, espera frames novos, le as
+    //      tags/containers por TF e a memoria de slots (viram circulos de
+    //      obstaculo), pega a grade fundida e roda o planejador; com
+    //      surface_observe_lazy para na 1a vista com plano completo;
+    //   3. IK propria nos melhores candidatos (escada 0/15/30 graus, alvo e
+    //      elevacao); nenhum resolve => kUnreachable (fila de alcance);
+    //   4. volta a pegar_obj se saiu de la, sobe para a elevacao (j1/j4/j5
+    //      primeiro, j2/j3 por ultimo), desce na vertical, confere a chegada
+    //      por FK; soltar/subir/recolher ficam com run_place_cycle
+    //      (stack_lift_q_ = elevacao).
+    // Toda saida sem entrega que nao e' falha de movimento deixa o braco em
+    // pegar_obj (ou surface_arm_moved_ ligado para quem chama recolher).
+    // =====================================================================
+    enum class SurfaceOutcome
+    {
+        kOk, kNotAvailable, kTableNotSeen, kNoSpace, kUnreachable, kMoveFailed, kArrivalFailed
+    };
+
+    static std::string surfaceFailReason(SurfaceOutcome out)
+    {
+        switch (out) {
+            case SurfaceOutcome::kOk: return "";
+            case SurfaceOutcome::kNotAvailable: return "superficie_indisponivel";
+            case SurfaceOutcome::kTableNotSeen: return "mesa_nao_vista";
+            case SurfaceOutcome::kNoSpace: return "sem_espaco_na_mesa";
+            case SurfaceOutcome::kUnreachable: return "alvo_fora_de_alcance";
+            case SurfaceOutcome::kMoveFailed: return "superficie_falhou";
+            case SurfaceOutcome::kArrivalFailed: return "chegada_fora_da_tolerancia";
+        }
+        return "superficie_falhou";
+    }
+
+    void reloadSurfaceParameters()
+    {
+        surface_place_enabled_ = this->get_parameter("surface_place_enabled").as_bool();
+        surface_observe_poses_ = this->get_parameter("surface_observe_poses").as_string_array();
+        surface_observe_lazy_ = this->get_parameter("surface_observe_lazy").as_bool();
+        surface_observe_settle_ms_ = static_cast<int>(this->get_parameter("surface_observe_settle_ms").as_int());
+        surface_observe_timeout_sec_ = this->get_parameter("surface_observe_timeout_sec").as_double();
+        surface_min_frames_ = static_cast<int>(this->get_parameter("surface_min_frames").as_int());
+        surface_grid_topic_ = this->get_parameter("surface_grid_topic").as_string();
+        surface_observe_topic_ = this->get_parameter("surface_observe_topic").as_string();
+        surface_table_plane_topic_ = this->get_parameter("surface_table_plane_topic").as_string();
+        surface_cube_size_m_ = this->get_parameter("surface_cube_size_m").as_double();
+        surface_footprint_radius_m_ = this->get_parameter("surface_footprint_radius_m").as_double();
+        surface_edge_clearance_m_ = this->get_parameter("surface_edge_clearance_m").as_double();
+        surface_object_clearance_m_ = this->get_parameter("surface_object_clearance_m").as_double();
+        surface_wall_clearance_m_ = this->get_parameter("surface_wall_clearance_m").as_double();
+        surface_zone_depth_m_ = this->get_parameter("surface_zone_depth_m").as_double();
+        surface_safety_margin_m_ = this->get_parameter("surface_safety_margin_m").as_double();
+        surface_front_fallback_enabled_ = this->get_parameter("surface_front_fallback_enabled").as_bool();
+        surface_front_fallback_y_m_ = this->get_parameter("surface_front_fallback_y_m").as_double();
+        surface_wall_sides_default_ = this->get_parameter("surface_wall_sides_default").as_string();
+        surface_front_lidar_enabled_ = this->get_parameter("surface_front_lidar_enabled").as_bool();
+        surface_front_lidar_half_width_m_ = this->get_parameter("surface_front_lidar_half_width_m").as_double();
+        surface_front_lidar_max_dev_m_ = this->get_parameter("surface_front_lidar_max_dev_m").as_double();
+        surface_front_prior_tolerance_m_ = this->get_parameter("surface_front_prior_tolerance_m").as_double();
+        surface_wall_lidar_enabled_ = this->get_parameter("surface_wall_lidar_enabled").as_bool();
+        surface_scan_topic_ = this->get_parameter("surface_scan_topic").as_string();
+        surface_tilt_ladder_deg_ = this->get_parameter("surface_tilt_ladder_deg").as_double_array();
+        surface_pre_lift_m_ = this->get_parameter("surface_pre_lift_m").as_double();
+        surface_drop_clearance_m_ = this->get_parameter("surface_drop_clearance_m").as_double();
+        surface_arrival_xy_tolerance_m_ = this->get_parameter("surface_arrival_xy_tolerance_m").as_double();
+        surface_arrival_z_tolerance_m_ = this->get_parameter("surface_arrival_z_tolerance_m").as_double();
+        surface_max_ik_candidates_ = static_cast<int>(this->get_parameter("surface_max_ik_candidates").as_int());
+        surface_candidate_spacing_m_ = this->get_parameter("surface_candidate_spacing_m").as_double();
+        surface_max_reach_radius_m_ = this->get_parameter("surface_max_reach_radius_m").as_double();
+        surface_weight_obstacle_ = this->get_parameter("surface_weight_obstacle").as_double();
+        surface_weight_edge_ = this->get_parameter("surface_weight_edge").as_double();
+        surface_weight_preferred_ = this->get_parameter("surface_weight_preferred").as_double();
+        surface_clearance_cap_m_ = this->get_parameter("surface_clearance_cap_m").as_double();
+        surface_fallback_legacy_slots_ = this->get_parameter("surface_fallback_legacy_slots").as_bool();
+    }
+
+    void publishSurfaceObserve(bool on)
+    {
+        if (!surface_observe_pub_) {
+            return;
+        }
+        std_msgs::msg::Bool msg;
+        msg.data = on;
+        surface_observe_pub_->publish(msg);
+    }
+
+    void publishTablePlaneZ(double tabletop_z)
+    {
+        if (!table_plane_z_pub_) {
+            return;
+        }
+        std_msgs::msg::Float64 msg;
+        msg.data = tabletop_z;
+        table_plane_z_pub_->publish(msg);
+    }
+
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr latestSurfaceGrid(std::uint64_t * count = nullptr)
+    {
+        std::lock_guard<std::mutex> lock(surface_mutex_);
+        if (count) {*count = surface_grid_count_;}
+        return latest_surface_grid_;
+    }
+
+    /// Espera `min_frames` grades novas (contador) cuja estampa seja posterior
+    /// a `not_before` (braco parado). false em timeout/cancel (quem chama
+    /// decide; a grade que houver ainda e' usada).
+    bool waitForSurfaceFrames(
+        const rclcpp::Time & not_before, std::uint64_t count_at_start, int min_frames,
+        double timeout_sec)
+    {
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::duration<double>(std::max(0.2, timeout_sec)));
+        while (std::chrono::steady_clock::now() < deadline) {
+            std::uint64_t count = 0;
+            const auto grid = latestSurfaceGrid(&count);
+            if (grid && count >= count_at_start + static_cast<std::uint64_t>(std::max(1, min_frames))) {
+                const rclcpp::Time stamp(grid->header.stamp, not_before.get_clock_type());
+                if (stamp >= not_before - rclcpp::Duration::from_seconds(0.3)) {
+                    return true;
+                }
+            }
+            if (!sleepInterruptibly(std::chrono::milliseconds(100))) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static manip_task_execution::SurfaceGrid toSurfaceGrid(const nav_msgs::msg::OccupancyGrid & msg)
+    {
+        return manip_task_execution::makeSurfaceGrid(
+            msg.info.origin.position.x, msg.info.origin.position.y, msg.info.resolution,
+            static_cast<int>(msg.info.width), static_cast<int>(msg.info.height), msg.data);
+    }
+
+    /// Raio FISICO (m) de um obstaculo de TF/memoria para o planejador: cubo
+    /// (meia diagonal) ou container (meia diagonal de 170 x 105 mm);
+    /// memoria ganha +1 cm pelo erro de re-docking.
+    double surfaceObstacleRadius(const TableObstacle & ob) const
+    {
+        const bool container =
+            ob.frame.rfind("ct_", 0) == 0 || ob.frame.find("@ct_") != std::string::npos ||
+            isContainerTarget(ob.frame);
+        double r = container ? 0.10 : surface_footprint_radius_m_;
+        if (ob.origin == "memoria") {
+            r += 0.01;
+        }
+        return r;
+    }
+
+    /// Pontos do ultimo /scan em manip_base_link (x, y). Vazio sem scan/TF.
+    std::vector<std::pair<double, double>> lidarPointsInArmFrame()
+    {
+        sensor_msgs::msg::LaserScan::ConstSharedPtr scan;
+        {
+            std::lock_guard<std::mutex> lock(surface_mutex_);
+            scan = latest_scan_;
+        }
+        std::vector<std::pair<double, double>> out;
+        if (!scan) {
+            RCLCPP_INFO(get_logger(), "[SUPERFICIE] LiDAR: sem /scan recebido (bancada/mock?) — sigo sem ele.");
+            return out;
+        }
+        const double age = (this->get_clock()->now() - rclcpp::Time(scan->header.stamp)).seconds();
+        if (age > 2.0) {
+            RCLCPP_WARN(get_logger(), "[SUPERFICIE] LiDAR: scan com %.1f s de idade — ignorado.", age);
+            return out;
+        }
+        geometry_msgs::msg::TransformStamped tf;
+        try {
+            tf = tf_buffer_->lookupTransform(ik_reference_frame_, scan->header.frame_id, tf2::TimePointZero);
+        } catch (const tf2::TransformException & ex) {
+            RCLCPP_WARN(get_logger(), "[SUPERFICIE] LiDAR: sem TF %s <- %s (%s).",
+                ik_reference_frame_.c_str(), scan->header.frame_id.c_str(), ex.what());
+            return out;
+        }
+        const Eigen::Quaterniond q(
+            tf.transform.rotation.w, tf.transform.rotation.x, tf.transform.rotation.y,
+            tf.transform.rotation.z);
+        const Eigen::Matrix3d R = q.toRotationMatrix();
+        const Eigen::Vector3d t(
+            tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z);
+        out.reserve(scan->ranges.size());
+        for (std::size_t i = 0; i < scan->ranges.size(); ++i) {
+            const float r = scan->ranges[i];
+            if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max || r > 3.0f) {
+                continue;
+            }
+            const double ang = scan->angle_min + static_cast<double>(i) * scan->angle_increment;
+            const Eigen::Vector3d p = R * Eigen::Vector3d(r * std::cos(ang), r * std::sin(ang), 0.0) + t;
+            out.emplace_back(p.x(), p.y());
+        }
+        return out;
+    }
+
+    /// Frente da mesa pelo LiDAR: mediana do y dos pontos do /scan logo a
+    /// frente do braco (|x| <= half_width), numa janela plausivel em torno
+    /// do prior do docking. nullopt se nao ha pontos suficientes/coerentes.
+    std::optional<double> frontFromLidar(
+        const std::vector<std::pair<double, double>> & pts, double prior_y)
+    {
+        std::vector<double> ys;
+        for (const auto & p : pts) {
+            if (std::abs(p.first) > surface_front_lidar_half_width_m_) {continue;}
+            if (std::abs(p.second - prior_y) > surface_front_lidar_max_dev_m_) {continue;}
+            ys.push_back(p.second);
+        }
+        if (ys.size() < 12) {
+            RCLCPP_INFO(
+                get_logger(), "[SUPERFICIE] LiDAR: so %zu ponto(s) perto da frente esperada (y=%.3f +- %.2f) — sem frente pelo scan.",
+                ys.size(), prior_y, surface_front_lidar_max_dev_m_);
+            return std::nullopt;
+        }
+        std::sort(ys.begin(), ys.end());
+        const double med = ys[ys.size() / 2];
+        std::vector<double> inl;
+        for (double y : ys) {if (std::abs(y - med) <= 0.03) {inl.push_back(y);}}
+        if (inl.size() < 12 || inl.size() < 0.6 * ys.size()) {
+            RCLCPP_INFO(
+                get_logger(), "[SUPERFICIE] LiDAR: pontos da frente dispersos (%zu/%zu a 3 cm da mediana %.3f) — sem frente pelo scan.",
+                inl.size(), ys.size(), med);
+            return std::nullopt;
+        }
+        const double y_front = inl[inl.size() / 2];
+        RCLCPP_INFO(
+            get_logger(), "[SUPERFICIE] LiDAR: frente da mesa em y=%.3f (%zu pts; prior docking %.3f).",
+            y_front, inl.size(), prior_y);
+        return y_front;
+    }
+
+    struct SurfaceChoice
+    {
+        manip_task_execution::SurfaceCandidate cand;
+        std::array<double, 5> q{};
+        std::array<double, 5> q_lift{};
+        double tilt{0.0};
+        Eigen::Vector3d target{0.0, 0.0, 0.0};
+    };
+
+    SurfaceOutcome placeWithSurfacePlanner(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & table_pose,
+        const std::string & ws,
+        const std::string & carried_tag,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        using manip_task_execution::SurfaceExtraObstacle;
+        using manip_task_execution::SurfacePlan;
+        using manip_task_execution::SurfacePlaceRules;
+        using manip_task_execution::SurfacePlannerOptions;
+
+        if (!surface_grid_subscription_ || surface_grid_subscription_->get_publisher_count() == 0) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[SUPERFICIE] workstation_surface_node nao esta no ar (sem publisher em %s) — "
+                "poses fixas.",
+                surface_grid_topic_.c_str());
+            return SurfaceOutcome::kNotAvailable;
+        }
+        double tabletop = 0.0;
+        if (!tabletopZForPose(arm, table_pose, &tabletop)) {
+            RCLCPP_WARN(get_logger(), "[SUPERFICIE] sem juntas da pose '%s' — sem cota do tampo.", table_pose.c_str());
+            return SurfaceOutcome::kNotAvailable;
+        }
+        publishTablePlaneZ(tabletop);
+        const double target_z = tabletop + cube_height_m_ + surface_drop_clearance_m_;
+
+        // Ponto preferido = FK da pose ensinada da mesa (confortavel p/ o braco).
+        Eigen::Vector3d p_named(0.0, 0.30, target_z);
+        {
+            std::array<double, 5> q_named{};
+            if (namedPoseJoints(arm, table_pose, q_named)) {
+                Eigen::Matrix3d rot;
+                manip_task_execution::forwardKinematics(
+                    q_named, manip_task_execution::ArmModel{}, p_named, rot);
+            }
+        }
+
+        SurfacePlaceRules rules;
+        rules.cube_size_m = surface_cube_size_m_;
+        rules.footprint_radius_m = surface_footprint_radius_m_;
+        rules.edge_clearance_m = surface_edge_clearance_m_;
+        rules.object_clearance_m = surface_object_clearance_m_;
+        rules.wall_clearance_m = surface_wall_clearance_m_;
+        rules.zone_depth_m = surface_zone_depth_m_;
+        rules.safety_margin_m = surface_safety_margin_m_;
+        {
+            const std::string spec = goal_handle->get_goal()->wall_sides.empty() ?
+                surface_wall_sides_default_ : goal_handle->get_goal()->wall_sides;
+            std::vector<std::string> unknown;
+            manip_task_execution::parseWallSides(spec, &rules.wall_left, &rules.wall_right, &unknown);
+            for (const auto & u : unknown) {
+                RCLCPP_WARN(get_logger(), "[SUPERFICIE] wall_sides: token '%s' desconhecido — ignorado.", u.c_str());
+            }
+        }
+        SurfacePlannerOptions opts;
+        opts.preferred_x = p_named.x();
+        opts.preferred_y = p_named.y();
+        opts.weight_obstacle_clearance = surface_weight_obstacle_;
+        opts.weight_edge_clearance = surface_weight_edge_;
+        opts.weight_preferred_distance = surface_weight_preferred_;
+        opts.clearance_cap_m = surface_clearance_cap_m_;
+        opts.max_candidates = std::max(1, surface_max_ik_candidates_ * 3);
+        opts.candidate_spacing_m = surface_candidate_spacing_m_;
+        opts.max_reach_radius_m = surface_max_reach_radius_m_;
+        if (surface_front_fallback_enabled_) {
+            opts.fallback_front_y = surface_front_fallback_y_m_;
+            opts.front_prior_y = surface_front_fallback_y_m_;
+            opts.front_prior_tolerance_m = std::max(surface_front_prior_tolerance_m_, surface_front_lidar_max_dev_m_);
+        }
+        // Frente medida pelo LiDAR (face da mesa): vira fallback E prior
+        // apertado para validar a frente vista pela camera.
+        std::vector<std::pair<double, double>> lidar_pts;
+        if (surface_front_lidar_enabled_ || surface_wall_lidar_enabled_) {
+            lidar_pts = lidarPointsInArmFrame();
+        }
+        if (surface_front_lidar_enabled_ && !lidar_pts.empty()) {
+            const auto y_lidar = frontFromLidar(lidar_pts, surface_front_fallback_y_m_);
+            if (y_lidar) {
+                opts.fallback_front_y = *y_lidar;
+                opts.front_prior_y = *y_lidar;
+                opts.front_prior_tolerance_m = surface_front_prior_tolerance_m_;
+            }
+        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[SUPERFICIE] tampo z=%.3f, alvo z=%.3f, preferido [%.3f %.3f], paredes L=%d R=%d, "
+            "frente fallback %s (prior +-%.2f)",
+            tabletop, target_z, p_named.x(), p_named.y(), rules.wall_left ? 1 : 0,
+            rules.wall_right ? 1 : 0,
+            opts.fallback_front_y ? std::to_string(*opts.fallback_front_y).substr(0, 5).c_str() : "-",
+            opts.front_prior_tolerance_m);
+
+        publish_stage(goal_handle, "surface_observing");
+        speak("Olhando a mesa para achar um lugar livre");
+        waitForCameraStream("PLACE superficie");
+        publishSurfaceObserve(true);
+
+        std::vector<std::string> poses = surface_observe_poses_;
+        if (poses.empty()) {
+            poses.push_back("pegar_obj");
+        }
+        std::optional<SurfacePlan> plan;
+        for (std::size_t k = 0; k < poses.size(); ++k) {
+            const std::string & pose = poses[k];
+            if (!(k == 0 && pose == "pegar_obj")) {
+                publish_stage(goal_handle, "surface_observe_move");
+                RCLCPP_INFO(get_logger(), "[SUPERFICIE] indo observar de %s.", pose.c_str());
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                arm->setNamedTarget(pose);
+                if (pose != "pegar_obj") {
+                    surface_arm_moved_ = true;
+                } 
+                if (!planAndExecute(arm, "surface observe " + pose)) {
+                    publishSurfaceObserve(false);
+                    return SurfaceOutcome::kMoveFailed;
+                }
+                if (pose == "pegar_obj") {
+                    surface_arm_moved_ = false;
+                }
+            }
+            const rclcpp::Time stopped = this->get_clock()->now();
+            std::uint64_t count0 = 0;
+            (void)latestSurfaceGrid(&count0);
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, surface_observe_settle_ms_)))) {
+                publishSurfaceObserve(false);
+                return SurfaceOutcome::kMoveFailed;
+            }
+            // Tags/containers por TF (dwell slot_observe_dwell_sec, durante o
+            // qual as grades chegam) + memoria.
+            std::map<std::string, TableObstacle> obstacles = early_obstacles_;
+            if (!observeTableObstacles(
+                    carried_tag, Eigen::Vector3d(p_named.x(), p_named.y(), target_z), stopped, obstacles))
+            {
+                publishSurfaceObserve(false);
+                return SurfaceOutcome::kMoveFailed;  // cancelado
+            }
+            addMemoryObstacles(ws, obstacles);
+            if (!waitForSurfaceFrames(stopped, count0, surface_min_frames_, surface_observe_timeout_sec_)) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SUPERFICIE] %s: sem %d grade(s) nova(s) em %.1f s — usando o que houver.",
+                    pose.c_str(), surface_min_frames_, surface_observe_timeout_sec_);
+            }
+            if (cancellationRequested()) {
+                publishSurfaceObserve(false);
+                return SurfaceOutcome::kMoveFailed;
+            }
+            std::vector<SurfaceExtraObstacle> extra;
+            for (const auto & kv : obstacles) {
+                SurfaceExtraObstacle ob;
+                ob.x = kv.second.p.x();
+                ob.y = kv.second.p.y();
+                ob.radius_m = surfaceObstacleRadius(kv.second);
+                ob.label = kv.first;
+                extra.push_back(ob);
+                RCLCPP_INFO(
+                    get_logger(), "[SUPERFICIE] obstaculo extra %-24s x=%+.3f y=%.3f r=%.3f (%s)",
+                    ob.label.c_str(), ob.x, ob.y, ob.radius_m, kv.second.origin.c_str());
+            }
+            const auto grid_msg = latestSurfaceGrid();
+            if (!grid_msg) {
+                RCLCPP_WARN(get_logger(), "[SUPERFICIE] %s: nenhuma grade recebida.", pose.c_str());
+                continue;
+            }
+            const manip_task_execution::SurfaceGrid grid = toSurfaceGrid(*grid_msg);
+            SurfacePlan p = manip_task_execution::planSurfacePlacement(grid, rules, extra, opts);
+            // Paredes pelo LiDAR (opt-in): so' acrescenta.
+            if (surface_wall_lidar_enabled_ && p.table_seen) {
+                const auto & pts = lidar_pts;
+                if (!pts.empty()) {
+                    const double front_y = p.front.found ? p.front.y0 : surface_front_fallback_y_m_;
+                    std::optional<double> lx, rx;
+                    if (p.left.found) {lx = p.left.x;}
+                    if (p.right.found) {rx = p.right.x;}
+                    const auto walls = manip_task_execution::detectSideWalls(
+                        pts, front_y, lx, rx, manip_task_execution::SideWallParams{});
+                    bool changed = false;
+                    if (walls.right_found && !rules.wall_right_x) {
+                        rules.wall_right = true;
+                        rules.wall_right_x = walls.right_x;
+                        changed = true;
+                        RCLCPP_WARN(get_logger(), "[SUPERFICIE] LiDAR: parede a DIREITA em x=%.3f (%d pts).", walls.right_x, walls.right_points);
+                    }
+                    if (walls.left_found && !rules.wall_left_x) {
+                        rules.wall_left = true;
+                        rules.wall_left_x = walls.left_x;
+                        changed = true;
+                        RCLCPP_WARN(get_logger(), "[SUPERFICIE] LiDAR: parede a ESQUERDA em x=%.3f (%d pts).", walls.left_x, walls.left_points);
+                    }
+                    if (changed) {
+                        p = manip_task_execution::planSurfacePlacement(grid, rules, extra, opts);
+                    }
+                }
+            }
+            RCLCPP_INFO(
+                get_logger(), "[SUPERFICIE] vista %zu/%zu (%s): %s",
+                k + 1, poses.size(), pose.c_str(), p.diagnostics.c_str());
+            plan = p;
+            const bool walls_ok =
+                (!rules.wall_left || rules.wall_left_x || p.left.found) &&
+                (!rules.wall_right || rules.wall_right_x || p.right.found);
+            // Completo = da para soltar com seguranca desta vista: tampo visto,
+            // candidato livre (o cubo inteiro em celulas CONHECIDAS — o que
+            // esta fora da vista nao atrapalha) e, se ha parede declarada, a
+            // borda daquele lado vista (ou o x da parede pelo LiDAR). A
+            // frente pode vir do docking (fallback): com o cubo na garra ela
+            // raramente aparece inteira na imagem.
+            const bool complete =
+                p.table_seen && p.front.found && !p.candidates.empty() && walls_ok;
+            if (surface_observe_lazy_ && complete) {
+                break;
+            }
+            if (!surface_observe_lazy_ && k + 1 < poses.size()) {
+                continue;
+            }
+        }
+        publishSurfaceObserve(false);
+
+        if (!plan || !plan->table_seen) {
+            RCLCPP_WARN(get_logger(), "[SUPERFICIE] mesa nao vista pela camera.");
+            speak("Nao consegui ver a mesa");
+            return SurfaceOutcome::kTableNotSeen;
+        }
+        if (plan->candidates.empty()) {
+            RCLCPP_WARN(get_logger(), "[SUPERFICIE] nenhum ponto livre que respeite as regras (%s).", plan->diagnostics.c_str());
+            speak("Nao achei lugar livre na mesa");
+            return SurfaceOutcome::kNoSpace;
+        }
+        if (plan->front.from_fallback) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[SUPERFICIE] frente da mesa %s pela camera — profundidade da zona pela frente "
+                "de referencia (y=%.3f, %s).",
+                plan->front.rejected_by_prior ? "REJEITADA (longe do prior)" : "NAO vista",
+                plan->front.y0, opts.front_prior_y ? "LiDAR/docking" : "docking");
+        }
+
+        // ---- IK nos melhores candidatos ----
+        publish_stage(goal_handle, "surface_selecting");
+        const std::vector<double> tilts = tiltLadderRad(surface_tilt_ladder_deg_);
+        std::vector<SurfaceChoice> feasible;
+        int tried = 0;
+        for (const auto & cand : plan->candidates) {
+            if (tried >= std::max(1, surface_max_ik_candidates_)) {break;}
+            ++tried;
+            SurfaceChoice ch;
+            ch.cand = cand;
+            ch.target = Eigen::Vector3d(cand.x, cand.y, target_z);
+            const Eigen::Vector3d lift = ch.target + Eigen::Vector3d(0.0, 0.0, surface_pre_lift_m_);
+            bool ok = false;
+            for (const double tilt : tilts) {
+                if (manip_task_execution::solveIk(ch.target, tilt, 0.0, ch.q) &&
+                    manip_task_execution::solveIk(lift, tilt, 0.0, ch.q_lift))
+                {
+                    ch.tilt = tilt;
+                    ok = true;
+                    break;
+                }
+            }
+            if (!ok) {
+                RCLCPP_INFO(get_logger(), "[SUPERFICIE] candidato [%.3f %.3f] nota %.3f: sem IK.", cand.x, cand.y, cand.score);
+                continue;
+            }
+            // Linha dos dedos: menor giro do punho (qualquer yaw serve p/ cubo).
+            ch.q[4] = manip_task_execution::computeWristForCubeYaw(0.0, ch.q[0], ch.tilt);
+            ch.q_lift[4] = ch.q[4];
+            feasible.push_back(ch);
+            RCLCPP_INFO(
+                get_logger(),
+                "[SUPERFICIE] candidato [%.3f %.3f] nota %.3f folga obj %.1f cm borda %.1f cm prof %.1f cm: "
+                "IK ok a %.0f graus -> j [%.3f %.3f %.3f %.3f %.3f]",
+                cand.x, cand.y, cand.score, cand.clearance_obstacle_m * 100.0,
+                cand.clearance_edge_m * 100.0, cand.depth_from_front_m * 100.0,
+                ch.tilt * 180.0 / M_PI, ch.q[0], ch.q[1], ch.q[2], ch.q[3], ch.q[4]);
+            if (feasible.size() >= 3) {break;}
+        }
+        if (feasible.empty()) {
+            last_unreachable_targets_.clear();
+            for (const auto & cand : plan->candidates) {
+                last_unreachable_targets_.emplace_back(cand.x, cand.y, target_z);
+                if (last_unreachable_targets_.size() >= 8) {break;}
+            }
+            RCLCPP_ERROR(
+                get_logger(),
+                "[SUPERFICIE] %d candidato(s) livres, nenhum com IK (melhor [%.3f %.3f %.3f]) — fora de alcance.",
+                tried, plan->candidates.front().x, plan->candidates.front().y, target_z);
+            return SurfaceOutcome::kUnreachable;
+        }
+
+        // ---- Aproximacao: sempre a partir de pegar_obj ----
+        if (surface_arm_moved_) {
+            publish_stage(goal_handle, "surface_return_pegar_obj");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (!planAndExecute(arm, "surface return pegar_obj before approach")) {
+                return SurfaceOutcome::kMoveFailed;
+            }
+            surface_arm_moved_ = false;
+        }
+        for (std::size_t a = 0; a < feasible.size() && a < 2; ++a) {
+            const SurfaceChoice & ch = feasible[a];
+            const std::size_t n_obs = static_cast<std::size_t>(plan->n_obstacle > 0 ? 1 : 0);
+            (void)n_obs;
+            speak("Achei um lugar livre na mesa, entregando " + sideOf(ch.target));
+            publish_stage(goal_handle, "surface_approach");
+            RCLCPP_INFO(
+                get_logger(),
+                "[SUPERFICIE] alvo [%.3f %.3f %.3f] (ferramenta a %.0f graus, folga obj %.1f cm, borda %.1f cm, "
+                "%.1f cm da frente) — elevacao %.0f mm acima e descida vertical.",
+                ch.target.x(), ch.target.y(), ch.target.z(), ch.tilt * 180.0 / M_PI,
+                ch.cand.clearance_obstacle_m * 100.0, ch.cand.clearance_edge_m * 100.0,
+                ch.cand.depth_from_front_m * 100.0, surface_pre_lift_m_ * 1000.0);
+            if (!moveToJointTargetJoints23Last(arm, ch.q_lift, "surface above target")) {
+                return SurfaceOutcome::kMoveFailed;
+            }
+            if (!moveToJointTarget(arm, ch.q, "surface descend")) {
+                return SurfaceOutcome::kMoveFailed;
+            }
+            Eigen::Vector3d actual = ch.target;
+            const double err = tcpErrorByFk(arm, ch.target, &actual);
+            const double err_xy = err < 0.0 ? -1.0 :
+                std::hypot(actual.x() - ch.target.x(), actual.y() - ch.target.y());
+            const double err_z = err < 0.0 ? 0.0 : std::abs(actual.z() - ch.target.z());
+            if (err < 0.0) {
+                RCLCPP_WARN(get_logger(), "[SUPERFICIE] sem joint_states para conferir a chegada — soltando sem conferir.");
+                speak("Atencao: nao consegui conferir a posicao da ponta antes de soltar");
+            } else if (err_xy > surface_arrival_xy_tolerance_m_ || err_z > surface_arrival_z_tolerance_m_) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SUPERFICIE] chegada fora da tolerancia (xy %.1f cm > %.1f ou z %.1f cm > %.1f) — subindo.",
+                    err_xy * 100.0, surface_arrival_xy_tolerance_m_ * 100.0,
+                    err_z * 100.0, surface_arrival_z_tolerance_m_ * 100.0);
+                (void)moveToJointTarget(arm, ch.q_lift, "surface back up (arrival)");
+                publish_stage(goal_handle, "surface_recover_pegar_obj");
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                arm->setNamedTarget("pegar_obj");
+                if (!planAndExecute(arm, "surface recover pegar_obj")) {
+                    return SurfaceOutcome::kMoveFailed;
+                }
+                if (a + 1 < feasible.size() && a + 1 < 2) {
+                    RCLCPP_WARN(get_logger(), "[SUPERFICIE] tentando o proximo candidato.");
+                    continue;
+                }
+                return SurfaceOutcome::kArrivalFailed;
+            } else {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SUPERFICIE] em posicao (erro FK %.1f cm: dx %+.1f dy %+.1f dz %+.1f cm) — soltando.",
+                    err * 100.0, (actual.x() - ch.target.x()) * 100.0,
+                    (actual.y() - ch.target.y()) * 100.0, (actual.z() - ch.target.z()) * 100.0);
+            }
+            last_slot_decision_ = SlotDecision{
+                "superficie", table_pose, ch.target, ch.cand.clearance_obstacle_m};
+            stack_lift_q_ = ch.q_lift;   // subida vertical apos soltar (run_place_cycle)
+            return SurfaceOutcome::kOk;
+        }
+        return SurfaceOutcome::kArrivalFailed;
+    }
+
+    // =====================================================================
     // EMPILHAR (2026-08-24): soltar o objeto carregado em cima do objeto da
     // tag `base_frame`, ja apoiado na mesa da estacao.
     //
@@ -2896,6 +3658,9 @@ private:
                 goal->table_pose.c_str());
             return;
         }
+        // Superficie livre (2026-10-19): o mapa da mesa e' ray-castado no
+        // plano do TAMPO (nao da borda do container).
+        publishTablePlaneZ(tabletop);
         const double plane_z = tabletop + container_rim_height_m_;
         std_msgs::msg::Float64 msg;
         msg.data = plane_z;
@@ -3240,6 +4005,7 @@ private:
         container_exit_pending_ = false;
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
+        surface_arm_moved_ = false;
         {
             const auto goal = goal_handle->get_goal();
             if (!goal->stack_on.empty()) {
@@ -3412,6 +4178,51 @@ private:
                 const auto goal = goal_handle->get_goal();
                 std::string why;
                 if (slotSelectionApplies(table_pose, goal->ws, &why)) {
+                    // SUPERFICIE LIVRE (2026-10-19): camera + regras do
+                    // rulebook antes das poses fixas. Qualquer saida sem
+                    // entrega que nao seja falha de movimento cai nas poses
+                    // fixas (byte a byte o fluxo de 2026-08-21).
+                    if (surface_place_enabled_) {
+                        const SurfaceOutcome out = placeWithSurfacePlanner(
+                            arm, table_pose, normalizedWs(goal->ws), goal->tag_frame, goal_handle);
+                        if (out == SurfaceOutcome::kOk) {
+                            return true;
+                        }
+                        if (out == SurfaceOutcome::kMoveFailed) {
+                            last_place_failure_reason_ = "superficie_falhou";
+                            return false;
+                        }
+                        if (out == SurfaceOutcome::kUnreachable &&
+                            tryUnreachableBailout(
+                                goal_handle, surface_tilt_ladder_deg_, "SUPERFICIE",
+                                "O lugar livre na mesa"))
+                        {
+                            return false;
+                        }
+                        if (!surface_fallback_legacy_slots_) {
+                            last_place_failure_reason_ = surfaceFailReason(out);
+                            return false;
+                        }
+                        RCLCPP_WARN(
+                            get_logger(),
+                            "[SUPERFICIE] sem entrega pela superficie (%s) — caindo nas poses "
+                            "fixas da mesa (%s).",
+                            surfaceFailReason(out).c_str(), table_pose.c_str());
+                        if (out != SurfaceOutcome::kNotAvailable) {
+                            speak("Vou usar as posicoes fixas da mesa");
+                        }
+                        if (surface_arm_moved_) {
+                            publish_stage(goal_handle, "surface_return_pegar_obj");
+                            arm->setStartStateToCurrentState();
+                            arm->setEndEffectorLink("tcp");
+                            arm->setNamedTarget("pegar_obj");
+                            if (!planAndExecute(arm, "surface fallback return pegar_obj")) {
+                                last_place_failure_reason_ = "superficie_falhou";
+                                return false;
+                            }
+                            surface_arm_moved_ = false;
+                        }
+                    }
                     return placeWithSlotSelection(
                         arm, table_pose, normalizedWs(goal->ws), goal->tag_frame, goal_handle);
                 }
@@ -3547,12 +4358,13 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "Received place goal tag=%s table=%s ws=%s stack_on=%s container_color=%s "
-            "final_attempt=%s base_shift_total=%+.3f",
+            "wall_sides=%s final_attempt=%s base_shift_total=%+.3f",
             goal->tag_frame.c_str(),
             goal->table_pose.c_str(),
             goal->ws.c_str(),
             goal->stack_on.empty() ? "-" : goal->stack_on.c_str(),
             goal->container_color.empty() ? "-" : goal->container_color.c_str(),
+            goal->wall_sides.empty() ? "-" : goal->wall_sides.c_str(),
             goal->final_attempt ? "true" : "false",
             base_shift_total_.load(std::memory_order_relaxed));
         if (!goal->container_color.empty() &&
@@ -3608,6 +4420,7 @@ private:
         last_unreachable_targets_.clear();
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
+        surface_arm_moved_ = false;
 
         auto result =
             std::make_shared<PlaceTag::Result>();
@@ -3669,6 +4482,7 @@ private:
 
         last_place_failure_reason_.clear();
         reloadSlotParameters();
+        reloadSurfaceParameters();
         pegar_obj_arrival_time_.reset();
         early_obstacles_.clear();
         last_slot_decision_.reset();
@@ -3982,7 +4796,7 @@ private:
         speak("Vou devolver o bloco ao " + spokenTargetName(container_pose));
         arm->setMaxAccelerationScalingFactor(1.0);
 
-        if (container_arm_moved_ || stack_arm_moved_) {
+        if (container_arm_moved_ || stack_arm_moved_ || surface_arm_moved_) {
             // Braco em tag_direita/esquerda ou na pre-pose: volta ao caminho
             // validado (pegar_obj) antes de descer ao pote.
             publish_stage(goal_handle, "returning_cube_pegar_obj");

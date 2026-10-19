@@ -69,6 +69,7 @@ motor quando o sinal de controle cai (robo pode dar re sozinho).
 | [docs/tutorial_gui_simulacao.md](docs/tutorial_gui_simulacao.md) | **Tutorial completo da GUI na simulacao**: mapa novo → dock → navegar |
 | [docs/passo_a_passo_mapa_service_areas_docking_route.md](docs/passo_a_passo_mapa_service_areas_docking_route.md) | O mesmo fluxo por terminal (avancado) |
 | [docs/service_areas_docking.md](docs/service_areas_docking.md) | Como funcionam Service Areas e Docking |
+| [docs/place_superficie_livre.md](docs/place_superficie_livre.md) | Place em superficie livre: a camera do punho escolhe onde soltar (rulebook 4.4) |
 | [docs/keepout_paredes_virtuais.md](docs/keepout_paredes_virtuais.md) | Paredes virtuais (fita no chao que o laser nao ve) |
 | [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | Alinhamento fino de docking com as rodas mecanum |
 | [docs/sincronizacao_relogio_ntp.md](docs/sincronizacao_relogio_ntp.md) | Relogio PC ↔ Raspberry (obrigatorio em arena sem internet) |

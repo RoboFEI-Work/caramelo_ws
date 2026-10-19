@@ -24,6 +24,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(moveit_task_constructor_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(my_robot_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -70,6 +71,15 @@ target_include_directories(amt1_sort_planner PUBLIC
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 target_compile_features(amt1_sort_planner PUBLIC cxx_std_17)
 
+# Superficie livre (2026-10-19): regras do rulebook (bordas, objetos, parede,
+# profundidade da zona) sobre a grade top-down da mesa publicada pelo
+# workstation_surface_node. Sem ROS: testado por gtest com mesas sinteticas.
+add_library(surface_place_planner src/surface_place_planner.cpp)
+target_include_directories(surface_place_planner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+target_compile_features(surface_place_planner PUBLIC cxx_std_17)
+
 # Executavel de conferencia: compara o solver C++ com o script Python do
 # operador numa grade de alvos (pega erro de transcricao).
 add_executable(custom_ik_check src/custom_ik_check.cpp)
@@ -107,6 +117,7 @@ ament_target_dependencies(
   "control_msgs"
   "moveit_ros_planning_interface"
   "my_robot_msgs"
+  "nav_msgs"
   "rclcpp"
   "rclcpp_action"
   "sensor_msgs"
@@ -115,7 +126,8 @@ ament_target_dependencies(
   "tf2_ros"
   "tf2_geometry_msgs"
 )
-target_link_libraries(mtc_place_action_node container_state_store custom_ik reach_shift)
+target_link_libraries(mtc_place_action_node
+  container_state_store custom_ik reach_shift surface_place_planner)
 
 # AMT1 (2026-08-28): servidor /amt1_sort — observa a mesa de precision
 # placement, planeja (amt1_sort_planner) e executa picks/places como CLIENTE
@@ -147,6 +159,7 @@ install(
     custom_ik
     reach_shift
     amt1_sort_planner
+    surface_place_planner
     custom_ik_check
     mtc_pick_action_node
     mtc_place_action_node
@@ -185,6 +198,10 @@ if(BUILD_TESTING)
   # oraculo simulatePlan (< 1 s; TIMEOUT folgado para maquina ocupada).
   ament_add_gtest(test_amt1_sort_planner test/test_amt1_sort_planner.cpp TIMEOUT 120)
   target_link_libraries(test_amt1_sort_planner amt1_sort_planner)
+
+  # Superficie livre (2026-10-19): mesas sinteticas x regras do rulebook.
+  ament_add_gtest(test_surface_place_planner test/test_surface_place_planner.cpp TIMEOUT 120)
+  target_link_libraries(test_surface_place_planner surface_place_planner)
 endif()
 
 ament_package()

@@ -59,6 +59,12 @@ public:
   // da pasta do mapa; sem entrada, deriva por normalizacao (WS_1 -> WS1).
   std::string dockIdForWs(const std::string & task_ws) const;
 
+  // 2026-10-19 (superficie livre): lados da mesa com PAREDE, do bloco
+  // `ws_walls:` do ws_table_mapping.yaml ("WS_3: [left]" ou "WS_3: left,right").
+  // Devolve a string normalizada "left" | "right" | "left,right" | "" (sem
+  // parede / estacao ausente). Chave aceita com ou sem '_' (WS_3 == WS3).
+  std::string wallSidesForWs(const std::string & task_ws) const;
+
   // Espelho C++ do normalize_dock_id de caramelo_docking_common.py, com o
   // extra de remover '_' e espacos (WS_1 -> WS1). Lanca std::runtime_error
   // se o resultado nao casar com WS\d+|SH\d+|PP\d+|RT\d+|START|FINISH.
@@ -79,6 +85,7 @@ private:
   std::unordered_map<std::string, bool> use_docking_;
   std::unordered_map<std::string, bool> manipulation_enabled_;
   std::unordered_map<std::string, std::string> ws_to_dock_id_;
+  std::unordered_map<std::string, std::string> ws_walls_;   // chave normalizada (WS3)
 };
 
 using MissionMapConfigPtr = std::shared_ptr<MissionMapConfig>;

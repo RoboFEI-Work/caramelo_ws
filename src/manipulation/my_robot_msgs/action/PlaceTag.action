@@ -27,6 +27,13 @@ bool final_attempt
 # daquele slot) em vez de resolver a IK do ponto xyz. So vale se a base nao
 # se moveu desde a pega (quem chama garante). Vazio = IK normal.
 float64[] place_joints
+# 2026-10-19: SUPERFICIE LIVRE — lados da mesa encostados numa PAREDE
+# (rulebook 4.4: zona de manipulacao comeca a 10 cm da parede). Tokens
+# separados por virgula, vistos pelo ROBO docado de frente para a mesa:
+# "left" | "right" | "left,right" (aceita esquerda/direita). Vazio = sem
+# parede declarada (o no ainda pode detectar pelo LiDAR, se habilitado).
+# Vem do ws_walls do ws_table_mapping.yaml do mapa ou do YAML de acoes.
+string wall_sides
 
 ---
 bool success

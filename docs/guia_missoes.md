@@ -503,6 +503,15 @@ repete. Um `home` no meio da estação fecha a fila (o próximo pick/place da
 mesma estação abre outra). `SH_*` e START/FINISH ficam fora. Para o XML
 antigo, byte a byte: `-p reach_queue_enabled:=false`.
 
+## 6-bis. Place em superfície livre (19/10)
+
+Em mesa comum (`WS_*`) o place agora **olha o tampo** com a RealSense antes de soltar e escolhe um
+ponto que cumpre o rulebook 4.4 (2 cm de bordas e objetos, 10 cm de parede, até 20 cm da frente),
+em vez das 3 poses fixas `MesaX/.1/.2` — que continuam como fallback. Paredes por estação no
+`ws_table_mapping.yaml` do mapa (`ws_walls: {WS_3: [left]}`) ou por ação (`wall_sides: [right]`).
+Kill-switch: `place_surface_planner:=false`. Detalhes, parâmetros e roteiro de validação:
+[docs/place_superficie_livre.md](place_superficie_livre.md). **Ainda sem teste no robô.**
+
 ## 6a. Empilhar objetos (`stack_on`, 24/08)
 
 Só no nível baixo (`actions:`) — o planejador da competição não gera isso.
