@@ -1847,19 +1847,22 @@ private:
     /// goal (campo 2026-08-29: muito_perto_da_mesa apos o docking).
     static bool isNudgeRefusal(const std::string & reason)
     {
+        // 2026-10-19: nudge_base aborta com sem_progresso quando a base nao responde ao comando.
         static const std::set<std::string> kRefusal = {
             "muito_perto_da_mesa", "obstaculo_lateral", "sem_scan", "sem_odometria",
-            "abaixo_do_passo_minimo", "acima_do_curso_maximo", "pedido_invalido", "ocupado"};
+            "abaixo_do_passo_minimo", "acima_do_curso_maximo", "pedido_invalido", "ocupado",
+            "sem_progresso"};
         // "abortado" sem motivo = o servidor estourou antes de mover (campo 29/08).
         return reason.empty() || reason == "abortado" || kRefusal.count(reason) > 0;
     }
 
     static bool isHardNudgeFailure(const std::string & reason)
     {
+        // 2026-10-19: sem_progresso = a base nao respondeu ao comando (nudge_base abortou).
         static const std::set<std::string> kHard = {
             "muro", "obstaculo_lateral", "muito_perto_da_mesa", "sem_scan", "sem_odometria",
             "timeout", "cancelado", "ocupado", "pedido_invalido", "abaixo_do_passo_minimo",
-            "acima_do_curso_maximo"};
+            "acima_do_curso_maximo", "sem_progresso"};
         return kHard.count(reason) > 0;
     }
 

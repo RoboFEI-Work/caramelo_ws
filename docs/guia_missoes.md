@@ -512,6 +512,21 @@ em vez das 3 poses fixas `MesaX/.1/.2` — que continuam como fallback. Paredes 
 Kill-switch: `place_surface_planner:=false`. Detalhes, parâmetros e roteiro de validação:
 [docs/place_superficie_livre.md](place_superficie_livre.md). **Ainda sem teste no robô.**
 
+## 6-ter. Memória de slots (19/10)
+
+A cada place bem-sucedido o nó grava em `~/.config/caramelo/container_states.yaml` (chave
+`table_slots`, por WS) onde a ponta soltou o bloco: slot (`Mesa15.1`, `superficie`, `stack:tag_4`,
+`ct_vermelho`), tag, x/y/z em `manip_base_link` (no frame da pose de docking) e o instante. Na
+próxima passada esses pontos entram como obstáculos virtuais (`memoria:<tag>@<slot>`, +2 cm de
+folga) para o caso de a câmera não ver mais a tag. **Sintoma antigo**: a mesma tag entrava duas
+vezes (TF + memória, em posições um pouco diferentes pelo erro de re-docking) e o robô "via mais
+tags do que existem"; o paliativo era `slot_memory_ttl_sec: 9`. Agora a câmera vence (log
+`memoria: tag_N@slot substituida pela deteccao da camera`) e o registro de uma tag é **apagado**
+quando: o pick confirma a pega (`memoria: tag_N removida (bloco pego)`), o place a solta em outro
+lugar (antes de gravar o novo), o launch reseta o yaml no início da rodada, ou vence o TTL.
+Parâmetros do `place_action_server`: `slot_memory_enabled` (true) e `slot_memory_ttl_sec`
+(600 s — só protege contra registro órfão). Para zerar à mão, apague a chave `table_slots`.
+
 ## 6a. Empilhar objetos (`stack_on`, 24/08)
 
 Só no nível baixo (`actions:`) — o planejador da competição não gera isso.

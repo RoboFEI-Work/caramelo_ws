@@ -5,10 +5,10 @@ duration_min: 6
 active_service_areas: [WS_1, WS_4]
 
 objects:
-  - {id: 21, type: ATTC, color: RED}    # objeto com a tag id 4 (frame tag_4) — BASE
-  - {id: 07, type: ATTC, color: BLUE}
-  - {id: 01, type: ATTC, color: BLUE}    # objeto com a tag id 1 (frame tag_1) — TOPO
-  - {id: 03, type: decoy, color: BLUE}    # objeto com a tag id 3 (frame tag_3) — TOPO
+  - {id: 21, type: ATTC}    # objeto com a tag id 4 (frame tag_4) — BASE
+  - {id: 07, type: ATTC}
+  - {id: 01, type: ATTC}    # objeto com a tag id 1 (frame tag_1) — TOPO
+  - {id: 03, type: decoy}    # objeto com a tag id 3 (frame tag_3) — TOPO
 containers: []
 
 start_state:

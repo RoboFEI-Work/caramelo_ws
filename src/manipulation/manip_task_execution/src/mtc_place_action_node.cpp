@@ -306,7 +306,11 @@ public:
         this->declare_parameter<double>("slot_named_pose_error_m", 0.04);
         this->declare_parameter<double>("max_pose_error_m", 0.025);
         this->declare_parameter<bool>("slot_memory_enabled", true);
-        this->declare_parameter<double>("slot_memory_ttl_sec", 900.0);
+        // TTL da memoria de slots (2026-10-19): 9 s era paliativo para a tag
+        // duplicada (memoria + camera do MESMO bloco). Agora a memoria e'
+        // deduplicada contra a camera e invalidada no pick/place
+        // (removeTableSlotsForTag); o TTL so' protege contra registro orfao.
+        this->declare_parameter<double>("slot_memory_ttl_sec", 600.0);
         this->declare_parameter<bool>("slot_fallback_free_xy_enabled", false);
         this->declare_parameter<double>("slot_fallback_grid_step_m", 0.02);
         this->declare_parameter<double>("slot_fallback_wrist_offset_rad", 0.0);
@@ -499,7 +503,7 @@ private:
     double slot_named_pose_error_m_{0.04};
     double max_pose_error_m_{0.025};
     bool slot_memory_enabled_{true};
-    double slot_memory_ttl_sec_{900.0};
+    double slot_memory_ttl_sec_{600.0};  ///< ver declare_parameter (19/10)
     bool slot_fallback_free_xy_enabled_{false};
     double slot_fallback_grid_step_m_{0.02};
     double slot_fallback_wrist_offset_rad_{0.0};
@@ -2045,8 +2049,12 @@ private:
     /// Slots que o proprio robo ja usou nesta estacao (yaml, sobrevive ao
     /// respawn) viram obstaculos virtuais — cobre o caso da tag do 1o bloco
     /// nao ser vista na 2a passada. +2 cm de folga pelo erro de re-docking.
+    /// 2026-10-19 (tag duplicada): a memoria e' DEDUPLICADA contra `out` —
+    /// a tag que o TF acabou de ver (origin "tf") vence o registro, e o
+    /// bloco na garra (carried_tag) nunca e' obstaculo de si mesmo.
     void addMemoryObstacles(
         const std::string & ws,
+        const std::string & carried_tag,
         std::map<std::string, TableObstacle> & out) const
     {
         if (!slot_memory_enabled_ || ws.empty()) {
@@ -2069,6 +2077,35 @@ private:
             if (rec.frame != ik_reference_frame_) {
                 continue;
             }
+            if (!carried_tag.empty() && rec.tag_frame == carried_tag) {
+                continue;  // morada antiga do bloco que esta na garra
+            }
+            // O mesmo bloco visto agora pela camera e lembrado pela memoria
+            // (posicao um pouco diferente pelo erro de re-docking) virava
+            // DOIS obstaculos. A deteccao fresca vence.
+            const auto seen = out.find(rec.tag_frame);
+            if (seen != out.end() && seen->second.origin == "tf") {
+                // DEBUG: na superficie livre isto roda uma vez por pose de
+                // observacao e repetiria a cada vista.
+                RCLCPP_DEBUG(
+                    get_logger(),
+                    "[SLOT] memoria: %s@%s substituida pela deteccao da camera.",
+                    rec.tag_frame.c_str(), rec.slot.c_str());
+                continue;
+            }
+            // Bloco solto DENTRO de um container que a camera ve agora: a
+            // folga do container ja cobre o bloco; sem isto ficavam dois
+            // circulos quase coincidentes sobre o mesmo container.
+            if (rec.slot.rfind("ct_", 0) == 0) {
+                const auto ct = out.find(rec.slot);
+                if (ct != out.end() && ct->second.origin == "tf") {
+                    RCLCPP_DEBUG(
+                        get_logger(),
+                        "[SLOT] memoria: %s@%s coberta pelo container visto pela camera.",
+                        rec.tag_frame.c_str(), rec.slot.c_str());
+                    continue;
+                }
+            }
             const std::string key = "memoria:" + rec.tag_frame + "@" + rec.slot;
             TableObstacle ob;
             ob.frame = key;
@@ -2083,7 +2120,10 @@ private:
             ++n;
         }
         if (n > 0) {
-            RCLCPP_INFO(get_logger(), "[SLOT] %zu slot(s) ja usado(s) em %s entraram como obstaculo.", n, ws.c_str());
+            // Throttle: a superficie livre chama isto a cada pose de observacao.
+            RCLCPP_INFO_THROTTLE(
+                get_logger(), *this->get_clock(), 2000,
+                "[SLOT] %zu slot(s) ja usado(s) em %s entraram como obstaculo.", n, ws.c_str());
         }
     }
 
@@ -2339,7 +2379,7 @@ private:
         {
             return false;  // cancelado
         }
-        addMemoryObstacles(ws, obstacles);
+        addMemoryObstacles(ws, carried_tag, obstacles);
 
         // 2) Pontuar.
         publish_stage(goal_handle, "selecting_slot");
@@ -2906,7 +2946,7 @@ private:
                 publishSurfaceObserve(false);
                 return SurfaceOutcome::kMoveFailed;  // cancelado
             }
-            addMemoryObstacles(ws, obstacles);
+            addMemoryObstacles(ws, carried_tag, obstacles);
             if (!waitForSurfaceFrames(stopped, count0, surface_min_frames_, surface_observe_timeout_sec_)) {
                 RCLCPP_WARN(
                     get_logger(),
@@ -5044,6 +5084,18 @@ private:
         if (!planAndExecute(gripper, "open gripper final")) {
             last_place_failure_reason_ = "garra_nao_abriu_no_destino";
             return false;
+        }
+        // 2026-10-19: o bloco tem morada nova (mesa, superficie, pilha ou
+        // container) — o registro antigo dele em QUALQUER WS morre antes de
+        // gravar o novo, senao vira obstaculo fantasma na outra mesa.
+        if (slot_memory_enabled_ && !goal->tag_frame.empty()) {
+            std::size_t removed = 0;
+            std::string err;
+            if (!container_state_store_->removeTableSlotsForTag(goal->tag_frame, &removed, &err)) {
+                RCLCPP_WARN(get_logger(), "[SLOT] memoria: nao apaguei %s (%s).", goal->tag_frame.c_str(), err.c_str());
+            } else if (removed > 0) {
+                RCLCPP_INFO(get_logger(), "[SLOT] memoria: %zu registro(s) antigo(s) de %s removido(s) (bloco realocado).", removed, goal->tag_frame.c_str());
+            }
         }
         recordSlotUsed(arm, place_ws, goal->tag_frame);
 

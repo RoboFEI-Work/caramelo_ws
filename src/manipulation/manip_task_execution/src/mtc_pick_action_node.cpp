@@ -3258,6 +3258,25 @@ private:
             speak("A garra detectou o bloco");
         }
 
+        // 2026-10-19: pega CONFIRMADA — o bloco saiu da mesa, entao o
+        // registro dele na memoria de slots (qualquer WS) deixa de valer;
+        // sem isso o place via um obstaculo fantasma (e tag duplicada).
+        // Usa a tag do GOAL (frame_to_pick pode ser o fallback_frame).
+        {
+            const std::string & picked_tag = goal_handle->get_goal()->tag_frame;
+            std::size_t removed = 0;
+            std::string err;
+            if (!container_state_store_->removeTableSlotsForTag(picked_tag, &removed, &err)) {
+                RCLCPP_WARN(
+                    this->get_logger(), "[SLOT] memoria: nao apaguei %s (%s).",
+                    picked_tag.c_str(), err.c_str());
+            } else if (removed > 0) {
+                RCLCPP_INFO(
+                    this->get_logger(), "[SLOT] memoria: %s removida (bloco pego).",
+                    picked_tag.c_str());
+            }
+        }
+
         // 2026-08-31 (pedido do operador): juntas NO FECHAMENTO da garra —
         // memoria para o place por juntas do no AMT1 (so mesa comum).
         if (!is_shelf) {

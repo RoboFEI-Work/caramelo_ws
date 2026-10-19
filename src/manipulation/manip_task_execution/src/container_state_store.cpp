@@ -363,7 +363,7 @@ bool ContainerStateStore::addTableSlotUsed(
 
     // AUDITORIA 31/08 (vazamento em disco): a lista era append-only (o TTL
     // valia so na leitura). Poda tudo com mais de 1 h — bem acima do TTL de
-    // leitura (900 s) — antes de gravar.
+    // leitura (600 s desde 2026-10-19) — antes de gravar.
     {
       YAML::Node pruned(YAML::NodeType::Sequence);
       for (const auto & e : list) {
@@ -447,6 +447,74 @@ bool ContainerStateStore::getTableSlotsUsed(
       records->push_back(rec);
     }
     return true;
+  } catch (const std::exception & ex) {
+    if (error_msg) {
+      *error_msg = ex.what();
+    }
+    return false;
+  }
+}
+
+bool ContainerStateStore::removeTableSlotsForTag(
+  const std::string & tag_frame,
+  std::size_t * removed,
+  std::string * error_msg)
+{
+  if (removed) {
+    *removed = 0;
+  }
+  if (tag_frame.empty()) {
+    if (error_msg) {
+      *error_msg = "tag_frame is empty";
+    }
+    return false;
+  }
+
+  try {
+    // Sem arquivo, sem mapa ou sem 'table_slots:' nao ha o que apagar — e
+    // nao se reescreve o yaml a toa.
+    if (!std::filesystem::exists(file_path_)) {
+      return true;
+    }
+    YAML::Node root = YAML::LoadFile(file_path_);
+    if (!root || !root.IsMap()) {
+      return true;
+    }
+    YAML::Node slots = root["table_slots"];
+    if (!slots || !slots.IsMap()) {
+      return true;
+    }
+
+    // Nomes primeiro: nao se altera o mapa enquanto se itera por ele.
+    std::vector<std::string> ws_names;
+    for (const auto & it : slots) {
+      ws_names.push_back(it.first.as<std::string>());
+    }
+
+    std::size_t n = 0;
+    for (const auto & ws : ws_names) {
+      YAML::Node list = slots[ws];
+      if (!list || !list.IsSequence()) {
+        continue;
+      }
+      YAML::Node kept(YAML::NodeType::Sequence);
+      for (const auto & entry : list) {
+        if (entry.IsMap() && entry["tag_frame"].as<std::string>("") == tag_frame) {
+          ++n;
+          continue;
+        }
+        kept.push_back(entry);
+      }
+      slots[ws] = kept;
+    }
+
+    if (removed) {
+      *removed = n;
+    }
+    if (n == 0) {
+      return true;
+    }
+    return writeYamlAtomically(root, file_path_, error_msg);
   } catch (const std::exception & ex) {
     if (error_msg) {
       *error_msg = ex.what();

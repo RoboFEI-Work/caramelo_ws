@@ -235,6 +235,15 @@ def _launch_setup(context, *args, **kwargs):
             # passo minimo do alinhamento fino 40% menor que os 0.19/0.49 antigos.
             {"min_body_vel": 0.1215},
             {"min_body_omega": 0.315},
+            # 2026-10-19 (campo: nudge "andou +0.000 m"): o piso em roda da'
+            # 2.4299999999999997 rad/s, um ULP abaixo do piso do ESC (2.43),
+            # e o driver so' LIGA com |cmd| >= piso. Toda partida do repouso
+            # comanda piso x 1.07 (2.60 rad/s na roda, como o _retreat).
+            {"floor_start_margin": 0.07},
+            # Watchdog do nudge: 1 s comandando sem a odometria andar 1 cm =
+            # aborta com 'sem_progresso' e loga o diagnostico.
+            {"nudge_no_progress_s": 1.0},
+            {"nudge_no_progress_min_m": 0.01},
             # Refino LiDAR: distancia frontal robo->face na pose final.
             # CALIBRADO 2026-07-23 na WS1 do arena3_520 (robo na pose ideal,
             # "refino face: dist=0.403 m, largura=0.60 m, residuo=3 mm").

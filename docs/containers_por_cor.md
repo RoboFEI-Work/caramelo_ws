@@ -224,7 +224,8 @@ ros2 run manip_bt bt_yaml_executor missao.yaml --ros-args \
 4. Para testar 2 blocos no mesmo container, use a mesma cor nos dois places e confira no
    log `N bloco(s) ja soltos … candidato k/3 … D cm do bloco mais proximo` (D ≈ 6 cm).
    A memória de slots fica em `~/.config/caramelo/container_states.yaml` (`table_slots`),
-   é zerada no launch e tem TTL de 900 s; para zerar à mão apague a chave `table_slots`.
+   é zerada no launch, tem TTL de 600 s (19/10) e o registro de uma tag some quando o pick a
+   pega ou o place a solta em outro lugar; para zerar à mão apague a chave `table_slots`.
 
 **Nunca cancele (Ctrl-C) o executor com um pick em andamento** para trocar parâmetro: o
 cubo fica na garra e a próxima missão abre a garra em `home`. Espere terminar.

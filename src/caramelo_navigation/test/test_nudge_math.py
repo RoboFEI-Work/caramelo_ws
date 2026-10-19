@@ -261,3 +261,61 @@ def test_assentamento_sem_amostra_nova_nao_assenta():
     """So a 1a amostra: nao ha janela fechada (o no cai no teto)."""
     s = Settle(EPS, MIN_S)
     assert s.update(0.0, 0.10) is False
+
+
+# ---------------------------------------------------------------------------
+# Revisao 2026-10-19: "o robo fala que vai se mover mas nao se move".
+# O piso de corpo convertido em roda pelo mecanum_drive_controller da Pi
+# (wheels_radius 0.05, projecao 0.3855) fica UM ULP abaixo do piso do ESC
+# (min_wheel_rad_per_sec = 2.43) — e o driver so' LIGA com |cmd| >= piso.
+start = dan._floor_start_speed
+no_progress = dan._nudge_no_progress
+
+WHEEL_R = 0.05        # caramelo_controllers.yaml: wheels_radius
+PROJ = 0.3855         # sum_of_robot_center_projection_on_X_Y_axis
+ESC_FLOOR = 2.43      # maxon_motors_node: min_wheel_rad_per_sec
+MIN_W, MARGIN = 0.315, 0.07   # MIN_V = 0.1215 ja' definido acima
+
+
+def test_piso_exato_fica_abaixo_do_esc():
+    """O caso que falhava no campo: 0.1215/0.05 = 2.4299999999999997 < 2.43
+    em float; o giro idem (0.315*0.3855/0.05 = 2.42865)."""
+    assert MIN_V / WHEEL_R < ESC_FLOOR
+    assert MIN_W * PROJ / WHEEL_R < ESC_FLOOR
+
+
+def test_partida_com_margem_passa_do_piso():
+    assert start(MIN_V, MARGIN) / WHEEL_R >= ESC_FLOOR
+    assert start(MIN_W, MARGIN) * PROJ / WHEEL_R >= ESC_FLOOR
+
+
+@pytest.mark.parametrize("floor, margin, expected", [
+    (0.1215, 0.07, 0.1215 * 1.07),
+    (0.315, 0.07, 0.315 * 1.07),
+    (0.1215, 0.0, 0.1215),     # sem margem = piso exato (como antes)
+    (0.0, 0.07, 0.0),
+])
+def test_partida_formula(floor, margin, expected):
+    assert start(floor, margin) == pytest.approx(expected, abs=1e-12)
+
+
+def test_partida_no_patamar_do_retreat_antigo():
+    """O _retreat usava 0.13 fixo (2.6 rad/s na roda) e por isso andava;
+    a margem default poe as outras primitivas no mesmo patamar."""
+    assert start(MIN_V, MARGIN) == pytest.approx(0.13, abs=1e-3)
+    assert 0.13 / WHEEL_R >= ESC_FLOOR
+
+
+@pytest.mark.parametrize("elapsed, travelled, ok", [
+    (0.0, 0.0, False),        # acabou de comandar
+    (0.99, 0.0, False),       # antes do prazo
+    (1.0, 0.0, True),         # prazo exato, parado
+    (1.0, 0.009, True),       # abaixo do minimo
+    (1.0, -0.009, True),      # modulo
+    (1.0, 0.01, False),       # minimo exato = andou
+    (1.0, -0.02, False),      # andou (lado errado, mas andou)
+    (5.3, 0.0, True),         # o caso do log de 2026-10-19
+    (2.0, 0.05, False),
+])
+def test_watchdog_sem_progresso(elapsed, travelled, ok):
+    assert no_progress(elapsed, travelled, 1.0, 0.01) is ok

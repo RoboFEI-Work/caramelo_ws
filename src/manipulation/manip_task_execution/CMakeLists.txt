@@ -202,6 +202,12 @@ if(BUILD_TESTING)
   # Superficie livre (2026-10-19): mesas sinteticas x regras do rulebook.
   ament_add_gtest(test_surface_place_planner test/test_surface_place_planner.cpp TIMEOUT 120)
   target_link_libraries(test_surface_place_planner surface_place_planner)
+
+  # Memoria de slots (2026-10-19): add/get com TTL, removeTableSlotsForTag em
+  # todas as WS preservando 'containers:', arquivo inexistente/vazio. Yaml
+  # temporario por teste (sem ROS).
+  ament_add_gtest(test_container_state_store test/test_container_state_store.cpp TIMEOUT 60)
+  target_link_libraries(test_container_state_store container_state_store)
 endif()
 
 ament_package()

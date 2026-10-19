@@ -49,6 +49,12 @@ Revisao 2026-08-28 (achados): pre-checagem projeta o avanco do bico pela
 inclinacao da face e vigia o front durante o curso; ganho de escorregamento
 lateral (odom nao ve o slip); assentamento por ODOMETRIA (o front nao muda
 num lateral); corte desconta a idade da odometria; NaN/inf no goal = recusa.
+Revisao 2026-10-19 (campo: "fala que vai se mover mas nao se move"): o piso
+de corpo em roda da' 2.4299999999999997 rad/s, um ULP abaixo do piso do ESC
+(2.43), e o driver so' LIGA com |cmd| >= piso. Toda primitiva que parte do
+repouso comanda piso x (1 + floor_start_margin) (_floor_start_speed); o
+nudge ganhou watchdog de progresso (razao 'sem_progresso') e loga o motivo
+de saida do curso.
 """
 import math
 import os
@@ -146,6 +152,28 @@ def _nudge_cut_reached(mag, travelled, sign, coast, min_v, odom_age, period):
     return mag - travelled * sign <= coast + min_v * (odom_age + period)
 
 
+def _floor_start_speed(floor, margin):
+    """Velocidade de PARTIDA a partir do repouso = piso x (1 + margin).
+    O piso de corpo (0.1215 m/s / 0.315 rad/s) convertido em roda pelo
+    mecanum_drive_controller da Pi (raio 0.05, projecao 0.3855) da'
+    2.4299999999999997 rad/s — UM ULP ABAIXO do piso do ESC (2.43). O
+    driver (maxon_motors_node) tem histerese: LIGAR exige |cmd| >= piso;
+    so' DESLIGA abaixo de 0.4 x piso. Logo quem parte do repouso exatamente
+    no piso nunca move as rodas (campo 2026-10-19: nudge "andou +0.000 m");
+    ja' em movimento (docking: parte com kp*erro > piso) o piso exato segue
+    valendo. O giro idem: 0.315 x 0.3855 / 0.05 = 2.42865 < 2.43. Pura,
+    testavel."""
+    return float(floor) * (1.0 + float(margin))
+
+
+def _nudge_no_progress(elapsed_s, travelled_m, min_s, min_m):
+    """Watchdog de progresso do curso lateral (2026-10-19): comandando ha'
+    pelo menos min_s e |travelled| < min_m = a base nao respondeu (roda
+    sub-piso, outro publicador na referencia, reference_timeout do
+    controller por relogio PC x Pi). Pura, testavel."""
+    return elapsed_s >= min_s and abs(travelled_m) < min_m
+
+
 class _OdomSettle:
     """Assentamento por ODOMETRIA do nudge (achado 3): num lateral puro o
     front NAO muda, entao o _settle do docking (front estavel em 3 scans)
@@ -211,6 +239,12 @@ class DockAlignNode(Node):
         # m/s / 0.315 rad/s de corpo, executado EXATO (mapa ancorado 1570us).
         self.declare_parameter("min_body_vel", 0.1215)
         self.declare_parameter("min_body_omega", 0.315)
+        # Partida do REPOUSO (2026-10-19, campo: nudge "andou +0.000 m"): o
+        # piso em roda da' 2.4299999999999997 rad/s, um ULP abaixo do piso
+        # do ESC (2.43), e o driver so' LIGA com |cmd| >= piso (histerese:
+        # desliga abaixo de 0.4 x piso). Toda primitiva que parte do repouso
+        # comanda piso x (1 + margem); ver _floor_start_speed.
+        self.declare_parameter("floor_start_margin", 0.07)
         self.declare_parameter("kp_linear", 1.2)
         self.declare_parameter("default_xy_tolerance", 0.03)
         # 0.05 -> 0.09 (teste 3 em 2026-08-18): a leitura de yaw da face
@@ -413,6 +447,13 @@ class DockAlignNode(Node):
         self.declare_parameter("nudge_settle_eps", 0.003)
         self.declare_parameter("nudge_settle_min_s", 0.8)
         self.declare_parameter("nudge_settle_max_s", 3.0)
+        # Watchdog de progresso (2026-10-19): comandando ha' nudge_no_progress_s
+        # sem a odometria andar nudge_no_progress_min_m = aborta com
+        # 'sem_progresso' e loga o diagnostico (publicadores na referencia,
+        # relogio PC x Pi, piso do ESC) em vez de esperar o teto e devolver
+        # 'curso_incompleto' sem explicacao.
+        self.declare_parameter("nudge_no_progress_s", 1.0)
+        self.declare_parameter("nudge_no_progress_min_m", 0.01)
 
         # ------- Refino de yaw sob suspeita (operador 2026-08-18: "as vezes
         # piora"): so aplica a correcao quando 2 fits confiantes consecutivos
@@ -1038,6 +1079,14 @@ class DockAlignNode(Node):
         msg.twist.angular.z = wz
         self._cmd_pub.publish(msg)
 
+    def _start_speeds(self):
+        """(v, w) de PARTIDA do repouso = piso x (1 + floor_start_margin).
+        Ver _floor_start_speed (2026-10-19): no piso exato a roda fica um
+        ULP abaixo do piso do ESC e nao liga."""
+        margin = float(self.get_parameter("floor_start_margin").value)
+        return (_floor_start_speed(float(self.get_parameter("min_body_vel").value), margin),
+                _floor_start_speed(float(self.get_parameter("min_body_omega").value), margin))
+
     # ---------------------------------------------- Primitivas do fluxo v4
     class _AttemptAbort(Exception):
         """Encerra a tentativa de dentro das primitivas (hard_stop, cancel,
@@ -1109,8 +1158,9 @@ class DockAlignNode(Node):
                cycles, phase_name):
         """Pulso de `cycles` ciclos no PISO do eixo (x|y|z), com os guards a
         cada ciclo, seguido de assentamento. Devolve o resultado do _settle."""
-        min_v = self.get_parameter("min_body_vel").value
-        min_w = self.get_parameter("min_body_omega").value
+        # Parte do repouso: piso x (1 + margem), senao a roda fica um ULP
+        # abaixo do piso do ESC e nao liga (2026-10-19, _floor_start_speed).
+        min_v, min_w = self._start_speeds()
         for _ in range(max(1, int(cycles))):
             front, _n, _fy = self._check_guards(goal_handle, deadline, attempt_end)
             if front is None:
@@ -1132,8 +1182,9 @@ class DockAlignNode(Node):
         (error_fn() -> valor com sinal, ou None) fica <= coast — o ESC retem a
         referencia ~0,5 s e termina o curso. Sem medicao por 3 scans novos ou
         inversao de sinal: corta. Devolve o resultado do _settle."""
-        min_v = self.get_parameter("min_body_vel").value
-        min_w = self.get_parameter("min_body_omega").value
+        # Parte do repouso: piso x (1 + margem) nos 3 eixos, senao a roda
+        # fica um ULP abaixo do piso do ESC e nao liga (2026-10-19).
+        min_v, min_w = self._start_speeds()
         start_s = self.get_clock().now().nanoseconds * 1e-9
         miss = 0
         last_seq = -1
@@ -1555,7 +1606,9 @@ class DockAlignNode(Node):
         stop_dist = self._resolve_stop_dist()
         base = stop_dist if stop_dist is not None else 0.35
         target_front = base + staging_offset
-        speed = max(self.get_parameter("min_body_vel").value, 0.13)
+        # Parte do repouso acima do piso (2026-10-19): o 0.13 fixo de antes
+        # ja' fazia isso na pratica (2.6 rad/s na roda); fica como minimo.
+        speed = max(self._start_speeds()[0], 0.13)
         max_time = (staging_offset / speed) * 2.0 + 2.0
         start_s = self.get_clock().now().nanoseconds * 1e-9
         traveled = 0.0
@@ -1799,20 +1852,32 @@ class DockAlignNode(Node):
             f"face_yaw={'?' if front is None else '%+.1f' % math.degrees(face_yaw)} "
             f"coast={coast:.3f} ganho_odom={gain:.2f} max_s={max_s:.1f} "
             f"timeout={timeout:.0f}")
+        # Diagnostico de partida (2026-10-19): velocidade REAL comandada
+        # (piso x margem) e quem mais esta' na referencia — um segundo
+        # publicador (Nav2, teleop) zerando o topico anula o nudge; zero
+        # assinantes = o mecanum_controller nao esta' ouvindo.
+        v_start, _w = self._start_speeds()
+        log(f"comando: vy={math.copysign(v_start, sign):+.4f} m/s (piso {min_v:.4f} x "
+            f"{1.0 + float(self.get_parameter('floor_start_margin').value):.2f}) em "
+            f"{self._ref_topic}: publicadores={self.count_publishers(self._ref_topic)} "
+            f"(este no' incluso), assinantes={self.count_subscribers(self._ref_topic)}")
 
         # ---- (5) curso continuo no piso, cortado pela odometria (com a
         # idade da medida descontada); depois assenta por ODOMETRIA — o
         # front nao muda num lateral, o _settle do docking devolveria com a
         # base ainda rodando (achado 3). Qualquer guarda vira _AttemptAbort.
         outcome, info = "ok", None
+        drive_exit = None  # motivo de saida do laco do curso (diagnostico)
         settled = False
         try:
-            self._nudge_drive(goal_handle, rate, deadline, sign, mag, origin,
-                              coast, max_s, require_scan, odom_max_age,
-                              gain, period, front, drift_max)
+            drive_exit = self._nudge_drive(goal_handle, rate, deadline, sign, mag, origin,
+                                           coast, max_s, require_scan, odom_max_age,
+                                           gain, period, front, drift_max)
             settled = self._nudge_settle(goal_handle, rate, deadline, origin)
         except self._AttemptAbort as ab:
             outcome, info = ab.outcome, ab.info
+            if drive_exit is None:
+                drive_exit = "sem_progresso" if ab.outcome == "no_progress" else ab.outcome
             # Abortado a base ainda escorrega o coast: espera parar com a
             # referencia em zero (sem guardas — ja dispararam) para que o
             # total publicado seja a posicao REAL, nao a de meio do coast.
@@ -1829,7 +1894,8 @@ class DockAlignNode(Node):
         raw, longi, dyaw = self._nudge_progress(origin)
         travelled = _nudge_corrected(raw, gain)
         self._set_shift_total(self._base_shift_total + travelled)
-        log(f"fim ({outcome}{'' if info is None else ': ' + str(info)}): lateral "
+        log(f"fim ({outcome}{'' if info is None else ': ' + str(info)}; saida do "
+            f"curso: {drive_exit}): lateral "
             f"{travelled * 100:+.1f} cm (odom bruto {raw * 100:+.1f} cm x ganho "
             f"{gain:.2f}; pedido {dy * 100:+.1f}), longitudinal "
             f"{longi * 100:+.1f} cm, yaw {math.degrees(dyaw):+.1f} graus, "
@@ -1845,6 +1911,11 @@ class DockAlignNode(Node):
             return fail("obstaculo_lateral", travelled)
         if outcome == "shutdown":
             return fail("cancelado", travelled, canceled=True)
+        if outcome == "no_progress":
+            # Razao NOVA (2026-10-19): a base nao saiu do lugar. As demais
+            # razoes nao mudam de texto (amt1_sort_action_node compara
+            # strings exatas).
+            return fail("sem_progresso", travelled)
         if _nudge_accepts(dy, travelled, slack):
             result.success = True
             result.reason = ""
@@ -1859,8 +1930,10 @@ class DockAlignNode(Node):
         referencia ~0,5 s). Guardas do docking valem (scan velha/cega,
         cancel, prazo); muro nao dispara porque a frente so' cresce."""
         coast = float(self.get_parameter("nudge_backoff_coast").value)
-        min_v = self.get_parameter("min_body_vel").value
-        max_s = (float(self.get_parameter("nudge_backoff_max").value) + coast) / max(min_v, 1e-3) + 2.0
+        # O _cut_drive ja' parte acima do piso (2026-10-19); o teto de tempo
+        # usa a mesma velocidade.
+        v_start, _w = self._start_speeds()
+        max_s = (float(self.get_parameter("nudge_backoff_max").value) + coast) / max(v_start, 1e-3) + 2.0
 
         def err_fn(front):
             return None if front is None else (front - target_front)
@@ -1882,19 +1955,31 @@ class DockAlignNode(Node):
         achado 1b) — muro; o corte desconta a idade da odometria (achado
         5) e usa o lateral ja corrigido pelo ganho (achado 2). Guardas de
         cancel/timeout/hard_min em _check_guards, como nas outras
-        primitivas. front0 = front da pre-checagem (None sem scan)."""
-        min_v = float(self.get_parameter("min_body_vel").value)
+        primitivas. front0 = front da pre-checagem (None sem scan).
+        Devolve o motivo de saida do laco (teto_de_tempo | corte | sem_scan
+        | odometria_velha | shutdown) para o log de fim; abortos (muro,
+        faixa lateral, sem_progresso, guardas) sobem como _AttemptAbort."""
+        # Parte do repouso: piso x (1 + floor_start_margin). No piso exato a
+        # roda fica um ULP abaixo do 2.43 rad/s do ESC e nunca liga (campo
+        # 2026-10-19: "andou +0.000 m"). O corte desconta o lag com a MESMA
+        # velocidade comandada.
+        v_cmd, _w = self._start_speeds()
+        no_prog_s = float(self.get_parameter("nudge_no_progress_s").value)
+        no_prog_m = float(self.get_parameter("nudge_no_progress_min_m").value)
         start_s = self.get_clock().now().nanoseconds * 1e-9
         x0, y0, yaw0 = origin
+        exit_reason = "shutdown"
         while rclpy.ok():
             front, _npts, _fy = self._check_guards(goal_handle, deadline, deadline)
             now_s = self.get_clock().now().nanoseconds * 1e-9
             if now_s - start_s > max_s:
                 self.get_logger().warn("nudge_base: teto de tempo do curso — corto")
+                exit_reason = "teto_de_tempo"
                 break
             if require_scan and front is None:
                 self.get_logger().warn(
                     "nudge_base: muro sem medicao no meio do curso (STALE/BLIND) — corto")
+                exit_reason = "sem_scan"
                 break
             if front is not None:
                 if front0 is None:
@@ -1913,22 +1998,41 @@ class DockAlignNode(Node):
             sample = self._odom_sample(odom_max_age)
             if sample is None:
                 self.get_logger().warn("nudge_base: odometria velha no meio do curso — corto")
+                exit_reason = "odometria_velha"
                 break
             raw = _lateral_displacement(x0, y0, yaw0, sample[0], sample[1])
             travelled = _nudge_corrected(raw, gain)
-            if _nudge_cut_reached(mag, travelled, sign, coast, min_v,
+            if _nudge_cut_reached(mag, travelled, sign, coast, v_cmd,
                                   sample[3], period):
                 # Falta so o coast (+ o que anda ate a medida chegar):
                 # corta e deixa o ESC terminar.
                 self.get_logger().info(
                     f"nudge_base: corte a {travelled * 100:+.1f} cm (odom bruto "
                     f"{raw * 100:+.1f} cm, idade {sample[3] * 1000:.0f} ms)")
+                exit_reason = "corte"
                 break
-            self._publish_cmd(0.0, math.copysign(min_v, sign), 0.0)
+            # Watchdog de progresso (2026-10-19): comandando ha' no_prog_s e
+            # a odometria nao saiu do lugar = a base nao respondeu. Aborta
+            # ja' com o diagnostico, em vez de esperar o teto e devolver
+            # 'curso_incompleto' sem explicacao.
+            elapsed = now_s - start_s
+            if _nudge_no_progress(elapsed, travelled, no_prog_s, no_prog_m):
+                self._publish_cmd(0.0, 0.0, 0.0)
+                self.get_logger().warn(
+                    f"nudge_base: base nao respondeu ao comando (vy="
+                    f"{math.copysign(v_cmd, sign):+.4f} m/s por {elapsed:.1f} s, odom "
+                    f"bruto {raw * 100:+.1f} cm): conferir publicadores em "
+                    f"{self._ref_topic} (count_publishers="
+                    f"{self.count_publishers(self._ref_topic)}), relogio PC x Pi "
+                    f"(reference_timeout 0.15 s no mecanum_controller) e o piso do "
+                    f"ESC (roda >= 2.43 rad/s)")
+                raise self._AttemptAbort(
+                    "no_progress", f"sem progresso em {elapsed:.1f} s")
+            self._publish_cmd(0.0, math.copysign(v_cmd, sign), 0.0)
             self._feedback(goal_handle, "deslocando", 0.0, 0.0, 0.0)
             rate.sleep()
         self._publish_cmd(0.0, 0.0, 0.0)
-        return
+        return exit_reason
 
     def _nudge_settle(self, goal_handle, rate, deadline, origin, guarded=True):
         """Assenta por ODOMETRIA (achado 3): publica zero ate o lateral

@@ -81,8 +81,9 @@ do EKF.
 
 Razões (`reason`): `pedido_invalido`, `abaixo_do_passo_minimo`, `acima_do_curso_maximo`,
 `sem_odometria`, `sem_scan`, `muito_perto_da_mesa`, `obstaculo_lateral`, `muro`, `timeout`,
-`cancelado`, `ocupado`, `curso_incompleto`. (`pedido_invalido` — revisão 28/08 — ainda não
-consta no comentário de `NudgeBase.action`; o `.action` não foi alterado.)
+`cancelado`, `ocupado`, `curso_incompleto`, `sem_progresso`. (`pedido_invalido` — revisão
+28/08 — e `sem_progresso` — 19/10 — ainda não constam no comentário de `NudgeBase.action`;
+o `.action` não foi alterado.)
 
 Frames: `manip_base_link` +X = direita do robô, +Y = frente; `base_footprint` +y =
 esquerda. A base andar `dy` para a esquerda ⇒ o `x_manip` de um alvo fixo na mesa vira
@@ -213,3 +214,51 @@ não recusa mais de cara: recua em x puro (`_nudge_backoff`, mesmo movimento do 
 descontando `nudge_backoff_coast` 0,06) até `lateral_min_front + nudge_backoff_margin` (0,03),
 limitado a `nudge_backoff_max` (0,12), re-mede a face e segue com o lateral. Desligar:
 `nudge_backoff_enabled:=false`. O recuo NÃO entra em `/manip/base_shift_total` (só o lateral).
+
+### `nudge_base` não se movia (2026-10-19)
+
+**Sintoma.** O robô fala "Vou me ajustar para a esquerda", o executor loga
+`[NudgeBase WS_1] ajuste lateral +0.10 m (esquerda), timeout 20 s...` e, 5 s depois,
+`ajuste de +0.10 m FALHOU: curso_incompleto (andou +0.000 m)`. Nada se move.
+
+**Causa (confirmada numericamente).** O nudge partia do **repouso** comandando exatamente
+`min_body_vel = 0.1215 m/s`. Na Raspberry o `mecanum_drive_controller` (`wheels_radius`
+0,05; `sum_of_robot_center_projection_on_X_Y_axis` 0,3855) converte isso em roda =
+`0.1215/0.05 = 2.4299999999999997 rad/s` — **um ULP abaixo** do piso do ESC
+(`min_wheel_rad_per_sec = 2.43`). O driver (`maxon_motors_node.cpp`,
+`velocity_to_pulse_width_us`) tem histerese: **ligar** exige `|cmd| ≥ piso`; só **desliga**
+abaixo de `0.4·piso`. Logo as rodas nunca partiam, a odometria lia 0,000 m e o resultado era
+`curso_incompleto`. O docking funcionava porque parte com `vx = kp·erro > piso` e, já em
+movimento, a histerese mantém as rodas quando o comando cai para o piso. O giro tem o mesmo
+problema (`0.315·0.3855/0.05 = 2.42865 < 2.43`); o `_retreat` já usava 0,13 m/s por isso.
+
+**Correção (`dock_align_node.py`).**
+- Parâmetro `floor_start_margin` (fração, default **0,07**) e helper puro
+  `_floor_start_speed(piso, margem) = piso·(1+margem)`: **toda primitiva que parte do
+  repouso** (`_nudge_drive`, `_cut_drive` nos 3 eixos — inclusive `min_body_omega` —,
+  `_nudge_backoff`, `_pulse` e `_retreat`, que mantém o mínimo de 0,13) comanda
+  `0.1215·1.07 = 0.130 m/s` (2,60 rad/s na roda) / `0.315·1.07 = 0.337 rad/s`. O corte do
+  nudge desconta o lag com a mesma velocidade comandada.
+- **Watchdog de progresso** em `_nudge_drive`: `nudge_no_progress_s` (1,0 s) e
+  `nudge_no_progress_min_m` (0,01 m) — comandando há ≥ 1 s com `|travelled| < 1 cm`
+  (`_nudge_no_progress`, pura) ⇒ zera a referência, loga o diagnóstico em WARN e aborta
+  com a razão **nova `sem_progresso`** (as demais razões não mudaram de texto; o
+  `amt1_sort_action_node` compara strings exatas e trata `sem_progresso` com
+  `|travelled| ≤ 2 cm` como falha, não como recusa nem parcial).
+- Os três parâmetros estão declarados em `docking_server.launch.py`.
+
+**Como diagnosticar (linhas de log do `dock_align_node`).**
+- No início de cada nudge: `[nudge +0.10] comando: vy=+0.1300 m/s (piso 0.1215 x 1.07) em
+  /mecanum_controller/reference: publicadores=1 (este no' incluso), assinantes=1` —
+  `publicadores > 1` = alguém mais (Nav2, teleop) está escrevendo na referência e pode
+  zerar o comando; `assinantes=0` = o `mecanum_controller` não está ouvindo.
+- Se a base não responder: `nudge_base: base nao respondeu ao comando (vy=+0.1300 m/s por
+  1.0 s, odom bruto +0.0 cm): conferir publicadores em /mecanum_controller/reference
+  (count_publishers=N), relogio PC x Pi (reference_timeout 0.15 s no mecanum_controller) e
+  o piso do ESC (roda >= 2.43 rad/s)` seguido de `fim (no_progress: sem progresso em 1.0 s;
+  saida do curso: sem_progresso)`.
+- A linha de fim sempre traz o motivo de saída do laço do curso: `fim (ok; saida do curso:
+  corte): ...` — valores: `corte` (normal), `teto_de_tempo`, `sem_scan`, `odometria_velha`,
+  `sem_progresso`, ou o outcome do abort (`hard_stop`, `side_blocked`, `canceled`, `timeout`).
+- Testes puros: `python3 -m pytest src/caramelo_navigation/test/test_nudge_math.py -q`
+  (inclui o caso que falhava, `0.1215/0.05 < 2.43`, e as bordas do watchdog).

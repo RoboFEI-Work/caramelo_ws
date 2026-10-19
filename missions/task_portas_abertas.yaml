@@ -1,0 +1,45 @@
+#BTT1
+task_id: PT
+name: Task dos Portas Abertas
+duration_min: 8
+active_service_areas: [WS_1, WS_2, WS_3, WS_4, SH_1]
+
+objects:
+  - {id: 05, type: ATTC}               
+  - {id: 01, type: ATTC}              
+  - {id: 21, type: ATTC, color: RED}               
+  - {id: 03, type: ATTC}
+  - {id: 04, type: ATTC}              
+containers: []                         
+start_state:
+  WS_1:
+    obj_ids: [01]
+    cont_ids: []
+  WS_2:
+    obj_ids: [21]
+    cont_ids: []
+  WS_4:
+    obj_ids: [04]
+    cont_ids: []
+  WS_3:
+    obj_ids: [03]
+    cont_ids: []
+  SH_1:
+    obj_ids: [05]
+    cont_ids: []
+finish_state:
+  WS_1:
+    obj_ids: [03,05]        
+    cont_ids: []
+  WS_2:
+    obj_ids: []
+    cont_ids: []
+  WS_4:
+    obj_ids: [21]
+    cont_ids: []     
+  WS_3:
+    obj_ids: [04]
+    cont_ids: [] 
+  SH_1:
+    obj_ids: [01]
+    cont_ids: []

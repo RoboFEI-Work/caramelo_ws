@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -26,9 +27,9 @@ public:
   explicit ContainerStateStore(const std::string & file_path);
 
   /// Memoria de slots usados por estacao ('table_slots:' no mesmo yaml).
-  /// Sobrevive ao respawn do no; o reset por missao do launch reescreve o
-  /// arquivo so com 'containers:' e a apaga. `resetAllEmpty` NAO a apaga —
-  /// por isso a leitura aceita um TTL.
+  /// Sobrevive ao respawn do no. O reset por rodada (one-shot do launch) e
+  /// `resetAllEmpty` apagam a chave 'table_slots'; o TTL da leitura so'
+  /// protege contra registro orfao (no' morto sem reset).
   bool addTableSlotUsed(
     const std::string & ws,
     const TableSlotRecord & record,
@@ -40,6 +41,19 @@ public:
     double now_sec,
     std::vector<TableSlotRecord> * records,
     std::string * error_msg = nullptr) const;
+
+  /// Apaga TODOS os registros de 'table_slots' (em qualquer WS) cujo
+  /// tag_frame seja o dado; o resto do yaml ('containers:' e as outras
+  /// tags) fica como esta e a escrita continua atomica (2026-10-19).
+  /// Chamado quando o bloco muda de morada: o pick o tirou da mesa ou o
+  /// place o soltou em outro lugar — sem isso o registro antigo virava
+  /// obstaculo FANTASMA (e, somado a deteccao da camera, tag duplicada).
+  /// Arquivo inexistente/vazio ou tag sem registro = sucesso com 0
+  /// removidos (nada e reescrito). `removed` (opcional) recebe a contagem.
+  bool removeTableSlotsForTag(
+    const std::string & tag_frame,
+    std::size_t * removed = nullptr,
+    std::string * error_msg = nullptr);
 
   bool setOccupied(
     const std::string & container_name,
