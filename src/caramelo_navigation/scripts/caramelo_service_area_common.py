@@ -18,7 +18,6 @@ except ImportError:  # pragma: no cover - mantem compatibilidade em PCs sem ruam
 from caramelo_docking_common import (
     backup_file,
     normalize_dock_id,
-    resolve_map_folder,
     service_areas_file,
 )
 

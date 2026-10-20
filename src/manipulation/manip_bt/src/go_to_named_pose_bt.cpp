@@ -5,11 +5,12 @@
 #include <std_msgs/msg/string.hpp>
 
 #include <chrono>
-#include <cstdint>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+#include "manip_bt/bt_node_name.hpp"
 
 namespace
 {
@@ -180,11 +181,7 @@ GoToNamedPoseBT::GoToNamedPoseBT(
   const BT::NodeConfiguration & config)
 : BT::SyncActionNode(name, config)
 {
-  const auto node_name =
-    std::string("bt_go_to_named_pose_") +
-    std::to_string(static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(this)));
-
-  node_ = std::make_shared<rclcpp::Node>(node_name);
+  node_ = std::make_shared<rclcpp::Node>(leafNodeName("bt_go_to_named_pose_", name));
 
   const auto source_move_group_node =
     node_->declare_parameter<std::string>("move_group_node", "/move_group");
@@ -233,12 +230,12 @@ BT::NodeStatus GoToNamedPoseBT::tick()
 {
   std::string pose_name;
   if (!getInput("pose_name", pose_name)) {
-    RCLCPP_ERROR(rclcpp::get_logger("GoToNamedPoseBT"), "Missing input port: pose_name");
+    RCLCPP_ERROR(rclcpp::get_logger("go_to_named_pose_bt"), "Porta de entrada ausente: pose_name");
     return BT::NodeStatus::FAILURE;
   }
 
   RCLCPP_INFO(
-    rclcpp::get_logger("GoToNamedPoseBT"),
+    rclcpp::get_logger("go_to_named_pose_bt"),
     "Moving arm to named pose: %s",
     pose_name.c_str());
 
@@ -267,7 +264,7 @@ BT::NodeStatus GoToNamedPoseBT::tick()
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         if (arm_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
           RCLCPP_WARN(
-            rclcpp::get_logger("GoToNamedPoseBT"),
+            rclcpp::get_logger("go_to_named_pose_bt"),
             "Planejamento falhou para '%s' (tentativa %d/%d)",
             name.c_str(), attempt, attempts);
           continue;
@@ -275,7 +272,7 @@ BT::NodeStatus GoToNamedPoseBT::tick()
 
         if (arm_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
           RCLCPP_WARN(
-            rclcpp::get_logger("GoToNamedPoseBT"),
+            rclcpp::get_logger("go_to_named_pose_bt"),
             "Execucao falhou para '%s' (tentativa %d/%d)",
             name.c_str(), attempt, attempts);
           continue;
@@ -288,14 +285,14 @@ BT::NodeStatus GoToNamedPoseBT::tick()
 
   if (try_named_pose(pose_name, 3)) {
     RCLCPP_INFO(
-      rclcpp::get_logger("GoToNamedPoseBT"),
+      rclcpp::get_logger("go_to_named_pose_bt"),
       "Reached named pose: %s",
       pose_name.c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
   RCLCPP_ERROR(
-    rclcpp::get_logger("GoToNamedPoseBT"),
+    rclcpp::get_logger("go_to_named_pose_bt"),
     "Pose '%s' falhou nas 3 tentativas.",
     pose_name.c_str());
 
@@ -306,13 +303,13 @@ BT::NodeStatus GoToNamedPoseBT::tick()
   if (pose_name != "home") {
     if (try_named_pose("home", 2)) {
       RCLCPP_ERROR(
-        rclcpp::get_logger("GoToNamedPoseBT"),
+        rclcpp::get_logger("go_to_named_pose_bt"),
         "Braco recolhido para home apos falhar em '%s' — reportando FAILURE "
         "porque ele NAO esta na pose pedida.",
         pose_name.c_str());
     } else {
       RCLCPP_FATAL(
-        rclcpp::get_logger("GoToNamedPoseBT"),
+        rclcpp::get_logger("go_to_named_pose_bt"),
         "Nem '%s' nem home foram alcancados — braco em pose imprevisivel, "
         "intervencao manual recomendada antes de seguir.",
         pose_name.c_str());

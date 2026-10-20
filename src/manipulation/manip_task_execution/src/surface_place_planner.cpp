@@ -1,3 +1,4 @@
+// Implementacao do planejador de superficie livre; contrato em surface_place_planner.hpp.
 #include "manip_task_execution/surface_place_planner.hpp"
 
 #include <algorithm>

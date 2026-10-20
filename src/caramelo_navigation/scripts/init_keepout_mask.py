@@ -2,38 +2,23 @@
 """Cria a mascara de Keepout Filter (parede virtual, RK-04) para um mapa.
 
 Gera um canvas TODO-LIVRE (branco) com a mesma geometria do map.pgm/map.yaml
-do mapa, mais o keepout_mask.yaml correspondente. A partir daí, basta abrir o
-keepout_mask.pgm num editor de imagem e pintar de PRETO as regioes que o robô
+do mapa, mais o keepout_mask.yaml correspondente. A partir dai, basta abrir o
+keepout_mask.pgm num editor de imagem e pintar de PRETO as regioes que o robo
 NAO pode pisar (ex.: fita zebrada de piso, que o LiDAR nao enxerga).
 
-Nao depende de numpy/PIL — le e escreve PGM (P5) em Python puro.
+Quem usa: operador, antes de subir a navegacao com use_keepout:=true
+(docs/keepout_paredes_virtuais.md).
+Como roda: ros2 run caramelo_navigation init_keepout_mask --map-name <mapa> [--force]
+
+Nao depende de numpy/PIL — le e escreve PGM (P5) em Python puro. A pasta do
+mapa vem de caramelo_docking_common.resolve_map_folder (--map-dir,
+CARAMELO_MAPS_DIR, CWD, share), como nas outras CLIs do pacote.
 """
 import argparse
 import os
 import sys
 
-
-def _resolve_map_folder(map_name, map_dir):
-    """Retorna a pasta do mapa contendo map.yaml."""
-    candidates = []
-    if map_dir:
-        candidates.append(os.path.join(map_dir, map_name))
-        candidates.append(map_dir)  # o proprio map_dir ja pode ser a pasta do mapa
-    # Locais padrao (arvore de fonte e instalada).
-    here = os.path.dirname(os.path.abspath(__file__))
-    for root in (
-        os.path.join(here, "..", "..", "caramelo_mapping", "maps"),
-        os.path.join(here, "..", "..", "..", "src", "caramelo_mapping", "maps"),
-        os.path.expanduser("~/caramelo_ws/src/caramelo_mapping/maps"),
-    ):
-        candidates.append(os.path.join(root, map_name))
-    for candidate in candidates:
-        if os.path.isfile(os.path.join(candidate, "map.yaml")):
-            return os.path.abspath(candidate)
-    raise FileNotFoundError(
-        f"Nao encontrei a pasta do mapa '{map_name}' com map.yaml. "
-        f"Passe --map-dir apontando para caramelo_mapping/maps."
-    )
+from caramelo_docking_common import resolve_map_folder
 
 
 def _read_pgm_header(pgm_path):
@@ -109,7 +94,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        map_folder = _resolve_map_folder(args.map_name, args.map_dir)
+        map_folder = str(resolve_map_folder(args.map_name, args.map_dir))
         map_yaml = os.path.join(map_folder, "map.yaml")
         map_pgm = os.path.join(map_folder, "map.pgm")
         if not os.path.isfile(map_pgm):

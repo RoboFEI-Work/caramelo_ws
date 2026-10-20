@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# LEGADO (formato antigo de service area: kind/dock_id/approach/table_height_m).
+# Cria docking.yaml e service_areas.yaml padrao na pasta do mapa se faltarem.
+# Prefira: ros2 run caramelo_navigation init_service_areas --map <mapa> --sync-docking
+# Como roda: ros2 run caramelo_navigation init_map_docking --map-name <mapa>
 import argparse
 import sys
 

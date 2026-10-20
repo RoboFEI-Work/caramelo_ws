@@ -1,4 +1,8 @@
 #pragma once
+// Folha PickTag: cliente da action /pick_tag (mtc_pick_action_node). Manda o
+// goal com tag_frame/table_pose/final_attempt, acompanha o feedback com um
+// watchdog de progresso e publica nas portas de saida o veredito do server
+// (unreachable, suggested_base_shift_m, skipped) para o ReachQueue decidir.
 
 #include <behaviortree_cpp_v3/action_node.h>
 
@@ -33,12 +37,12 @@ private:
   GoalHandlePickTag::SharedPtr goal_handle_;
   bool goal_sent_;
   bool waiting_result_;
-  // Watchdog de progresso (auditoria 2026-08-07, item 1.5): rearmado a cada
-  // feedback de stage do server — acao saudavel publica stage continuamente
-  // e nunca e cancelada; silencio prolongado = server pendurado -> FAILURE.
+  // Watchdog de progresso: rearmado a cada feedback de stage do server. Acao
+  // saudavel publica stage continuamente e nunca e cancelada; silencio
+  // prolongado = server pendurado -> FAILURE.
   std::chrono::steady_clock::time_point last_progress_;
-  // 2026-08-28 (fila de alcance): valor enviado em goal.final_attempt, so
-  // para o log do resultado. Porta ausente => true (XML antigo inalterado).
+  // Valor enviado em goal.final_attempt (fila de alcance), so para o log do
+  // resultado. Porta ausente => true (XML antigo inalterado).
   bool final_attempt_{true};
   std::string tag_frame_;
 };

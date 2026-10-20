@@ -19,8 +19,8 @@
 namespace manip_bt
 {
 
-// Navegacao REAL ate uma estacao (substitui o antigo SimulatedGoto).
-// Reproduz a sequencia validada do mission_runner.py do caramelo_navigation:
+// Folha GoToWS: navegacao REAL ate uma estacao (o mock para
+// simulate_navigation vive no bt_yaml_executor). Sequencia:
 //   [se dockado] undock -> [use_docking] dock (staging+approach) -> align fino
 //   [senao]      undock -> navegacao pura ate a pose do dock (START/FINISH)
 // So' retorna SUCCESS com o robo alinhado/chegado — pronto p/ pick/place.
@@ -42,9 +42,9 @@ public:
   void onHalted() override;
 
 private:
-  // kStagingNav (2026-08-18): fluxo novo — NavigateToPose ate a STAGING e o
-  // align faz TODO o approach com muro por LiDAR (o /dock_robot uniciclo que
-  // empurrava contra a mesa vira rollback via use_opennav_approach).
+  // kStagingNav: NavigateToPose ate a STAGING e o align faz TODO o approach
+  // com muro por LiDAR (o /dock_robot uniciclo vira rollback via
+  // use_opennav_approach).
   enum class Stage { kIdle, kUndocking, kDocking, kStagingNav, kAligning, kNavigating };
   enum class Poll { kPending, kRejected, kFinished };
 

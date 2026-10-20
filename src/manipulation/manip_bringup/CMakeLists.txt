@@ -26,7 +26,7 @@ if(BUILD_TESTING)
   # Nucleo do detector de containers (segmentacao + projecao), sem ROS.
   ament_add_pytest_test(test_container_detector test/test_container_detector.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-  # Mapa da mesa (2026-10-19): segmentacao + projecao + fusao, sem ROS.
+  # Mapa da mesa: segmentacao + projecao + fusao, sem ROS.
   ament_add_pytest_test(test_workstation_surface test/test_workstation_surface.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()

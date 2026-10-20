@@ -30,7 +30,7 @@ workstation_surface:
     plane_z_topic: /manip/table_plane_z
     grid_topic: /manip/workstation_surface/grid
     debug_image: true              # publica debug_image/grid_image so com assinante
-    save_debug_dir: ""             # ex.: /home/linux24-04/caramelo_ws/missions/fotos_mesa/debug (cuidado com o disco)
+    save_debug_dir: ""             # ex.: /tmp/caramelo_debug/mesa (fora do repo; cuidado com o disco)
     save_debug_every_s: 1.0
 
     # --- frames / plano ---

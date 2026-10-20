@@ -1,3 +1,8 @@
+# Mapeamento com slam_toolbox (modo sincrono) + map_saver_server + RViz +
+# markers das service areas do mapa (caramelo_navigation). Publica map->odom;
+# NAO rodar junto com a localizacao (AMCL) — o launch avisa (RK-02).
+# Quem usa: GUI (modulo Mapeamento) e operador.
+# Como roda: ros2 launch caramelo_mapping slam.launch.py map_name:=<mapa>
 import os
 import subprocess
 from launch import LaunchDescription
@@ -49,9 +54,8 @@ def generate_launch_description():
     use_service_area_markers = LaunchConfiguration("use_service_area_markers")
     service_area_marker_topic = LaunchConfiguration("service_area_marker_topic")
 
-    ros_distro = os.environ["ROS_DISTRO"]
+    # Os dois nos sao gerenciados pelo lifecycle_manager.
     lifecycle_nodes = ["map_saver_server", "slam_toolbox"]
-    # Note: Both nodes are lifecycle-managed for better control
 
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
@@ -61,7 +65,7 @@ def generate_launch_description():
     map_resolution_arg = DeclareLaunchArgument(
         "map_resolution",
         default_value="0.02",
-        description="Default SLAM map resolution in meters/cell"
+        description="Resolucao do mapa do SLAM em m/celula"
     )
 
     slam_config_arg = DeclareLaunchArgument(
@@ -71,7 +75,7 @@ def generate_launch_description():
             "config",
             "slam_toolbox.yaml"
         ),
-        description="Full path to slam yaml file to load"
+        description="Caminho completo do yaml do slam_toolbox"
     )
     
     rviz_config_arg = DeclareLaunchArgument(
@@ -81,43 +85,43 @@ def generate_launch_description():
             "rviz",
             "slam.rviz"
         ),
-        description="Full path to RViz config file"
+        description="Caminho completo da config do RViz"
     )
 
     use_rviz_arg = DeclareLaunchArgument(
         "use_rviz",
         default_value="true",
-        description="Open RViz automatically"
+        description="Abre o RViz junto"
     )
 
     slam_scan_topic_arg = DeclareLaunchArgument(
         "slam_scan_topic",
         default_value="/scan",
-        description="LaserScan topic consumed by slam_toolbox"
+        description="Topico LaserScan consumido pelo slam_toolbox"
     )
 
     scan_range_max_arg = DeclareLaunchArgument(
         "scan_range_max",
         default_value="30.0",
-        description="Maximum laser range in meters for the fixed scan"
+        description="Alcance maximo do laser (m) usado pelo slam_toolbox"
     )
 
     map_name_arg = DeclareLaunchArgument(
         "map_name",
         default_value="sala_520",
-        description="Map folder used to load service_areas.yaml markers"
+        description="Pasta do mapa de onde vem o service_areas.yaml dos markers"
     )
 
     use_service_area_markers_arg = DeclareLaunchArgument(
         "use_service_area_markers",
         default_value="true",
-        description="Publish service area markers during mapping"
+        description="Publica os markers das service areas durante o mapeamento"
     )
 
     service_area_marker_topic_arg = DeclareLaunchArgument(
         "service_area_marker_topic",
         default_value="/caramelo/service_areas/markers",
-        description="MarkerArray topic for service areas"
+        description="Topico do MarkerArray das service areas"
     )
 
     nav2_map_saver = Node(
@@ -128,14 +132,14 @@ def generate_launch_description():
         parameters=[
             {"save_map_timeout": 5.0},
             {"use_sim_time": use_sim_time},
-            {"free_thresh_default": 0.196},     # Conservative free threshold
-            {"occupied_thresh_default": 0.65},  # Conservative occupied threshold
+            {"free_thresh_default": 0.196},     # limiar conservador de livre
+            {"occupied_thresh_default": 0.65},  # limiar conservador de ocupado
         ],
     )
 
     slam_toolbox = Node(
         package="slam_toolbox",
-        executable="sync_slam_toolbox_node",  # Synchronous mode for real-time
+        executable="sync_slam_toolbox_node",  # modo sincrono (tempo real)
         name="slam_toolbox",
         output="screen",
         parameters=[
@@ -156,9 +160,9 @@ def generate_launch_description():
             {"node_names": lifecycle_nodes},
             {"use_sim_time": use_sim_time},
             {"autostart": True},
-            # slam_toolbox remains operational, but its bond heartbeat is
-            # unreliable with the incoming hardware scan pipeline. Disabling
-            # bond monitoring prevents lifecycle cleanup from erasing the map.
+            # O bond (heartbeat) do slam_toolbox falha com o pipeline de scan
+            # do hardware; sem ele o lifecycle_manager limpava o no' e apagava
+            # o mapa. bond_timeout 0 desliga a vigilancia do bond.
             {"bond_timeout": 0.0}
         ],
     )

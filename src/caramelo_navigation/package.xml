@@ -3,8 +3,8 @@
 <package format="3">
   <name>caramelo_navigation</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="victoroliveiraayres@gmail.com">linux24-04</maintainer>
+  <description>Nav2 do Caramelo: launches de navegacao/docking, configs, BTs, dock_align_node (align_to_dock/nudge_base), service areas e run_mission.</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -33,7 +33,6 @@
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>caramelo_localization</exec_depend>
   <exec_depend>caramelo_mapping</exec_depend>
-  <exec_depend>caramelo_planning</exec_depend>
   <exec_depend>nav2_controller</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_planner</exec_depend>

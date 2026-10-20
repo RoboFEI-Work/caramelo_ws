@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# API ROS das service areas de um mapa: services /caramelo/service_areas/{init,
+# list,validate} e action /caramelo/service_areas/save_pose (grava a pose atual
+# do robo e sincroniza docking.yaml). Quem usa: GUI (modulo Service Areas);
+# subido por navigation.launch.py (use_service_area_manager, padrao true).
+# Como roda: ros2 run caramelo_navigation service_area_manager_node --ros-args -p default_map_name:=<mapa>
 import math
 import time
 

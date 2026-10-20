@@ -14,7 +14,7 @@ namespace
 {
 rclcpp::Logger logger()
 {
-  return rclcpp::get_logger("ReachQueueBT");
+  return rclcpp::get_logger("reach_queue_bt");
 }
 constexpr double kZeroShiftEps = 1e-6;
 }  // namespace

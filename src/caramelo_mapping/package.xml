@@ -4,22 +4,12 @@
 
   <name>caramelo_mapping</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="victoroliveiraayres@gmail.com">linux24-04</maintainer>
+  <description>Mapeamento do Caramelo com slam_toolbox (slam.launch.py) e os mapas em maps/ por nome (map.yaml, service_areas.yaml, docking.yaml, ws_table_mapping.yaml, keepout).</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclpy</depend>
-  <depend>sensor_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>tf2_ros</depend>
-  <depend>tf2</depend>
-
-  <exec_depend>tf_transformations</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>

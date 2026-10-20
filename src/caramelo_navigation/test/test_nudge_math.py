@@ -163,7 +163,8 @@ def test_ganho_entra_no_aceite():
     assert dan._nudge_accepts(0.20, corr(0.21, 0.82), 0.03) is True   # 0,172
 
 
-# Achado 5: corte descontando a idade da odometria (lag = v*(idade+periodo)).
+# Achado 5: corte descontando a idade da odometria (lag = v_cmd*(idade+periodo));
+# v_cmd e' a velocidade COMANDADA no curso (piso x margem de partida).
 COAST, MIN_V = 0.03, 0.1215
 
 
@@ -178,7 +179,7 @@ COAST, MIN_V = 0.03, 0.1215
     (0.10, 0.0, 1.0, 0.0, 0.05, False),     # inicio do curso
 ])
 def test_criterio_de_corte_com_idade(mag, travelled, sign, age, period, ok):
-    assert cut(mag, travelled, sign, COAST, MIN_V, age, period) is ok
+    assert cut(mag, travelled, sign, COAST, v_cmd=MIN_V, odom_age=age, period=period) is ok
 
 
 def test_corte_lag_igual_ao_da_reta_do_align():
@@ -186,8 +187,8 @@ def test_corte_lag_igual_ao_da_reta_do_align():
     age, period = 0.15, 0.05
     lag = MIN_V * (age + period)
     remaining = COAST + lag
-    assert cut(0.20, 0.20 - remaining + 1e-9, 1.0, COAST, MIN_V, age, period) is True
-    assert cut(0.20, 0.20 - remaining - 1e-6, 1.0, COAST, MIN_V, age, period) is False
+    assert cut(0.20, 0.20 - remaining + 1e-9, 1.0, COAST, v_cmd=MIN_V, odom_age=age, period=period) is True
+    assert cut(0.20, 0.20 - remaining - 1e-6, 1.0, COAST, v_cmd=MIN_V, odom_age=age, period=period) is False
 
 
 # Achado 3: assentamento por odometria.
@@ -297,6 +298,15 @@ def test_partida_com_margem_passa_do_piso():
 ])
 def test_partida_formula(floor, margin, expected):
     assert start(floor, margin) == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize("margin", [-0.05, -1.0, float("nan"), float("-inf"), float("inf")])
+def test_partida_margem_invalida_vira_zero(margin):
+    """Margem negativa/NaN/inf no launch reproduziria o bug de campo em
+    silencio (partida ABAIXO do piso ou NaN no comando): o helper trata
+    como 0 (piso exato) e o no' avisa uma vez."""
+    assert start(MIN_V, margin) == pytest.approx(MIN_V, abs=1e-12)
+    assert start(MIN_W, margin) == pytest.approx(MIN_W, abs=1e-12)
 
 
 def test_partida_no_patamar_do_retreat_antigo():

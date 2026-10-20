@@ -19,8 +19,9 @@ duplica o Nav2 (não existe controlador holonômico de docking lá).
 2) dock_align_node  -> alinhamento fino HOLONÔMICO (vx, vy, wz) até a tolerância
 ```
 
-O `dock_align_node` (`caramelo_navigation`) expõe a action
-**`caramelo_msgs/action/AlignToDock`** (`align_to_dock`):
+O `dock_align_node` (`caramelo_navigation`, sobe junto do `docking_server.launch.py`)
+expõe a action **`caramelo_msgs/action/AlignToDock`** (`align_to_dock`; clientes: a
+folha `GoToWS` do `manip_bt` e o módulo Docking da GUI):
 - Lê a pose alvo do dock em `maps/<mapa>/docking.yaml` (mesma base do Docking Server).
 - (Opcional) refina a pose pela **face** da mesa no `/scan`.
 - Servo-controle holonômico P (vx, vy, wz) → publica `TwistStamped` em
@@ -57,15 +58,17 @@ O `dock_align_node` (`caramelo_navigation`) expõe a action
 - Gravar as poses reais dos docks (hoje são placeholders `[0,0,0]`) com as ferramentas
   existentes (`dock_pose_recorder_node`, `save_dock_pose`).
 
-**Nada disto foi validado em hardware** — o controle é testável em simulação; a
-percepção precisa de scan real.
+Texto original de 2026-07: o alinhamento foi validado no robô em 2026-07-21 (ver
+`docs/historico/relatorio_sessoes_2026-07-14_a_21.md`); o refino pela face é
+calibrado por `refine_desired_face_dist` (`docs/guia_missoes.md` §1.1).
 
 ## Ajuste lateral `nudge_base` (2026-08-28, fila de alcance)
 
 O mesmo `dock_align_node` expõe uma segunda action, **`caramelo_msgs/action/NudgeBase`**
 (nome relativo `nudge_base`, como `align_to_dock`): "anda `dy` metros de lado", pedida
-pela árvore (`ReachQueue`/`NudgeBase` do `manip_bt`) quando o braço não alcança um alvo
-na mesa. A Raspberry não muda: usa o mesmo `/mecanum_controller/reference` e o `/odom`
+pela árvore (`ReachQueue`/`NudgeBase` do `manip_bt`, via `bt_yaml_executor`) quando o
+braço não alcança um alvo na mesa, e pelo `amt1_sort_action_node` (busca lateral e
+ajustes da AMT1). A Raspberry não muda: usa o mesmo `/mecanum_controller/reference` e o `/odom`
 do EKF.
 
 ### Contrato
@@ -81,9 +84,8 @@ do EKF.
 
 Razões (`reason`): `pedido_invalido`, `abaixo_do_passo_minimo`, `acima_do_curso_maximo`,
 `sem_odometria`, `sem_scan`, `muito_perto_da_mesa`, `obstaculo_lateral`, `muro`, `timeout`,
-`cancelado`, `ocupado`, `curso_incompleto`, `sem_progresso`. (`pedido_invalido` — revisão
-28/08 — e `sem_progresso` — 19/10 — ainda não constam no comentário de `NudgeBase.action`;
-o `.action` não foi alterado.)
+`cancelado`, `ocupado`, `curso_incompleto`, `sem_progresso` (todas listadas no comentário
+de `caramelo_msgs/action/NudgeBase.action`).
 
 Frames: `manip_base_link` +X = direita do robô, +Y = frente; `base_footprint` +y =
 esquerda. A base andar `dy` para a esquerda ⇒ o `x_manip` de um alvo fixo na mesa vira
@@ -120,7 +122,8 @@ esquerda. A base andar `dy` para a esquerda ⇒ o `x_manip` de um alvo fixo na m
   (achado 5, mesma conta da reta do align): corta quando
   `|dy| − travelled·sinal ≤ coast + min_body_vel·(idade_odom + período)`; por isso
   `nudge_odom_max_age` caiu para 0,2 s (mais velha que isso a conta não vale — corta).
-  Teto de tempo `(|dy| + 0,05)/min_body_vel + 1 s`.
+  Teto de tempo `(|dy| + 0,05)/v_partida + 1 s`, com `v_partida` = velocidade real de
+  partida (`_start_speeds`, piso × (1 + `floor_start_margin`)), não o piso nu.
 - Medida: `_lateral_displacement(x0, y0, yaw0, x, y) = −sin(yaw0)·(x−x0) + cos(yaw0)·(y−y0)`
   — projeção do delta de `/odom` no eixo +y INICIAL do robô (função pura, testada em
   `test/test_nudge_math.py` com yaw 0/±90/180 e movimento puro em x = 0), **× 
@@ -236,9 +239,13 @@ problema (`0.315·0.3855/0.05 = 2.42865 < 2.43`); o `_retreat` já usava 0,13 m/
 - Parâmetro `floor_start_margin` (fração, default **0,07**) e helper puro
   `_floor_start_speed(piso, margem) = piso·(1+margem)`: **toda primitiva que parte do
   repouso** (`_nudge_drive`, `_cut_drive` nos 3 eixos — inclusive `min_body_omega` —,
-  `_nudge_backoff`, `_pulse` e `_retreat`, que mantém o mínimo de 0,13) comanda
-  `0.1215·1.07 = 0.130 m/s` (2,60 rad/s na roda) / `0.315·1.07 = 0.337 rad/s`. O corte do
-  nudge desconta o lag com a mesma velocidade comandada.
+  `_nudge_backoff` e `_retreat`, que mantém o mínimo de 0,13) comanda
+  `0.1215·1.07 = 0.130 m/s` (2,60 rad/s na roda) / `0.315·1.07 = 0.337 rad/s`. Margem
+  negativa, NaN ou inf vira 0 (WARN uma vez, em `_start_speeds`). O corte do nudge
+  (`_nudge_cut_reached`, argumento `v_cmd`) desconta o lag com a mesma velocidade
+  comandada, e o teto de tempo do curso usa essa velocidade de partida.
+- Depois do `_nudge_backoff`, se a face não mudou mais de 1 cm, o nó loga WARN
+  `recuo sem efeito (base nao respondeu?)` com o mesmo diagnóstico do watchdog abaixo.
 - **Watchdog de progresso** em `_nudge_drive`: `nudge_no_progress_s` (1,0 s) e
   `nudge_no_progress_min_m` (0,01 m) — comandando há ≥ 1 s com `|travelled| < 1 cm`
   (`_nudge_no_progress`, pura) ⇒ zera a referência, loga o diagnóstico em WARN e aborta
@@ -261,4 +268,22 @@ problema (`0.315·0.3855/0.05 = 2.42865 < 2.43`); o `_retreat` já usava 0,13 m/
   corte): ...` — valores: `corte` (normal), `teto_de_tempo`, `sem_scan`, `odometria_velha`,
   `sem_progresso`, ou o outcome do abort (`hard_stop`, `side_blocked`, `canceled`, `timeout`).
 - Testes puros: `python3 -m pytest src/caramelo_navigation/test/test_nudge_math.py -q`
-  (inclui o caso que falhava, `0.1215/0.05 < 2.43`, e as bordas do watchdog).
+  (inclui o caso que falhava, `0.1215/0.05 < 2.43`, as bordas do watchdog e as margens
+  inválidas de `floor_start_margin`).
+
+## Ferramentas de calibração
+
+- **`scripts/pulse_test.py` — MOVE O ROBÔ.** Publica direto em
+  `/mecanum_controller/reference` (fora do collision monitor): rodas suspensas ou área
+  livre, alguém no botão de emergência. `python3 scripts/pulse_test.py x 4` (eixo `x|y|z`,
+  N ciclos a 20 Hz no piso do ESC) e `python3 scripts/pulse_test.py x cont` (1 s contínuo)
+  medem com fita/régua o deslocamento real de um pulso e o coast do corte; os valores
+  alimentam `esc_coast_dist`/`yaw_coast_est`/`center_coast_est` na lista `parameters`
+  do `dock_align_node` em `docking_server.launch.py` (a data da última medição está no
+  comentário do launch).
+- **`nudge_odom_lateral_gain` com trena** — procedimento na seção "Parâmetros
+  `nudge_*`" acima (`ros2 action send_goal /nudge_base ...`, ganho = real / odom bruto).
+- **`refine_desired_face_dist`** — robô posicionado à mão na pose ideal, goal de
+  `align_to_dock` com `use_lidar_refine: true, timeout: 1.0` e leitura do log
+  (`docs/guia_missoes.md` §1.1).
+- Testes puros do nó: `python3 -m pytest src/caramelo_navigation/test/test_nudge_math.py -q`.

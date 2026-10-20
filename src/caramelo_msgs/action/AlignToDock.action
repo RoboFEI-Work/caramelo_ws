@@ -1,6 +1,8 @@
-# Alinhamento fino HOLONOMICO a um dock (ADR-05 opcao c).
-# Complementa o opennav_docking (cujo controller e' unicycle e nao usa vy).
-# Deve ser chamado DEPOIS do staging/approach do Docking Server.
+# Alinhamento fino HOLONOMICO a um dock (ADR-05 opcao c), servido pelo
+# dock_align_node (nome relativo 'align_to_dock'). Complementa o opennav_docking
+# (cujo controller e' unicycle e nao usa vy). Deve ser chamado DEPOIS do
+# staging do Docking Server: ajuste lateral pela face no /scan, reto guiado
+# pelo muro LiDAR ate a distancia de parada e retoque lateral na mesa (v5).
 
 # --- Goal ---
 string dock_id            # ID do dock no docking.yaml do mapa (ex.: WS1, SH1, PP1)
@@ -19,7 +21,10 @@ float64 final_y_error
 float64 final_yaw_error
 ---
 # --- Feedback ---
-string phase              # "refinando", "alinhando", "concluido", "abortado"
+string phase              # fases reais publicadas pelo no': "refinando" (fit da face),
+                          # "esquadrando" (giro por AMCL sem face), "centrando" (lateral),
+                          # "aproximando" (reto), "assentando", "recuando",
+                          # "sem_scan" / "face_invisivel" (parado esperando o muro)
 float64 x_error
 float64 y_error
 float64 yaw_error

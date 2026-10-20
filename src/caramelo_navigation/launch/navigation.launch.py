@@ -1,5 +1,12 @@
+# Navegacao Nav2 do Caramelo para um mapa de caramelo_mapping/maps/<map_name>.
+# Inclui global_localization (AMCL + map_server [+ keepout]) e sobe
+# controller/planner/smoother/bt_navigator/behavior/velocity_smoother/
+# collision_monitor + lifecycle, o relay cmd_vel -> TwistStamped (caramelo_utils
+# twist_relay), service_area_manager/markers e, com use_docking, o
+# docking_server.launch.py. Quem usa: bringup.launch.py (GUI "Ligar navegacao")
+# e caramelo_bringup/robot_manipulation.launch.py.
+# Como roda: ros2 launch caramelo_navigation navigation.launch.py map_name:=<mapa> [nav_profile:=dwb|mppi]
 import os
-import tempfile
 from pathlib import Path
 
 import yaml
@@ -60,8 +67,8 @@ def _resolve_costmap_resolution(context):
         return 0.20
 
 
-def _make_navigation_override_params(resolution, lattice_filepath, route_graph_filepath,
-                                     keepout_enabled=False):
+def _make_navigation_override_params(map_name, resolution, lattice_filepath,
+                                     route_graph_filepath, keepout_enabled=False):
     # Parametros por costmap (local e global). So injetamos o Keepout Filter
     # (RK-04) quando use_keepout:=true, para nao gerar avisos de "esperando
     # CostmapFilterInfo" quando os servidores de mascara nao estao no ar.
@@ -102,16 +109,12 @@ def _make_navigation_override_params(resolution, lattice_filepath, route_graph_f
         },
     }
 
-    params_file = tempfile.NamedTemporaryFile(
-        mode="w",
-        prefix="caramelo_navigation_overrides_",
-        suffix=".yaml",
-        delete=False,
-        encoding="utf-8",
-    )
-    with params_file:
+    # Caminho FIXO por mapa (sobrescrito a cada launch): o tempfile de antes
+    # deixava um arquivo novo em /tmp a cada 'ros2 launch'.
+    params_path = Path("/tmp") / f"caramelo_navigation_overrides_{map_name}.yaml"
+    with params_path.open("w", encoding="utf-8") as params_file:
         yaml.safe_dump(params, params_file, sort_keys=False)
-    return params_file.name
+    return str(params_path)
 
 
 def _route_graph_counts(route_graph_filepath):
@@ -198,6 +201,7 @@ def _create_navigation_stack(context, *args, **kwargs):
     costmap_resolution = _resolve_costmap_resolution(context)
     keepout_enabled = _as_bool(LaunchConfiguration("use_keepout").perform(context))
     navigation_override_params = _make_navigation_override_params(
+        map_name.perform(context),
         costmap_resolution,
         lattice_filepath,
         route_graph_filepath,
@@ -338,7 +342,7 @@ def _create_navigation_stack(context, *args, **kwargs):
 
     cmd_vel_relay = Node(
         package="caramelo_utils",
-        executable="twist_relay.py",
+        executable="twist_relay",
         name="nav2_twist_relay",
         output="screen",
         parameters=[
@@ -406,11 +410,11 @@ def _create_navigation_stack(context, *args, **kwargs):
     )
 
     return [
-        LogInfo(msg=f"Using costmap resolution: {costmap_resolution:.3f} m/cell"),
-        LogInfo(msg=f"Using Nav2 profile: {nav_profile_value}"),
-        LogInfo(msg=f"Using Smac lattice primitives: {lattice_filepath}"),
-        LogInfo(msg=f"Using route graph: {route_graph_filepath} ({route_graph_nodes} nodes, {route_graph_edges} edges)"),
-        LogInfo(msg=f"Route server enabled: {start_route_server}"),
+        LogInfo(msg=f"Resolucao dos costmaps: {costmap_resolution:.3f} m/celula"),
+        LogInfo(msg=f"Perfil Nav2: {nav_profile_value}"),
+        LogInfo(msg=f"Primitivas do Smac lattice: {lattice_filepath}"),
+        LogInfo(msg=f"Grafo de rotas: {route_graph_filepath} ({route_graph_nodes} nos, {route_graph_edges} arestas)"),
+        LogInfo(msg=f"Route server ligado: {start_route_server}"),
         delayed_navigation,
     ]
 
@@ -442,74 +446,74 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "map_name",
             default_value="sala_520",
-            description="Map folder name inside caramelo_mapping/maps/",
+            description="Nome da pasta do mapa em caramelo_mapping/maps/",
         ),
         DeclareLaunchArgument(
             "costmap_resolution",
             default_value="0.02",
-            description="Costmap resolution in meters/cell. Pass 'map' to use map.yaml resolution",
+            description="Resolucao dos costmaps em m/celula. 'map' usa a resolucao do map.yaml",
         ),
         DeclareLaunchArgument(
             "nav_profile",
             default_value="dwb",
-            description="Navigation profile: dwb or mppi",
+            description="Perfil de navegacao (BT + controlador): dwb ou mppi",
         ),
         DeclareLaunchArgument(
             "use_route_server",
             default_value="true",
-            description="Start Nav2 Route Server with the selected map route_graph.geojson",
+            description="Sobe o Route Server do Nav2 com o route_graph.geojson do mapa (so se tiver nos e arestas)",
         ),
         DeclareLaunchArgument(
             "use_waypoint_follower",
             default_value="true",
-            description="Start Nav2 Waypoint Follower",
+            description="Sobe o Waypoint Follower do Nav2",
         ),
         DeclareLaunchArgument(
             "use_docking",
             default_value="true",
-            description="Start Nav2 Docking Server using this map folder",
+            description="Sobe o Docking Server (opennav_docking + dock_align_node) com o docking.yaml do mapa",
         ),
         DeclareLaunchArgument(
             "use_keepout",
             default_value="false",
             description="Ativa o Keepout Filter (RK-04): sobe os servidores de mascara "
                         "e injeta o plugin KeepoutFilter nos costmaps. Requer "
-                        "maps/<mapa>/keepout_mask.{yaml,pgm} (ver init_keepout_mask.py).",
+                        "maps/<mapa>/keepout_mask.{yaml,pgm} (ver ros2 run caramelo_navigation init_keepout_mask).",
         ),
         DeclareLaunchArgument(
             "navigation_start_delay",
             default_value="5.0",
-            description="Seconds to wait before starting Nav2 after localization starts",
+            description="Segundos de espera entre subir a localizacao e subir o Nav2",
         ),
         DeclareLaunchArgument(
             "use_cmd_vel_relay",
             default_value="true",
-            description="Convert Nav2 cmd_vel Twist into mecanum_controller TwistStamped reference",
+            description="Converte o Twist de cmd_vel do Nav2 em TwistStamped na referencia do mecanum_controller",
         ),
         DeclareLaunchArgument(
             "cmd_vel_topic",
             default_value="/cmd_vel",
-            description="Final velocity command topic after collision monitor",
+            description="Topico final de velocidade (saida do collision_monitor)",
         ),
         DeclareLaunchArgument(
             "mecanum_reference_topic",
             default_value="/mecanum_controller/reference",
-            description="Mecanum controller TwistStamped command topic",
+            description="Topico TwistStamped de comando do mecanum_controller",
         ),
         DeclareLaunchArgument(
             "use_service_area_manager",
             default_value="true",
-            description="Start Service Area service/action API",
+            description="Sobe o service_area_manager_node (services list/validate/init + action save_pose)",
         ),
         DeclareLaunchArgument(
             "use_service_area_markers",
             default_value="true",
-            description="Publish service area MarkerArray for RViz",
+            description="Publica o MarkerArray das service areas para RViz/GUI",
         ),
         DeclareLaunchArgument(
             "service_area_marker_topic",
             default_value="/caramelo/service_areas/markers",
-            description="MarkerArray topic for service areas",
+            description="Topico do MarkerArray das service areas",
         ),
         localization,
         OpaqueFunction(function=_create_navigation_stack),

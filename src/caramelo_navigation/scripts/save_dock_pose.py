@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Salva a pose atual do robo (TF map->base) como dock em docking.yaml do mapa
+# (CLI equivalente ao botao "Salvar pose como dock" da GUI / dock_pose_recorder_node).
+# Quem usa: operador, na calibracao de um mapa.
+# Como roda: ros2 run caramelo_navigation save_dock_pose --map-name <mapa> --dock-id WS1
 import argparse
 import sys
 
@@ -60,7 +64,8 @@ def main(argv=None) -> int:
     rclpy.init(args=argv)
     node = Node("save_dock_pose")
     buffer = Buffer()
-    listener = TransformListener(buffer, node)
+    # Mantido vivo de proposito: o listener alimenta o buffer enquanto spin_once roda.
+    _listener = TransformListener(buffer, node)
     try:
         end_time = node.get_clock().now() + Duration(seconds=args.timeout)
         while rclpy.ok() and node.get_clock().now() < end_time:

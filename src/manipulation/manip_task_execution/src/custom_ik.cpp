@@ -1,3 +1,4 @@
+// Implementacao da IK propria do braco (5 GDL); contrato em custom_ik.hpp.
 #include "manip_task_execution/custom_ik.hpp"
 
 #include <algorithm>

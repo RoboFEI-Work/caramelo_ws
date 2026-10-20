@@ -32,12 +32,9 @@ Este pacote já traz todo o mecanismo pronto e **desligado por padrão** (`use_k
 
 ### 1. Gerar o canvas da máscara (uma vez por mapa)
 
-Já existe canvas todo-livre para `sala_520` e `arena_teste`. Para um mapa novo:
+Já existe canvas todo-livre para `sala_520` e `arena_teste` (veja `ls src/caramelo_mapping/maps/*/keepout_mask.yaml`). Para um mapa novo:
 ```bash
-ros2 run caramelo_navigation init_keepout_mask.py --map-name <mapa>
-# ou, no fonte:
-python3 src/caramelo_navigation/scripts/init_keepout_mask.py \
-    --map-name <mapa> --map-dir src/caramelo_mapping/maps
+ros2 run caramelo_navigation init_keepout_mask --map-name <mapa>
 ```
 Isso cria `keepout_mask.pgm` (todo branco = nenhum bloqueio) e `keepout_mask.yaml`.
 

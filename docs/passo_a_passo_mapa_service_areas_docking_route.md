@@ -415,7 +415,7 @@ O route graph e usado pelo Nav2 Route Server. Ele e derivado das Service Areas.
 Gere o grafo:
 
 ```bash
-python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+ros2 run caramelo_navigation sync_route_graph \
   --map-folder src/caramelo_mapping/maps/${MAP_NAME}
 ```
 
@@ -443,7 +443,7 @@ Regras do gerador:
 Exemplo conectando mais vizinhos:
 
 ```bash
-python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+ros2 run caramelo_navigation sync_route_graph \
   --map-folder src/caramelo_mapping/maps/${MAP_NAME} \
   --max-neighbors 4
 ```
@@ -606,7 +606,7 @@ Route server enabled: False
 entao o grafo esta vazio ou invalido. Confira:
 
 ```bash
-python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+ros2 run caramelo_navigation sync_route_graph \
   --map-folder src/caramelo_mapping/maps/${MAP_NAME}
 ```
 
@@ -710,7 +710,7 @@ ros2 run caramelo_navigation validate_service_areas \
 Gerar route graph:
 
 ```bash
-python3 src/caramelo_navigation/scripts/sync_route_graph.py \
+ros2 run caramelo_navigation sync_route_graph \
   --map-folder src/caramelo_mapping/maps/${MAP_NAME}
 ```
 

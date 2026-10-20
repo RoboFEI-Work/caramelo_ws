@@ -86,8 +86,8 @@ set -u
 MAP="$WS_ROOT/src/caramelo_mapping/maps/arenalegal_2026"
 TAGS_YAML="$WS_ROOT/src/manipulation/manip_bringup/config/tags_36h11.yaml"
 WS_MAP="$MAP/ws_table_mapping.yaml"
-MISSION="$WS_ROOT/missions/amt1_pp1.yaml"
-BT_DIR="$WS_ROOT/src/manipulation/manip_bt/behavior_tree_manip"
+MISSION="$WS_ROOT/missions/task_AMT1_pp1.yaml"
+BT_DIR="$HERE/fixtures"  # BMT.yaml, ATT1.yaml e ws_table_mapping.yaml de regressao
 LOG_DIR="${AMT1_LOG_DIR:-/tmp/amt1_scenario}"
 BENCH_DIR="${AMT1_BENCH_DIR:-/tmp/amt1_bench}"
 CONTAINER_YAML="$BENCH_DIR/container_states.yaml"
@@ -313,7 +313,7 @@ case_planner() {
   echo "=== caso: planner ==="
   local out="$LOG_DIR/planner.actions.yaml" log="$LOG_DIR/planner.log"
   "$PLANNER_BIN" "$MISSION" "$out" "$TAGS_YAML" "$WS_MAP" > "$log" 2>&1
-  expect_exit $? 0 "task_planner amt1_pp1.yaml"
+  expect_exit $? 0 "task_planner task_AMT1_pp1.yaml"
   expect_count "$log" 1 "[task_planner] AMT1: ordenar 6 tags na PP_1 (Mesa10, left_to_right, max 3 a bordo)"
   expect_count "$out" 1 "kind: goto"
   expect_count "$out" 1 "kind: amt1_sort"
@@ -1162,7 +1162,7 @@ case_mission() {
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] estagio: op_1/6_pick_5 (0/6 ops)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] estagio: done (6/6 ops)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] ORDENACAO CONCLUIDA: ordem inicial [5,2,3,1,4,6] -> final [1,2,3,4,5,6]; 3 pick(s), 3 place(s), 0 nudge(s)"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
   expect_count "$NODE_LOG" 1 "[AMT1] goal aceito: ws=PP_1 table_pose=Mesa10 expected=[1, 2, 3, 4, 5, 6] direction=left_to_right max_onboard=3 observe_only=false"
   expect_count "$NODE_LOG" 1 "fim: success=true partial=false fail_reason=''"
   expect_count "$LOG_DIR/mission.fake_nav.log" 1 "/fake_nav/station = 'PP1'"
@@ -1195,7 +1195,7 @@ case_bench_ok() {
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] estagio: op_6/6_place_5_slot_4 (5/6 ops)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] estagio: done (6/6 ops)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] ORDENACAO CONCLUIDA: ordem inicial [5,2,3,1,4,6] -> final [1,2,3,4,5,6]; 3 pick(s), 3 place(s), 0 nudge(s), deslocamento total 0.000 m"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
   expect_count "$SORT_LOG" 1 "goal aceito: ws=PP_1 table_pose=Mesa10 expected=[1, 2, 3, 4, 5, 6] direction='left_to_right' max_onboard=3 observe_only=False"
   expect_count "$SORT_LOG" 1 "goal concluido com sucesso (fake)"
   settle
@@ -1206,7 +1206,7 @@ case_bench_fail() {
   run_executor bench_fail "$ACTIONS" ""
   expect_exit "$CASE_RC" 1 "bt_yaml_executor (fake aborta)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] goal /amt1_sort ABORTADO: pick abortou (fake) (fail_reason=pick_falhou)"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with FAILURE"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com FALHA"
   expect_count "$CASE_LOG" 0 "ORDENACAO CONCLUIDA"
   expect_count "$SORT_LOG" 1 "goal ABORTADO (fail_stage:=abort)"
   settle
@@ -1217,7 +1217,7 @@ case_bench_result() {
   run_executor bench_result "$ACTIONS" ""
   expect_exit "$CASE_RC" 0 "bt_yaml_executor (fake devolve success=false)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] ordenacao INCOMPLETA (parcial, fail_reason=fora_de_alcance): op_2/6_pick_1: fora de alcance (fake)"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
   expect_count "$CASE_LOG" 0 "ORDENACAO CONCLUIDA"
   settle
 }
@@ -1227,7 +1227,7 @@ case_bench_reject() {
   run_executor bench_reject "$ACTIONS" ""
   expect_exit "$CASE_RC" 1 "bt_yaml_executor (fake rejeita)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] goal /amt1_sort REJEITADO pelo server."
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with FAILURE"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com FALHA"
   expect_count "$SORT_LOG" 1 "goal REJEITADO (reject:=true)"
   settle
 }
@@ -1238,7 +1238,7 @@ case_bench_watchdog() {
   expect_exit "$CASE_RC" 1 "bt_yaml_executor (server mudo, watchdog 4 s)"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] WATCHDOG: 4 s sem feedback do /amt1_sort (ultimo estagio: <nenhum>) — server pendurado. Cancelando o goal."
   expect_count "$CASE_LOG" 0 "server nao confirmou o cancelamento"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with FAILURE"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com FALHA"
   expect_count "$SORT_LOG" 1 "cancel recebido em"
   settle
 }
@@ -1255,7 +1255,7 @@ case_bench_deadline() {
   expect_count "$CASE_LOG" 1 "— NAO cancelando: o server ainda manda feedback; o goal so sera cancelado se o feedback parar por 300 s (watchdog)."
   expect_count "$CASE_LOG" 0 "WATCHDOG"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] ORDENACAO CONCLUIDA: ordem inicial [5,2,3,1,4,6] -> final [1,2,3,4,5,6]"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
   expect_count "$SORT_LOG" 0 "cancel recebido"
   expect_count "$SORT_LOG" 1 "goal concluido com sucesso (fake)"
   settle
@@ -1266,7 +1266,7 @@ case_bench_deadline() {
   expect_exit "$CASE_RC" 1 "bt_yaml_executor (server mudo, prazo 2 s + watchdog 4 s)"
   expect_count "$CASE_LOG" 1 "prazo total de 2 s esgotado (ultimo estagio: <nenhum>) — NAO cancelando"
   expect_count "$CASE_LOG" 1 "[Amt1Sort PP_1] WATCHDOG: 4 s sem feedback do /amt1_sort (ultimo estagio: <nenhum>) — server pendurado. Cancelando o goal. Prazo total de 2 s tambem ja estava esgotado."
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with FAILURE"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com FALHA"
   expect_count "$SORT_LOG" 1 "cancel recebido em"
   settle
 }

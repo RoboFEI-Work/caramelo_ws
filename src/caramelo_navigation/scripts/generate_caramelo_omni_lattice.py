@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate Smac State Lattice primitives for the Caramelo mecanum base."""
+"""Gera as primitivas do Smac State Lattice (omni) da base mecanum do Caramelo:
+config/lattice/caramelo_omni_2cm_16bins.json, lido pelo planner_server.
+Quem usa: operador, so' quando mudar resolucao/primitivas (arquivo versionado).
+Como roda: ros2 run caramelo_navigation generate_caramelo_omni_lattice [saida.json]
+"""
 
 from __future__ import annotations
 
@@ -13,8 +17,8 @@ GRID_RESOLUTION = 0.02
 TURNING_RADIUS = 0.0
 DATE_GENERATED = "2026-07-06"
 
-# Same heading bins used by the Nav2 16-bin omni samples. They are grid-friendly
-# angles, not uniformly spaced angles.
+# Mesmos bins de orientacao das amostras omni de 16 bins do Nav2: angulos
+# alinhados a grade, nao uniformemente espacados.
 HEADING_ANGLES = [
     0.0,
     0.4636476090008061,
@@ -34,8 +38,8 @@ HEADING_ANGLES = [
     5.81953769817878,
 ]
 
-# Local-frame translations. The mecanum base can move laterally and diagonally
-# without needing a nonzero turning radius.
+# Translacoes no frame local. A base mecanum anda de lado e na diagonal sem
+# precisar de raio de giro.
 TRANSLATION_PRIMITIVES = [
     (0.16, 0.0),
     (-0.08, 0.0),
@@ -168,7 +172,7 @@ def main() -> None:
         nargs="?",
         type=Path,
         default=default_output_path(),
-        help="Output JSON path.",
+        help="Caminho do JSON de saida.",
     )
     args = parser.parse_args()
 
@@ -177,7 +181,7 @@ def main() -> None:
     with output.open("w", encoding="utf-8") as handle:
         json.dump(build_primitives(), handle, indent=2)
         handle.write("\n")
-    print(f"Generated {output}")
+    print(f"Gerado {output}")
 
 
 if __name__ == "__main__":

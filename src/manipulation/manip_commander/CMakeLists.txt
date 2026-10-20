@@ -5,21 +5,19 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(example_interfaces REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 
-add_executable(test_moveit src/tests_moveit.cpp)
-ament_target_dependencies(test_moveit rclcpp moveit_ros_planning_interface)
+# Ferramenta de bancada: move o braco por topico (ver src/commander_node.cpp).
+add_executable(commander src/commander_node.cpp)
+ament_target_dependencies(commander
+  rclcpp moveit_ros_planning_interface example_interfaces geometry_msgs tf2)
 
-add_executable(commmander src/commander_template.cpp)
-ament_target_dependencies(commmander rclcpp moveit_ros_planning_interface example_interfaces)
-
-install(TARGETS
-  test_moveit
-  commmander
+install(TARGETS commander
   DESTINATION lib/${PROJECT_NAME}
 )
 

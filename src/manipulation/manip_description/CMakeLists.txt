@@ -8,11 +8,10 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 
+# Bancada standalone: so urdf/ e meshes/ (usados pelo manip_moveit_config).
 install(
-  DIRECTORY launch rviz urdf meshes
+  DIRECTORY urdf meshes
   DESTINATION share/${PROJECT_NAME}
 )
-
-
 
 ament_package()

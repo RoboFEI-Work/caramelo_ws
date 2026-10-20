@@ -3,10 +3,8 @@
 <package format="3">
   <name>manip_moveit_config</name>
   <version>0.3.0</version>
-  <description>
-     An automatically generated package with all the configuration and launch files for using the manip with the MoveIt Motion Planning Framework
-  </description>
-  <maintainer email="thomasay4747@gmail.com">Thomas Ay</maintainer>
+  <description>Configuracao MoveIt do braco do Caramelo: caramelo.srdf (poses nomeadas), kinematics, joint_limits, controllers e o launch do move_group do robo combinado.</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
 
   <license>BSD-3-Clause</license>
 
@@ -23,7 +21,6 @@
   <exec_depend>moveit_planners</exec_depend>
   <exec_depend>moveit_simple_controller_manager</exec_depend>
   <exec_depend>joint_state_publisher</exec_depend>
-  <exec_depend>joint_state_publisher_gui</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>xacro</exec_depend>
   <!-- The next 2 packages are required for the gazebo simulation.
@@ -34,15 +31,13 @@
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_ros_visualization</exec_depend>
-  <exec_depend>moveit_ros_warehouse</exec_depend>
-  <exec_depend>moveit_setup_assistant</exec_depend>
+  <!-- bancada standalone (move_group.launch.py / manip.urdf.xacro) -->
   <exec_depend>manip_description</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>rviz_common</exec_depend>
   <exec_depend>rviz_default_plugins</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>warehouse_ros_sqlite</exec_depend>
   <exec_depend>xacro</exec_depend>
   <!-- Robo combinado Caramelo: URDF vem do caramelo_description; IK via pick_ik -->
   <exec_depend>caramelo_description</exec_depend>

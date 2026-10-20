@@ -1,7 +1,14 @@
 # Guia do operador — Missões do Caramelo (nav + manipulação)
 
-Validado no robô real em 2026-07-22 (missão completa autônoma WS1→WS2→FINISH
-com pick e place). Detalhes técnicos: `docs/relatorio_integracao_manip_2026-07-22.md`.
+Runbook de competição: subir o sistema, rodar uma missão, escrever o YAML da tarefa,
+preparar os arquivos do mapa e entender o executor. Validado no robô real em
+2026-07-22 (missão completa autônoma WS1→WS2→FINISH com pick e place); o relatório
+daquela integração está em `docs/historico/relatorio_integracao_manip_2026-07-22.md`
+(histórico). Datas das mudanças: §7.
+
+Sumário: 1 Subir · 2 Rodar · 3 Formato do YAML (competição, novo, empilhar, container,
+superfície, AMT1, nível baixo) · 4 Arquivos por mapa · 5 Executor (parâmetros, fila de
+alcance, memória de slots) · 6 Problemas comuns · 7 Histórico.
 
 ---
 
@@ -21,10 +28,11 @@ ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arena2_520
 
 Args úteis do launch: `use_nav:=false` (só manipulação), `use_camera:=false`,
 `use_apriltag:=false`, `use_audio:=false`, `use_rviz:=true` (RViz da nav),
-`use_rviz_manip:=true` (RViz do MoveIt), `use_mock_hardware:=true` (tudo
+`use_rviz_manip:=true` (RViz do MoveIt), `use_commander:=false` (não sobe o
+`commander`, ferramenta de bancada do braço), `use_mock_hardware:=true` (tudo
 simulado no PC, sem robô).
 
-## 1a. RUNBOOK 100% TERMINAL (sem GUI) — atualizado 2026-07-23
+### 1.1 Runbook 100 % terminal (sem GUI)
 
 ```bash
 # ── 1. SUBIR (terminal 1; Pi ja com hardware_bringup rodando) ──────────────
@@ -77,7 +85,7 @@ ros2 param set /dock_align_node refine_desired_face_dist 0.XXX
 # e yaw esquadrado com a mesa, mesmo com AMCL/mapa deslocados.
 ```
 
-## 1b. Passo a passo com visualização (nav + MoveIt + câmera)
+### 1.2 Passo a passo com visualização (nav + MoveIt + câmera)
 
 ```bash
 # T1 (PC): sistema completo
@@ -114,7 +122,13 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
 - Cada missão gera um YAML de ações auditável em `~/.ros/caramelo_missions/`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
 
-## 3. Onde e como definir a missão
+## 3. Formato do YAML da missão
+
+Crie/edite arquivos em `~/caramelo_ws/missions/` (fonte única; `missions/README.md`
+lista os prontos). Subseções: 3.1 competição (antigo) · 3.2 novo do @Work Commander ·
+3.3 empilhar · 3.4 container por cor · 3.5 superfície livre · 3.6 AMT1 · 3.7 nível baixo.
+
+### 3.1 YAML da competição (formato antigo)
 
 Crie/edite arquivos em **`~/caramelo_ws/missions/`** (nome livre, formato =
 YAML da competição, igual `missions/arena_test.yaml`):
@@ -152,7 +166,7 @@ finish_state:                        # onde cada coisa deve TERMINAR
 - ids de tag disponíveis (cfg da competição): 1..7 → `tag_1..tag_7`,
   10..16 → `ct_10..ct_16` (potes), 20..28 → `tag_20..tag_28`, 42 → `tag_42`.
 
-### 3b. YAML novo do @Work Commander (25/08)
+### 3.2 YAML novo do @Work Commander
 
 O planner aceita os dois formatos. O novo:
 
@@ -178,9 +192,11 @@ finish_state:
   outros vão para a mesa como antes.
 - Ids 1..30 têm frame `tag_<id>` em `tags_36h11.yaml`; objeto sem frame agora é **erro** do
   planner (antes sumia do plano em silêncio). Objeto só no `start_state` vira aviso (não é
-  pego); só no `finish_state` é erro. `type` com "DECOY" é ignorado. `stacks:` continua (§3a).
+  pego); só no `finish_state` é erro. `type` com "DECOY" é ignorado. `stacks:` continua (§3.3).
 
-### 3a. Empilhar no YAML da competição (24/08)
+### 3.3 Empilhar
+
+#### No YAML da competição (`stacks:`)
 
 No `finish_state` da estação de destino, declare as pilhas de BAIXO para CIMA:
 
@@ -194,12 +210,115 @@ finish_state:
 ```
 
 O `task_planner` solta a base antes do topo (na mesma visita) e emite
-`stack_on: tag_4` no place do topo — ver §6a para o que o place faz com isso.
-Exemplo pronto: `missions/empilhar_ws4_ws6.yaml`. Casos inválidos (ciclo,
+`stack_on: tag_4` no place do topo — ver abaixo o que o place faz com isso.
+Exemplo pronto (já traduzido para o nível baixo, formato de ações):
+`missions/exemplos/empilhar_ws4_ws6_actions.yaml`. Casos inválidos (ciclo,
 objeto que não termina nessa estação, topo com duas bases) abortam o planner
 com mensagem clara.
 
-## 3c. AMT1 — Advanced Manipulation Task 1 (ordenar a mesa de precisão, 28/08)
+#### No nível baixo (`stack_on`)
+
+No nível baixo (`actions:`) — é o que o `task_planner` emite a partir de `stacks:`
+(acima). No `place` do objeto de CIMA, acrescente `stack_on: tag_<id da base>`; a base
+tem que ser solta ANTES, na mesma estação. `table_pose` continua obrigatório
+(altura da mesa e fallback: se a tag base não for vista pela câmera, o objeto
+é solto na mesa normalmente). Não vale para a prateleira.
+
+```yaml
+actions:
+  - {kind: goto, ws: WS_4, mesa: Mesa15}
+  - {kind: pick, tag_frame: tag_4, table_pose: Mesa15}
+  - {kind: pick, tag_frame: tag_7, table_pose: Mesa15}
+  - {kind: home}
+  - {kind: goto, ws: WS_6, mesa: Mesa15}
+  - {kind: place, tag_frame: tag_4, table_pose: Mesa15, ws: WS_6}
+  - {kind: place, tag_frame: tag_7, table_pose: Mesa15, ws: WS_6, stack_on: tag_4}
+  - {kind: home}
+```
+
+Exemplo pronto: `missions/exemplos/empilhar_ws4_ws6_actions.yaml`.
+O que o place faz com `stack_on`: vê a tag base pela câmera (a partir de
+`pegar_obj`, com o bloco na garra), vai para (x, y) dela com o TCP em
+`z_base + stack_place_z_offset` (parâmetro do `place_action_server`, 0,05 m =
+cubo de 42 mm + folga — **calibrar no robô**), passando por uma pré-pose
+`stack_pre_lift_m` (0,05) acima e descendo na vertical; depois de soltar sobe
+de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
+`stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
+`stack_tilt_ladder_deg` ([15, 30]).
+
+### 3.4 Container por cor (`container_color`)
+
+> Manutenção completa (trocar container, cor, garra; que arquivo/parâmetro mexer):
+> [containers_por_cor.md](containers_por_cor.md).
+
+No nível baixo: `- {kind: place, tag_frame: tag_8, table_pose: Mesa15, ws: WS_6, container_color: RED}`
+(RED|BLUE; nunca junto com `stack_on`). O place: publica a cota da borda em
+`/manip/container_plane_z`, espera o TF `ct_vermelho`/`ct_azul` do `container_detector`
+(até `container_detect_timeout_sec` 3 s), alinha lateral se preciso, vai para
+(x, y) do container com o fundo do cubo `container_drop_clearance_m` (1 cm) acima da
+borda (`container_rim_height_m` 0,07), abre. A descida é em 3 movimentos (pedido de
+25/08): base e punho (j1, j4, j5) com o braço na altura atual → ombro+cotovelo (j2, j3)
+até a pose de elevação (`stack_pre_lift_m` 5 cm acima) → descida vertical curta.
+Saída (25/08): fecha a garra (`container_close_gripper_on_exit` true,
+`container_exit_gripper_position` 0,170 = fechada; use p.ex. −0,05 para fechar só parcialmente),
+mede o esforço — se pegou o bloco de volta, reabre e sai com a garra aberta — sobe na
+vertical até a pose de elevação e volta a `pegar_obj` com j2/j3 primeiro (os dedos abertos
+batiam na parede e empurravam o container). Não viu / sem IK → solta na mesa.
+Params do `place_action_server`: `container_frame_red/blue`, `container_rim_height_m`,
+`container_drop_clearance_m`, `cube_height_m`, `container_detect_timeout_sec`,
+`container_arrival_tolerance_m` (erro em XY, 3 cm), `container_arrival_z_tolerance_m` (erro em Z,
+6 cm — o braço estendido afunda ~2,5 cm sistematicamente, medido 25/08), `container_tilt_ladder_deg`,
+`container_fallback_to_table`, `container_close_gripper_on_exit`, `container_exit_gripper_position`,
+`container_slot_offsets_long_m` / `container_slot_offsets_short_m` (vários blocos no MESMO
+container, 25/08: candidatos de deslocamento do ponto de soltura no eixo longo/curto do
+container, default [+3, −3, 0] cm no longo; cada bloco vai para o candidato mais longe dos
+que a memória de slots diz que já foram soltos lá — 1º a +3 cm, 2º a −3 cm, 3º no centro).
+
+**Calibrar as cores do container** (`manip_bringup/config/container_detector.yaml`,
+todos reajustáveis com `ros2 param set /container_detector ...`):
+```bash
+# sem robô, com uma foto:
+ros2 run manip_bringup container_detector_node.py --image foto.jpg --out overlay.png
+ros2 run manip_bringup container_detector_node.py --image foto.jpg --probe 800,600   # HSV do pixel
+# no robô:
+ros2 launch ... use_container_detector:=true container_detector_always_on:=true
+ros2 topic echo /manip/container_detector/status
+ros2 run rqt_image_view rqt_image_view /manip/container_detector/debug_image
+ros2 run tf2_ros tf2_echo manip_base_link ct_vermelho
+```
+**A garra é VERMELHA e aparece na imagem** (câmera e garra são solidárias → sempre nos
+mesmos pixels). O detector apaga essas regiões da máscara antes de segmentar:
+`exclusion_polys_norm` (dedos ABERTOS, cantos superiores — valem sempre) e
+`exclusion_polys_holding_norm` + `exclusion_rects_norm` (dedos FECHADOS + cubo carregado —
+só com a garra fechada, lida de `/joint_states`: `gripper_joint` `manip_joint6` >
+`gripper_holding_above` −0,12). Para recalibrar na arena (câmera trocada/remontada):
+```bash
+# foto com a garra ABERTA sobre a mesa branca, SEM container vermelho na imagem:
+ros2 run manip_bringup container_detector_node.py --image garra_aberta.png --fit-gripper
+#   -> cole as linhas "topo" em exclusion_polys_norm
+# foto com a garra FECHADA num cubo AZUL (mesma condição):
+ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper                 # dedos fechados
+ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper --fit-color azul --margin-px 20   # cubo
+#   -> cole em exclusion_polys_holding_norm (junte o topo do cubo até y=0)
+# conferir: --out overlay.png (polígonos em amarelo); --gripper-open simula garra vazia
+```
+Blob cortado pela borda ou por uma região apagada = "parcial": usa o centroide da parte
+visível (cai dentro da abertura), mas precisa de ≥ `partial_min_area_frac` (25 %) da área
+esperada. Blob inteiro: solidez ≥ 0,75, proporção 1,1–2,6, retangularidade ≥ 0,70 e lados
+dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de container
+(dedo cortado pela borda vira quadrilátero) — por isso as máscaras fixas.
+`yaw_axis_offset_deg` = 90 se os dedos tiverem que cruzar o lado curto.
+
+### 3.5 Place em superfície livre
+
+Em mesa comum (`WS_*`) o place agora **olha o tampo** com a RealSense antes de soltar e escolhe um
+ponto que cumpre o rulebook 4.4 (2 cm de bordas e objetos, 10 cm de parede, até 20 cm da frente),
+em vez das 3 poses fixas `MesaX/.1/.2` — que continuam como fallback. Paredes por estação no
+`ws_table_mapping.yaml` do mapa (`ws_walls: {WS_3: [left]}`) ou por ação (`wall_sides: [right]`).
+Kill-switch: `place_surface_planner:=false`. Detalhes, parâmetros e roteiro de validação:
+[docs/place_superficie_livre.md](place_superficie_livre.md). **Ainda sem teste no robô.**
+
+### 3.6 AMT1 — Advanced Manipulation Task 1 (ordenar a mesa de precisão)
 
 **O que é**: na mesa de precision placement (`PP_1` → pose `Mesa10`, dock `PP1`) há 6 cubos com
 tag em ordem aleatória; o robô deve deixá-los em **ordem crescente de id, da esquerda para a
@@ -210,7 +329,7 @@ onde estava A…).
 **Como o planner reconhece**: `name` contendo "advanced manipulation task 1" (sem distinguir
 maiúsculas) OU `task_id` começando com `AMT1`. Aí ele ignora o planejamento de transferências e
 emite só `goto PP_1` + `amt1_sort` (a rotina inteira roda no nó `/amt1_sort`). Exemplo
-completo em [missions/amt1_pp1.yaml](../missions/amt1_pp1.yaml): `active_service_areas: [PP_1]`
+completo em [missions/task_AMT1_pp1.yaml](../missions/task_AMT1_pp1.yaml): `active_service_areas: [PP_1]`
 (obrigatório — estação fora da lista é descartada), 6 objetos em `start_state.PP_1`,
 `finish_state` igual ao `start_state`.
 
@@ -234,7 +353,7 @@ ganho = real / odom bruto (o `dock_align_node` loga `fim (...): lateral ... (odo
 ganho ...)`), esperado ~0,82; gravar ao vivo com `ros2 param set /dock_align_node
 nudge_odom_lateral_gain 0.82` e deixar permanente em
 `src/caramelo_navigation/launch/docking_server.launch.py` (lista `parameters` do `dock_align_node`,
-como o `refine_desired_face_dist` do §1a); repetir com `dy: -0.20` e conferir que o
+como o `refine_desired_face_dist` do §1.1); repetir com `dy: -0.20` e conferir que o
 `/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
 coisa (a bancada não cobre isto: a mesa falsa não escorrega).
 
@@ -363,8 +482,8 @@ o nó soma o `travelled` da odometria (slots e `total_shift_m`), continua a sequ
 re-registra e repete a op; só as falhas físicas (`muro`, `obstaculo_lateral`, `timeout`,
 `sem_odometria`, `sem_scan`, `muito_perto_da_mesa`, `cancelado`...) viram `nudge_falhou`.
 
-**Rodar**: `ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 --task
-/home/linux24-04/caramelo_ws/missions/amt1_pp1.yaml [--dry-run]` (o preflight passa a exigir
+**Rodar** (da raiz `~/caramelo_ws`): `ros2 run caramelo_navigation run_mission --map-name
+arenalegal_2026 --task missions/task_AMT1_pp1.yaml [--dry-run]` (o preflight passa a exigir
 `/amt1_sort`). Só observar e falar o plano sem mover cubo:
 `ros2 action send_goal /amt1_sort my_robot_msgs/action/Amt1Sort "{ws: PP_1, table_pose: Mesa10,
 expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
@@ -439,41 +558,7 @@ navegação precisa estar no ar (o `nudge_base` aparece em `ros2 action list`).
 anda de lado; se nem recuando houver folga, recusa. Na AMT1 uma recusa de segurança do nudge
 durante a busca vira "busca impossível" → ordena o que viu; `nudge_falhou` só para muro/timeout.
 
-## 4. ws_table_mapping.yaml — qual dos dois vale?
-
-Existem duas cópias, mas **só uma manda**:
-
-| Arquivo | Papel |
-|---|---|
-| `src/caramelo_mapping/maps/<mapa>/ws_table_mapping.yaml` | **CANÔNICO** — é o que o run_mission usa. Edite SEMPRE este. |
-| `src/manipulation/manip_bt/behavior_tree_manip/ws_table_mapping.yaml` | Fallback antigo (só se rodar o task_planner na mão sem o 4º argumento). Ignorar. |
-
-O arquivo do mapa tem DUAS chaves, lidas por partes diferentes do sistema:
-
-```yaml
-ws_to_table_pose:   # ALTURA DO BRACO em cada mesa (lido pelo task_planner)
-  WS_1: Mesa0       # Mesa0/Mesa5/Mesa10/Mesa15 = poses do braco p/ 0/5/10/15 cm
-  WS_2: Mesa5
-ws_to_dock_id:      # qual DOCK do docking.yaml corresponde a estacao (lido pelo executor)
-  WS_1: WS1
-  WS_2: WS2
-```
-
-Trocou a altura física de uma mesa? Ajuste o `ws_to_table_pose` dela aqui.
-
-## 5. Demais arquivos por mapa (a "carteira de identidade" da arena)
-
-Tudo em `src/caramelo_mapping/maps/<mapa>/`:
-- `docking.yaml` — pose e tipo de cada dock (**regravar pela GUI**: posicione o
-  robô na distância ideal da mesa — pick validado com objeto a ~40 cm — e use
-  "Salvar pose como dock" escolhendo a estação; vale na próxima missão).
-- `service_areas.yaml` — pose final, use_docking e manipulation_enabled por área.
-- `ws_table_mapping.yaml` — seção 4.
-
-Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/config/tags_36h11.yaml`
-(vendorado — NÃO depende mais do pacote apriltag_ros de fora; o binário vem do ~/ros2_ws).
-
-## 6. Nível baixo (controle total da ordem, sem planejador)
+### 3.7 Nível baixo (YAML de ações, sem planejador)
 
 Escreva você mesmo o YAML de AÇÕES (exemplos gerados em
 `~/.ros/caramelo_missions/`):
@@ -489,7 +574,7 @@ actions:
 
 ```bash
 ros2 run manip_bt bt_yaml_executor minhas_acoes.yaml --ros-args \
-  -p map_folder:=/home/linux24-04/caramelo_ws/src/caramelo_mapping/maps/arena2_520
+  -p map_folder:=$HOME/caramelo_ws/src/caramelo_mapping/maps/arena2_520
 # uteis: --dry-run | -p simulate_navigation:=true | -p finish_dock_id:="''"
 ```
 
@@ -497,130 +582,54 @@ O undock antes de sair de uma estação é automático (embutido no goto seguint
 `home` antes de cada goto é responsabilidade de quem escreve as ações.
 
 Desde 28/08 os picks/places de uma mesa comum (`WS_*`, `PP_*`) entram
-automaticamente numa **fila de alcance** (`<ReachQueue>`, ver §6d): o que voltar
+automaticamente numa **fila de alcance** (`<ReachQueue>`, ver §5.2): o que voltar
 "alvo visto mas fora de alcance" é adiado, a base se ajusta de lado e a fila
 repete. Um `home` no meio da estação fecha a fila (o próximo pick/place da
 mesma estação abre outra). `SH_*` e START/FINISH ficam fora. Para o XML
 antigo, byte a byte: `-p reach_queue_enabled:=false`.
 
-## 6-bis. Place em superfície livre (19/10)
+## 4. Arquivos por mapa
 
-Em mesa comum (`WS_*`) o place agora **olha o tampo** com a RealSense antes de soltar e escolhe um
-ponto que cumpre o rulebook 4.4 (2 cm de bordas e objetos, 10 cm de parede, até 20 cm da frente),
-em vez das 3 poses fixas `MesaX/.1/.2` — que continuam como fallback. Paredes por estação no
-`ws_table_mapping.yaml` do mapa (`ws_walls: {WS_3: [left]}`) ou por ação (`wall_sides: [right]`).
-Kill-switch: `place_surface_planner:=false`. Detalhes, parâmetros e roteiro de validação:
-[docs/place_superficie_livre.md](place_superficie_livre.md). **Ainda sem teste no robô.**
+### 4.1 ws_table_mapping.yaml
 
-## 6-ter. Memória de slots (19/10)
+Arquivo **canônico**: `src/caramelo_mapping/maps/<mapa>/ws_table_mapping.yaml` — é o que
+o `run_mission` passa ao `task_planner` (4º argumento) e ao executor. **Edite sempre este.**
+Não existe mais cópia de fallback no share do `manip_bt`: a antiga
+`behavior_tree_manip/ws_table_mapping.yaml` virou fixture de teste
+(`src/manipulation/manip_bt/test/fixtures/`, usada só pela bancada) e o `run_mission`
+não procura `--task` nem o mapping fora da pasta do mapa — sem o arquivo no mapa ele
+aborta antes de mover.
 
-A cada place bem-sucedido o nó grava em `~/.config/caramelo/container_states.yaml` (chave
-`table_slots`, por WS) onde a ponta soltou o bloco: slot (`Mesa15.1`, `superficie`, `stack:tag_4`,
-`ct_vermelho`), tag, x/y/z em `manip_base_link` (no frame da pose de docking) e o instante. Na
-próxima passada esses pontos entram como obstáculos virtuais (`memoria:<tag>@<slot>`, +2 cm de
-folga) para o caso de a câmera não ver mais a tag. **Sintoma antigo**: a mesma tag entrava duas
-vezes (TF + memória, em posições um pouco diferentes pelo erro de re-docking) e o robô "via mais
-tags do que existem"; o paliativo era `slot_memory_ttl_sec: 9`. Agora a câmera vence (log
-`memoria: tag_N@slot substituida pela deteccao da camera`) e o registro de uma tag é **apagado**
-quando: o pick confirma a pega (`memoria: tag_N removida (bloco pego)`), o place a solta em outro
-lugar (antes de gravar o novo), o launch reseta o yaml no início da rodada, ou vence o TTL.
-Parâmetros do `place_action_server`: `slot_memory_enabled` (true) e `slot_memory_ttl_sec`
-(600 s — só protege contra registro órfão). Para zerar à mão, apague a chave `table_slots`.
-
-## 6a. Empilhar objetos (`stack_on`, 24/08)
-
-Só no nível baixo (`actions:`) — o planejador da competição não gera isso.
-No `place` do objeto de CIMA, acrescente `stack_on: tag_<id da base>`; a base
-tem que ser solta ANTES, na mesma estação. `table_pose` continua obrigatório
-(altura da mesa e fallback: se a tag base não for vista pela câmera, o objeto
-é solto na mesa normalmente). Não vale para a prateleira.
+O arquivo tem DUAS chaves, lidas por partes diferentes do sistema:
 
 ```yaml
-actions:
-  - {kind: goto, ws: WS_4, mesa: Mesa15}
-  - {kind: pick, tag_frame: tag_4, table_pose: Mesa15}
-  - {kind: pick, tag_frame: tag_7, table_pose: Mesa15}
-  - {kind: home}
-  - {kind: goto, ws: WS_6, mesa: Mesa15}
-  - {kind: place, tag_frame: tag_4, table_pose: Mesa15, ws: WS_6}
-  - {kind: place, tag_frame: tag_7, table_pose: Mesa15, ws: WS_6, stack_on: tag_4}
-  - {kind: home}
+ws_to_table_pose:   # ALTURA DO BRACO em cada mesa (lido pelo task_planner)
+  WS_1: Mesa0       # Mesa0/Mesa5/Mesa10/Mesa15 = poses do braco p/ 0/5/10/15 cm
+  WS_2: Mesa5
+ws_to_dock_id:      # qual DOCK do docking.yaml corresponde a estacao (lido pelo executor)
+  WS_1: WS1
+  WS_2: WS2
 ```
 
-Exemplo pronto: `src/caramelo_bringup/missions/empilhar_ws4_ws6_actions.yaml`.
-O que o place faz com `stack_on`: vê a tag base pela câmera (a partir de
-`pegar_obj`, com o bloco na garra), vai para (x, y) dela com o TCP em
-`z_base + stack_place_z_offset` (parâmetro do `place_action_server`, 0,05 m =
-cubo de 42 mm + folga — **calibrar no robô**), passando por uma pré-pose
-`stack_pre_lift_m` (0,05) acima e descendo na vertical; depois de soltar sobe
-de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
-`stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
-`stack_tilt_ladder_deg` ([15, 30]).
+Trocou a altura física de uma mesa? Ajuste o `ws_to_table_pose` dela aqui. Opcional:
+`ws_walls: {WS_3: [left]}` declara paredes por estação para o place em superfície
+livre (§3.5).
 
-## 6a-bis. Container por cor (`container_color`, 25/08)
+### 4.2 Demais arquivos por mapa (a "carteira de identidade" da arena)
 
-> Manutenção completa (trocar container, cor, garra; que arquivo/linha/parâmetro mexer):
-> [containers_por_cor.md](containers_por_cor.md).
+Tudo em `src/caramelo_mapping/maps/<mapa>/`:
+- `docking.yaml` — pose e tipo de cada dock (**regravar pela GUI**: posicione o
+  robô na distância ideal da mesa — pick validado com objeto a ~40 cm — e use
+  "Salvar pose como dock" escolhendo a estação; vale na próxima missão).
+- `service_areas.yaml` — pose final, use_docking e manipulation_enabled por área.
+- `ws_table_mapping.yaml` — §4.1.
 
-No nível baixo: `- {kind: place, tag_frame: tag_8, table_pose: Mesa15, ws: WS_6, container_color: RED}`
-(RED|BLUE; nunca junto com `stack_on`). O place: publica a cota da borda em
-`/manip/container_plane_z`, espera o TF `ct_vermelho`/`ct_azul` do `container_detector`
-(até `container_detect_timeout_sec` 3 s), alinha lateral se preciso, vai para
-(x, y) do container com o fundo do cubo `container_drop_clearance_m` (1 cm) acima da
-borda (`container_rim_height_m` 0,07), abre. A descida é em 3 movimentos (pedido de
-25/08): base e punho (j1, j4, j5) com o braço na altura atual → ombro+cotovelo (j2, j3)
-até a pose de elevação (`stack_pre_lift_m` 5 cm acima) → descida vertical curta.
-Saída (25/08): fecha a garra (`container_close_gripper_on_exit` true,
-`container_exit_gripper_position` 0,170 = fechada; use p.ex. −0,05 para fechar só parcialmente),
-mede o esforço — se pegou o bloco de volta, reabre e sai com a garra aberta — sobe na
-vertical até a pose de elevação e volta a `pegar_obj` com j2/j3 primeiro (os dedos abertos
-batiam na parede e empurravam o container). Não viu / sem IK → solta na mesa.
-Params do `place_action_server`: `container_frame_red/blue`, `container_rim_height_m`,
-`container_drop_clearance_m`, `cube_height_m`, `container_detect_timeout_sec`,
-`container_arrival_tolerance_m` (erro em XY, 3 cm), `container_arrival_z_tolerance_m` (erro em Z,
-6 cm — o braço estendido afunda ~2,5 cm sistematicamente, medido 25/08), `container_tilt_ladder_deg`,
-`container_fallback_to_table`, `container_close_gripper_on_exit`, `container_exit_gripper_position`,
-`container_slot_offsets_long_m` / `container_slot_offsets_short_m` (vários blocos no MESMO
-container, 25/08: candidatos de deslocamento do ponto de soltura no eixo longo/curto do
-container, default [+3, −3, 0] cm no longo; cada bloco vai para o candidato mais longe dos
-que a memória de slots diz que já foram soltos lá — 1º a +3 cm, 2º a −3 cm, 3º no centro).
+Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/config/tags_36h11.yaml`
+(vendorado — NÃO depende mais do pacote apriltag_ros de fora; o binário vem do ~/ros2_ws).
 
-**Calibrar as cores do container** (`manip_bringup/config/container_detector.yaml`,
-todos reajustáveis com `ros2 param set /container_detector ...`):
-```bash
-# sem robô, com uma foto:
-ros2 run manip_bringup container_detector_node.py --image foto.jpg --out overlay.png
-ros2 run manip_bringup container_detector_node.py --image foto.jpg --probe 800,600   # HSV do pixel
-# no robô:
-ros2 launch ... use_container_detector:=true container_detector_always_on:=true
-ros2 topic echo /manip/container_detector/status
-ros2 run rqt_image_view rqt_image_view /manip/container_detector/debug_image
-ros2 run tf2_ros tf2_echo manip_base_link ct_vermelho
-```
-**A garra é VERMELHA e aparece na imagem** (câmera e garra são solidárias → sempre nos
-mesmos pixels). O detector apaga essas regiões da máscara antes de segmentar:
-`exclusion_polys_norm` (dedos ABERTOS, cantos superiores — valem sempre) e
-`exclusion_polys_holding_norm` + `exclusion_rects_norm` (dedos FECHADOS + cubo carregado —
-só com a garra fechada, lida de `/joint_states`: `gripper_joint` `manip_joint6` >
-`gripper_holding_above` −0,12). Para recalibrar na arena (câmera trocada/remontada):
-```bash
-# foto com a garra ABERTA sobre a mesa branca, SEM container vermelho na imagem:
-ros2 run manip_bringup container_detector_node.py --image garra_aberta.png --fit-gripper
-#   -> cole as linhas "topo" em exclusion_polys_norm
-# foto com a garra FECHADA num cubo AZUL (mesma condição):
-ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper                 # dedos fechados
-ros2 run manip_bringup container_detector_node.py --image cubo_na_garra.png --fit-gripper --fit-color azul --margin-px 20   # cubo
-#   -> cole em exclusion_polys_holding_norm (junte o topo do cubo até y=0)
-# conferir: --out overlay.png (polígonos em amarelo); --gripper-open simula garra vazia
-```
-Blob cortado pela borda ou por uma região apagada = "parcial": usa o centroide da parte
-visível (cai dentro da abertura), mas precisa de ≥ `partial_min_area_frac` (25 %) da área
-esperada. Blob inteiro: solidez ≥ 0,75, proporção 1,1–2,6, retangularidade ≥ 0,70 e lados
-dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de container
-(dedo cortado pela borda vira quadrilátero) — por isso as máscaras fixas.
-`yaw_axis_offset_deg` = 90 se os dedos tiverem que cruzar o lado curto.
+## 5. Executor: parâmetros, fila de alcance e memória de slots
 
-## 6b. Parâmetros novos do executor (23/07)
+### 5.1 Parâmetros do executor (`bt_yaml_executor`)
 
 - `startup_home` (true): braço vai a `home` ANTES da primeira ação da missão.
 - `startup_pose_name` ("home"): pose do prólogo.
@@ -628,11 +637,11 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   há menos de 1 s — protege contra alvo fantasma (TF velha com robô movido).
   Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
   campo de visão (não é erro de IK).
-- AMT1 (28/08, ver §3c): kind `amt1_sort` (`ws`, `table_pose`, `expected_tags: [ids]`,
+- AMT1 (28/08, ver §3.6): kind `amt1_sort` (`ws`, `table_pose`, `expected_tags: [ids]`,
   `direction`, `max_onboard`) — exige um `goto` anterior, fecha a fila de alcance e roda a rotina
   inteira no nó `/amt1_sort`; params do executor `amt1_timeout` (1800 s, prazo total — estourar só
   avisa) e `amt1_stage_timeout` (300 s, watchdog por feedback — o único que cancela o goal).
-- Fila de alcance (28/08, ver §6d): `reach_queue_enabled` (true),
+- Fila de alcance (28/08, ver §5.2): `reach_queue_enabled` (true),
   `reach_queue_ws_prefixes` (`["WS_","PP_"]`), `reach_queue_max_nudges` (2),
   `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
   `nudge_timeout` (20 s, goal do `nudge_base`).
@@ -659,26 +668,7 @@ dentro de ±`dims_tolerance_frac` de 170 × 105 mm. Forma 2D NÃO separa dedo de
   alvo moveu dx dy dz`). Sem TF fresca mantém a primeira IK; se de perto não houver IK, vira
   "fora de alcance" (fila de alcance). Desligar: `pick_recompute_ik_after_j1:=false`.
 
-## 6c. Raspberry NOVA (ou reinstalada): restaurar o SSH sem senha
-
-Troca de Pi = host key nova + authorized_keys vazio. No PC:
-
-```bash
-# 1. Limpar a chave da Pi ANTIGA do known_hosts (senão o ssh recusa conectar):
-ssh-keygen -R raspberrypi.local
-
-# 2. Copiar a chave publica do PC para a Pi nova (senha padrao: raspberrypi):
-sshpass -p raspberrypi ssh-copy-id -o StrictHostKeyChecking=accept-new raspberrypi@raspberrypi.local
-
-# 3. Testar (nao pode pedir senha):
-ssh raspberrypi@raspberrypi.local 'echo ok'
-```
-
-Se o PC ainda não tiver chave (`ls ~/.ssh/id_*` vazio): `ssh-keygen -t ed25519`
-(enter em tudo) antes do passo 2. Regras que continuam valendo: 1 conexão SSH
-por vez; NTP da Pi (sem RTC, deriva rápido — conferir `timedatectl` sempre).
-
-## 6d. Fila de alcance por estação (`ReachQueue` + `nudge_base`, 28/08)
+### 5.2 Fila de alcance por estação (`ReachQueue` + `nudge_base`)
 
 **Problema**: o robô estaciona na mesa numa pose que nem sempre deixa o braço
 alcançar todos os objetos/containers (28/08: container azul a +20 cm → alvo
@@ -704,7 +694,7 @@ comum, o executor embrulha os picks/places numa `<ReachQueue>`:
 **Uma fila por estação**: um `home` no meio da estação fecha a fila (o
 `NudgeBase` entra antes do `home`) e os picks/places seguintes da **mesma**
 estação ficam fora dela (XML antigo, `final_attempt=true`) — o orçamento de
-`reach_queue_max_nudges` (2) vale por estação, não por fila. O kind `amt1_sort` (§3c) também
+`reach_queue_max_nudges` (2) vale por estação, não por fila. O kind `amt1_sort` (§3.6) também
 fecha a fila de alcance da estação (o `NudgeBase` entra antes dele) e roda fora dela — o nó
 `/amt1_sort` faz os próprios ajustes de base.
 
@@ -740,7 +730,22 @@ mover). Fakes: `fake_pick_place.py -p unreachable_picks:=['tag_7:0.20']`
 do valor), `-p unseen_tags:=['tag_9']`; `fake_nav_actions.py -p
 nudge_slip:=0.85 -p fail_stage:=nudge`.
 
-## 7. Avisos rápidos (aprendidos na validação)
+### 5.3 Memória de slots
+
+A cada place bem-sucedido o nó grava em `~/.config/caramelo/container_states.yaml` (chave
+`table_slots`, por WS) onde a ponta soltou o bloco: slot (`Mesa15.1`, `superficie`, `stack:tag_4`,
+`ct_vermelho`), tag, x/y/z em `manip_base_link` (no frame da pose de docking) e o instante. Na
+próxima passada esses pontos entram como obstáculos virtuais (`memoria:<tag>@<slot>`, +2 cm de
+folga) para o caso de a câmera não ver mais a tag. **Sintoma antigo**: a mesma tag entrava duas
+vezes (TF + memória, em posições um pouco diferentes pelo erro de re-docking) e o robô "via mais
+tags do que existem"; o paliativo era `slot_memory_ttl_sec: 9`. Agora a câmera vence (log
+`memoria: tag_N@slot substituida pela deteccao da camera`) e o registro de uma tag é **apagado**
+quando: o pick confirma a pega (`memoria: tag_N removida (bloco pego)`), o place a solta em outro
+lugar (antes de gravar o novo), o launch reseta o yaml no início da rodada, ou vence o TTL.
+Parâmetros do `place_action_server`: `slot_memory_enabled` (true) e `slot_memory_ttl_sec`
+(600 s — só protege contra registro órfão). Para zerar à mão, apague a chave `table_slots`.
+
+## 6. Problemas comuns (aprendidos na validação)
 
 - **Cabo de rede caiu durante trajetória do braço** = o braço termina o
   movimento mas o PC dá timeout/abort ("Execute request aborted"). Fixar bem os
@@ -793,3 +798,23 @@ nudge_slip:=0.85 -p fail_stage:=nudge`.
   build` sempre de um terminal NOVO (bashrc padrão), nunca de um com sources
   manuais extras. E após mexer no bashrc: FECHAR o terminal e abrir outro
   (`exec bash` não limpa — o path antigo fica herdado nas variáveis).
+
+## 7. Histórico de mudanças
+
+Datas que estavam nos títulos das seções (a cronologia completa fica no git):
+
+- **2026-07-22** — primeira missão completa nav + manipulação no robô (§1).
+- **2026-07-23** — runbook 100 % terminal (§1.1); parâmetros `startup_home`,
+  `startup_pose_name`, `max_tag_age_sec` (§5.1).
+- **2026-08-24** — empilhar: `stacks:` no YAML da competição e `stack_on` no nível baixo (§3.3).
+- **2026-08-25** — YAML novo do @Work Commander (§3.2); container por cor sem tag (§3.4).
+- **2026-08-28** — AMT1 (§3.6); fila de alcance `ReachQueue` + `nudge_base` (§5.2);
+  busca lateral com a base; ordem das juntas na pega (§5.1).
+- **2026-08-29** — varredura só com a j1, precisão do place (mediana, re-registro local,
+  verificação), garra larga em `pegar_obj`, subida vertical pós-pega, re-detecção após a j1,
+  recuo antes do lateral (§3.6, §5.1).
+- **2026-08-31** — observação `tag_direita → tag_esquerda`, place por juntas gravadas, yaw
+  de cubo normalizado, pré-ponto TCP2 no pick e no empilhamento (§3.6).
+- **2026-10-19** — place em superfície livre (§3.5); memória de slots com TTL 600 s e
+  dedup câmera × memória (§5.3); `nudge_base` não se movia (piso do ESC) — correção no
+  `dock_align_node` (`docs/docking_alinhamento_holonomico.md`).

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Lista os docks de docking.yaml do mapa (id, type, pose) com os campos extras
+# da service area correspondente. Quem usa: operador, para conferir o mapa.
+# Como roda: ros2 run caramelo_navigation list_docks --map-name <mapa>
 import argparse
 import sys
 
@@ -33,7 +36,7 @@ def main() -> int:
         print(f"Service areas: {service_path}")
     print("")
     if not docks:
-        print("Nenhum dock encontrado. Rode init_map_docking ou save_dock_pose primeiro.")
+        print("Nenhum dock encontrado. Rode init_service_areas --sync-docking ou save_dock_pose primeiro.")
         return 0
     for dock_id, dock in docks.items():
         service = services.get(dock_id, {}) if isinstance(services, dict) else {}

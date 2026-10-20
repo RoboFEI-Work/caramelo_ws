@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Manda o robo desencostar do dock via action /undock_robot do opennav_docking.
+# Quem usa: operador em teste (a missao real desencosta pelo GoToWS).
+# Como roda: ros2 run caramelo_navigation undock [--dock-type caramelo_front_dock]
 import argparse
 import sys
 

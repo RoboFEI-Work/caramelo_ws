@@ -132,15 +132,15 @@ case_main() {
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_2] AJUSTE LATERAL 1/2: -0.15 m (place_6)"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_2] concluida (ajustes=1, total=-0.15 m)"
   expect_count "$CASE_LOG" 0 "[ReachQueue WS_2] PASSAGEM FINAL"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
 }
 
 case_fail_pick() {
   run_case fail_pick 1 "" "-p fail_stage:=pick $MAIN_PP"
-  expect_count "$CASE_LOG" 1 "PICK action finished with non-success result code"
+  expect_count "$CASE_LOG" 1 "Action de PICK terminou sem SUCCEEDED"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_1] pick_2 falhou (FAILURE)"
   expect_count "$CASE_LOG" 0 "AJUSTE LATERAL"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with FAILURE"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com FALHA"
 }
 
 case_unseen() {
@@ -151,7 +151,7 @@ case_unseen() {
   expect_count "$CASE_LOG" 3 "PICK PULADO (causa: tag_nao_vista)"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_1] concluida (ajustes=0, total=+0.00 m)"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_2] concluida (ajustes=0, total=+0.00 m)"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
 }
 
 case_fail_nudge() {
@@ -164,7 +164,7 @@ case_fail_nudge() {
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_1] concluida (ajustes=0, total=+0.00 m)"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_2] PASSAGEM FINAL: 1 acao(oes) pendente(s)"
   expect_count "$CASE_LOG" 1 "[ReachQueue WS_2] concluida (ajustes=0, total=+0.00 m)"
-  expect_count "$CASE_LOG" 1 "Behavior tree finished with SUCCESS"
+  expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
 }
 
 case "$MODE" in

@@ -3,15 +3,14 @@
 <package format="3">
   <name>my_robot_msgs</name>
   <version>0.0.0</version>
-  <description>Interfaces for robot actions and messages.</description>
-  <maintainer email="robofei-work@todo.todo">robofei-work</maintainer>
+  <description>Interfaces de manipulacao do Caramelo: actions PickTag, PlaceTag e Amt1Sort servidas pelo manip_task_execution e usadas pelo manip_bt e pela Pi.</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>action_msgs</depend>
-  <depend>rclcpp_action</depend>
   <depend>rosidl_default_generators</depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>

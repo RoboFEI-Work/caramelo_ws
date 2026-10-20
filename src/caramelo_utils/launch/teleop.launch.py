@@ -1,3 +1,8 @@
+# Teleoperacao da base do Caramelo: joy_node + joy_teleop (joystick),
+# teleop_twist_keyboard num xterm (/cmd_vel_key), twist_mux (arbitra as fontes
+# em caramelo_controller/cmd_vel_unstamped) e twist_relay (-> TwistStamped em
+# /mecanum_controller/reference). Quem usa: GUI (modulo Teleop) e operador.
+# Como roda: ros2 launch caramelo_utils teleop.launch.py
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -76,7 +81,7 @@ def generate_launch_description():
 
     twist_relay_node = Node(
         package="caramelo_utils",
-        executable="twist_relay.py",
+        executable="twist_relay",
         name="twist_relay",
         parameters=[
             {"use_sim_time": LaunchConfiguration("use_sim_time")},

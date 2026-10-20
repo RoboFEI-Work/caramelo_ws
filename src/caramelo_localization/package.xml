@@ -3,12 +3,16 @@
 <package format="3">
   <name>caramelo_localization</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="victoroliveiraayres@gmail.com">linux24-04</maintainer>
+  <description>Localizacao do Caramelo: AMCL + map_server (global_localization.launch.py) e os servidores do Keepout Filter, com a config do RViz padrao do bringup.</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <exec_depend>caramelo_mapping</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

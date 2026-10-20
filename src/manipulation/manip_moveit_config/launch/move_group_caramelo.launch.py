@@ -53,7 +53,7 @@ def generate_launch_description():
     # LaunchArgument "capabilities" com default = move_group_capabilities["capabilities"];
     # o builder do Jazzy nao tem setter, entao setamos o campo direto no config —
     # assim a capability entra por padrao e o caller ainda pode sobrescrever via
-    # <arg name="capabilities" .../> (como manip_pc.launch.xml faz com move_group.launch.py).
+    # <arg name="capabilities" .../> (mesmo repasse que o manip_stack.launch.py faz).
     moveit_config.move_group_capabilities["capabilities"] = (
         "move_group/ExecuteTaskSolutionCapability"
     )

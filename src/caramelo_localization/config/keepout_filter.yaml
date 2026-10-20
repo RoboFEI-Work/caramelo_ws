@@ -3,7 +3,7 @@
 #
 # So sobem quando use_keepout:=true. O yaml_filename da mascara e' injetado
 # pelo launch a partir de maps/<mapa>/keepout_mask.yaml (ver
-# docs/keepout_paredes_virtuais.md e o script init_keepout_mask.py).
+# docs/keepout_paredes_virtuais.md e 'ros2 run caramelo_navigation init_keepout_mask').
 
 # map_server dedicado que publica a mascara como OccupancyGrid.
 filter_mask_server:

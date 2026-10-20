@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Lista as service areas de maps/<mapa>/service_areas.yaml (tipo, pose final,
+# approach, dock) em tabela. Quem usa: operador, para conferir o mapa.
+# Como roda: ros2 run caramelo_navigation list_service_areas --map <mapa>
 import argparse
 import sys
 

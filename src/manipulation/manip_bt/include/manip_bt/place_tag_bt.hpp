@@ -1,4 +1,9 @@
 #pragma once
+// Folha PlaceTag: cliente da action /place_tag (mtc_place_action_node). Manda
+// o goal com tag_frame/table_pose/ws/stack_on/container_color/wall_sides/
+// final_attempt, acompanha o feedback com um watchdog de progresso e publica
+// nas portas de saida o veredito do server (unreachable,
+// suggested_base_shift_m, skipped) para o ReachQueue decidir.
 
 #include <behaviortree_cpp_v3/action_node.h>
 
@@ -33,10 +38,10 @@ private:
   GoalHandlePlaceTag::SharedPtr goal_handle_;
   bool goal_sent_;
   bool waiting_result_;
-  // Watchdog de progresso (auditoria 2026-08-07, item 1.5) — ver pick_tag_bt.
+  // Watchdog de progresso: ver pick_tag_bt.hpp.
   std::chrono::steady_clock::time_point last_progress_;
-  // 2026-08-28 (fila de alcance): valor enviado em goal.final_attempt, so
-  // para o log do resultado. Porta ausente => true (XML antigo inalterado).
+  // Valor enviado em goal.final_attempt (fila de alcance), so para o log do
+  // resultado. Porta ausente => true (XML antigo inalterado).
   bool final_attempt_{true};
   std::string tag_frame_;
 };

@@ -3,14 +3,17 @@
 <package format="3">
   <name>manip_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="thomas-ay@todo.todo">thomas-ay</maintainer>
+  <description>Stack de manipulacao do PC (manip_stack.launch.py): move_group, pick/place MTC, RealSense, AprilTag, detectores de container e superficie, voz e braco mock.</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <exec_depend>manip_description</exec_depend>
   <exec_depend>manip_moveit_config</exec_depend>
+  <exec_depend>manip_commander</exec_depend>
+  <!-- camera e deteccao de tags (manip_stack.launch.py) -->
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>apriltag_ros</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
@@ -23,7 +26,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
-  <!-- container_detector_node.py (2026-08-25) -->
+  <!-- container_detector_node.py -->
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
@@ -32,7 +35,7 @@
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
-  <!-- workstation_surface_node.py (2026-10-19) -->
+  <!-- workstation_surface_node.py -->
   <exec_depend>nav_msgs</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>python3-pytest</test_depend>

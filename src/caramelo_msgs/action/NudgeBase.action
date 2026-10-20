@@ -6,8 +6,10 @@ float32 timeout   # s; 0 => nudge_default_timeout do no'
 ---
 bool success
 float32 travelled # m com sinal, medido por odometria (0 se nao saiu do lugar)
-string reason     # "" no sucesso; abaixo_do_passo_minimo | acima_do_curso_maximo |
-                  # sem_odometria | sem_scan | muito_perto_da_mesa | obstaculo_lateral |
-                  # muro | timeout | cancelado | ocupado | curso_incompleto
+string reason     # "" no sucesso; pedido_invalido (dy/timeout NaN/inf) |
+                  # abaixo_do_passo_minimo | acima_do_curso_maximo | sem_odometria |
+                  # sem_scan | muito_perto_da_mesa | obstaculo_lateral | muro |
+                  # timeout | cancelado | ocupado | curso_incompleto |
+                  # sem_progresso (2026-10-19: a base nao respondeu ao comando)
 ---
 float32 travelled

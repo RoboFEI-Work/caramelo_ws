@@ -173,7 +173,7 @@ Testes: `colcon test --packages-select manip_task_execution manip_bringup --ctes
 1. **Bancada mock** já feita (19/10, 2 rodadas: sem parede e com `wall_sides: right`):
    `manip_stack.launch.py use_mock_hardware:=true use_camera:=false use_apriltag:=false
    use_audio:=false use_container_detector:=false reset_container_states:=false` + a foto
-   `missions/fotos_containers/realsense_pegar_obj.png` publicada como stream (640x480, fx=385) +
+   `docs/imagens/containers/realsense_pegar_obj.png` publicada como stream (640x480, fx=385) +
    `PlaceTag{tag_frame: tag_5, table_pose: Mesa15, ws: WS_1}`. Resultado: containers viraram
    obstáculo, 5 candidatos, alvo a 4,2 cm do objeto mais próximo e 17 cm da frente, IK a 0°,
    descida/subida vertical, memória gravada (`Place completed [slot=superficie ...]`). Com a

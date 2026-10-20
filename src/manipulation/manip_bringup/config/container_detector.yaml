@@ -28,7 +28,7 @@ container_detector:
     # o vermelho — esvaziar a pasta de tempos em tempos (~1 MB/s de place).
     # AUDITORIA 31/08 (vazamento): ligado, grava ~3,5 GB/h SEM limite e enche
     # o disco. DESLIGADO por default; religar so para diagnostico pontual:
-    #   save_debug_dir: /home/linux24-04/caramelo_ws/missions/fotos_containers/debug
+    #   save_debug_dir: /tmp/caramelo_debug/containers   # fora do repo (nunca dentro de caramelo_ws)
     save_debug_dir: ""
     save_debug_every_s: 1.0
 

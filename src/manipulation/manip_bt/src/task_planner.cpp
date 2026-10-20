@@ -1,4 +1,13 @@
-#include <ament_index_cpp/get_package_share_directory.hpp>
+// task_planner: traduz o YAML da competicao (@Work Commander, formatos antigo
+// e novo; BMT/BTT/ATT/AMT1) em uma lista de acoes goto/pick/place/amt1_sort
+// que o bt_yaml_executor consome.
+//
+// Uso: task_planner <competicao.yaml> <saida_actions.yaml> <tags_36h11.yaml>
+//                   <ws_table_mapping.yaml>
+// Quem chama: caramelo_navigation/scripts/run_mission.py (sempre com os 4
+// caminhos absolutos) e manip_bt/test/run_amt1_scenario.sh.
+// Saida: 0 ok, 1 falha de traducao, 2 argumentos errados.
+
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -10,7 +19,6 @@
 #include <random>
 #include <regex>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,8 +33,8 @@ struct ObjectInfo
   std::string color;   // canonica (RED, BLUE, ...) ou vazia
 };
 
-// Container da MESA (arena). 2026-08-25: nao tem mais tag — e' identificado
-// pela COR (container_detector). `pose_name` (ct<id>) foi removido.
+// Container da MESA (arena): nao tem tag, e' identificado pela COR
+// (container_detector).
 struct ContainerInfo
 {
   int id = -1;
@@ -47,13 +55,13 @@ struct TransferItem
   std::string tag_frame;
   std::string from_ws;
   std::string to_ws;
-  // 2026-08-25: cor do container da mesa onde soltar (RED|BLUE); vazia =
-  // mesa. Vem da constraint "inside" (formato antigo) ou da cor do proprio
+  // Cor do container da mesa onde soltar (RED|BLUE); vazia = mesa. Vem da
+  // constraint "inside" (formato antigo) ou da cor do proprio
   // objeto (formato novo: se houver container dessa cor visivel, o place usa).
   std::string container_color;
   bool needs_pick = false;
   bool needs_place = false;
-  // 2026-08-24 EMPILHAR: este objeto e' solto EM CIMA do objeto `stack_on_obj`
+  // Empilhar: este objeto e' solto EM CIMA do objeto `stack_on_obj`
   // (frame `stack_on_frame`), que precisa estar na mesa de `to_ws` antes.
   int stack_on_obj = -1;
   std::string stack_on_frame;
@@ -91,7 +99,7 @@ std::string toUpper(std::string value)
   return value;
 }
 
-// 2026-08-25 — cores. Aceita ingles/portugues, maiusculas/minusculas.
+// Cores: aceita ingles/portugues, maiusculas/minusculas.
 std::string canonicalColor(const std::string & raw)
 {
   const std::string t = toUpper(trim(raw));
@@ -150,8 +158,8 @@ bool colorHasContainer(const std::string & color)
   return color == "RED" || color == "BLUE";
 }
 
-/// 2026-08-25: YAML do @Work Commander traz schema_version/version. So
-/// avisamos — chaves desconhecidas sempre foram ignoradas.
+/// YAML do @Work Commander traz schema_version/version. So avisamos:
+/// chaves desconhecidas sempre foram ignoradas.
 void checkSchemaVersion(const YAML::Node & root)
 {
   const YAML::Node sv = root["schema_version"];
@@ -176,7 +184,7 @@ std::string toLower(std::string value)
   return value;
 }
 
-// ---- AMT1 (2026-08-28) ----------------------------------------------------
+// ---- AMT1 ------------------------------------------------------------------
 // Advanced Manipulation Task 1: os cubos com tag da mesa de precisao (PP_*)
 // comecam e terminam na MESMA estacao, so mudam de ORDEM (crescente de id, da
 // esquerda para a direita). O fluxo normal descartava esses objetos em
@@ -184,7 +192,7 @@ std::string toLower(std::string value)
 // qualquer outra task segue o fluxo antigo, intocado (que, quando parecer
 // AMT1, so AVISA — ver looksLikeAmt1 em main).
 //
-// Reconhecimento tolerante a escrita (achado 10, 2026-08-28):
+// Reconhecimento tolerante a escrita:
 //   task_id: prefixo AMT1 sem distinguir maiusculas, aceitando separadores
 //            entre AMT e 1 (AMT-1, AMT_1, "AMT 1"); o caractere apos o 1 NAO
 //            pode ser digito (AMT10 / AMT11 nao sao AMT1).
@@ -446,7 +454,7 @@ std::map<int, ContainerAssignment> parseContainerAssignments(
   return assignments;
 }
 
-/// 2026-08-24 — EMPILHAMENTO no YAML da competicao. Em finish_state.<WS>:
+/// Empilhamento no YAML da competicao. Em finish_state.<WS>:
 ///   stacks: [[04, 07], [1, 2, 3]]   # cada lista de BAIXO para CIMA
 /// ou, em constraints, frases "O7 on top of O4" / "O7 em cima de O4" /
 /// "O7 sobre O4" / "O7 stacked on O4". Devolve topo -> base. Valida que os
@@ -761,7 +769,7 @@ std::vector<int> shuffledBestCandidates(
   return best_indices;
 }
 
-// ---- pilhas (2026-08-24) --------------------------------------------------
+// ---- pilhas ----------------------------------------------------------------
 // A base de uma pilha esta "na mesa" se ja foi solta ou se nunca precisou de
 // acao (comeca e termina na mesma estacao, sem ser topo de outra pilha).
 bool baseOnTable(
@@ -893,9 +901,8 @@ void appendGotoIfNeeded(
   }
 
   const std::string table_pose = ws_it->second;
-  // BUG 2026-08-07: current_ws guardava a MESA (table_pose), nao a estacao.
-  // Com WS_1 e WS_2 ambas Mesa15, o goto WS_2 era pulado e o robo "colocava
-  // na WS_2" sem sair da WS_1. Comparar/registrar SEMPRE pela estacao (ws).
+  // Comparar/registrar SEMPRE pela estacao (ws), nunca pela mesa: WS_1 e
+  // WS_2 podem ser a mesma Mesa e o goto seria pulado indevidamente.
   if (state.current_ws == ws) {
     return;
   }
@@ -1012,9 +1019,8 @@ void appendPicksAtWs(
     pick["kind"] = "pick";
     pick["tag_frame"] = t.tag_frame;
     pick["ws"] = t.from_ws;
-    // 2026-08-12: o pick tambem precisa saber o tipo de mesa — a prateleira
-    // (MesaSh) exige uma sequencia de movimentos propria. Ate aqui so o place
-    // recebia table_pose, e o pick era cego ao tipo de estacao.
+    // O pick tambem precisa saber o tipo de mesa: a prateleira (MesaSh)
+    // exige uma sequencia de movimentos propria.
     const auto ws_it = ws_to_table_pose.find(t.from_ws);
     if (ws_it == ws_to_table_pose.end()) {
       throw std::runtime_error("Missing WS->Mesa mapping for source workspace: " + t.from_ws);
@@ -1079,7 +1085,7 @@ YAML::Node buildOutput(
   return output;
 }
 
-// ---- AMT1 (2026-08-28) ----------------------------------------------------
+// ---- AMT1 ------------------------------------------------------------------
 struct Amt1Station
 {
   std::string ws;                 // "PP_1"
@@ -1091,7 +1097,7 @@ bool isPpStation(const std::string & ws)
   return ws.rfind("PP", 0) == 0;
 }
 
-/// AMT1 disfarcada (achado 10): no fluxo antigo, TODOS os objetos nao-decoy
+/// AMT1 disfarcada: no fluxo antigo, TODOS os objetos nao-decoy
 /// do start_state comecam e terminam na MESMA estacao PP_* (e ha pelo menos
 /// um). Com 0 transferencias isso e a cara da AMT1 com task_id/name fora do
 /// padrao — main so avisa, nao muda o fluxo.
@@ -1116,7 +1122,7 @@ bool looksLikeAmt1(
 
 /// Estacao da AMT1: a PP_* do start_state com objetos (empate: a que tiver
 /// MAIS objetos). Se a PP com objetos existe mas NAO esta em
-/// active_service_areas -> erro claro (achado 9: nada de redirecionar em
+/// active_service_areas -> erro claro (nada de redirecionar em
 /// silencio para outra PP_* ativa). So sem NENHUMA PP_* com objetos no
 /// start_state cai no fallback: a 1a PP_* de active_service_areas (na ordem
 /// do yaml) com expected_tags = todos os objetos nao-decoy do bloco
@@ -1166,7 +1172,7 @@ Amt1Station resolveAmt1Station(
   }
 
   if (station.ws.empty() && !inactive_pp.empty()) {
-    // Achado 9: a PP com os cubos existe mas esta fora de
+    // A PP com os cubos existe mas esta fora de
     // active_service_areas. Erro AQUI, antes do fallback — senao a rotina
     // rodaria em silencio numa PP_* ativa que nao tem os cubos.
     std::string hint;
@@ -1265,35 +1271,6 @@ void writeOutputYaml(const YAML::Node & output, const std::string & output_yaml_
   std::cout << "Wrote translation to " << output_yaml_path << std::endl;
 }
 
-std::string resolveApriltagPath(int argc, char ** argv)
-{
-  if (argc >= 4) {
-    return argv[3];
-  }
-
-  try {
-    return ament_index_cpp::get_package_share_directory("apriltag_ros") + "/cfg/tags_36h11.yaml";
-  } catch (const std::exception &) {
-    throw std::runtime_error(
-            "Could not resolve default apriltag config. Provide third argument: <apriltag_yaml>");
-  }
-}
-
-std::string resolveWsTableMapPath(int argc, char ** argv)
-{
-  if (argc >= 5) {
-    return argv[4];
-  }
-
-  try {
-    return ament_index_cpp::get_package_share_directory("manip_bt") +
-           "/behavior_tree_manip/ws_table_mapping.yaml";
-  } catch (const std::exception &) {
-    throw std::runtime_error(
-            "Could not resolve default WS map config. Provide fourth argument: <ws_table_map_yaml>");
-  }
-}
-
 std::map<std::string, std::string> parseWsToTablePose(const std::string & ws_map_yaml_path)
 {
   const YAML::Node root = YAML::LoadFile(ws_map_yaml_path);
@@ -1319,74 +1296,43 @@ std::map<std::string, std::string> parseWsToTablePose(const std::string & ws_map
   return result;
 }
 
-std::string resolvePathWithFallbacks(
-  const std::string & input_path,
-  const std::vector<std::string> & fallback_dirs)
+// Caminho de entrada obrigatorio: sem fallback relativo nem por share (os
+// chamadores passam caminhos absolutos).
+std::string requireExistingFile(const std::string & path, const char * what)
 {
-  namespace fs = std::filesystem;
-
-  if (fs::exists(input_path)) {
-    return input_path;
+  if (!std::filesystem::exists(path)) {
+    throw std::runtime_error(std::string("arquivo de ") + what + " nao existe: " + path);
   }
+  return path;
+}
 
-  for (const auto & dir : fallback_dirs) {
-    fs::path candidate = fs::path(dir) / input_path;
-    if (fs::exists(candidate)) {
-      return candidate.string();
-    }
-  }
-
-  std::ostringstream oss;
-  oss << "bad file: " << input_path;
-  throw std::runtime_error(oss.str());
+void printUsage()
+{
+  std::cerr
+    << "Uso: task_planner <competicao.yaml> <saida_actions.yaml> <tags_36h11.yaml>"
+    << " <ws_table_mapping.yaml>\n"
+    << "  competicao.yaml      YAML da task (missions/task_*.yaml)\n"
+    << "  saida_actions.yaml   lista de acoes gerada para o bt_yaml_executor\n"
+    << "  tags_36h11.yaml      ids das AprilTags (manip_bringup/config/tags_36h11.yaml)\n"
+    << "  ws_table_mapping.yaml  WS -> pose de mesa, da pasta do mapa\n"
+    << "Os quatro argumentos sao obrigatorios." << std::endl;
 }
 
 }  // namespace
 
 int main(int argc, char ** argv)
 {
-  if (argc < 3) {
-    std::cerr
-      << "Usage: task_planner <competition_yaml> <output_yaml> [apriltag_yaml] [ws_table_map_yaml]"
-      << std::endl;
+  if (argc != 5) {
+    printUsage();
     return 2;
   }
 
-  const std::string competition_yaml_arg = argv[1];
   const std::string output_yaml_path = argv[2];
 
   try {
-    std::vector<std::string> competition_fallback_dirs;
-    std::vector<std::string> apriltag_fallback_dirs;
-    std::vector<std::string> ws_map_fallback_dirs;
-
-    try {
-      competition_fallback_dirs.push_back(
-        ament_index_cpp::get_package_share_directory("manip_bt") + "/behavior_tree_manip");
-    } catch (const std::exception &) {
-      // Optional fallback only.
-    }
-    competition_fallback_dirs.push_back("src/manip_bt/behavior_tree_manip");
-    ws_map_fallback_dirs = competition_fallback_dirs;
-
-    try {
-      apriltag_fallback_dirs.push_back(
-        ament_index_cpp::get_package_share_directory("apriltag_ros") + "/cfg");
-    } catch (const std::exception &) {
-      // Optional fallback only.
-    }
-    apriltag_fallback_dirs.push_back("src/apriltag_ros/cfg");
-
-    const std::string competition_yaml_path =
-      resolvePathWithFallbacks(competition_yaml_arg, competition_fallback_dirs);
-
-    const std::string apriltag_yaml_arg = resolveApriltagPath(argc, argv);
-    const std::string apriltag_yaml_path =
-      resolvePathWithFallbacks(apriltag_yaml_arg, apriltag_fallback_dirs);
-
-    const std::string ws_map_yaml_arg = resolveWsTableMapPath(argc, argv);
-    const std::string ws_map_yaml_path =
-      resolvePathWithFallbacks(ws_map_yaml_arg, ws_map_fallback_dirs);
+    const std::string competition_yaml_path = requireExistingFile(argv[1], "competicao");
+    const std::string apriltag_yaml_path = requireExistingFile(argv[3], "tags");
+    const std::string ws_map_yaml_path = requireExistingFile(argv[4], "ws_table_mapping");
     const auto ws_to_table_pose = parseWsToTablePose(ws_map_yaml_path);
 
     const YAML::Node competition_root = YAML::LoadFile(competition_yaml_path);
@@ -1400,7 +1346,7 @@ int main(int argc, char ** argv)
     const auto finish_index = buildStateIndex(competition_root["finish_state"], active_areas, "finish_state");
     const auto id_to_frame = parseApriltagIdToFrame(apriltag_yaml_path);
 
-    // AMT1 (2026-08-28): ordenar as tags da mesa de precisao. Sai aqui — o
+    // AMT1: ordenar as tags da mesa de precisao. Sai aqui: o
     // fluxo de transferencias abaixo descartaria os objetos (mesma estacao
     // no inicio e no fim) e geraria 0 acoes.
     if (isAmt1Task(competition_root)) {
@@ -1427,7 +1373,7 @@ int main(int argc, char ** argv)
         !containers.empty());
     const auto output = buildOutput(competition_root, transfers, apriltag_yaml_path, ws_to_table_pose);
 
-    // Achado 10: AMT1 disfarcada — 0 transferencias e todos os objetos
+    // AMT1 disfarcada: 0 transferencias e todos os objetos
     // comecando e terminando na mesma PP_*. So avisa (o fluxo nao muda):
     // o operador confere o task_id/name do yaml antes de rodar.
     if (transfers.empty() && looksLikeAmt1(start_index, finish_index, ignored_object_ids)) {

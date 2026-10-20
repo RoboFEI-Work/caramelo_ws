@@ -3,7 +3,7 @@
 // Modulo Mapas: lista os mapas de caramelo_mapping/maps com miniatura (Qt le
 // PGM nativamente), usa um mapa em runtime (/map_server/load_map), renomeia,
 // duplica, exclui (com confirmacao -> vai para a lixeira, nunca apaga direto)
-// e salva o mapa atual do SLAM (/map_saver/save_map).
+// e salva o mapa atual do SLAM (/map_saver_server/save_map).
 
 #include <QString>
 #include <QWidget>

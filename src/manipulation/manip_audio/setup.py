@@ -24,8 +24,8 @@ setup(
     install_requires=['setuptools'],
     tests_require=['pytest'],
     zip_safe=True,
-    maintainer='RoboFEI Work',
-    maintainer_email='robofei-work@todo.todo',
+    maintainer='Equipe RoboFEI @Work',
+    maintainer_email='robofei.atwork@gmail.com',
     description='Sintese de voz desacoplada para o manipulador.',
     license='TODO',
     entry_points={

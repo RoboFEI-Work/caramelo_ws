@@ -22,6 +22,7 @@ install(FILES
 install(PROGRAMS
   scripts/init_keepout_mask.py
   DESTINATION lib/${PROJECT_NAME}
+  RENAME init_keepout_mask
 )
 
 install(PROGRAMS
@@ -46,12 +47,6 @@ install(PROGRAMS
   scripts/dock_align_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME dock_align_node
-)
-
-install(PROGRAMS
-  scripts/mission_runner.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME mission_runner
 )
 
 install(PROGRAMS

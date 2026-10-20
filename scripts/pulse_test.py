@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Mede o deslocamento real de um pulso no piso do ESC, do jeito que o
+"""Ferramenta de calibracao do coast do ESC - ATENCAO: MOVE O ROBO (publica
+direto em /mecanum_controller/reference): rodar com as rodas suspensas ou em
+area livre, com alguem no botao de emergencia.
+
+Mede o deslocamento real de um pulso no piso do ESC, do jeito que o
 dock_align_node comanda: N ciclos a 20 Hz no piso, seguidos de ZEROS
 publicados continuamente (o driver da Pi NAO entra no watchdog).
 
 Uso: python3 scripts/pulse_test.py x 4      # eixo x|y|z, ciclos
 Mede com fita/regua o quanto o robo andou (ou girou) e anote. Rode 4, 5, 6 e
-tambem 'cont' (contínuo de 1 s) para medir o coast do corte:
+tambem 'cont' (continuo de 1 s) para medir o coast do corte:
       python3 scripts/pulse_test.py x cont
+Os valores medidos alimentam esc_coast_dist/yaw_coast_est/center_coast_est em
+caramelo_navigation/launch/docking_server.launch.py.
 """
 import sys
 import time
@@ -50,7 +56,7 @@ def main():
     for _ in range(40):
         send(0.0)
         time.sleep(0.05)
-    print("fim — meca o deslocamento")
+    print("fim - meca o deslocamento")
     rclpy.shutdown()
 
 

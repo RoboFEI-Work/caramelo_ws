@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Salva a pose atual do robo (TF map->base_footprint) como final_robot_pose de
+# uma service area em service_areas.yaml e sincroniza o docking.yaml.
+# Quem usa: operador na calibracao do mapa (a GUI faz o mesmo pela action save_pose).
+# Como roda: ros2 run caramelo_navigation save_service_area_pose --map <mapa> --name WS1 --type workstation
 import argparse
 import sys
 

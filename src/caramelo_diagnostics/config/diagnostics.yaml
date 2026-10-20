@@ -1,4 +1,4 @@
-caramelo_health_monitor:
+health_monitor:
   ros__parameters:
     publish_period: 1.0
     scan_topic: "/scan"

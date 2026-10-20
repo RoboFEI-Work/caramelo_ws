@@ -2,6 +2,7 @@
 
 #include <QCheckBox>
 #include <QDir>
+#include <QFile>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -45,9 +46,20 @@ MapeamentoModule::MapeamentoModule(RosBridge * bridge, QWidget * parent)
       if (runner_->isRunning()) {
         runner_->stop();
       } else {
+        const QString map_name = nome_->text().trimmed();
         QStringList args;
-        // slam.launch.py nao declara map_name (era ignorado em silencio);
-        // o nome digitado vale apenas para o salvamento do mapa.
+        // map_name e usado so pelo service_area_markers_node (markers das
+        // service areas no RViz embutido). Mapa ainda sem map.yaml derruba
+        // esse node na partida (resolve_map_folder lanca FileNotFoundError),
+        // entao os markers ficam desligados ate o mapa existir; o SLAM em si
+        // nao depende do nome (Salvar mapa usa nome_ direto).
+        const bool mapa_existe = !map_name.isEmpty() &&
+          QFile::exists(MapasModule::mapsDir() + "/" + map_name + "/map.yaml");
+        if (mapa_existe) {
+          args << QString("map_name:=%1").arg(map_name);
+        } else {
+          args << "use_service_area_markers:=false";
+        }
         args << "use_rviz:=false"
              << QString("use_sim_time:=%1")
           .arg(sim_time->isChecked() ? "true" : "false");

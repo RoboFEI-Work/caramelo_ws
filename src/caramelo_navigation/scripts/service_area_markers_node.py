@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Publica um MarkerArray (pose final, approach, mesa, area livre, nomes) das
+# service areas de maps/<map_name>/service_areas.yaml, relendo o arquivo
+# quando ele muda. Quem usa: navigation.launch.py e slam.launch.py (RViz/GUI).
+# Como roda: ros2 run caramelo_navigation service_area_markers_node --ros-args -p map_name:=<mapa>
 import math
 from pathlib import Path
 
@@ -39,15 +43,30 @@ class ServiceAreaMarkers(Node):
         self.publisher = self.create_publisher(MarkerArray, topic, 10)
         self._service_data = None
         self._mtime = None
+        self._missing_warned = False
         self._next_id = 1
         self.timer = self.create_timer(max(period, 0.2), self._on_timer)
         self.get_logger().info(f"Publicando Service Areas de {self.service_path} em {topic}")
 
     def _load_if_changed(self):
-        mtime = Path(self.service_path).stat().st_mtime
+        """Recarrega o yaml se mudou. Devolve False (e avisa UMA vez) se o
+        arquivo nao existe — mapa recem-salvo ainda sem service areas."""
+        path = Path(self.service_path)
+        if not path.exists():
+            if not self._missing_warned:
+                self._missing_warned = True
+                self.get_logger().warn(
+                    f"sem service_areas.yaml em {self.map_folder}; markers desligados "
+                    "ate o arquivo existir (init_service_areas / GUI Service Areas)")
+            self._service_data = None
+            self._mtime = None
+            return False
+        self._missing_warned = False
+        mtime = path.stat().st_mtime
         if self._service_data is None or self._mtime != mtime:
             self._service_data = load_service_areas(self.map_folder)
             self._mtime = mtime
+        return True
 
     def _new_marker(self, ns: str, marker_type: int, frame_id: str) -> Marker:
         marker = Marker()
@@ -208,12 +227,15 @@ class ServiceAreaMarkers(Node):
 
     def _on_timer(self):
         try:
-            self._load_if_changed()
+            loaded = self._load_if_changed()
             markers = MarkerArray()
             delete_all = Marker()
             delete_all.action = Marker.DELETEALL
             markers.markers.append(delete_all)
             self._next_id = 1
+            if not loaded:
+                self.publisher.publish(markers)  # so' o DELETEALL: nada a mostrar
+                return
             for area_id, entry in self._service_data["service_areas"].items():
                 area = normalized_service_area(area_id, entry, self._service_data.get("frame_id", "map"))
                 self._station_marker(area, markers)

@@ -4,8 +4,8 @@ Passo a passo para colocar um segundo PC operando o robô. Pressupõe **Ubuntu 2
 ROS 2 Jazzy desktop já instalado** e cobre o que falta além disso.
 
 A informação aqui estava espalhada entre `caramelo_hardware_ws/docs/relogio_chrony.md`,
-`docs/guia_missoes.md`, `docs/AUDITORIA.md` e a memória do projeto — este documento
-consolida e resolve os conflitos entre eles.
+`docs/guia_missoes.md`, `docs/historico/AUDITORIA.md` (snapshot de 2026-07, histórico) e a
+memória do projeto — este documento consolida e resolve os conflitos entre eles.
 
 ---
 
@@ -263,7 +263,7 @@ antes, e o `makestep 1 3` padrão sobrescreveria.
 
 ```bash
 ssh-keygen -t ed25519          # so se ainda nao houver chave
-sshpass -p raspberrypi ssh-copy-id -o StrictHostKeyChecking=accept-new raspberrypi@raspberrypi.local
+ssh-copy-id -o StrictHostKeyChecking=accept-new raspberrypi@raspberrypi.local   # pede a senha da Pi (padrao da imagem)
 ssh raspberrypi@raspberrypi.local 'echo ok'    # nao pode pedir senha
 ```
 
@@ -279,13 +279,35 @@ Host raspberrypi.local
   ControlPersist 10m
 ```
 
+### Raspberry nova (ou reinstalada): restaurar o SSH sem senha
+
+Troca de Pi = host key nova + `authorized_keys` vazio. No PC:
+
+```bash
+# 1. Limpar a chave da Pi ANTIGA do known_hosts (senão o ssh recusa conectar):
+ssh-keygen -R raspberrypi.local
+
+# 2. Copiar a chave publica do PC para a Pi nova:
+ssh-copy-id -o StrictHostKeyChecking=accept-new raspberrypi@raspberrypi.local   # pede a senha da Pi (padrao da imagem)
+
+# 3. Testar (nao pode pedir senha):
+ssh raspberrypi@raspberrypi.local 'echo ok'
+```
+
+Se o PC ainda não tiver chave (`ls ~/.ssh/id_*` vazio): `ssh-keygen -t ed25519`
+(enter em tudo) antes do passo 2. Regras que continuam valendo: 1 conexão SSH
+por vez (ControlMaster acima); NTP da Pi (sem RTC, deriva rápido — conferir
+`timedatectl` sempre, Passo 10).
+
 ---
 
-## Passo 12 — Copiar o `limpar_stack.sh`
+## Passo 12 — Scripts de operação (`scripts/`)
 
-O script `caramelo_ws/scripts/limpar_stack.sh` está **fora do git** — não vem no clone.
-Copie-o à mão do notebook atual e dê `chmod +x`. Ele mata processos ROS órfãos e evita a
-classe de falha mais cara do projeto.
+`scripts/limpar_stack.sh` e `scripts/pulse_test.py` **já vêm no clone** (rastreados no
+git, com o bit de execução). Só confira `ls -l scripts/` e, se o bit se perdeu em alguma
+cópia, `chmod +x scripts/limpar_stack.sh scripts/pulse_test.py`. O `limpar_stack.sh` mata
+processos ROS órfãos e evita a classe de falha mais cara do projeto; o `pulse_test.py`
+**move o robô** (calibração do ESC — ver `docs/docking_alinhamento_holonomico.md`).
 
 ---
 
@@ -326,7 +348,8 @@ ou tire-o da rede do robô antes de continuar.
 6. **Câmera** — a D455 precisa de porta **USB 3**: `lsusb -t` tem que mostrar `5000M`. Em
    USB 2 ela só funciona a 640x480x5 e derruba frames.
 7. **Missão** —
-   `ros2 run caramelo_navigation run_mission --map-name arena3_520 --task arena_test.yaml`.
+   `cd ~/caramelo_ws && ros2 run caramelo_navigation run_mission --map-name arena3_520 --task missions/arena_test.yaml`
+   (`--task` é relativo ao diretório atual; as tarefas vivem em `missions/` na raiz).
 
 ---
 
@@ -337,10 +360,17 @@ Intel (2.56.5, lista apontando para `jammy`, hoje desabilitada) e o
 `ros-jazzy-realsense2-camera` (4.57.7). No notebook novo, fique **só com o pacote ROS** —
 as duas versões juntas são fonte de conflito.
 
-**Dois launches quebram sem o `manip_ws`.** `manip_bringup.launch.xml` e
-`manip_pc_test.launch.xml` apontam para `$(env HOME)/manip_ws/src/apriltag_ros/cfg/tags_36h11.yaml`.
-O arquivo correto já existe em `manip_bringup/config/tags_36h11.yaml` — que é o que o
-`manip_stack.launch.py` usa. Corrija os dois ou simplesmente não os use.
+**Launches XML antigos da manipulação.** Os `manip_*.launch.xml` da bancada standalone
+(apontavam para `~/manip_ws`) foram removidos em 2026-10. O único launch de manipulação é
+`manip_bringup/launch/manip_stack.launch.py` (incluído pelo `robot_manipulation.launch.py`),
+que usa `manip_bringup/config/tags_36h11.yaml`. Se um clone antigo ainda tiver os XML,
+não os use.
+
+**Cache do IntelliSense (`.vscode/browse.vc.db*`).** O VS Code grava o índice C/C++ dentro
+do workspace (ignorado pelo git) e ele passa de 1 GB. Limpeza periódica, **só com o VS Code
+fechado**: `rm -f .vscode/browse.vc.db* .vscode/browse.vc.2.db*` (é regenerado). Confira
+também que `.vscode/c_cpp_properties.json` aponta para `${workspaceFolder}/install`, não
+para um `~/manip_ws` antigo.
 
 **RViz não abre de terminal do VS Code.** O snap do VS Code injeta uma `libpthread`
 incompatível e o RViz morre com `symbol lookup error`. Use sempre um terminal normal do

@@ -1,9 +1,10 @@
 #include "manip_bt/nudge_base_bt.hpp"
 
+#include "manip_bt/bt_node_name.hpp"
+
 #include <rclcpp_action/exceptions.hpp>
 
 #include <cmath>
-#include <cstdint>
 
 using namespace std::chrono_literals;
 
@@ -14,7 +15,7 @@ namespace
 {
 rclcpp::Logger logger()
 {
-  return rclcpp::get_logger("NudgeBaseBT");
+  return rclcpp::get_logger("nudge_base_bt");
 }
 // Abaixo disso nao vale a pena pedir ao servidor (piso do ESC ~0,10 m e o
 // ReachQueue ja aplica min_shift_m); tambem cobre o "0 = nada a fazer".
@@ -26,10 +27,7 @@ constexpr double kDeadlineSlackSec = 10.0;
 NudgeBaseBT::NudgeBaseBT(const std::string & name, const BT::NodeConfiguration & config)
 : BT::StatefulActionNode(name, config)
 {
-  const auto node_name =
-    std::string("bt_nudge_base_client_") +
-    std::to_string(static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(this)));
-  node_ = std::make_shared<rclcpp::Node>(node_name);
+  node_ = std::make_shared<rclcpp::Node>(leafNodeName("bt_nudge_base_", name));
   // Nome RELATIVO de proposito — igual ao align_to_dock do dock_align_node.
   session_.client = rclcpp_action::create_client<NudgeBase>(node_, "nudge_base");
 }

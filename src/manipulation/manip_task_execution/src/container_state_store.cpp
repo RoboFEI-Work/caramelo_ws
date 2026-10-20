@@ -1,3 +1,4 @@
+// Implementacao do ContainerStateStore; contrato em container_state_store.hpp.
 #include "manip_task_execution/container_state_store.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -45,7 +46,7 @@ bool writeYamlAtomically(
     std::ofstream ofs(tmp_path, std::ios::trunc);
     if (!ofs.is_open()) {
       if (error_msg) {
-        *error_msg = "failed to open temporary file for writing: " + tmp_path.string();
+        *error_msg = "falha ao abrir o arquivo temporario para escrita: " + tmp_path.string();
       }
       return false;
     }
@@ -53,7 +54,7 @@ bool writeYamlAtomically(
     ofs.flush();
     if (!ofs) {
       if (error_msg) {
-        *error_msg = "failed to write temporary yaml: " + tmp_path.string();
+        *error_msg = "falha ao escrever o yaml temporario: " + tmp_path.string();
       }
       return false;
     }
@@ -65,7 +66,7 @@ bool writeYamlAtomically(
   // velho, porque parece valido.
   if (!fsyncPath(tmp_path.string(), false)) {
     if (error_msg) {
-      *error_msg = "failed to fsync temporary yaml: " + tmp_path.string();
+      *error_msg = "falha no fsync do yaml temporario: " + tmp_path.string();
     }
     return false;
   }
@@ -77,7 +78,7 @@ bool writeYamlAtomically(
   std::filesystem::rename(tmp_path, output_path, ec);
   if (ec) {
     if (error_msg) {
-      *error_msg = "failed to replace yaml file: " + ec.message();
+      *error_msg = "falha ao substituir o arquivo yaml: " + ec.message();
     }
     return false;
   }
@@ -174,14 +175,14 @@ bool ContainerStateStore::findContainerByTag(
 {
   if (tag_frame.empty()) {
     if (error_msg) {
-      *error_msg = "tag_frame is empty";
+      *error_msg = "tag_frame vazio";
     }
     return false;
   }
 
   if (container_name == nullptr) {
     if (error_msg) {
-      *error_msg = "container_name output pointer is null";
+      *error_msg = "ponteiro de saida container_name nulo";
     }
     return false;
   }
@@ -189,7 +190,7 @@ bool ContainerStateStore::findContainerByTag(
   try {
     if (!std::filesystem::exists(file_path_)) {
       if (error_msg) {
-        *error_msg = "container state file not found: " + file_path_;
+        *error_msg = "arquivo de estado dos containers nao encontrado: " + file_path_;
       }
       return false;
     }
@@ -198,7 +199,7 @@ bool ContainerStateStore::findContainerByTag(
     YAML::Node containers = root["containers"];
     if (!containers || !containers.IsMap()) {
       if (error_msg) {
-        *error_msg = "missing 'containers' map in yaml";
+        *error_msg = "yaml sem o mapa 'containers'";
       }
       return false;
     }
@@ -220,7 +221,7 @@ bool ContainerStateStore::findContainerByTag(
     }
 
     if (error_msg) {
-      *error_msg = "tag not found in occupied containers: " + tag_frame;
+      *error_msg = "tag nao encontrada nos containers ocupados: " + tag_frame;
     }
     return false;
   } catch (const std::exception & ex) {
@@ -237,7 +238,7 @@ bool ContainerStateStore::findFirstEmptyContainer(
 {
   if (container_name == nullptr) {
     if (error_msg) {
-      *error_msg = "container_name output pointer is null";
+      *error_msg = "ponteiro de saida container_name nulo";
     }
     return false;
   }
@@ -245,7 +246,7 @@ bool ContainerStateStore::findFirstEmptyContainer(
   try {
     if (!std::filesystem::exists(file_path_)) {
       if (error_msg) {
-        *error_msg = "container state file not found: " + file_path_;
+        *error_msg = "arquivo de estado dos containers nao encontrado: " + file_path_;
       }
       return false;
     }
@@ -254,7 +255,7 @@ bool ContainerStateStore::findFirstEmptyContainer(
     YAML::Node containers = root["containers"];
     if (!containers || !containers.IsMap()) {
       if (error_msg) {
-        *error_msg = "missing 'containers' map in yaml";
+        *error_msg = "yaml sem o mapa 'containers'";
       }
       return false;
     }
@@ -274,7 +275,7 @@ bool ContainerStateStore::findFirstEmptyContainer(
     }
 
     if (error_msg) {
-      *error_msg = "no empty containers available";
+      *error_msg = "nenhum container vazio disponivel";
     }
     return false;
   } catch (const std::exception & ex) {
@@ -293,7 +294,7 @@ bool ContainerStateStore::updateContainer(
 {
   if (container_name.empty()) {
     if (error_msg) {
-      *error_msg = "container_name is empty";
+      *error_msg = "container_name vazio";
     }
     return false;
   }
@@ -336,7 +337,7 @@ bool ContainerStateStore::addTableSlotUsed(
 {
   if (ws.empty()) {
     if (error_msg) {
-      *error_msg = "ws is empty";
+      *error_msg = "ws vazio";
     }
     return false;
   }
@@ -406,7 +407,7 @@ bool ContainerStateStore::getTableSlotsUsed(
 {
   if (!records) {
     if (error_msg) {
-      *error_msg = "records is null";
+      *error_msg = "ponteiro records nulo";
     }
     return false;
   }
@@ -465,7 +466,7 @@ bool ContainerStateStore::removeTableSlotsForTag(
   }
   if (tag_frame.empty()) {
     if (error_msg) {
-      *error_msg = "tag_frame is empty";
+      *error_msg = "tag_frame vazio";
     }
     return false;
   }

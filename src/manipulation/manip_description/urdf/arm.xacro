@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot name="manip" xmlns:xacro="http://ros.org/wiki/xacro">
 
-  <!-- ================= REALSENSE INCLUDE ================= -->
+  <!-- ================= INCLUDE DA REALSENSE ================= -->
 
   <xacro:arg name="use_realsense" default="true"/>
 
@@ -198,9 +198,7 @@
         name="camera"
         use_nominal_extrinsics="true">
 
-        <!--
-        Ajuste da pose da câmera em relação ao flange
-        -->
+        <!-- Ajuste da pose da camera em relacao ao flange -->
 
         <origin xyz="0 -0.055 0.0125"
                 rpy="0 -1.57079632679 -1.57079632679"/>
@@ -208,7 +206,7 @@
     </xacro:sensor_d455>
   </xacro:if>
 
-  <!-- ================= ARM JOINTS ================= -->
+  <!-- ================= JUNTAS DO BRACO ================= -->
 
   <joint name="manip_joint1" type="revolute">
     <parent link="base_link"/>

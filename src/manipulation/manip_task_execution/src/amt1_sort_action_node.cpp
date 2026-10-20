@@ -129,7 +129,7 @@ public:
             std::make_unique<manip_task_execution::ManipulatorExecutionLock>(lock_file);
         if (!execution_lock_->valid()) {
             throw std::runtime_error(
-                "Failed to open manipulator lock file '" + lock_file + "': " +
+                "Falha ao abrir o arquivo de lock do manipulador '" + lock_file + "': " +
                 execution_lock_->error());
         }
 

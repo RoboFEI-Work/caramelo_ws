@@ -116,6 +116,14 @@ def generate_launch_description():
             description="Detector processa sempre (calibracao), nao so durante o place",
         ),
         DeclareLaunchArgument(
+            "use_commander",
+            default_value="true",
+            description=(
+                "Sobe o commander (manip_commander): ferramenta de bancada para mover "
+                "o braco por topico. false na competicao."
+            ),
+        ),
+        DeclareLaunchArgument(
             "use_gui",
             default_value="false",
             description="GUI fora do escopo; abrir manualmente (sem efeito por ora)",
@@ -217,6 +225,7 @@ def generate_launch_description():
                 "use_container_detector": LaunchConfiguration("use_container_detector"),
                 "container_detector_always_on": LaunchConfiguration("container_detector_always_on"),
                 "use_rviz_manip": use_rviz_manip,
+                "use_commander": LaunchConfiguration("use_commander"),
                 "camera_profile": LaunchConfiguration("camera_profile"),
                 "verify_grasp_effort": LaunchConfiguration("verify_grasp_effort"),
                 "max_pose_error_m": LaunchConfiguration("max_pose_error_m"),

@@ -1,4 +1,9 @@
-#BTT1
+# PT - task da demonstracao Portas Abertas: 5 cubos, shelf + 4 mesas, 1 container.
+# Montagem fisica: WS_1: cubo 01; WS_2: cubo 21 (vermelho); WS_3: cubo 03; WS_4: cubo 04
+#   + container VERMELHO (recebe o 21); SH_1: cubo 05. Destinos: 03 e 05 -> WS_1;
+#   21 -> container vermelho na WS_4; 04 -> WS_3; 01 -> SH_1.
+# Uso: ros2 run caramelo_navigation run_mission --map-name arena_portas_abertas --task missions/task_portas_abertas.yaml
+
 task_id: PT
 name: Task dos Portas Abertas
 duration_min: 8

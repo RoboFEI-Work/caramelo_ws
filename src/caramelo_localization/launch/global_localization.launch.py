@@ -1,3 +1,9 @@
+# Localizacao global: map_server + AMCL (config/amcl.yaml) com o mapa de
+# caramelo_mapping/maps/<map_name> e, com use_keepout:=true, os servidores do
+# Keepout Filter (mascara keepout_mask.yaml do mapa). Publica map->odom; NAO
+# rodar junto com o SLAM — o launch avisa (RK-02).
+# Quem usa: incluido por caramelo_navigation/navigation.launch.py.
+# Como roda: ros2 launch caramelo_localization global_localization.launch.py map_name:=<mapa>
 import os
 import subprocess
 from launch import LaunchDescription
@@ -54,7 +60,7 @@ def generate_launch_description():
             "config",
             "amcl.yaml"
         ),
-        description="Full path to amcl yaml file to load"
+        description="Caminho completo do yaml do AMCL"
     )
 
     # Keepout Filter (RK-04): paredes virtuais invisiveis ao LiDAR (fita zebrada).

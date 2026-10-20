@@ -6,10 +6,11 @@
     <ros2_control name="Arm" type="system">
         <hardware>
             <xacro:if value="$(arg use_mock_components)">
-                <!-- By default, set up controllers for simulation. This won't work on real hardware -->
+                <!-- Mock de simulacao (use_mock_components=true, default); nao funciona no hardware real -->
                 <plugin>mock_components/GenericSystem</plugin>
             </xacro:if>
             <xacro:unless value="$(arg use_mock_components)">
+                <!-- Plugin real do braco (bancada standalone); o robo usa caramelo_hardware -->
                 <plugin>arm_hardware/ArmHardwareInterface</plugin>
                 <param name="manip_joint1_motor_id">1</param>
                 <param name="manip_joint2_motor_id">2</param>
@@ -19,7 +20,7 @@
                 <param name="manip_joint6_motor_id">6</param>
                 <param name="manip_joint7_motor_id">7</param>
                 <param name="dynamixel_port">/dev/ttyUSB0</param>
-                <!-- Ajuste por calibração para maior precisão de torque. -->
+                <!-- Ajuste por calibracao para maior precisao de torque. -->
                 <param name="torque_constant_nm_per_amp">2.4</param>
             </xacro:unless>
         </hardware>

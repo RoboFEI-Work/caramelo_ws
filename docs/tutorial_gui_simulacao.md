@@ -3,6 +3,14 @@
 Fluxo completo usando a **GUI** com o robô **simulado** (`caramelo_simulation_ws`).
 Use terminais normais (fora do VSCode, que contamina o ambiente com libs do snap).
 
+> **Pré-requisito:** este tutorial exige o workspace de simulação
+> `~/caramelo_simulation_ws` (repositório separado, com o pacote
+> `caramelo_simulation` e o Gazebo). Ele **não está presente neste PC** e não
+> faz parte do `caramelo_ws`. Sem ele, os passos 3 a 7 valem igual com o robô
+> real (Raspberry ligada, `docs/guia_missoes.md` §1) — só não marque o
+> "Relogio da simulacao" e **não** ligue o Nav2 pela GUI se o
+> `robot_manipulation.launch.py` já estiver no ar.
+
 ---
 
 ## 1. Ligar o robô simulado (Terminal 1)
@@ -92,12 +100,11 @@ arraste a esfera azul pelo mapa (ferramenta *Interagir*) → **Salvar** →
 **Ir ate o selecionado** ou **Seguir todos (em ordem)**.
 
 **Docking:** sidebar → **Docking**: Dock=`WS1`, Mapa=`deposito` → **Dockar**
-(o robô navega até a pose de aproximação e faz o approach). Para o
-**Alinhamento fino (holonômico)**, rode antes num terminal:
-```bash
-source ~/caramelo_ws/install/setup.bash
-ros2 run caramelo_navigation dock_align_node --ros-args -p use_sim_time:=true
-```
+(o robô navega até a pose de aproximação e faz o approach). O **alinhamento
+fino holonômico** (`dock_align_node`, action `align_to_dock`) já sobe junto do
+`docking_server.launch.py` quando a navegação é ligada "Com docking server" —
+não rode nada à mão (um segundo `dock_align_node` no ar rouba os goals).
+Detalhes: [docking_alinhamento_holonomico.md](docking_alinhamento_holonomico.md).
 Depois **Undock** para sair da estação.
 
 ---

@@ -3,8 +3,8 @@
 <package format="3">
   <name>manip_hardware</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="ed@todo.todo">ed</maintainer>
+  <description>Plugin ros2_control do braco Dynamixel para a bancada standalone (copia do caramelo_hardware da Pi; o PC usa braco mock).</description>
+  <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

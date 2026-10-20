@@ -71,7 +71,7 @@ public:
 
   // --- Mapas ---
   void loadMap(const QString & yaml_path);              // /map_server/load_map
-  void saveMap(const QString & dir, const QString & name);  // /map_saver/save_map
+  void saveMap(const QString & dir, const QString & name);  // /map_saver_server/save_map
 
   // --- Service Areas (API do service_area_manager_node) ---
   void listServiceAreas(const QString & map_name);

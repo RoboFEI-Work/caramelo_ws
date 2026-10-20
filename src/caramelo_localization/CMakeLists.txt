@@ -6,17 +6,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_python REQUIRED)
-find_package(rclpy REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
-find_package(tf2_ros REQUIRED)
-
-ament_python_install_package(${PROJECT_NAME})
-
-install(PROGRAMS
-  DESTINATION lib/${PROJECT_NAME}
-)
 
 install(
   DIRECTORY config launch rviz

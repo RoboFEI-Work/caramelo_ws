@@ -1,20 +1,17 @@
-# AMT1 - Advanced Manipulation Task 1 (2026-08-28): os 6 cubos com AprilTag da
-# mesa de precision placement (PP_1 -> Mesa10, dock PP1) estao em ordem
-# aleatoria; o robo deve deixa-los em ordem CRESCENTE de id, da esquerda para
-# a direita, usando os containers de bordo como buffer.
+# AMT1 - Advanced Manipulation Task 1: ordenar os 6 cubos da mesa de precision placement.
+# Montagem fisica: PP_1 (pose Mesa10, dock PP1) com os 6 cubos com AprilTag 1..6 em
+#   ordem aleatoria, lado a lado; o robo deve deixa-los em ordem CRESCENTE de id, da
+#   esquerda para a direita, usando os containers de bordo como buffer (2 livres).
+# Uso: ros2 run caramelo_navigation run_mission --map-name <mapa> --task missions/task_AMT1_pp1.yaml [--dry-run]
 #
 # O task_planner reconhece a task pelo task_id (prefixo AMT1) ou pelo name
 # (contem "advanced manipulation task 1") e gera SO duas acoes:
 #   goto PP_1 (Mesa10) + amt1_sort {expected_tags: [1..6], left_to_right, max 3}
 # A rotina inteira (observar, planejar os ciclos, picks/places nos slots,
 # nudge da base) roda no amt1_sort_action_node (/amt1_sort).
-#
-# Os objetos comecam e terminam na MESMA estacao (nada e transportado); a
-# PP_1 PRECISA estar em active_service_areas.
-#
-# Uso:
-#   ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
-#       --task missions/amt1_pp1.yaml --dry-run
+# Os objetos comecam e terminam na MESMA estacao (nada e' transportado); a
+# PP_1 PRECISA estar em active_service_areas. Detalhes: docs/guia_missoes.md, secao 3.6.
+
 schema_version: 1
 task_id: AMT1
 name: Advanced Manipulation Task 1

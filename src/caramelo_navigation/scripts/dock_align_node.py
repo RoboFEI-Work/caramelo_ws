@@ -1,60 +1,24 @@
 #!/usr/bin/env python3
-"""Alinhamento fino HOLONOMICO a um dock (ADR-05, opcao c).
+"""Alinhamento fino HOLONOMICO a um dock e ajuste lateral da base (fluxo v5).
 
-Complementa o opennav_docking: o controller do Docking Server e' unicycle
-(so linear.x + angular.z, sem vy), entao ele nao usa as rodas mecanum para
-corrigir lateralmente. Este no faz o trecho FINAL de alinhamento com holonomia
-(vx, vy, wz), depois que o Docking Server ja levou o robo ate o staging/approach.
-
-O que este no faz (v4, 2026-08-21 — "reto, depois ajeita, nunca encosta"):
-  1. Le a pose alvo do dock em docking.yaml (mesma base do opennav_docking).
-  2. (Opcional) refina a pose alvo pela FACE da mesa no /scan -> corrige a
-     distancia (X) e o yaw, que sao observaveis numa face reta.
-  3. MURO DE SEGURANCA por LiDAR a cada ciclo (20 Hz, idade pela hora de
-     chegada do scan): hard_min ACIMA do bico do LiDAR (o que toca a mesa);
-     abaixo dele o no RECUA ate o pre-docking e tenta de novo
-     (approach_retries), so falhando depois de esgotar — e a camada de missao
-     decide pular a mesa. Scan velho/ausente ou face fora do plano = NAO anda.
-  4. Fases: DRIVE (reta continua, cortada antes do standoff para o coast do
-     ESC fechar) -> STANDOFF (so aqui gira e anda de lado: esquadra o yaw pela
-     face e centra no CENTRO DA FACE medido pelo LiDAR, em pulsos curtos com
-     checagem lateral) -> APPROACH (pulsos no piso com portao de distancia
-     por pior caso, auto-calibrado pelo proprio LiDAR) -> FINISH (sem giro;
-     so re por pulso se passou). Sucesso = front na janela E yaw da face
-     valido na tolerancia. Nada de lateral no staging.
-
-LIMITES HONESTOS (ADR-05):
-  - Y (lateral) so e' observavel quando as DUAS bordas da face aparecem no
-    scan; sem elas o no NAO mexe no lateral (fica onde o Nav2 deixou). O
-    LiDAR e' cego para o que esta ao lado do chassi (x < 0.32 m) e abaixo do
-    seu plano (~25 cm) — por isso os pulsos laterais sao curtos e so no
-    standoff.
-  - PISO DO ESC (2026-08-03, firmware corrigido): 0.1215 m/s / 0.315 rad/s de
-    corpo, EXECUTADOS EXATOS (ganhos do PI + mapa ancorado; ver
-    caramelo_hardware_ws/docs). O piso e por RODA (2.43 rad/s): em comandos
-    mistos vx/vy/wz uma roda individual pode ficar sub-piso e o driver a
-    arredonda — a garantia "executa exato" vale p/ movimentos de eixo puro.
-
-Nada aqui foi validado no robo — a percepcao e os ganhos precisam de dados reais.
-
-AJUSTE LATERAL `nudge_base` (2026-08-28, fila de alcance): segunda action no
-mesmo no. A arvore pede "anda dy de lado" (+ = esquerda) quando o braco nao
-alcanca um alvo na mesa. Malha fechada por ODOMETRIA (/odom do EKF — a face
-reta nao observa o lateral), com as MESMAS guardas do docking (muro
-hard_min, faixa lateral, scan velho/cego = nao anda, cancel, timeout, eixo
-puro). Fala antes de mover; publica o total acumulado em
-/manip/base_shift_total (latched; zera a cada align_to_dock) para o place
-node deslocar a memoria de slots. Nunca roda junto com o align (lock).
-Revisao 2026-08-28 (achados): pre-checagem projeta o avanco do bico pela
-inclinacao da face e vigia o front durante o curso; ganho de escorregamento
-lateral (odom nao ve o slip); assentamento por ODOMETRIA (o front nao muda
-num lateral); corte desconta a idade da odometria; NaN/inf no goal = recusa.
-Revisao 2026-10-19 (campo: "fala que vai se mover mas nao se move"): o piso
-de corpo em roda da' 2.4299999999999997 rad/s, um ULP abaixo do piso do ESC
-(2.43), e o driver so' LIGA com |cmd| >= piso. Toda primitiva que parte do
-repouso comanda piso x (1 + floor_start_margin) (_floor_start_speed); o
-nudge ganhou watchdog de progresso (razao 'sem_progresso') e loga o motivo
-de saida do curso.
+Serve duas actions (caramelo_msgs) no mesmo no', nunca as duas ao mesmo tempo:
+  - align_to_dock: a partir do pre-docking (staging do opennav_docking), faz
+    (A) UM ajuste lateral pelo centro da face no /scan, (B) RETO no piso do
+    ESC guiado pelo muro LiDAR ate a distancia de parada (corte descontando o
+    coast) e (C) retoque lateral na mesa. Esquadro ativo (giro por AMCL) so'
+    quando o refino LiDAR nao confia na face; tentativas = approach_retries+1
+    (0 no launch = uma so'); so' recua na falha se parou perigosamente perto.
+    Clientes: GoToWS (manip_bt) e GUI (modulo Docking).
+  - nudge_base: deslocamento LATERAL puro (+ = esquerda) em malha fechada por
+    ODOMETRIA, com as mesmas guardas (muro, faixa lateral, scan velho,
+    watchdog de progresso). Clientes: NudgeBase BT (manip_bt nudge_base_bt,
+    via reach_queue/bt_yaml_executor) e amt1_sort_action_node.
+Publica TwistStamped em reference_topic, /manip/speech (aviso antes de mover) e
+/manip/base_shift_total (latched: total lateral desde o ultimo align); assina
+scan_topic e odom_topic. Parametros-chave: min_body_vel/omega (piso do ESC),
+floor_start_margin (partida do repouso), hard_min_face_dist (muro), *_coast_*,
+lateral_min_front, nudge_*. Valores vigentes: launch/docking_server.launch.py;
+historico e medicoes: docs/docking_alinhamento_holonomico.md.
 """
 import math
 import os
@@ -91,10 +55,6 @@ def _yaw_from_quat(z, w, x=0.0, y=0.0):
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     return math.atan2(siny_cosp, cosy_cosp)
-
-
-def _clamp(value, limit):
-    return max(-limit, min(limit, value))
 
 
 def _lateral_displacement(x0, y0, yaw0, x, y):
@@ -143,13 +103,13 @@ def _nudge_corrected(raw_lateral, gain):
     return raw_lateral * gain
 
 
-def _nudge_cut_reached(mag, travelled, sign, coast, min_v, odom_age, period):
+def _nudge_cut_reached(mag, travelled, sign, coast, v_cmd, odom_age, period):
     """Criterio de corte do curso lateral (achado 5): o que falta
-    (mag - travelled*sign) ja cabe no coast do ESC MAIS o que a base anda
-    enquanto a medida envelhece (odom_age) e ate a proxima decisao (period)
-    — a mesma conta da reta do align (lag = v*(idade + periodo)). Pura,
-    testavel."""
-    return mag - travelled * sign <= coast + min_v * (odom_age + period)
+    (mag - travelled*sign) ja cabe no coast do ESC MAIS o que a base anda, a
+    velocidade COMANDADA v_cmd (piso x margem de partida), enquanto a medida
+    envelhece (odom_age) e ate a proxima decisao (period) — a mesma conta da
+    reta do align (lag = v*(idade + periodo)). Pura, testavel."""
+    return mag - travelled * sign <= coast + v_cmd * (odom_age + period)
 
 
 def _floor_start_speed(floor, margin):
@@ -161,9 +121,13 @@ def _floor_start_speed(floor, margin):
     so' DESLIGA abaixo de 0.4 x piso. Logo quem parte do repouso exatamente
     no piso nunca move as rodas (campo 2026-10-19: nudge "andou +0.000 m");
     ja' em movimento (docking: parte com kp*erro > piso) o piso exato segue
-    valendo. O giro idem: 0.315 x 0.3855 / 0.05 = 2.42865 < 2.43. Pura,
-    testavel."""
-    return float(floor) * (1.0 + float(margin))
+    valendo. O giro idem: 0.315 x 0.3855 / 0.05 = 2.42865 < 2.43.
+    Margem negativa ou NaN/inf reproduziria o bug em silencio (partida
+    ABAIXO do piso): vale 0 (piso exato). Pura, testavel."""
+    margin = float(margin)
+    if not math.isfinite(margin) or margin < 0.0:
+        margin = 0.0
+    return float(floor) * (1.0 + margin)
 
 
 def _nudge_no_progress(elapsed_s, travelled_m, min_s, min_m):
@@ -231,9 +195,9 @@ class DockAlignNode(Node):
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("control_frequency", 20.0)
-        # Limites coerentes com o Nav2 (controller_server.yaml).
-        # 0.20 -> 0.13 (v4): a reta do staging e' curta (~0.15-0.25 m) e o
-        # coast do ESC cresce com a velocidade.
+        # Limites coerentes com o Nav2 (controller_server.yaml). 0.13 (v4,
+        # 2026-08-21): a reta do staging e' curta (~0.15-0.25 m) e o coast do
+        # ESC cresce com a velocidade.
         self.declare_parameter("max_vel_x", 0.13)
         # Piso fisico do ESC pos-fix do firmware (2026-08-03): 650rpm = 0.1215
         # m/s / 0.315 rad/s de corpo, executado EXATO (mapa ancorado 1570us).
@@ -247,16 +211,13 @@ class DockAlignNode(Node):
         self.declare_parameter("floor_start_margin", 0.07)
         self.declare_parameter("kp_linear", 1.2)
         self.declare_parameter("default_xy_tolerance", 0.03)
-        # 0.05 -> 0.09 (teste 3 em 2026-08-18): a leitura de yaw da face
-        # oscila +-4 graus entre fits — exigir 2.9 e' pedir menos que o ruido
-        # e o robo fica em retoque infinito ate o timeout. 5 graus fecha, e o
+        # 0.09 rad (~5 graus, 2026-08-18): o yaw da face oscila +-4 graus
+        # entre fits; exigir menos vira retoque infinito ate o timeout, e o
         # pick compensa o residuo pela camera/tag.
         self.declare_parameter("default_yaw_tolerance", 0.09)
-        # 30 -> 60 (2026-08-18): o align agora faz o approach INTEIRO
-        # (staging->dock, ~45cm) e o orcamento cobre recuo+retries.
-        # 60 -> 90 (v4): 2 tentativas de ate 40 s + recuo.
+        # 90 s (v4, 2026-08-21): cobre o approach inteiro (staging->dock,
+        # ~45 cm) mais o recuo final.
         self.declare_parameter("default_timeout", 90.0)
-        self.declare_parameter("settle_cycles", 5)
 
         # ------- MURO DE SEGURANCA por LiDAR (2026-08-18, pedido do operador:
         # "o robo NUNCA pode bater na mesa"). Distancia frontal medida a CADA
@@ -267,20 +228,16 @@ class DockAlignNode(Node):
         # (docking.yaml, por mesa) e, na falta, refine_desired_face_dist
         # global; tudo <0 = muro so aplica o hard_min.
         self.declare_parameter("stop_face_dist", -1.0)
-        # Banda de histerese do HOLD (ideia do operador: parar a X com folga
-        # de +-0.5cm para nao ligar/desligar o freio a cada ciclo).
-        # 0.005 -> 0.015 (v4): janela de sucesso [stop-0.01, stop+band+0.01]
-        # = 3,5 cm, maior que o ruido do percentil (+-3 mm) e o passo do pulso.
+        # Banda de histerese do HOLD: a janela de sucesso [stop-0.01,
+        # stop+band+0.01] = 3,5 cm fica acima do ruido do percentil (+-3 mm).
         self.declare_parameter("wall_hysteresis_band", 0.015)
-        # Abaixo disso: para tudo e RECUA para tentar de novo. O que toca a
-        # mesa e' o BICO do LiDAR (apendice frontal, ponta ~0.38-0.40 m do
-        # centro — costmap.yaml usa 0.395): hard_min tem de ficar ACIMA dele.
-        # 0.32 (antigo) = bico 5,5 cm DENTRO da mesa. CAMPO 2026-08-21: o
-        # robo ENCOSTOU com o muro lendo 0.398 => a ponta real esta em ~0.40
-        # (valor do footprint 0.395). 0.42 = 2,5 cm de folga do contato real.
+        # Abaixo disso: para tudo (hard_stop). O que toca a mesa e' o BICO do
+        # LiDAR (ponta ~0.40 m do centro; footprint 0.395 em planner_server.yaml
+        # e controller_server.yaml): hard_min fica ACIMA dele. 0.42 = 2,5 cm de
+        # folga do contato real (campo 2026-08-21: encostou com o muro lendo 0.398).
         self.declare_parameter("hard_min_face_dist", 0.42)
         # Idade medida pela HORA DE CHEGADA do scan (imune a relogio da Pi).
-        # 0.5 -> 0.2 s: a 0.12 m/s cada 0.1 s e' 1,2 cm de atraso.
+        # 0.2 s: a 0.12 m/s cada 0.1 s e' 1,2 cm de atraso.
         self.declare_parameter("wall_max_scan_age", 0.2)
         self.declare_parameter("wall_min_points", 5)
         # Corredor frontal = meia-largura do chassi 0.195 + 1.5cm de margem.
@@ -289,21 +246,13 @@ class DockAlignNode(Node):
         # k-esimo menor x (fracao dos pontos do corredor): rejeita speckle
         # isolado sem esconder obstaculo real.
         self.declare_parameter("wall_percentile", 0.10)
-        # Teto de vx proporcional a folga ate o stop (alem do perfil P).
-        self.declare_parameter("wall_kp", 1.5)
-        # RECUO+RETRY (pedido do operador 2026-08-18): em hard-stop/timeout de
-        # aproximacao, recua ate a distancia de pre-docking e tenta de novo
-        # este numero de vezes antes de reportar falha (a missao pula a mesa).
-        # 2 -> 0 (v5, pedido do operador: SEM vai-e-vem): uma tentativa so.
+        # Tentativas extras apos hard_stop/timeout (recua ate o pre-docking e
+        # tenta de novo). 0 (v5, 2026-08-21, pedido do operador: SEM
+        # vai-e-vem): uma tentativa so'; na falha a missao pula a mesa.
         self.declare_parameter("approach_retries", 0)
 
-        # ------- Fluxo v4 (2026-08-21, pedido do operador): NADA de lateral no
-        # staging (a rajada cega do v3 batia em caixas laterais invisiveis ao
-        # LiDAR). staging -> RETA -> STANDOFF (esquadra o yaw e centra na face
-        # pelo LiDAR, longe o bastante para o bico girar) -> APROXIMACAO FINAL
-        # por pulsos com portao de distancia -> FINISH sem giro.
-        # Distancia ACIMA do stop onde o robo para para esquadrar/centrar.
-        self.declare_parameter("standoff_gap", 0.12)
+        # ------- Coast do ESC e distancias minimas das primitivas (v4/v5,
+        # 2026-08-21; o fluxo por pulsos/standoff do v4 saiu no v5).
         # O ESC mantem a ultima referencia ~0,5 s depois do neutro (TURNOFF):
         # qualquer movimento continuo e' CORTADO quando falta exatamente este
         # coast, e o ESC termina. MEDIDO 2026-08-21 (pulse_test.py cont, robo
@@ -315,13 +264,12 @@ class DockAlignNode(Node):
         # ha como corrigir — o residuo e' aceito (a camera do pick compensa).
         self.declare_parameter("yaw_coast_est", 0.10)
         self.declare_parameter("center_coast_est", 0.03)
-        # Raio do canto do bico ~0.38-0.40 m: girar so com front >= isto; pulso
+        # Raio do canto do bico ~0.38-0.40 m: girar so com front >= isto;
         # lateral so com front >= lateral_min_front.
         self.declare_parameter("rotate_min_front", 0.46)
-        # 0.48 -> 0.42 (campo 2026-08-21): lateral puro nao avanca o bico;
-        # o operador confirmou que a 0,43 e' seguro andar de lado.
-        # 2026-08-24: alvo 0,38 (decisao do operador) -> pousos 0,37-0,39; o
-        # retoque lateral na mesa precisa continuar valendo ate hard_min+0,01.
+        # 0.36 (2026-08-24): lateral puro nao avanca o bico (campo 21/08) e,
+        # com alvo de pouso 0,38 (pousos 0,37-0,39), o retoque lateral na mesa
+        # precisa valer ate hard_min+0,01.
         self.declare_parameter("lateral_min_front", 0.36)
         # 2026-08-29 (campo, AMT1): o docking para com o bico a ~0,35-0,39 m
         # e o nudge era recusado (muito_perto_da_mesa). Em vez de recusar,
@@ -331,12 +279,8 @@ class DockAlignNode(Node):
         self.declare_parameter("nudge_backoff_margin", 0.03)   # folga acima de lateral_min_front
         self.declare_parameter("nudge_backoff_max", 0.12)      # recuo maximo (m)
         self.declare_parameter("nudge_backoff_coast", 0.06)    # coast da re (ESC retem ~0,5 s)
-        # Esquadro no standoff: alvo 0.06 rad (3.4 graus), no maximo 4 s;
-        # depois aceita ate a tolerancia de sucesso (yaw_tolerance).
-        self.declare_parameter("standoff_yaw_tol", 0.06)
-        self.declare_parameter("standoff_square_max_s", 4.0)
         # Assentamento apos cada comando: front estavel em N scans NOVOS
-        # (eps) ou teto de tempo — so entao medir/pulsar de novo.
+        # (eps) ou teto de tempo — so entao medir/comandar de novo.
         self.declare_parameter("settle_stable_scans", 3)
         self.declare_parameter("settle_stable_eps", 0.003)
         self.declare_parameter("settle_max_s", 1.5)
@@ -345,44 +289,12 @@ class DockAlignNode(Node):
         # (recuo+retry). Mesa fora do plano do LiDAR NAO e' dockavel por aqui.
         self.declare_parameter("stale_abort_s", 1.0)
         self.declare_parameter("blind_wait_s", 1.0)
-        # Pulsos no piso: comprimento base (ciclos) por eixo e escalonamento
-        # (+1 ciclo se "nao moveu", ate o max). O ESC precisa de >200 ms para
-        # ARMAR a partir do repouso: 4 ciclos = 200 ms (campo 18/08 mediu
-        # ~2,4 cm/3,6 graus); 6 ciclos = 300 ms. O comprimento que funcionou e'
-        # MANTIDO (nao volta ao base) — so reescala se deixar de mover.
-        self.declare_parameter("pulse_on_cycles", 4)
-        self.declare_parameter("pulse_on_max_cycles", 6)
-        # Portao de distancia da aproximacao final: so pulsa para frente se
-        # front - safety * max(learned, pulse_travel_est) >= janela_inferior.
-        # `learned` = deslocamento medido pelo proprio LiDAR nos pulsos
-        # anteriores; pulse_travel_est = pior caso ate a medicao de campo.
-        # 2026-08-21: pulso de 4-6 ciclos andou 10-14 cm (medido) — pulsos
-        # nao servem de aproximacao fina; 0.12 fecha o portao no APPROACH e
-        # deixa os pulsos so para a RE. approach_mode default = single_cut.
-        self.declare_parameter("pulse_travel_est", 0.12)
-        self.declare_parameter("pulse_travel_safety", 1.5)
-        # Pulso que andou mais que (portao + esta margem) = anomalia (ESC/
-        # atrito): encerra a tentativa. E' margem sobre o pior caso vigente,
-        # nunca um teto absoluto abaixo da estimativa.
-        self.declare_parameter("pulse_travel_margin", 0.03)
-        # Passo minimo de giro por pulso (~0,315 rad/s x (0,2+0,5) s ~ 0,2 rad
-        # se o ESC retiver a referencia): so pulsar giro se o erro for maior
-        # que metade disto, senao o esquadro vira pingue-pongue.
-        self.declare_parameter("pulse_yaw_est", 0.12)
-        # Pior caso do pulso lateral (centragem) ate a medicao de campo.
-        self.declare_parameter("center_pulse_travel_est", 0.12)
-        # Se o portao proibir o pulso mas o front estiver ate esta folga
-        # acima da janela, aceita parar ali (nunca forcar para encostar).
-        self.declare_parameter("approach_accept_slack", 0.05)
-        # "pulses" (default) ou "single_cut" (reta continua cortada em
-        # stop + band/2 + esc_coast_dist, depois assenta) — escolher pela
-        # medicao de campo dos pulsos (plano 2026-08-21, M1).
-        self.declare_parameter("approach_mode", "single_cut")
-        # Centragem na face (standoff): estimador endurecido + pulsos vy.
+        # Centragem na face (lateral_adjust): estimador endurecido + curso vy
+        # cortado pelo centro medido.
         self.declare_parameter("center_enabled", True)
         self.declare_parameter("center_half_width_y", 0.65)
         self.declare_parameter("center_edge_margin", 0.08)
-        # 0.50 -> 0.48 (campo 22/08: a prateleira mede 0.49).
+        # 0.48 (campo 2026-08-22): a prateleira mede 0.49.
         self.declare_parameter("center_width_min", 0.48)
         self.declare_parameter("center_width_max", 0.95)
         self.declare_parameter("center_max_residual", 0.012)
@@ -390,12 +302,8 @@ class DockAlignNode(Node):
         self.declare_parameter("center_spread_max", 0.02)
         self.declare_parameter("center_deadband", 0.025)
         self.declare_parameter("center_max_travel", 0.15)
-        self.declare_parameter("center_pulse_cycles", 4)
-        self.declare_parameter("center_max_pulses", 4)
-        # Faixa lateral (alem do corredor) vigiada antes de cada pulso vy.
+        # Faixa lateral (alem do corredor) vigiada antes de cada curso vy.
         self.declare_parameter("side_clear_half_width", 0.50)
-        # FINISH: correcoes (re/yaw) no maximo N antes de encerrar a tentativa.
-        self.declare_parameter("finish_max_corrections", 6)
         # Recuo final (apos esgotar tentativas/timeout) com orcamento proprio.
         self.declare_parameter("final_retreat_grace_s", 15.0)
         # Sanidade do pre-docking (campo 22/08, WS5): o align so comeca se o
@@ -469,10 +377,9 @@ class DockAlignNode(Node):
         # residuo RMS maximo do ajuste de reta (face plana de verdade) e largura
         # minima da face detectada (rejeita perna de mesa/objeto isolado).
         self.declare_parameter("refine_max_residual", 0.02)
-        # 0.30 -> 0.50 (2026-08-03, gauntlet WS1 r3): um fit com largura 0.39m
-        # (segmento parcial da face vista de perto) passou nos guards com
-        # residuo 5mm e girou o alvo 16.7 graus. Fits saudaveis medem 0.61-0.65
-        # (face real 0.80m). Abaixo de 0.50 = vista degradada, sem confianca.
+        # 0.50 (2026-08-03): fits saudaveis medem 0.61-0.65 (face real 0.80 m);
+        # um fit de 0.39 m (segmento parcial visto de perto) passou nos guards
+        # e girou o alvo 16.7 graus. Abaixo de 0.50 = vista degradada.
         self.declare_parameter("refine_min_face_width", 0.50)
         # Distancia frontal DESEJADA robo->face na pose final (calibrar no robo:
         # posicione o robo na pose perfeita e leia o face_dist do log). Valor
@@ -509,8 +416,10 @@ class DockAlignNode(Node):
         self._last_scan_rx_ns = 0
         self._scan_seq = 0
         self._stamp_warned = False
+        # floor_start_margin invalido (negativo/NaN) e' avisado uma vez.
+        self._margin_warned = False
         # Menor x fora do corredor, por lado (esq py>0, dir py<0): checagem
-        # lateral antes dos pulsos vy do standoff.
+        # lateral antes de cada curso vy.
         self._side_min = (None, None)
         self._wall_age = None
         self._center_reject = ""
@@ -672,13 +581,10 @@ class DockAlignNode(Node):
 
     # --------------------------------------------------------- Refino LiDAR
     def _scan_points_in_base(self, scan):
-        """Pontos validos do scan TRANSFORMADOS para o base_frame (2D).
-
-        2026-07-23: a versao antiga usava os angulos crus do scan assumindo
-        0 grau = frente do robo — mas o LiDAR e' montado de cabeca para baixo
-        (RPY 180/0/180) e o crop do scan_normalizer poe a frente fisica em
-        ~180 graus, entao px saia sempre <= 0 e o refino NUNCA achava pontos.
-        Agora usamos a TF real (base <- frame do scan), que absorve a inversao.
+        """Pontos validos do scan TRANSFORMADOS para o base_frame (2D) pela
+        TF real (base <- frame do scan): o LiDAR e' montado de cabeca para
+        baixo (RPY 180/0/180) e o crop do scan_normalizer poe a frente fisica
+        em ~180 graus, entao os angulos crus do scan nao servem (2026-07-23).
         """
         try:
             tf = self._tf_buffer.lookup_transform(
@@ -835,7 +741,7 @@ class DockAlignNode(Node):
         """True se nada na faixa lateral do lado do movimento esta mais perto
         que a face (caixa/objeto protruso junto ao bico). Cego para o que
         esta AO LADO do chassi (px < 0.32) e abaixo do plano do LiDAR — por
-        isso os pulsos laterais sao curtos e so no standoff."""
+        isso os cursos laterais sao curtos e vigiados a cada ciclo."""
         side = self._side_min[0] if direction > 0.0 else self._side_min[1]
         return side is None or front is None or side > front - margin
 
@@ -957,10 +863,9 @@ class DockAlignNode(Node):
         if scan is None:
             self.get_logger().warn("refino: nenhum /scan recebido ainda.")
             return target, False
-        # Guard de idade (2026-08-03): com o re-refino periodico, um /scan
-        # CONGELADO (LiDAR/USB) faria o alvo seguir o robo — runaway rumo a
-        # mesa. Scan velho -> sem confianca, mantem o alvo vigente.
-        # Idade pela hora de CHEGADA (v4), como no muro.
+        # Guard de idade (2026-08-03): um /scan CONGELADO (LiDAR/USB) faria o
+        # alvo seguir o robo — runaway rumo a mesa. Scan velho -> sem
+        # confianca. Idade pela hora de CHEGADA (v4), como no muro.
         scan_age = (self.get_clock().now().nanoseconds - self._last_scan_rx_ns) * 1e-9
         if scan_age > 0.5:
             self.get_logger().warn(
@@ -1082,12 +987,20 @@ class DockAlignNode(Node):
     def _start_speeds(self):
         """(v, w) de PARTIDA do repouso = piso x (1 + floor_start_margin).
         Ver _floor_start_speed (2026-10-19): no piso exato a roda fica um
-        ULP abaixo do piso do ESC e nao liga."""
+        ULP abaixo do piso do ESC e nao liga. Margem negativa/NaN e' avisada
+        UMA vez e vale 0 (nunca partir abaixo do piso)."""
         margin = float(self.get_parameter("floor_start_margin").value)
+        if not math.isfinite(margin) or margin < 0.0:
+            if not self._margin_warned:
+                self._margin_warned = True
+                self.get_logger().warn(
+                    f"floor_start_margin={margin} invalido (negativo/NaN): uso 0 — "
+                    "partida no piso exato pode nao ligar as rodas (campo 2026-10-19)")
+            margin = 0.0
         return (_floor_start_speed(float(self.get_parameter("min_body_vel").value), margin),
                 _floor_start_speed(float(self.get_parameter("min_body_omega").value), margin))
 
-    # ---------------------------------------------- Primitivas do fluxo v4
+    # ------------------------------------------- Primitivas de movimento (v5)
     class _AttemptAbort(Exception):
         """Encerra a tentativa de dentro das primitivas (hard_stop, cancel,
         anomalia). `outcome` e' o mesmo vocabulario de _run_attempt."""
@@ -1153,28 +1066,6 @@ class DockAlignNode(Node):
             rate.sleep()
         face_yaw_f = sorted(yaws)[len(yaws) // 2] if yaws else None
         return front, npts, face_yaw_f
-
-    def _pulse(self, goal_handle, rate, deadline, attempt_end, axis, sign,
-               cycles, phase_name):
-        """Pulso de `cycles` ciclos no PISO do eixo (x|y|z), com os guards a
-        cada ciclo, seguido de assentamento. Devolve o resultado do _settle."""
-        # Parte do repouso: piso x (1 + margem), senao a roda fica um ULP
-        # abaixo do piso do ESC e nao liga (2026-10-19, _floor_start_speed).
-        min_v, min_w = self._start_speeds()
-        for _ in range(max(1, int(cycles))):
-            front, _n, _fy = self._check_guards(goal_handle, deadline, attempt_end)
-            if front is None:
-                break  # STALE/BLIND no meio do pulso: nao anda as cegas
-            if axis == "x":
-                self._publish_cmd(math.copysign(min_v, sign), 0.0, 0.0)
-            elif axis == "y":
-                self._publish_cmd(0.0, math.copysign(min_v, sign), 0.0)
-            else:
-                self._publish_cmd(0.0, 0.0, math.copysign(min_w, sign))
-            self._feedback(goal_handle, phase_name, 0.0, 0.0, 0.0)
-            rate.sleep()
-        self._publish_cmd(0.0, 0.0, 0.0)
-        return self._settle(goal_handle, rate, deadline, attempt_end, phase_name)
 
     def _cut_drive(self, goal_handle, rate, deadline, attempt_end, axis, sign,
                    error_fn, coast, max_s, phase_name):
@@ -1804,6 +1695,7 @@ class DockAlignNode(Node):
                     # prazo proprio do recuo (o deadline do lateral so e
                     # calculado mais abaixo)
                     backoff_deadline = self.get_clock().now().nanoseconds * 1e-9 + float(timeout)
+                    front_before = front
                     try:
                         self._nudge_backoff(goal_handle, rate, backoff_deadline,
                                             target_front)
@@ -1818,6 +1710,18 @@ class DockAlignNode(Node):
                     if front is None:
                         log("sem medicao do muro apos o recuo")
                         return fail("sem_scan")
+                    # O recuo (_cut_drive em x) nao tem watchdog por odometria:
+                    # front inalterado apos o curso = a base nao respondeu
+                    # (padrao dos logs de 16/09 e 15/10). Mesmo diagnostico
+                    # do watchdog do lateral.
+                    if abs(front - front_before) < 0.01:
+                        self.get_logger().warn(
+                            f"nudge_base: recuo sem efeito (base nao respondeu?): front "
+                            f"{front_before:.3f} -> {front:.3f} apos recuo de {step:.3f} m; "
+                            f"conferir publicadores em {self._ref_topic} (count_publishers="
+                            f"{self.count_publishers(self._ref_topic)}), relogio PC x Pi "
+                            f"(reference_timeout 0.15 s no mecanum_controller) e o piso do "
+                            f"ESC (roda >= 2.43 rad/s)")
                     if face_yaw is None:
                         face_yaw = 0.0
                     front_proj = _front_after_lateral(front, mag, face_yaw)
@@ -1847,7 +1751,10 @@ class DockAlignNode(Node):
                 return fail("cancelado", canceled=True)
             rate.sleep()
 
-        max_s = (mag + 0.05) / min_v + 1.0
+        # Teto de tempo do curso com a velocidade de PARTIDA real (piso x
+        # margem) — a mesma que _nudge_drive comanda e desconta no corte.
+        v_start, _w = self._start_speeds()
+        max_s = (mag + 0.05) / v_start + 1.0
         log(f"inicio: front={'?' if front is None else '%.3f' % front} "
             f"face_yaw={'?' if front is None else '%+.1f' % math.degrees(face_yaw)} "
             f"coast={coast:.3f} ganho_odom={gain:.2f} max_s={max_s:.1f} "
@@ -1856,7 +1763,6 @@ class DockAlignNode(Node):
         # (piso x margem) e quem mais esta' na referencia — um segundo
         # publicador (Nav2, teleop) zerando o topico anula o nudge; zero
         # assinantes = o mecanum_controller nao esta' ouvindo.
-        v_start, _w = self._start_speeds()
         log(f"comando: vy={math.copysign(v_start, sign):+.4f} m/s (piso {min_v:.4f} x "
             f"{1.0 + float(self.get_parameter('floor_start_margin').value):.2f}) em "
             f"{self._ref_topic}: publicadores={self.count_publishers(self._ref_topic)} "

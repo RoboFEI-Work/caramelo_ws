@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Valida o service_areas.yaml de um mapa (tipos, poses, docking) e, com
+# --sync-docking, regrava o docking.yaml a partir dele (docking.yaml e' derivado).
+# Quem usa: operador antes da missao; a GUI usa o mesmo codigo via service.
+# Como roda: ros2 run caramelo_navigation validate_service_areas --map <mapa> [--sync-docking]
 import argparse
 import sys
 

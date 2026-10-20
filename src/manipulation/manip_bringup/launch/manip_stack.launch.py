@@ -1,7 +1,8 @@
-# Stack de manipulacao no PC (porta do manip_pc.launch.xml para Python).
+# Stack de manipulacao no PC (porta em Python do launch XML antigo, removido).
 #
-# SEMPRE sobe: move_group (com ExecuteTaskSolutionCapability p/ MTC) + manip_commander.
-# Opcionais: camera RealSense, AprilTag, audio (Piper), pick/place MTC, RViz.
+# SEMPRE sobe: move_group (com ExecuteTaskSolutionCapability p/ MTC).
+# Opcionais: commander (use_commander, ferramenta de bancada), camera RealSense,
+# AprilTag, audio (Piper), pick/place MTC, RViz.
 #
 # use_mock_hardware=true: sobe RSP + ros2_control com mock_components NO PC
 # (braco simulado, SEM base mecanum/navegacao). Em modo real (default) o
@@ -41,6 +42,7 @@ def generate_launch_description():
     use_audio = LaunchConfiguration("use_audio")
     use_pick_place = LaunchConfiguration("use_pick_place")
     use_rviz_manip = LaunchConfiguration("use_rviz_manip")
+    use_commander = LaunchConfiguration("use_commander")
     launch_pick_telemetry = LaunchConfiguration("launch_pick_telemetry")
     use_container_detector = LaunchConfiguration("use_container_detector")
     container_detector_always_on = LaunchConfiguration("container_detector_always_on")
@@ -60,7 +62,7 @@ def generate_launch_description():
     apriltag_params_file = os.path.join(
         manip_bringup_share, "config", "tags_36h11.yaml"
     )
-    # Multi-place (2026-08-21): o no de place enumera as tags que podem estar
+    # Multi-place: o no de place enumera as tags que podem estar
     # na mesa a partir da MESMA lista que o apriltag publica — uma fonte so.
     with open(apriltag_params_file, "r", encoding="utf-8") as handle:
         _apriltag_yaml = yaml.safe_load(handle) or {}
@@ -73,7 +75,7 @@ def generate_launch_description():
             .get("frames", [])
         )
     ]
-    # Containers por cor (2026-08-25): os frames publicados pelo
+    # Containers por cor: os frames publicados pelo
     # container_detector entram como obstaculo dos places normais (0,13 m
     # via clearanceForFrame, prefixo ct_). Sem detector, o place ignora
     # frames sem TF.
@@ -93,7 +95,7 @@ def generate_launch_description():
             default_value="false",
             description="Detector processa sempre (calibracao/bag), nao so durante o place",
         ),
-        # --- Superficie livre (2026-10-19) ---
+        # --- Superficie livre ---
         DeclareLaunchArgument(
             "use_surface_detector",
             default_value="true",
@@ -134,10 +136,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "camera_profile",
-            # 640x480x5: unico modo estavel em porta USB 2 (2026-08-07: em 2.1
-            # a 15fps dava "Incomplete video frame"/"Frame Corrupted" e o driver
-            # reiniciava em loop, derrubando ate a navegacao). Em USB 3 passe
-            # camera_profile:=640x480x15 (ou mais).
+            # 640x480x5: unico modo estavel em porta USB 2 (a 15 fps o driver
+            # reiniciava em loop com frames corrompidos, medido 2026-08-07).
+            # Em USB 3 passe camera_profile:=640x480x15 (ou mais).
             default_value="640x480x5",
             description="Perfil WxHxFPS dos streams color e depth da RealSense",
         ),
@@ -148,10 +149,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_perception_gate",
-            # Default FALSE (decisao do operador, 2026-08-10): no 1o teste o
-            # liga-desliga travou o driver da RealSense. O motivo original do
-            # gate (banda do USB 2) sumiu com a camera no USB 3. Fica como
-            # opt-in — ver o docstring do perception_gate_node.py.
+            # Default FALSE: o liga-desliga ja travou o driver da RealSense e
+            # o motivo original do gate (banda do USB 2) sumiu com a camera no
+            # USB 3. Opt-in; ver o docstring do perception_gate_node.py.
             default_value="false",
             description=(
                 "Camera streama SO durante pick/place (libera CPU/USB na "
@@ -186,7 +186,15 @@ def generate_launch_description():
             default_value="false",
             description="Inicia o pick_telemetry_plotter",
         ),
-        # --- Audio (defaults identicos ao manip_pc.launch.xml) ---
+        DeclareLaunchArgument(
+            "use_commander",
+            default_value="true",
+            description=(
+                "Sobe o commander (manip_commander): ferramenta de bancada para mover "
+                "o braco por topico (ros2 topic pub). false na competicao."
+            ),
+        ),
+        # --- Audio ---
         DeclareLaunchArgument("piper_executable", default_value="auto"),
         DeclareLaunchArgument(
             "piper_model",
@@ -195,13 +203,12 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("speech_player_executable", default_value="auto"),
-        # --- IK/grasp (defaults identicos ao manip_pc.launch.xml) ---
+        # --- IK/grasp ---
         DeclareLaunchArgument("verify_grasp_effort", default_value="true"),
         # Erro maximo (m) entre a pose pedida e onde a ponta parou. 0.0 DESLIGA
-        # a checagem — util para rodar missao demo aceitando falha silenciosa,
-        # que era o comportamento historico antes de 2026-08-10.
+        # a checagem (missao demo aceitando falha silenciosa).
         DeclareLaunchArgument("max_pose_error_m", default_value="0.025"),
-        # --- Multi-place na mesa comum (2026-08-21) ---
+        # --- Multi-place na mesa comum ---
         # false = pose unica legada (kill-switch de arena). Tambem aceita
         # `ros2 param set /place_action_server slot_selection_enabled false`
         # sem relaunch (o no rele os slot_* a cada goal) — mas esse param set
@@ -213,29 +220,20 @@ def generate_launch_description():
         # Olhar a mesa de garra vazia (movimento extra) alem de em pegar_obj.
         DeclareLaunchArgument("place_slot_observe_empty_gripper_first", default_value="false"),
         # XY livre pela IK custom quando nenhuma pose fixa tem folga. OFF ate
-        # ser validado no robo (plano 2026-08-21, passo V7).
+        # ser validado no robo.
         DeclareLaunchArgument("place_slot_fallback_free_xy", default_value="false"),
         DeclareLaunchArgument("grasp_min_effort_nm", default_value="0.15"),
         DeclareLaunchArgument("grasp_min_effort_increase_nm", default_value="0.05"),
-        # >= 2 e OBRIGATORIO para o ladder da mesa ter os 3 degraus
-        # (2026-08-17): tentativa 1 = IK custom bottom, 2 = IK custom frente,
+        # >= 2 e OBRIGATORIO para o ladder da mesa ter os 3 degraus:
+        # tentativa 1 = IK custom bottom, 2 = IK custom frente,
         # 3 = MoveIt/pick_ik (ultimo recurso).
         DeclareLaunchArgument("grasp_retry_attempts", default_value="2"),
-        # ATENCAO (auditoria item 2.7 + verificacao adversarial 2026-08-10):
-        # os args de SOLVER abaixo (attempt_*_ik_solver, fallback_ik_*) sao
-        # INERTES. Trocar o kinematics_solver por parametro em runtime nao
-        # afeta o plugin ja carregado e cacheado pelo move_group — a "escada
-        # de solvers" era placebo. Desde 2026-08-17 os attempt_1_*/attempt_2_*
-        # ficaram DUPLAMENTE inertes: as tentativas 1-2 usam a IK custom e nem
-        # chamam a IK do MoveIt. O que age de verdade: os attempt_3_* (degrau
-        # MoveIt). Ficam declarados so para nao quebrar linhas de comando
-        # salvas; nao perca tempo tunando os demais.
-        DeclareLaunchArgument("switch_ik_after_failed_grasp", default_value="true"),
-        DeclareLaunchArgument("attempt_1_ik_solver", default_value="pick_ik/PickIkPlugin"),
-        DeclareLaunchArgument(
-            "attempt_2_ik_solver",
-            default_value="kdl_kinematics_plugin/KDLKinematicsPlugin",
-        ),
+        # So os attempt_3_* agem (degrau MoveIt/pick_ik da tentativa 3): as
+        # tentativas 1-2 usam a IK custom e nem chamam a IK do MoveIt, e trocar
+        # o kinematics_solver em runtime nao afeta o plugin ja carregado pelo
+        # move_group. Os antigos switch_ik_after_failed_grasp, attempt_1/2_* e
+        # fallback_ik_* eram inertes e foram removidos daqui (o no de pick
+        # continua com os defaults de codigo).
         DeclareLaunchArgument("attempt_3_ik_solver", default_value="pick_ik/PickIkPlugin"),
         DeclareLaunchArgument("attempt_3_ik_solve_type", default_value="Distance"),
         DeclareLaunchArgument("attempt_3_ik_position_only", default_value="false"),
@@ -245,23 +243,19 @@ def generate_launch_description():
         DeclareLaunchArgument("attempt_3_goal_orientation_tolerance", default_value="0.80"),
         DeclareLaunchArgument("skip_failed_pick_after_retries", default_value="true"),
         DeclareLaunchArgument("skip_missing_place_tag", default_value="true"),
-        DeclareLaunchArgument("fallback_ik_solver", default_value="pick_ik/PickIkPlugin"),
-        DeclareLaunchArgument("fallback_ik_mode", default_value="local"),
-        DeclareLaunchArgument("fallback_ik_solve_type", default_value="Distance"),
-        DeclareLaunchArgument("fallback_ik_position_only", default_value="true"),
-        # Decisao do operador (2026-08-08): default TRUE — todo start de stack
-        # zera os containers (fluxo real: 1 launch por rodada). Num relaunch
-        # POS-CRASH no meio de missao com bloco a bordo, subir com
-        # reset_container_states:=false para preservar o estado.
+        # Default TRUE: todo start de stack zera os containers (fluxo real:
+        # 1 launch por rodada). Num relaunch POS-CRASH no meio de missao com
+        # bloco a bordo, subir com reset_container_states:=false para
+        # preservar o estado.
         DeclareLaunchArgument("reset_container_states", default_value="true"),
     ]
 
     # --- move_group (sempre) ---
-    # Mesmo mecanismo do manip_pc.launch.xml: o launch gerado pelo
+    # Mesmo mecanismo do launch XML antigo (removido): o launch gerado pelo
     # generate_move_group_launch declara o arg "capabilities" e o injeta como
     # parametro do move_group; basta repassar como launch argument.
     #
-    # S7 (auditoria item 3.8) — o warning repetido
+    # O warning repetido
     #   "Unable to transform object from frame 'tag_N' to planning frame"
     # e BENIGNO: o PlanningSceneMonitor varre TODOS os frames do TF a cada
     # request de plan, e os frames tag_N ficam stale porque o apriltag so
@@ -298,7 +292,7 @@ def generate_launch_description():
         value_type=str,
     )
 
-    # SRDF LOCAL como parametro (2026-08-07, achado do teste mock): quando o
+    # SRDF LOCAL como parametro: quando o
     # move_group cai, o RDFLoader dos nos MTC esperava a SRDF via topico por
     # 10s e o construtor do MoveGroupInterface ABORTAVA O PROCESSO (SIGABRT em
     # thread interna). Com a SRDF local, o modelo monta sempre e a falta do
@@ -309,16 +303,15 @@ def generate_launch_description():
     ) as srdf_file:
         robot_description_semantic_content = srdf_file.read()
 
-    # --- Commander (sempre; exec "commmander" com tres m, como no pacote) ---
-    # 2026-08-10: o commander MORRIA no boot ("Could not find parameter
-    # robot_description and did not receive ... within 10 seconds", exit -6) —
-    # ele corria contra o robot_state_publisher da Pi e perdia. Com o no morto,
-    # /go_to_named_target ficava SEM ASSINANTE e os comandos sumiam em silencio
-    # (o operador so via "o braco nao se move"). Mesmo tratamento dos nos MTC:
-    # URDF/SRDF locais como parametro, deterministico, sem corrida.
+    # --- Commander (use_commander; ferramenta de bancada, nao faz parte da missao) ---
+    # URDF/SRDF locais como parametro (mesmo tratamento dos nos MTC): sem isso
+    # o commander corria contra o robot_state_publisher da Pi, morria no boot
+    # ("Could not find parameter robot_description") e /go_to_named_target
+    # ficava sem assinante em silencio.
     commander = Node(
         package="manip_commander",
-        executable="commmander",
+        executable="commander",
+        condition=IfCondition(use_commander),
         respawn=True,
         respawn_delay=5.0,
         parameters=[{
@@ -328,7 +321,7 @@ def generate_launch_description():
     )
 
 
-    # respawn (2026-08-07, achado do teste mock): se o no de pick/place morrer
+    # respawn: se o no de pick/place morrer
     # (ex.: SIGABRT interno do MoveIt), renasce sozinho em vez de deixar a
     # missao sem action server ate reiniciar o stack na mao.
     pick_action = Node(
@@ -353,10 +346,6 @@ def generate_launch_description():
                 LaunchConfiguration("grasp_min_effort_increase_nm"), value_type=float),
             "grasp_retry_attempts": ParameterValue(
                 LaunchConfiguration("grasp_retry_attempts"), value_type=int),
-            "switch_ik_after_failed_grasp": ParameterValue(
-                LaunchConfiguration("switch_ik_after_failed_grasp"), value_type=bool),
-            "attempt_1_ik_solver": LaunchConfiguration("attempt_1_ik_solver"),
-            "attempt_2_ik_solver": LaunchConfiguration("attempt_2_ik_solver"),
             "attempt_3_ik_solver": LaunchConfiguration("attempt_3_ik_solver"),
             "attempt_3_ik_solve_type": LaunchConfiguration("attempt_3_ik_solve_type"),
             "attempt_3_ik_position_only": ParameterValue(
@@ -369,11 +358,6 @@ def generate_launch_description():
                 LaunchConfiguration("attempt_3_goal_position_tolerance"), value_type=float),
             "attempt_3_goal_orientation_tolerance": ParameterValue(
                 LaunchConfiguration("attempt_3_goal_orientation_tolerance"), value_type=float),
-            "fallback_ik_solver": LaunchConfiguration("fallback_ik_solver"),
-            "fallback_ik_mode": LaunchConfiguration("fallback_ik_mode"),
-            "fallback_ik_solve_type": LaunchConfiguration("fallback_ik_solve_type"),
-            "fallback_ik_position_only": ParameterValue(
-                LaunchConfiguration("fallback_ik_position_only"), value_type=bool),
             "skip_failed_pick_after_retries": ParameterValue(
                 LaunchConfiguration("skip_failed_pick_after_retries"), value_type=bool),
             "container_state_file": container_state_file,
@@ -384,8 +368,8 @@ def generate_launch_description():
     )
 
     # Reset dos containers UMA vez por rodada (start do launch), nunca no
-    # (re)start de processo — verificacao adversarial 2026-08-10: o respawn
-    # do no de pick re-executava o reset e zerava o yaml com blocos a bordo.
+    # (re)start de processo: o respawn do no de pick re-executaria o reset e
+    # zeraria o yaml com blocos a bordo.
     reset_container_states_once = ExecuteProcess(
         condition=IfCondition(LaunchConfiguration("reset_container_states")),
         name="reset_container_states_once",
@@ -420,16 +404,15 @@ def generate_launch_description():
             "manipulator_lock_file": manipulator_lock_file,
             "robot_description": primitive_robot_description,
             "robot_description_semantic": robot_description_semantic_content,
-            # Verificacao adversarial 2026-08-10: os mesmos args de esforco do
-            # pick valem para o place — sem isso, ajustar o arg no launch so
-            # mudava o pick e o place ficava nos defaults do codigo.
+            # Os mesmos args de esforco do pick valem para o place; sem isso o
+            # place ficaria nos defaults do codigo.
             "verify_grasp_effort": ParameterValue(
                 LaunchConfiguration("verify_grasp_effort"), value_type=bool),
             "grasp_min_effort_nm": ParameterValue(
                 LaunchConfiguration("grasp_min_effort_nm"), value_type=float),
             "grasp_min_effort_increase_nm": ParameterValue(
                 LaunchConfiguration("grasp_min_effort_increase_nm"), value_type=float),
-            # Multi-place (2026-08-21).
+            # Multi-place.
             "slot_selection_enabled": ParameterValue(
                 LaunchConfiguration("place_slot_selection"), value_type=bool),
             "slot_min_clearance_m": ParameterValue(
@@ -441,7 +424,7 @@ def generate_launch_description():
             "slot_obstacle_tag_frames": slot_obstacle_tag_frames,
             "max_pose_error_m": ParameterValue(
                 LaunchConfiguration("max_pose_error_m"), value_type=float),
-            # Superficie livre (2026-10-19).
+            # Superficie livre.
             "surface_place_enabled": ParameterValue(
                 LaunchConfiguration("place_surface_planner"), value_type=bool),
             "surface_wall_lidar_enabled": ParameterValue(
@@ -449,7 +432,7 @@ def generate_launch_description():
         }],
     )
 
-    # --- AMT1 (2026-08-28): ordenacao das tags da mesa de precision placement ---
+    # --- AMT1: ordenacao das tags da mesa de precision placement ---
     # Servidor /amt1_sort. Cliente de /pick_tag e /place_tag (nao pega nem
     # solta sozinho); so move o braco para OBSERVAR a mesa, por isso recebe
     # os mesmos URDF/SRDF locais, o mesmo lock e o mesmo yaml dos containers.
@@ -473,15 +456,15 @@ def generate_launch_description():
             # Altura do cubo: tampo = z da tag - cube_height_m (o place soma
             # stack_place_z_offset ao soltar).
             "cube_height_m": 0.042,
-            # Busca de tag que falta (2026-08-29, pedido do operador): gira
+            # Busca de tag que falta: gira
             # SO a j1 ("j1"); "base" = anda de lado; "j1_then_base" = os dois.
             "search_mode": "j1",
             "search_j1_offsets_deg": [-30.0, 30.0, -60.0, 60.0],
-            # 2026-08-31 (pedido do operador, validado em teste): observa de
-            # tag_direita e depois tag_esquerda (j2=0 no SRDF nas duas).
+            # Observa de tag_direita e depois tag_esquerda (j2=0 no SRDF nas
+            # duas; validado em teste 2026-08-31).
             "observe_poses": ["tag_direita", "tag_esquerda"],
             "reobserve_poses": ["tag_direita", "tag_esquerda"],
-            # Precisao do place (2026-08-29): re-registro local antes de cada
+            # Precisao do place: re-registro local antes de cada
             # place e passe de verificacao/ajuste (tolerancia 15 mm).
             "place_local_reregister": True,
             "verify_after_sort": True,
@@ -511,11 +494,11 @@ def generate_launch_description():
                     "enable_color": "true",
                     "enable_depth": "true",
                     "publish_tf": "false",
-                    # 2026-08-07: resolucao/fps reduzidos (default era
-                    # 1280x720@30). O pick acontece com o robo PARADO a ~30cm
-                    # da tag (>100px mesmo em 480p); full-res so servia para o
-                    # apriltag comer 125% de CPU e afogar o Nav2. O perfil vem
-                    # do arg camera_profile (USB2 vs USB3 — ver declaracao).
+                    # Resolucao/fps reduzidos (default do driver e 1280x720@30):
+                    # o pick acontece com o robo PARADO a ~30cm da tag (>100px
+                    # mesmo em 480p); full-res so servia para o apriltag comer
+                    # 125% de CPU e afogar o Nav2. O perfil vem do arg
+                    # camera_profile (USB2 vs USB3 — ver declaracao).
                     "rgb_camera.color_profile": camera_profile,
                     "depth_module.depth_profile": camera_profile,
                 }.items(),
@@ -538,7 +521,7 @@ def generate_launch_description():
         executable="apriltag_node",
         prefix="nice -n 15",
         output="screen",
-        # Item 3.7: percepcao morta no meio de uma missao deixava o pick cego
+        # Percepcao morta no meio de uma missao deixava o pick cego
         # ate o fim da rodada.
         respawn=True,
         respawn_delay=3.0,
@@ -553,7 +536,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- Detector de containers por cor (2026-08-25) ---
+    # --- Detector de containers por cor ---
     # Segmentacao HSV + ray-cast no plano da borda (a profundidade do D455
     # nao alcanca a mesa daqui). Publica TF manip_base_link -> ct_vermelho /
     # ct_azul so enquanto ve o container e so durante o place (/manip/
@@ -573,7 +556,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- Mapa da mesa (superficie livre, 2026-10-19) ---
+    # --- Mapa da mesa (superficie livre) ---
     # Segmenta o tampo branco e projeta cada celula de 1 cm no plano do tampo
     # (cota em /manip/table_plane_z, do place). Publica nav_msgs/OccupancyGrid
     # em /manip/workstation_surface/grid (frame manip_base_link) enquanto
@@ -598,7 +581,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- Gate da percepcao (adendo da auditoria 2026-08-07) ---
+    # --- Gate da percepcao ---
     # A camera so streama durante pick/place. Desacoplado: sem este no, tudo
     # se comporta como antes (camera sempre ligada). Ver o docstring do script.
     perception_gate = Node(
@@ -725,7 +708,7 @@ def generate_launch_description():
 
     # A RealSense entra por IncludeLaunchDescription (sem como aplicar prefix):
     # renice apos o driver subir. Mesma justificativa do nice do apriltag.
-    # Item 3.7: era um one-shot de 12 s — o driver respawnado voltava com
+    # Era um one-shot de 12 s: o driver respawnado voltava com
     # prioridade normal e roubava CPU do Nav2 sem ninguem perceber. Agora e um
     # loop leve (uma varredura a cada 10 s; renice em pid ja nicado e no-op).
     renice_camera = TimerAction(

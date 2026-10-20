@@ -1,9 +1,10 @@
 #include "manip_bt/amt1_sort_bt.hpp"
 
+#include "manip_bt/bt_node_name.hpp"
+
 #include <rclcpp_action/exceptions.hpp>
 
 #include <cmath>
-#include <cstdint>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -17,7 +18,7 @@ namespace
 {
 rclcpp::Logger logger()
 {
-  return rclcpp::get_logger("Amt1SortBT");
+  return rclcpp::get_logger("amt1_sort_bt");
 }
 
 std::string joinIds(const std::vector<int32_t> & ids)
@@ -33,10 +34,7 @@ std::string joinIds(const std::vector<int32_t> & ids)
 Amt1SortBT::Amt1SortBT(const std::string & name, const BT::NodeConfiguration & config)
 : BT::StatefulActionNode(name, config)
 {
-  const auto node_name =
-    std::string("bt_amt1_sort_client_") +
-    std::to_string(static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(this)));
-  node_ = std::make_shared<rclcpp::Node>(node_name);
+  node_ = std::make_shared<rclcpp::Node>(leafNodeName("bt_amt1_sort_", name));
   // Nome ABSOLUTO, como /pick_tag e /place_tag.
   session_.client = rclcpp_action::create_client<Amt1Sort>(node_, "/amt1_sort");
 }

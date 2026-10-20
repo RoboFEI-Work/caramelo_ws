@@ -55,7 +55,7 @@ class _RateMonitor:
 
 class HealthMonitor(Node):
     def __init__(self):
-        super().__init__("caramelo_health_monitor")
+        super().__init__("health_monitor")
 
         self.declare_parameter("publish_period", 1.0)
         self.declare_parameter("scan_topic", "/scan")
@@ -108,7 +108,7 @@ class HealthMonitor(Node):
         self._nav_fut = None
 
         self.create_timer(self._period, self._tick)
-        self.get_logger().info("caramelo_health_monitor publicando em /diagnostics")
+        self.get_logger().info("health_monitor publicando em /diagnostics")
 
     # ------------------------------------------------------------- servicos
     def _poll_services(self):

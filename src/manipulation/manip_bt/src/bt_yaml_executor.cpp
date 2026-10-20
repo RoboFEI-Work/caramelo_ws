@@ -1,8 +1,27 @@
+// bt_yaml_executor: le a lista de acoes (goto/pick/place/home/amt1_sort)
+// gerada pelo task_planner, monta a arvore de comportamento em XML e a executa
+// com as folhas GoToWS, PickTag, PlaceTag, ReachQueue, NudgeBase, Amt1Sort e
+// GoToNamedPose. Quem chama: caramelo_navigation/scripts/run_mission.py.
+//
+// Uso: bt_yaml_executor <actions.yaml> [--dry-run] --ros-args -p map_folder:=...
+//   --dry-run  so imprime o plano e o XML gerado (nao executa nada).
+// Parametros principais (ros-args):
+//   map_folder / map_name      pasta do mapa (docking.yaml, service_areas.yaml,
+//                              ws_table_mapping.yaml); obrigatorio sem simulacao
+//   simulate_navigation        GoToWS/NudgeBase viram mocks (manipulacao real)
+//   finish_dock_id, startup_home, startup_pose_name
+//   align_timeout, nav_timeout, max_staging_time, max_undocking_time,
+//   use_lidar_refine, skip_align, use_opennav_approach, nudge_timeout
+//   skip_unreachable_station   goto falhou => pula o bloco da estacao
+//   reach_queue_enabled, reach_queue_ws_prefixes, reach_queue_max_nudges,
+//   reach_queue_max_shift_m, reach_queue_min_shift_m
+//   amt1_timeout, amt1_stage_timeout
+// Saida: 0 ok, 1 falha, 2 argumentos errados, 130 interrompido (Ctrl-C).
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <rclcpp/rclcpp.hpp>
 #include <yaml-cpp/yaml.h>
@@ -73,7 +92,7 @@ public:
     getInput("dock_id", dock_id);
 
     RCLCPP_INFO(
-      rclcpp::get_logger("SimulatedGoToWS"),
+      rclcpp::get_logger("simulated_go_to_ws"),
       "[SIMULADO] Indo para %s (%s%s%s)...",
       dock_id.empty() ? ws.c_str() : dock_id.c_str(),
       ws.c_str(),
@@ -95,7 +114,7 @@ public:
   }
 };
 
-// Mock do ajuste lateral (2026-08-28, fila de alcance) para simulate_navigation:
+// Mock do ajuste lateral (fila de alcance) para simulate_navigation:
 // MESMAS portas do NudgeBase real. So loga e espera 1 s — a base NAO se move
 // e nada e publicado (o /manip/base_shift_total e do dock_align_node), entao
 // um pick/place "fora de alcance" continua fora de alcance ate a passada final.
@@ -124,7 +143,7 @@ public:
     getInput("ws", ws);
 
     RCLCPP_WARN(
-      rclcpp::get_logger("SimulatedNudgeBase"),
+      rclcpp::get_logger("simulated_nudge_base"),
       "[SIMULADO] ajuste lateral %+.2f m; base NAO se move (%s)", dy, ws.c_str());
 
     // Espera de 1 s em fatias de 100 ms para o Ctrl-C nao ficar preso.
@@ -138,23 +157,23 @@ public:
   }
 };
 
+// Caminho literal (absoluto ou relativo ao CWD); sem fallback por share.
 std::string resolveActionsYamlPath(const std::string & input_path)
 {
-  namespace fs = std::filesystem;
-
-  // Caminho literal (absoluto ou relativo ao CWD) vale como dado.
-  if (fs::exists(input_path)) {
+  if (std::filesystem::exists(input_path)) {
     return input_path;
   }
+  throw std::runtime_error("actions.yaml nao encontrado: " + input_path);
+}
 
-  const fs::path share_candidate =
-    fs::path(ament_index_cpp::get_package_share_directory("manip_bt")) / "behavior_tree_manip" /
-    input_path;
-  if (fs::exists(share_candidate)) {
-    return share_candidate.string();
-  }
-
-  throw std::runtime_error("Could not find actions yaml: " + input_path);
+void printUsage()
+{
+  std::cerr
+    << "Uso: bt_yaml_executor <actions.yaml> [--dry-run] --ros-args -p map_folder:=/caminho\n"
+    << "  actions.yaml  lista de acoes gerada pelo task_planner\n"
+    << "  --dry-run     imprime o plano e o XML da arvore sem executar\n"
+    << "  map_folder    pasta do mapa (ou -p map_name:=<mapa>); sem mapa so com\n"
+    << "                -p simulate_navigation:=true" << std::endl;
 }
 
 std::string escapeXmlAttr(const std::string & value)
@@ -225,11 +244,11 @@ struct MissionBuildContext
   std::string finish_dock_id;
   bool startup_home{true};
   std::string startup_pose_name{"home"};
-  // 2026-08-18 (pedido do operador): GoToWS falhou depois de todos os retries
-  // internos do align => PULA o bloco da estacao (picks/places dela) e a
-  // missao segue — nao perder a task inteira por uma mesa inacessivel.
+  // GoToWS falhou depois de todos os retries internos do align => PULA o
+  // bloco da estacao (picks/places dela) e a missao segue, para nao perder
+  // a task inteira por uma mesa inacessivel.
   bool skip_unreachable_station{true};
-  // 2026-08-28: FILA DE ALCANCE por estacao (<ReachQueue>): picks/places de
+  // FILA DE ALCANCE por estacao (<ReachQueue>): picks/places de
   // uma mesa comum (prefixos abaixo) rodam numa fila que adia os "fora de
   // alcance", ajusta a base de lado (NudgeBase, ate max_nudges vezes) e
   // termina com a passada final. false = XML identico ao de antes.
@@ -307,7 +326,9 @@ void emitGoToWs(
   blackboard->set(dock_key, dock_id);
   blackboard->set(use_dock_key, use_docking);
 
-  xml << "      <GoToWS ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
+  // name= vira o nome do no rclcpp da folha (bt_go_to_ws_goto_<i>).
+  xml << "      <GoToWS name=\"goto_" << action_index << "\" ws=\""
+      << escapeXmlAttr(blackboardPort(ws_key))
       << "\" mesa=\"" << escapeXmlAttr(blackboardPort(mesa_key))
       << "\" dock_id=\"" << escapeXmlAttr(blackboardPort(dock_key))
       << "\" use_docking=\"" << escapeXmlAttr(blackboardPort(use_dock_key))
@@ -339,7 +360,7 @@ std::string buildTreeXmlFromActions(
   // nunca colide com action_<i>_* nem com o epilogo (N/N+1).
   if (ctx.startup_home) {
     blackboard->set("prologue_pose_name", ctx.startup_pose_name);
-    xml << "      <GoToNamedPose pose_name=\""
+    xml << "      <GoToNamedPose name=\"home_prologo\" pose_name=\""
         << escapeXmlAttr(blackboardPort("prologue_pose_name")) << "\"/>\n";
     ctx.plan_rows.push_back("[ini] " + ctx.startup_pose_name + " (prologo automatico)");
   }
@@ -348,7 +369,7 @@ std::string buildTreeXmlFromActions(
   std::string current_station_ws;    // 'ws' do ultimo goto (p/ o place legado sem 'ws')
   std::string current_station_mesa;  // mesa do ultimo goto (fallback do amt1_sort)
 
-  // Bloco de estacao com skip (2026-08-18, pedido do operador): cada goto de
+  // Bloco de estacao com skip: cada goto de
   // estacao dockavel abre um <Fallback><Inverter><GoToWS/></Inverter>
   // <Sequence>picks/places</Sequence></Fallback>. GoToWS falhou (depois dos
   // retries internos do align) => Inverter vira SUCCESS => a Fallback fecha
@@ -369,10 +390,10 @@ std::string buildTreeXmlFromActions(
       station_has_actions = false;
     };
 
-  // Fila de alcance (2026-08-28): abre no 1o pick/place depois do goto de uma
+  // Fila de alcance: abre no 1o pick/place depois do goto de uma
   // estacao elegivel (dock+align e prefixo WS_/PP_) e fecha — com o NudgeBase
   // como ultimo filho — em home, goto ou no fim das acoes. UMA fila por
-  // estacao (revisao 28/08): um home no meio da estacao fecha a fila e os
+  // estacao: um home no meio da estacao fecha a fila e os
   // picks/places seguintes da MESMA estacao saem FORA dela (XML antigo,
   // final_attempt=true) — o orcamento de max_nudges vale por estacao, nao
   // por fila.
@@ -386,7 +407,8 @@ std::string buildTreeXmlFromActions(
       if (!queue_open) {
         return;
       }
-      xml << "      <NudgeBase dy=\"" << escapeXmlAttr(blackboardPort(queue_shift_key))
+      xml << "      <NudgeBase name=\"nudge_" << station_goto_index << "\" dy=\""
+          << escapeXmlAttr(blackboardPort(queue_shift_key))
           << "\" timeout=\"{nudge_timeout}\""
           << " ws=\"" << escapeXmlAttr(blackboardPort(station_ws_key)) << "\"/>\n";
       xml << "      </ReachQueue>\n";
@@ -450,8 +472,8 @@ std::string buildTreeXmlFromActions(
       setStringOnBlackboard(blackboard, i, "pose_name", pose_name);
 
       close_reach_queue();
-      xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
-          << "\"/>\n";
+      xml << "      <GoToNamedPose name=\"home_" << i << "\" pose_name=\""
+          << escapeXmlAttr(blackboardPort(pose_name_key)) << "\"/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] home  pose=" + pose_name);
@@ -516,7 +538,7 @@ std::string buildTreeXmlFromActions(
       const std::string tag_frame_key = actionBlackboardKey(i, "tag_frame");
       setStringOnBlackboard(blackboard, i, "tag_frame", tag_frame);
 
-      // 2026-08-12: repassa a mesa tambem no pick — a prateleira (MesaSh) tem
+      // Repassa a mesa tambem no pick: a prateleira (MesaSh) tem
       // sequencia propria de movimentos. Opcional de proposito: actions.yaml
       // antigo (sem table_pose no pick) continua valendo e cai no
       // comportamento de mesa comum.
@@ -548,7 +570,7 @@ std::string buildTreeXmlFromActions(
       setStringOnBlackboard(blackboard, i, "tag_frame", tag_frame);
       setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
 
-      // 2026-08-21: o 'ws' agora viaja ate o no de place (escolha de slot na
+      // O 'ws' viaja ate o no de place (escolha de slot na
       // mesa comum e guarda de PP/SH). Preferencia: 'ws' da propria acao
       // (task_planner sempre grava); yaml de baixo nivel sem 'ws' herda a
       // estacao do ultimo goto; sem nada = vazio (comportamento legado).
@@ -562,7 +584,7 @@ std::string buildTreeXmlFromActions(
       const std::string ws_key = actionBlackboardKey(i, "ws");
       setStringOnBlackboard(blackboard, i, "ws", place_ws);
 
-      // 2026-08-24: EMPILHAR — `stack_on: tag_4` = soltar este objeto em cima
+      // EMPILHAR: `stack_on: tag_4` = soltar este objeto em cima
       // do objeto da tag_4 (ja na mesa da MESMA estacao). table_pose continua
       // obrigatorio (altura da mesa; fallback se a base nao for vista).
       // Validacao fail-fast: frame TF plausivel e diferente do proprio objeto.
@@ -582,7 +604,7 @@ std::string buildTreeXmlFromActions(
       const std::string stack_on_key = actionBlackboardKey(i, "stack_on");
       setStringOnBlackboard(blackboard, i, "stack_on", stack_on);
 
-      // 2026-08-25: CONTAINER POR COR — `container_color: RED|BLUE` = soltar
+      // CONTAINER POR COR: `container_color: RED|BLUE` = soltar
       // dentro do container dessa cor visto pela camera na mesa de destino
       // (fallback: mesa). Fail-fast: cor conhecida e nunca junto com stack_on.
       std::string container_color;
@@ -617,7 +639,7 @@ std::string buildTreeXmlFromActions(
       const std::string container_color_key = actionBlackboardKey(i, "container_color");
       setStringOnBlackboard(blackboard, i, "container_color", container_color);
 
-      // 2026-10-19: SUPERFICIE LIVRE — paredes ao lado da mesa (rulebook 4.4:
+      // SUPERFICIE LIVRE: paredes ao lado da mesa (rulebook 4.4:
       // 10 cm da parede). Preferencia: `wall_sides` da propria acao (lista ou
       // string "left,right"); senao o bloco ws_walls do ws_table_mapping.yaml
       // do mapa para a estacao do place; senao vazio (sem parede).
@@ -678,7 +700,7 @@ std::string buildTreeXmlFromActions(
       continue;
     }
 
-    // AMT1 (2026-08-28): ordenar as tags da mesa de precisao. UMA folha
+    // AMT1: ordenar as tags da mesa de precisao. UMA folha
     // <Amt1Sort/> cliente do /amt1_sort (a rotina inteira — observar,
     // planejar, picks/places nos slots e nudge — roda no server). Exige um
     // goto anterior: a estacao e a do ultimo goto; fecha a fila de alcance
@@ -717,7 +739,7 @@ std::string buildTreeXmlFromActions(
 
       // expected_tags: lista de ints no yaml (task_planner) ou string "1,2,3".
       // Vira a string "1,2,3" na blackboard — a folha converte para int32[].
-      // Qualquer erro de leitura sai com o indice da acao (achado 11).
+      // Qualquer erro de leitura sai com o indice da acao.
       std::vector<int> expected_tags;
       const YAML::Node tags_node = action["expected_tags"];
       try {
@@ -780,8 +802,8 @@ std::string buildTreeXmlFromActions(
       }
       // max_onboard: 0..3, como no Amt1Sort.action e no no (0 = todos os
       // containers vazios). Chave ausente => 3. Valor nao-inteiro ("tres") e
-      // erro com o indice da acao — antes as<int>(3) engolia e virava 3 em
-      // silencio (achado 11).
+      // erro com o indice da acao (as<int>(3) engoliria e viraria 3 em
+      // silencio).
       int max_onboard = 3;
       if (action["max_onboard"] && !action["max_onboard"].IsNull()) {
         try {
@@ -855,11 +877,10 @@ std::string buildTreeXmlFromActions(
     const std::size_t goto_index = actions.size() + 1;
     const std::string pose_name_key = actionBlackboardKey(home_index, "pose_name");
     blackboard->set(pose_name_key, std::string("home"));
-    xml << "      <GoToNamedPose pose_name=\"" << escapeXmlAttr(blackboardPort(pose_name_key))
-        << "\"/>\n";
-    // Item 3.9: o docking do FINISH era `false` cravado — se a arena definir
-    // o FINISH como estacao com dock, o epilogo chegava perto e parava sem
-    // encostar. Agora pergunta ao mapa, com o mesmo fallback do goto normal.
+    xml << "      <GoToNamedPose name=\"home_" << home_index << "\" pose_name=\""
+        << escapeXmlAttr(blackboardPort(pose_name_key)) << "\"/>\n";
+    // O docking do FINISH pergunta ao mapa (mesmo fallback do goto normal):
+    // se a arena definir o FINISH como estacao com dock, o epilogo encosta.
     const bool finish_use_docking = ctx.map_config ?
       ctx.map_config->useDocking(finish_id) :
       (finish_id != "START" && finish_id != "FINISH");
@@ -888,7 +909,7 @@ int main(int argc, char ** argv)
   int exit_code = 0;
   try {
     const std::vector<std::string> args = rclcpp::remove_ros_arguments(argc, argv);
-    std::string input_yaml = "bmtt.yaml";
+    std::string input_yaml;
     bool dry_run = false;
     for (std::size_t i = 1; i < args.size(); ++i) {
       if (args[i] == "--dry-run") {
@@ -897,8 +918,13 @@ int main(int argc, char ** argv)
         input_yaml = args[i];
       }
     }
+    if (input_yaml.empty()) {
+      printUsage();
+      rclcpp::shutdown();
+      return 2;
+    }
 
-    auto node = std::make_shared<rclcpp::Node>("mission_executor");
+    auto node = std::make_shared<rclcpp::Node>("bt_yaml_executor");
     const std::string map_folder_param =
       node->declare_parameter<std::string>("map_folder", "");
     const std::string map_name_param =
@@ -913,13 +939,12 @@ int main(int argc, char ** argv)
 
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
-    // 30 -> 60 (2026-08-18): o align cobre o approach inteiro + retries.
-    // 60 -> 90 (2026-08-21, docking v4): 2 tentativas de ate 40 s (settle,
-    // esquadro, centragem e pulsos) + recuo entre elas cabem em 90; o
-    // GoToWS da +15 s e o recuo final usa esse tempo.
+    // 90 s: o align faz 2 tentativas de ate 40 s (settle, esquadro, centragem
+    // e pulsos) + recuo entre elas; o GoToWS da +15 s e o recuo final usa
+    // esse tempo (medido 2026-08-21, docking v4).
     blackboard->set("align_timeout", node->declare_parameter<double>("align_timeout", 90.0));
-    // Fluxo novo do docking (2026-08-18): Nav2 ate a staging + align com muro
-    // por LiDAR. true = ROLLBACK para o approach do opennav (/dock_robot).
+    // Docking = Nav2 ate a staging + align com muro por LiDAR.
+    // true = ROLLBACK para o approach do opennav (/dock_robot).
     blackboard->set(
       "use_opennav_approach",
       node->declare_parameter<bool>("use_opennav_approach", false));
@@ -928,23 +953,21 @@ int main(int argc, char ** argv)
     blackboard->set("nav_timeout", node->declare_parameter<double>("nav_timeout", 180.0));
     blackboard->set(
       "server_wait_timeout", node->declare_parameter<double>("server_wait_timeout", 10.0));
-    // Default true (2026-08-03): sem refino a missao alinha só pelo AMCL e
-    // herda o offset global (~cm) na hora critica. Desligar (debug):
+    // Default true: sem refino a missao alinha so pelo AMCL e herda o
+    // offset global (~cm) na hora critica. Desligar (debug):
     //   --ros-args -p use_lidar_refine:=false
     blackboard->set("use_lidar_refine", node->declare_parameter<bool>("use_lidar_refine", true));
     blackboard->set("skip_align", node->declare_parameter<bool>("skip_align", false));
-    // 2026-08-28 (fila de alcance): timeout do goal nudge_base (a base anda
+    // Fila de alcance: timeout do goal nudge_base (a base anda
     // <= 0,25 m; o servidor tem o proprio nudge_default_timeout quando 0).
     blackboard->set("nudge_timeout", node->declare_parameter<double>("nudge_timeout", 20.0));
-    // AMT1 (2026-08-28): prazo total do goal /amt1_sort e silencio maximo de
-    // feedback (o server manda heartbeat <= 5 s; um pick/place filho leva
-    // ate ~5 min com retries).
-    // amt1_timeout = 1800 s (achado 8): 6 picks + 6 places levam ~12-18 min,
-    // entao 900 s estourava no meio de um pick/place. Estourar o prazo total
-    // NAO cancela o goal: a folha Amt1SortBT so avisa (WARN, uma vez) e
-    // continua; o cancel de fato e SEMPRE e SO do watchdog de feedback
-    // (amt1_stage_timeout) — cancelar com cubo a bordo/braco no ar e pior
-    // que esperar o server terminar a op.
+    // AMT1: prazo total do goal /amt1_sort e silencio maximo de feedback
+    // (o server manda heartbeat <= 5 s; um pick/place filho leva ate ~5 min
+    // com retries). amt1_timeout = 1800 s porque 6 picks + 6 places levam
+    // ~12-18 min. Estourar o prazo total NAO cancela o goal: a folha
+    // Amt1SortBT so avisa (WARN, uma vez) e continua; o cancel de fato e
+    // SEMPRE e SO do watchdog de feedback (amt1_stage_timeout) — cancelar
+    // com cubo a bordo/braco no ar e pior que esperar o server terminar.
     blackboard->set("amt1_timeout", node->declare_parameter<double>("amt1_timeout", 1800.0));
     blackboard->set(
       "amt1_stage_timeout", node->declare_parameter<double>("amt1_stage_timeout", 300.0));
@@ -960,7 +983,7 @@ int main(int argc, char ** argv)
     // false = comportamento antigo (goto falhou => missao inteira falha).
     ctx.skip_unreachable_station =
       node->declare_parameter<bool>("skip_unreachable_station", true);
-    // Fila de alcance (2026-08-28). reach_queue_enabled:=false => XML
+    // Fila de alcance. reach_queue_enabled:=false => XML
     // identico ao de antes (folhas sem final_attempt => true).
     ctx.reach_queue_enabled = node->declare_parameter<bool>("reach_queue_enabled", true);
     ctx.reach_queue_ws_prefixes = node->declare_parameter<std::vector<std::string>>(
@@ -1048,7 +1071,7 @@ int main(int argc, char ** argv)
 
     RCLCPP_INFO(
       rclcpp::get_logger("bt_yaml_executor"),
-      "Running BT from actions yaml: %s (navegacao %s)",
+      "Executando a arvore do actions.yaml: %s (navegacao %s)",
       yaml_path.c_str(),
       simulate_navigation ? "SIMULADA" : "REAL");
 
@@ -1057,11 +1080,11 @@ int main(int argc, char ** argv)
     while (rclcpp::ok() && !g_interrupted) {
       status = tree.tickRoot();
       if (status == BT::NodeStatus::SUCCESS) {
-        RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "Behavior tree finished with SUCCESS");
+        RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "Arvore terminou com SUCESSO");
         break;
       }
       if (status == BT::NodeStatus::FAILURE) {
-        RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Behavior tree finished with FAILURE");
+        RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Arvore terminou com FALHA");
         exit_code = 1;
         break;
       }
@@ -1081,7 +1104,7 @@ int main(int argc, char ** argv)
       exit_code = 130;
     }
   } catch (const std::exception & ex) {
-    RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Execution failed: %s", ex.what());
+    RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Execucao falhou: %s", ex.what());
     rclcpp::shutdown();
     return 1;
   }

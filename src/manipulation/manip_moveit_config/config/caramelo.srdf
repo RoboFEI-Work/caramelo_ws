@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    SRDF do robo COMBINADO Caramelo (base movel + manipulador), correspondente a URDF
-    publicada pela Pi a partir de caramelo_description/urdf/robots/robot.urdf.xacro.
-    Nela a base do braco chama-se "manip_base_link" (filha de base_link via
+    SRDF do robo COMBINADO Caramelo (base movel + manipulador): a que o
+    move_group_caramelo.launch.py e o manip_stack.launch.py carregam. Corresponde
+    a URDF de caramelo_description/urdf/robots/robot.urdf.xacro (hardware_ws),
+    onde a base do braco se chama "manip_base_link" (filha de base_link via
     manipulator_mount_joint) e a raiz da arvore e base_footprint.
-    A manip.srdf continua sendo a SRDF da bancada standalone (braco sozinho,
-    onde a base do braco chama-se "base_link"). NAO apague nenhuma das duas.
+    As poses nomeadas (home, pegar_obj, Mesa*, tag_*, container*) vivem AQUI.
+    manip.srdf e a SRDF da bancada standalone (braco sozinho, raiz base_link),
+    desatualizada e mantida so para o move_group.launch.py/Setup Assistant.
 -->
 <!--This does not replace URDF, and is not an extension of URDF.
     This is a format for representing semantic information about the robot structure.
@@ -30,17 +32,10 @@
         <joint name="manip_joint7"/>
     </group>
     <!--GROUP STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is useful to define states like 'folded arms'-->
-    <!-- home regravado em 2026-08-10: joint3 era 2.3911, INALCANCAVEL. O servo
-         Dynamixel do joint3 nao aciona alem de ~2.17 rad (limite de posicao na
-         EEPROM): pedindo 2.30 ele para em 2.1702 com esforco baixo (-0.70 Nm),
-         ou seja, nao e batente mecanico nem falta de torque — ele simplesmente
-         recusa. Medido reproduzivel: as outras 4 juntas chegavam com erro
-         <0.011 rad e o joint3 travava em 2.1717, sempre. Resultado: TODA ida
-         ao home terminava em GOAL_TOLERANCE_VIOLATED. Ficava escondido porque
-         o GoToNamedPose antigo devolvia SUCCESS pelo fallback (removido na
-         Fase 3). 2.10 deixa ~0.07 rad de folga do limite.
-         Se um dia quiserem a pose original de volta, o caminho e subir o Max
-         Position Limit na EEPROM do servo — nao mexer aqui. -->
+    <!-- home: joint3 = 2.10 porque o servo nao aciona alem de ~2.17 rad (Max
+         Position Limit na EEPROM; medido 2026-08-10: travava em 2.1717 e toda
+         ida ao home dava GOAL_TOLERANCE_VIOLATED). Se quiserem o 2.3911
+         original, subir o limite na EEPROM do servo, nao mexer aqui. -->
     <group_state name="home" group="arm">
         <joint name="manip_joint1" value="1.5708"/>
         <joint name="manip_joint2" value="-1.5359"/>
@@ -76,11 +71,10 @@
         <joint name="manip_joint4" value="2.19911"/>
         <joint name="manip_joint5" value="-1.567"/>
     </group_state>
-    <!-- Pose de partida do pick em PRATELEIRA (shelf), 2026-08-12.
-         Graus: j1 90, j2 -56, j3 134, j4 80, j5 -90.
-         Separada do pegar_obj de proposito: aquela e usada pelas mesas comuns,
-         que ja estao validadas, e nao deve mudar. O ramo de shelf do
-         mtc_pick_action_node usa esta aqui como pose de partida e de retorno. -->
+    <!-- Pose de partida e retorno do pick em PRATELEIRA (ramo shelf do
+         mtc_pick_action_node). Graus: j1 90, j2 -56, j3 134, j4 80, j5 -90.
+         Separada do pegar_obj de proposito: aquela e das mesas comuns, ja
+         validadas, e nao deve mudar. -->
     <group_state name="pegar_obj_sh" group="arm">
         <joint name="manip_joint1" value="1.570796"/>
         <joint name="manip_joint2" value="-0.977384"/>
@@ -221,12 +215,10 @@
         <joint name="manip_joint4" value="1.6406"/>
         <joint name="manip_joint5" value="-1.5708"/>
     </group_state>
-    <!-- 2026-08-21: regravada como simetrica da Mesa15.2 (j1 = 1.5708 - 0.4887;
-         j2..j5 iguais a Mesa15). A versao anterior (-1.9373, -0.5411, -0.9948,
-         -1.5184, +1.6232) era a familia "de costas" do mesmo ponto: exigia girar
-         o joint1 em ~201 graus com o bloco na garra e tinha a menor folga sobre
-         o tampo (4,3 cm). FK esperada em base_footprint: (0.536, -0.170, 0.208).
-         VALIDAR NO ROBO antes de usar em prova. -->
+    <!-- Mesa15.1 = simetrica da Mesa15.2 (j1 = 1.5708 - 0.4887; j2..j5 iguais
+         a Mesa15), gravada 2026-08-21 no lugar da familia "de costas" (girava
+         o joint1 ~201 graus com bloco na garra). FK esperada em
+         base_footprint: (0.536, -0.170, 0.208). VALIDAR NO ROBO antes da prova. -->
     <group_state name="Mesa15.1" group="arm">
         <joint name="manip_joint1" value="1.0821"/>
         <joint name="manip_joint2" value="0.6458"/>
@@ -281,19 +273,12 @@
     <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
     <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
     <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
-    <!-- 2026-08-15: as malhas de colisao do braco sao grosseiramente super-
-         dimensionadas. Medido via /check_state_validity com o braco RETO PARA
-         CIMA (pirocao, todas as juntas em 0): 10 pares "em contato", inclusive
-         base_link x link5 (garra tocando o chassi com o braco esticado para
-         cima — fisicamente impossivel). Esses falsos positivos rejeitavam o
-         goal de QUALQUER plano para pirocao ("Insufficient states in
-         sampleable goal region", testes 2026-08-13 e 15), e o FCL para no
-         primeiro contato — corrigir um par so revelava o proximo. Todos os
-         pares abaixo foram levantados de uma vez com o servico e desabilitados
-         em bloco. A protecao real contra batida do braco sao as poses
-         ensinadas/validadas no robo e os limites de junta (j3 <= 2.6); se um
-         dia as malhas de colisao forem remodeladas com o tamanho certo,
-         reavaliar este bloco. -->
+    <!-- Pares abaixo desabilitados em bloco porque as malhas de colisao do
+         braco sao superdimensionadas: com o braco reto para cima (pirocao)
+         o /check_state_validity acusava 10 contatos impossiveis e rejeitava
+         qualquer plano (medido 2026-08-15). A protecao real sao as poses
+         validadas no robo e os limites de junta (j3 <= 2.6); se as malhas
+         forem remodeladas no tamanho certo, reavaliar este bloco. -->
     <disable_collisions link1="link2" link2="link4" reason="Never"/>
     <disable_collisions link1="link2" link2="link5" reason="Never"/>
     <disable_collisions link1="link1" link2="link3" reason="Never"/>
@@ -310,18 +295,16 @@
         NAO desabilitar base_link x link4/link5/fingers/camera_link: sao colisoes REAIS que o MoveIt deve evitar.-->
     <disable_collisions link1="base_link" link2="manip_base_link" reason="Adjacent"/>
     <disable_collisions link1="base_link" link2="link1" reason="Never"/>
-    <!--2026-07-23: com colisao PRIMITIVE (caixas envolventes), link2/link3 dobrados
-        sobre o chassi em home interpenetram ~1-2cm onde as malhas reais tem folga
-        (CheckStartStateCollision reprovava a pose home). Falso-positivo de bounding:
-        a protecao fisica do chassi segue nos pares ativos link4/link5/fingers/camera.-->
+    <!--Com colisao PRIMITIVE (caixas envolventes), link2/link3 dobrados sobre o
+        chassi em home interpenetram ~1-2cm onde as malhas reais tem folga (falso
+        positivo de bounding); a protecao do chassi segue nos pares ativos
+        link4/link5/fingers/camera.-->
     <disable_collisions link1="base_link" link2="link2" reason="Default"/>
     <disable_collisions link1="base_link" link2="link3" reason="Default"/>
-    <!--2026-08-07: mesmo falso-positivo de bounding acima, agora com as RODAS:
-        o caminho pre_container->home raspou a caixa da back_left_wheel no
-        ponto 60/76 (ValidateSolution: INVALID_MOTION_PLAN) e derrubou a missao
-        ja completa. Fisicamente link2/link3 nunca alcancam as rodas — a chapa
-        do chassi esta no meio, e a protecao real segue nos pares ATIVOS de
-        base_link x link4/link5/fingers/camera.-->
+    <!--Mesmo falso positivo de bounding com as RODAS (pre_container->home raspava
+        a caixa da back_left_wheel e derrubava a missao, 2026-08-07): link2/link3
+        nunca alcancam as rodas, a chapa do chassi esta no meio; a protecao real
+        segue nos pares ATIVOS de base_link x link4/link5/fingers/camera.-->
     <disable_collisions link1="link2" link2="front_left_wheel_link" reason="Never"/>
     <disable_collisions link1="link2" link2="front_right_wheel_link" reason="Never"/>
     <disable_collisions link1="link2" link2="back_left_wheel_link" reason="Never"/>

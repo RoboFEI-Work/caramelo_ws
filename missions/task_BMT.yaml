@@ -1,14 +1,17 @@
-#BMT
+# BMT1 - teste de Basic Manipulation Task: 3 cubos da WS_1 para a WS_4 (+1 decoy).
+# Montagem fisica: WS_1: cubos 21, 07 e 01 + o decoy 03; WS_4: vazia (recebe os 3).
+# Uso: ros2 run caramelo_navigation run_mission --map-name <mapa> --task missions/task_BMT.yaml
+
 task_id: BMT1
 name: Teste da BMT
 duration_min: 6
 active_service_areas: [WS_1, WS_4]
 
 objects:
-  - {id: 21, type: ATTC}    # objeto com a tag id 4 (frame tag_4) — BASE
-  - {id: 07, type: ATTC}
-  - {id: 01, type: ATTC}    # objeto com a tag id 1 (frame tag_1) — TOPO
-  - {id: 03, type: decoy}    # objeto com a tag id 3 (frame tag_3) — TOPO
+  - {id: 21, type: ATTC}    # tag_21: WS_1 -> WS_4
+  - {id: 07, type: ATTC}    # tag_7: WS_1 -> WS_4
+  - {id: 01, type: ATTC}    # tag_1: WS_1 -> WS_4
+  - {id: 03, type: decoy}    # decoy: ignorado pelo planner (fica na WS_1)
 containers: []
 
 start_state:

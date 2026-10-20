@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Manda o robo dockar num dock de docking.yaml via action /dock_robot do
+# opennav_docking (navega ate o staging e faz o approach uniciclo; NAO chama o
+# align_to_dock — a missao real usa GoToWS/run_mission). Quem usa: operador em teste.
+# Como roda: ros2 run caramelo_navigation dock_to --map-name <mapa> --dock-id WS1
 import argparse
 import sys
 

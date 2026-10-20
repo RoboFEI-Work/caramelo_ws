@@ -10,9 +10,9 @@ ament_python_install_package(${PROJECT_NAME})
 
 # Executavel chamavel por ros2 run
 install(PROGRAMS
-  scripts/health_aggregator.py
+  scripts/health_monitor.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME health_aggregator
+  RENAME health_monitor
 )
 
 install(DIRECTORY launch config

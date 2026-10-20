@@ -1,28 +1,21 @@
-# TAREFA COMPLETA (2026-08-25) — exercita TUDO com as tags 0..7:
-#   - pick na SHELF (tags 1 e 2 partem da SH_1)
-#   - place na SHELF (tag 0 termina na SH_1)
-#   - mesas diferentes (WS_1, WS_2 e WS_4)
-#   - EMPILHAR (tag 7 em cima da tag 3, na WS_4)
-#   - CONTAINERS por cor (tag 5 -> pote VERMELHO, tag 6 -> pote AZUL, na WS_1)
-#   - transferencias normais (tags 1, 2 e 4 -> WS_2)
+# Tarefa completa: shelf, mesas, pilha e container (8 cubos, ids 08..24).
+# Montagem fisica: SH_1: cubos 08 e 10; WS_1: vazia (recebe 12 e 18 - deixar
+#   espaco); WS_2: cubos 12, 14 e 18 + container VERMELHO com espaco livre
+#   (recebe 08, 10 e 20); WS_4: cubo 20 (recebe a pilha 24+14); WS_5: cubos 23 e 24.
+# Uso: ros2 run caramelo_navigation run_mission --map-name <mapa> --task missions/tarefa_completa_tags0a7.yaml
+#   (--dry-run so' mostra o plano; --simulate-nav testa a manipulacao parado)
 #
-# MONTAGEM FISICA antes de rodar:
-#   SH_1 (prateleira): cubos 1 e 2
-#   WS_1: cubos 0, 3 e 7 + os DOIS containers (vermelho e azul) com espaco livre
-#   WS_2: cubos 5 e 6 (mesa que RECEBE 1, 2 e 4 — deixar espaco)
-#   WS_4: cubo 4 (mesa que recebe a pilha 3+7)
-#   Obs.: tag_0 foi acrescentada em tags_36h11.yaml em 25/08 — o nó apriltag
-#   precisa ter reiniciado depois disso para enxerga-la.
-#
-# Rodar (com navegacao real):
-#   ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
-#     --task /home/linux24-04/caramelo_ws/missions/tarefa_completa_tags0a7.yaml
-#   (--dry-run so mostra o plano; --simulate-nav testa a manipulacao parado)
-#
-# Semantica (task_planner, 25/08): `containers: []` + objeto com `color:` que
-# termina em mesa comum FORA de pilha => place no container daquela cor
-# (deteccao por camera). Objetos sem `color:` = place normal. Pilha
-# (`stacks: [[03, 07]]`, de BAIXO para CIMA) e shelf nunca vao para container.
+# O que exercita:
+#   - pick na SHELF (08 e 10 partem da SH_1) e place na SHELF (23 termina na SH_1:
+#     tem color BLUE, mas prateleira nunca vai para container - nenhum pote azul);
+#   - EMPILHAR na WS_4 (14 em cima da 24; `stacks:` e' de BAIXO para CIMA);
+#   - CONTAINER por cor (20 RED -> pote vermelho na WS_2, achado pela camera);
+#   - transferencias normais (12 e 18 -> WS_1; sem `color:` = place na mesa).
+# Semantica (task_planner): `containers: []` + objeto com `color:` que termina em
+# mesa comum FORA de pilha => place no container daquela cor. Objetos sem `color:`
+# = place normal. Pilha e shelf nunca vao para container.
+# Obs.: o nome do arquivo vem da versao original com as tags 0..7; os ids abaixo
+# sao os atuais.
 
 task_id: TAREFA_COMPLETA_0A7
 name: Tudo em uma - shelf, mesas, pilha e containers (tags 0..7)
@@ -30,15 +23,15 @@ duration_min: 20
 active_service_areas: [WS_1, WS_2, WS_4, WS_5, SH_1]
 
 objects:
-  - {id: 08, type: ATTC}               # WS_1 -> SH_1 (place na prateleira)
+  - {id: 08, type: ATTC}               # SH_1 -> WS_2 (pick na prateleira)
   - {id: 10, type: ATTC}               # SH_1 -> WS_2 (pick na prateleira)
-  - {id: 12, type: ATTC}               # SH_1 -> WS_2 (pick na prateleira)
-  - {id: 14, type: ATTC}               # WS_1 -> WS_4 (BASE da pilha)
-  - {id: 18, type: ATTC}               # WS_4 -> WS_2 (transferencia normal)
-  - {id: 20, type: ATTC, color: RED}   # WS_2 -> container VERMELHO na WS_1
-  - {id: 23, type: ATTC, color: BLUE}  # WS_2 -> container AZUL na WS_1
-  - {id: 24, type: ATTC}               # WS_1 -> WS_4 (TOPO da pilha, sobre a 03)
-containers: []                         # potes SEM tag, achados por COR na WS_1
+  - {id: 12, type: ATTC}               # WS_2 -> WS_1 (transferencia normal, sem cor)
+  - {id: 14, type: ATTC}               # WS_2 -> WS_4 (TOPO da pilha, sobre a 24)
+  - {id: 18, type: ATTC}               # WS_2 -> WS_1 (transferencia normal, sem cor)
+  - {id: 20, type: ATTC, color: RED}   # WS_4 -> container VERMELHO na WS_2
+  - {id: 23, type: ATTC, color: BLUE}  # WS_5 -> SH_1 (prateleira: nunca vai para container)
+  - {id: 24, type: ATTC}               # WS_5 -> WS_4 (BASE da pilha)
+containers: []                         # potes SEM tag, achados por COR (vermelho na WS_2)
 
 start_state:
   SH_1:
@@ -62,7 +55,7 @@ finish_state:
     obj_ids: [23]
     cont_ids: []
   WS_1:
-    obj_ids: [12, 18]        # dentro dos containers vermelho/azul
+    obj_ids: [12, 18]        # place normal na mesa (sem cor)
     cont_ids: []
   WS_2:
     obj_ids: [08, 10, 20]
@@ -70,7 +63,7 @@ finish_state:
   WS_4:
     obj_ids: [24, 14]
     cont_ids: []
-    stacks: [[24, 14]]       # 07 em cima da 03
+    stacks: [[24, 14]]       # 14 em cima da 24 (de baixo para cima)
   WS_5:
     obj_ids: []
     cont_ids: []

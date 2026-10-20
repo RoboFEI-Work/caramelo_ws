@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Cria o service_areas.yaml (formato novo: type/final_robot_pose/table/docking)
+# de um mapa com as areas padrao e, com --sync-docking, deriva o docking.yaml.
+# Quem usa: operador ao preparar um mapa novo (docs/passo_a_passo_*.md).
+# Como roda: ros2 run caramelo_navigation init_service_areas --map <mapa> [--areas START WS1 ...] [--sync-docking]
 import argparse
 import sys
 

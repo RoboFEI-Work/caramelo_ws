@@ -1,4 +1,8 @@
-import os
+# Docking do Caramelo: opennav_docking (DockRobot/UndockRobot com docking.yaml
+# do mapa), dock_align_node (actions align_to_dock e nudge_base, parametros de
+# calibracao do ESC/muro abaixo) e dock_pose_recorder_node (/save_dock_pose).
+# Quem usa: incluido por navigation.launch.py com use_docking:=true (padrao).
+# Como roda sozinho: ros2 launch caramelo_navigation docking_server.launch.py map_name:=<mapa>
 from pathlib import Path
 
 import yaml
@@ -218,10 +222,10 @@ def _launch_setup(context, *args, **kwargs):
         ],
     )
 
-    # Alinhamento fino holonomico (action /align_to_dock): validado no robo em
-    # 2026-07-21 (erros ~1-2cm / ~1-2 graus). Pisos casados com o firmware novo
-    # dos ESCs. Antes nenhum launch subia o node e o botao da GUI/mission_runner
-    # dependia de rodar na mao.
+    # Alinhamento fino holonomico (actions align_to_dock e nudge_base):
+    # validado no robo em 2026-07-21 (erros ~1-2cm / ~1-2 graus). Pisos
+    # casados com o firmware novo dos ESCs. Clientes: GoToWS e NudgeBase BT
+    # (manip_bt), amt1_sort_action_node e a GUI (modulo Docking).
     dock_align = Node(
         package="caramelo_navigation",
         executable="dock_align_node",
@@ -244,18 +248,12 @@ def _launch_setup(context, *args, **kwargs):
             # aborta com 'sem_progresso' e loga o diagnostico.
             {"nudge_no_progress_s": 1.0},
             {"nudge_no_progress_min_m": 0.01},
-            # Refino LiDAR: distancia frontal robo->face na pose final.
-            # CALIBRADO 2026-07-23 na WS1 do arena3_520 (robo na pose ideal,
-            # "refino face: dist=0.403 m, largura=0.60 m, residuo=3 mm").
-            # Recalibrar se a pose ideal em relacao a mesa mudar.
-            # 0.403 -> 0.393 (2026-08-03): medido na pose ideal de manipulacao
-            # da WS1 (regua TF na face real; pose tambem re-gravada no banco).
-            # 0.393 -> 0.45 (2026-08-21, docking v5): o robo ENCOSTOU com o
-            # muro lendo 0.398 => ponta real ~0.40 (footprint 0.395). 0.45 =
-            # 5 cm de folga real; o corte a 0.48 + coast ~3 cm para em ~0.45.
-            # Poses de place ficam ~5,7 cm mais perto da borda — conferir as
-            # internas (Mesa15.1) no robo.
-            # 0.45 -> 0.43 (pedido do operador 22/08: 2 cm mais perto).
+            # Refino LiDAR: distancia frontal robo->face na pose final (m).
+            # Ponta real do robo ~0.40 m quando o muro le 0.398 (footprint
+            # 0.395): 0.38 = ultima calibracao em campo (2026-08-22, poses de
+            # place medidas com esse valor). Para recalibrar: robo na pose
+            # ideal e ler "refino face: dist=..." no log. Historico em
+            # docs/docking_alinhamento_holonomico.md.
             {"refine_desired_face_dist": 0.38},
             # ---- Seguranca do docking v4 (2026-08-21), explicita aqui ----
             # hard_min ACIMA do bico (antes 0.32 = bico 5,5 cm dentro da mesa:
@@ -265,7 +263,8 @@ def _launch_setup(context, *args, **kwargs):
             {"wall_max_scan_age": 0.2},
             # Janela de sucesso [stop-0.01, stop+band+0.01] = [0.41, 0.445].
             {"wall_hysteresis_band": 0.015},
-            # 2 tentativas (40 s cada) cabem no align_timeout de 90 s.
+            # v5: UMA tentativa (0 = sem retry); o laco de retry continua
+            # disponivel para testes (cada tentativa ~40 s, align_timeout 90 s).
             {"approach_retries": 0},
             # Reta curta (staging a ~0.35): 0.13 m/s limita o coast do ESC.
             {"max_vel_x": 0.13},

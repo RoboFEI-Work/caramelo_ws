@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Helpers for Caramelo docking files stored inside each map folder."""
+"""Funcoes comuns de docking do Caramelo: resolucao da pasta do mapa,
+leitura/escrita de docking.yaml e service_areas.yaml (com backup .bak) e
+gravacao da pose de um dock. Importado pelos scripts instalados em
+lib/caramelo_navigation (dock_align_node, CLIs de mapa, nos de service area)."""
 
 from __future__ import annotations
 

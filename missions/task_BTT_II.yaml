@@ -1,4 +1,8 @@
-#BTT2
+# BTT2 - teste de Basic Transportation Task: 5 cubos entre 4 mesas.
+# Montagem fisica: WS_1: cubos 02 e 04; WS_2: cubo 01; WS_4: cubo 05; WS_5: cubo 03.
+#   Destinos: 05 -> WS_1; 03 e 04 -> WS_2; 01 e 02 -> WS_4.
+# Uso: ros2 run caramelo_navigation run_mission --map-name <mapa> --task missions/task_BTT_II.yaml
+
 task_id: BTT2
 name: Teste da BTT2
 duration_min: 8

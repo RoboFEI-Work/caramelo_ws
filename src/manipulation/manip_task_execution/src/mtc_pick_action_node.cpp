@@ -1,11 +1,18 @@
+// mtc_pick_action_node: servidor da action /pick_tag (my_robot_msgs/PickTag),
+// no pick_action_server: pega o bloco da tag pedida (mesa comum ou prateleira,
+// escada de inclinacao 0/15/30 com a IK propria custom_ik), confere a pega pelo
+// esforco da garra (/dynamic_joint_states) e guarda o bloco num container de
+// bordo livre (container_state_store, yaml container_state_file). Alvo visto
+// mas fora de alcance => result.unreachable + suggested_base_shift_m
+// (reach_shift); quem move a base e o ReachQueue/NudgeBase do manip_bt.
+// Apesar do prefixo 'mtc', nao usa MoveIt Task Constructor: move o braco pelo
+// MoveGroupInterface. flock em manipulator_lock_file: um no move o braco por
+// vez. Sobe pelo manip_bringup/launch/manip_stack.launch.py (use_pick_place).
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <control_msgs/msg/dynamic_joint_state.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
-#include <moveit/task_constructor/solvers.h>
-#include <moveit/task_constructor/stages.h>
-#include <moveit/task_constructor/task.h>
 #include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 
@@ -46,8 +53,6 @@
 #include "manip_task_execution/reach_shift.hpp"
 #include "my_robot_msgs/action/pick_tag.hpp"
 
-namespace mtc = moveit::task_constructor;
-
 class PickActionServer : public rclcpp::Node
 {
 public:
@@ -65,7 +70,7 @@ public:
             std::make_unique<manip_task_execution::ManipulatorExecutionLock>(lock_file);
         if (!execution_lock_->valid()) {
             throw std::runtime_error(
-                "Failed to open manipulator lock file '" + lock_file + "': " +
+                "Falha ao abrir o arquivo de lock do manipulador '" + lock_file + "': " +
                 execution_lock_->error());
         }
 
@@ -93,19 +98,21 @@ public:
                     &reset_error)) {
                 RCLCPP_ERROR(
                     this->get_logger(),
-                    "Failed to reset container state file %s: %s",
+                    "Falha ao resetar o arquivo de estado dos containers %s: %s",
                     container_state_file_.c_str(),
                     reset_error.c_str());
             } else {
                 RCLCPP_INFO(
                     this->get_logger(),
-                    "Reset container state file to empty: %s",
+                    "Arquivo de estado dos containers resetado (todos vazios): %s",
                     container_state_file_.c_str());
             }
         }
 
-        // Ensure MTC PipelinePlanner can resolve OMPL params when this node is
-        // started outside the generated MoveIt launch.
+        // Defaults ompl.* mantidos por compatibilidade com launches antigos que
+        // passavam esses parametros ao no. Nada neste processo os le: o
+        // MoveGroupInterface delega o planejamento ao move_group, que carrega a
+        // propria config. Candidatos a cair apos conferir na bancada.
         if (!this->has_parameter("ompl.planning_plugins")) {
             this->declare_parameter<std::vector<std::string>>(
                 "ompl.planning_plugins",
@@ -140,8 +147,8 @@ public:
                 0.1);
         }
 
-        // Ensure MoveGroupInterface can instantiate IK for approximate targets
-        // when this node is started standalone (without MoveIt launch params).
+        // Garante que o MoveGroupInterface instancie a IK (pick_ik) para alvos
+        // aproximados quando o no sobe sem os parametros do launch do MoveIt.
         if (!this->has_parameter("robot_description_kinematics.arm.kinematics_solver")) {
             this->declare_parameter<std::string>(
                 "robot_description_kinematics.arm.kinematics_solver",
@@ -203,8 +210,8 @@ public:
                 0.0008);
         }
 
-        // Keep the top-level form as a compatibility fallback for existing
-        // launch files that pass config/kinematics.yaml directly to this node.
+        // Forma sem prefixo mantida por compatibilidade com launches antigos que
+        // passam config/kinematics.yaml direto a este no.
         if (!this->has_parameter("arm.kinematics_solver")) {
             this->declare_parameter<std::string>(
                 "arm.kinematics_solver",
@@ -1005,16 +1012,6 @@ private:
         return arm;
     }
 
-    std::shared_ptr<MoveGroupInterface> createArmInterfaceForAttempt(int attempt)
-    {
-        applyIkProfile(ikProfileForAttempt(attempt), ikProfileNameForAttempt(attempt));
-        auto arm = makeInterfaceWithTimeout("arm");
-        if (arm) {
-            configureArmInterface(arm);
-        }
-        return arm;
-    }
-
     void onDynamicJointState(
         const control_msgs::msg::DynamicJointState::SharedPtr message)
     {
@@ -1185,13 +1182,6 @@ private:
         active_gripper_ = gripper;
     }
 
-    void clearActiveInterfaces()
-    {
-        std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
-        active_arm_.reset();
-        active_gripper_.reset();
-    }
-
     void releaseExecutionResources()
     {
         publishPickActive(false);
@@ -1232,7 +1222,7 @@ private:
         return true;
     }
 
-    void publish_stage(
+    void publishStage(
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
         const std::string & stage)
     {
@@ -1621,7 +1611,7 @@ private:
         if (std::abs(delta) <= 0.03) {
             return false;  // ja aponta para la e a deteccao acabou de falhar: varredura
         }
-        publish_stage(goal_handle, "pointing_j1_at_last_seen");
+        publishStage(goal_handle, "pointing_j1_at_last_seen");
         RCLCPP_INFO(
             this->get_logger(),
             "[%s] %s vista ha %.0f s em [%.3f %.3f]: aponto a j1 (%+.2f rad) e re-detecto.",
@@ -1683,7 +1673,7 @@ private:
             // MUDA dentro do gap do estagio detecting_tag — o operador nao via
             // nada acontecer e o watchdog de 120s do BT contava o tempo todo
             // como "sem progresso". Cada passo agora publica.
-            publish_stage(
+            publishStage(
                 goal_handle,
                 "sweeping_for_tag_" + std::to_string(++step) + "_of_" +
                 std::to_string(static_cast<int>(offsets.size())));
@@ -1707,7 +1697,7 @@ private:
                 return true;
             }
         }
-        publish_stage(goal_handle, "sweep_returning_to_center");
+        publishStage(goal_handle, "sweep_returning_to_center");
         joints[0] = center;
         arm->setJointValueTarget(joints);
         if (!planAndExecute(arm, cycle_name + " sweep_return")) {
@@ -2182,7 +2172,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "shelf_phase1");
+        publishStage(goal_handle, "shelf_phase1");
         const std::array<double, 5> phase1{
             q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
@@ -2204,7 +2194,7 @@ private:
         };
 
         if (shelf_lift_q_) {
-            publish_stage(goal_handle, "shelf_phase2_pre_grasp");
+            publishStage(goal_handle, "shelf_phase2_pre_grasp");
             const std::array<double, 5> phase2a{
                 (*shelf_lift_q_)[0], (*shelf_lift_q_)[1], (*shelf_lift_q_)[2],
                 (*shelf_lift_q_)[3], kShelfWristJoint5};
@@ -2213,7 +2203,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "shelf_phase2");
+        publishStage(goal_handle, "shelf_phase2");
         const std::array<double, 5> phase2{
             q_grasp[0], q_grasp[1], q_grasp[2], q_grasp[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase2, cycle_name + " shelf fase2")) {
@@ -2227,7 +2217,7 @@ private:
         if (std::abs(shelf_phase3_j4_delta_deg_) > 1e-9 ||
             std::abs(shelf_phase3_j3_delta_deg_) > 1e-9)
         {
-            publish_stage(goal_handle, "shelf_phase3");
+            publishStage(goal_handle, "shelf_phase3");
             std::array<double, 5> phase3 = phase2;
             const manip_task_execution::ArmModel limits;
             phase3[2] = std::max(
@@ -2257,7 +2247,7 @@ private:
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
-        publish_stage(goal_handle, "shelf_retreat");
+        publishStage(goal_handle, "shelf_retreat");
 
         // Pegada "bottom" com pre-pega: sobe na vertical primeiro (descola o
         // bloco do tampo) e so entao volta a postura da fase 1.
@@ -2308,7 +2298,7 @@ private:
         const std::string & cycle_name,
         const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
-        publish_stage(goal_handle, "final_approach_custom_down");
+        publishStage(goal_handle, "final_approach_custom_down");
         last_table_grasp_target_.reset();
 
         // Fase 0 (2026-08-31, pedido do operador): IK com o TCP2 como
@@ -2337,7 +2327,7 @@ private:
             }
             if (out_pre == CustomIkOutcome::kOk) {
                 q_pre[4] = manip_task_execution::computeWristForCubeYaw(yaw_pre, q_pre[0], tilt_pre);
-                publish_stage(goal_handle, "pre_ik_tcp2");
+                publishStage(goal_handle, "pre_ik_tcp2");
                 RCLCPP_INFO(
                     this->get_logger(),
                     "[%s] pre-ponto TCP2 (tcp_z %.2f, %.0f graus): garra ~%.0f mm antes do alvo para re-detectar.",
@@ -2348,7 +2338,7 @@ private:
                         this->get_logger(), "[%s] pre-ponto TCP2: movimento falhou — sigo para a aproximacao normal.",
                         cycle_name.c_str());
                 } else {
-                    publish_stage(goal_handle, "re_detecting_at_tcp2");
+                    publishStage(goal_handle, "re_detecting_at_tcp2");
                     if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
                         return TableApproachResult::kMoveFailed;
                     }
@@ -2450,7 +2440,7 @@ private:
         // segue com a primeira solucao (WARN). Se de perto nao houver IK, o
         // alvo esta mesmo fora de alcance.
         if (recompute_ik_after_j1_ && cur.size() >= 5) {
-            publish_stage(goal_handle, "re_detecting_after_j1");
+            publishStage(goal_handle, "re_detecting_after_j1");
             if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
                 return TableApproachResult::kMoveFailed;
             }
@@ -2507,7 +2497,7 @@ private:
         // gripper_open, a pose normal da pega (dedos largos bateriam nos
         // cubos vizinhos). So' quando ainda esta na pose larga.
         if (gripper_wide_open_ && gripper) {
-            publish_stage(goal_handle, "gripper_open_before_descent");
+            publishStage(goal_handle, "gripper_open_before_descent");
             gripper->setStartStateToCurrentState();
             if (!gripper->setNamedTarget("gripper_open") ||
                 !planAndExecute(gripper, cycle_name + " gripper_open antes da descida"))
@@ -2545,7 +2535,7 @@ private:
         if (lift_after_grasp_m_ <= 0.0 || !last_table_grasp_target_) {
             return true;
         }
-        publish_stage(goal_handle, "lifting_after_grasp");
+        publishStage(goal_handle, "lifting_after_grasp");
         for (const double lift : {lift_after_grasp_m_, lift_after_grasp_m_ * 0.5}) {
             Eigen::Vector3d target = *last_table_grasp_target_;
             target.z() += lift;
@@ -2638,7 +2628,7 @@ private:
             return;
         }
 
-        publish_stage(goal_handle, "unreachable_check");
+        publishStage(goal_handle, "unreachable_check");
         manip_task_execution::ReachShiftOptions opts;
         opts.candidates_m = unreachable_shift_candidates_m_;
         opts.tilts_rad = tableDownTiltsRad();
@@ -2859,7 +2849,7 @@ private:
         // bloco vindo da estante — o retorno ja deixou o braco em
         // pegar_obj_sh; segue direto ao pre_container.
         if (!is_shelf) {
-            publish_stage(goal_handle, "returning_to_pegar_obj");
+            publishStage(goal_handle, "returning_to_pegar_obj");
             speak("Bloco seguro. Voltando para a pose de transporte");
             // Pedido do operador 2026-08-28: recolhe o braco (j2..j5) e so
             // depois gira a base (j1) - o bloco nao varre a mesa girando.
@@ -2879,8 +2869,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "going_pre_container");
-        //speak("Indo para a pre pose do container");
+        publishStage(goal_handle, "going_pre_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -2888,7 +2877,7 @@ private:
             return TransferOutcome::kFailHolding;
         }
 
-        publish_stage(goal_handle, "going_container");
+        publishStage(goal_handle, "going_container");
         speak("Levando o bloco para o " + container_pose);
         arm->setStartStateToCurrentState();
         arm->setNamedTarget(container_pose);
@@ -2896,16 +2885,14 @@ private:
             return TransferOutcome::kFailHolding;
         }
 
-        publish_stage(goal_handle, "opening_gripper");
-        //speak("Abrindo a garra para soltar o bloco");
+        publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, cycle_name + " open gripper")) {
             return TransferOutcome::kFailHolding;
         }
 
-        publish_stage(goal_handle, "going pre_container_final");
-        //speak("Saindo do container");
+        publishStage(goal_handle, "going pre_container_final");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -2958,8 +2945,7 @@ private:
         const std::shared_ptr<GoalHandlePickTag> & goal_handle,
         const std::string & cycle_name)
     {
-        publish_stage(goal_handle, "camera_xy_alignment");
-        //speak("Alinhando a camera em X e Y pela tag " + spokenTagName(tag_frame));
+        publishStage(goal_handle, "camera_xy_alignment");
 
         geometry_msgs::msg::TransformStamped tag_tf;
         if (!waitForTagTransform(
@@ -3048,7 +3034,7 @@ private:
     // era codigo morto — definido e nunca chamado; prometia um retry que
     // nao existia (parametro use_camera_alignment_retry sem efeito).
 
-    bool run_pick_cycle(
+    bool runPickCycle(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string & tag_frame,
@@ -3066,7 +3052,7 @@ private:
         // NOMEIA a causa em voz+log (pedido do operador). Falha pos-grasp
         // (transfer com bloco na garra) NAO seta o flag.
         retryable_failure = false;
-        publish_stage(goal_handle, "detecting_tag");
+        publishStage(goal_handle, "detecting_tag");
         speak("Procurando a tag " + spokenTagName(tag_frame));
         waitForCameraStream(cycle_name);
 
@@ -3093,7 +3079,7 @@ private:
         // mesa; em frente a estante ele so move o braco a toa perto da
         // estrutura. Deteccao e varredura continuam valendo nos dois casos.
         if (!is_shelf) {
-            publish_stage(goal_handle, "pre_approach");
+            publishStage(goal_handle, "pre_approach");
             if (!alignCameraToTagXY(
                     arm,
                     tag_frame,
@@ -3143,8 +3129,7 @@ private:
             if (strategy == TableIkStrategy::kMoveItPose) {
                 // Degrau 3+: caminho antigo do MoveIt/pick_ik, identico ao
                 // attempt 3 historico (enforce_pitch_pi era attempt < 3).
-                publish_stage(goal_handle, "final_approach");
-                //speak("Fazendo a aproximacao final da tag");
+                publishStage(goal_handle, "final_approach");
                 if (!moveToTarget(
                         arm,
                         tag_tf,
@@ -3217,8 +3202,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "closing_gripper");
-        //speak("Fechando a garra no bloco");
+        publishStage(goal_handle, "closing_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_close");
         if (!planAndExecute(gripper, cycle_name + " close gripper")) {
@@ -3237,7 +3221,7 @@ private:
         }
 
         if (verify_grasp_effort_) {
-            publish_stage(goal_handle, "verifying_grasp");
+            publishStage(goal_handle, "verifying_grasp");
             speak("Verificando o bloco pela forca da garra");
             if (!verifyGraspByEffort(*effort_before_close, cycle_name)) {
                 retryable_failure = true;
@@ -3355,7 +3339,7 @@ private:
                 fill_reach_fields(false);
                 execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
-                    result->message = "Pick canceled: " + message;
+                    result->message = "Pick cancelado: " + message;
                     goal_handle->canceled(result);
                 } else {
                     result->message = message;
@@ -3368,8 +3352,6 @@ private:
             return;
         }
 
-        //speak("Iniciando a rotina de pegar a tag " + spokenTagName(goal->tag_frame));
-
         std::string container_pose;
         std::string lookup_error;
         if (!container_state_store_->findFirstEmptyContainer(&container_pose, &lookup_error)) {
@@ -3379,7 +3361,6 @@ private:
             finish_failure(result->message);
             return;
         }
-        //speak("Container livre selecionado: " + container_pose);
 
         auto arm = createArmInterface(false);
         auto gripper = makeInterfaceWithTimeout("gripper");
@@ -3402,8 +3383,7 @@ private:
         gripper->setMaxVelocityScalingFactor(1.0);
         gripper->setMaxAccelerationScalingFactor(1.0);
 
-        publish_stage(goal_handle, "opening_gripper");
-        //speak("Abrindo a garra antes de pegar");
+        publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "open gripper")) {
@@ -3427,8 +3407,7 @@ private:
             is_shelf ? "PRATELEIRA" : "mesa comum",
             start_pose.c_str());
 
-        publish_stage(goal_handle, "going_pegar_obj");
-        //speak("Indo para a pose inicial de pegar");
+        publishStage(goal_handle, "going_pegar_obj");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(start_pose);
@@ -3460,7 +3439,7 @@ private:
         // nas tabuas. Falha aqui NAO derruba o pick (a garra ja esta aberta
         // pelo gripper_open de antes do movimento).
         if (!is_shelf && !start_gripper_pose_.empty()) {
-            publish_stage(goal_handle, "gripper_full_open_at_pegar_obj");
+            publishStage(goal_handle, "gripper_full_open_at_pegar_obj");
             gripper->setStartStateToCurrentState();
             if (!gripper->setNamedTarget(start_gripper_pose_) ||
                 !planAndExecute(gripper, start_gripper_pose_ + " em " + start_pose)) {
@@ -3510,7 +3489,7 @@ private:
                 speak("Tentativa de pegar numero " + std::to_string(attempt));
             }
 
-            cycle_success = run_pick_cycle(
+            cycle_success = runPickCycle(
                 arm,
                 gripper,
                 frame_to_pick,
@@ -3555,7 +3534,7 @@ private:
             }
 
             if (attempt < max_pick_attempts) {
-                publish_stage(goal_handle, "preparing_next_pick_attempt");
+                publishStage(goal_handle, "preparing_next_pick_attempt");
                 // Mesa: 1->2 repete a escada por cima com uma leitura NOVA
                 // da tag (2026-08-28: nao ha mais pega frontal), sem mexer
                 // nas tolerancias; a frase antiga so vale entrando no degrau
@@ -3570,8 +3549,7 @@ private:
                 }
             }
 
-            //speak("Vou abrir a garra e tentar pegar novamente");
-            publish_stage(goal_handle, "retrying_grasp");
+            publishStage(goal_handle, "retrying_grasp");
             RCLCPP_WARN(
                 this->get_logger(),
                 "Pick attempt %d/%d falhou (retentavel). Tentando de novo.",
@@ -3724,14 +3702,14 @@ private:
         }
 
         if (result->success) {
-            publish_stage(goal_handle, "done");
+            publishStage(goal_handle, "done");
             speak("Coleta concluida com sucesso");
             execution_guard.release();
             goal_handle->succeed(result);
         } else if (unreachable_bailout) {
             // Fila de alcance: nao e falha — o executor desloca a base e
             // volta. success=true + skipped=true + unreachable=true.
-            publish_stage(goal_handle, "skipped_unreachable");
+            publishStage(goal_handle, "skipped_unreachable");
             result->success = true;
             result->skipped = true;
             result->fail_reason = last_pick_failure_reason_;
@@ -3739,7 +3717,7 @@ private:
             std::snprintf(
                 shift_txt, sizeof(shift_txt), "%+.2f", last_suggested_shift_m_);
             result->message =
-                "Pick skipped: alvo visto mas fora de alcance (sugestao base " +
+                "Pick pulado: alvo visto mas fora de alcance (sugestao base " +
                 std::string(shift_txt) + " m)";
             speak(
                 std::string("O bloco está fora do meu alcance") +
@@ -3747,11 +3725,11 @@ private:
             execution_guard.release();
             goal_handle->succeed(result);
         } else if (!cycle_success && skip_failed_pick_after_retries_) {
-            publish_stage(goal_handle, "skipped_after_pick_retries");
+            publishStage(goal_handle, "skipped_after_pick_retries");
             result->success = true;
             result->skipped = true;  // item 2.5: contrato explicito
             result->fail_reason = last_pick_failure_reason_;
-            result->message = "Pick skipped after all retry attempts failed (" +
+            result->message = "Pick pulado apos esgotar as tentativas (" +
                 last_pick_failure_reason_ + ")";
             speak("Nao consegui pegar o bloco. Vou seguir para o proximo objetivo");
             execution_guard.release();

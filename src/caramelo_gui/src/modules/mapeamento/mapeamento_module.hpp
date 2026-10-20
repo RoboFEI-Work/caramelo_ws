@@ -2,8 +2,8 @@
 
 // Modulo Mapeamento: inicia/para o SLAM (caramelo_mapping/slam.launch.py, sem
 // RViz proprio — o mapa cresce no RViz embutido da GUI) e salva o mapa via
-// /map_saver/save_map. A trava SLAMxAMCL (RK-02) do launch continua valendo:
-// se a localizacao estiver ativa, o launch aborta e o erro aparece no log.
+// /map_saver_server/save_map. RK-02: se o AMCL parecer ativo o launch so AVISA
+// (nao aborta) e SLAM e AMCL passam a publicar map->odom; derrubar o Nav2 antes.
 
 #include <QWidget>
 

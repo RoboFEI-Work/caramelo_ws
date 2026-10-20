@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# No' que grava a pose atual do robo como dock ao receber o id em /save_dock_pose
+# (std_msgs/String "WS1" ou "WS1:caramelo_front_dock"): atualiza docking.yaml e,
+# por padrao, a entrada da service area (formato antigo). Quem usa: botao
+# "Salvar pose como dock" da GUI; subido por docking_server.launch.py.
+# Como roda: ros2 run caramelo_navigation dock_pose_recorder_node --ros-args -p map_name:=<mapa>
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node

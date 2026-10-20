@@ -3,7 +3,8 @@
 #include <rclcpp_action/exceptions.hpp>
 
 #include <cmath>
-#include <cstdint>
+
+#include "manip_bt/bt_node_name.hpp"
 
 using namespace std::chrono_literals;
 
@@ -14,25 +15,21 @@ namespace
 {
 rclcpp::Logger logger()
 {
-  return rclcpp::get_logger("GoToWSBT");
+  return rclcpp::get_logger("go_to_ws_bt");
 }
 }  // namespace
 
 GoToWSBT::GoToWSBT(const std::string & name, const BT::NodeConfiguration & config)
 : BT::StatefulActionNode(name, config)
 {
-  const auto node_name =
-    std::string("bt_go_to_ws_client_") +
-    std::to_string(static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(this)));
-
-  node_ = std::make_shared<rclcpp::Node>(node_name);
+  node_ = std::make_shared<rclcpp::Node>(leafNodeName("bt_go_to_ws_", name));
   undock_.client = rclcpp_action::create_client<UndockRobot>(node_, "/undock_robot");
   dock_.client = rclcpp_action::create_client<DockRobot>(node_, "/dock_robot");
-  // Nome RELATIVO de proposito — igual ao mission_runner/dock_align_node.
+  // Nome RELATIVO de proposito: e assim que o dock_align_node anuncia a action.
   align_.client = rclcpp_action::create_client<AlignToDock>(node_, "align_to_dock");
   nav_.client = rclcpp_action::create_client<NavigateToPose>(node_, "/navigate_to_pose");
-  // Voz (2026-08-18): a falha de estacao agora pode virar SKIP na missao —
-  // o operador precisa OUVIR que a mesa foi pulada, nao so ler o log.
+  // Voz: a falha de estacao pode virar SKIP na missao; o operador precisa
+  // OUVIR que a mesa foi pulada, nao so ler o log.
   speech_pub_ = node_->create_publisher<std_msgs::msg::String>("/manip/speech", 10);
 }
 
@@ -104,11 +101,10 @@ void GoToWSBT::cancel(Session<ActionT> & session)
     session.reset();
     return;
   }
-  // 2026-08-21 (campo): o halt chegava 0,2 s depois do send_goal, antes de o
-  // handle existir — o cancel virava no-op e o Nav2 seguiu navegando por 83 s
-  // depois do Ctrl-C. Agora espera o handle (ate 1 s) e a RESPOSTA do cancel
-  // (ate 0,5 s) — o processo encerra logo depois do halt e um cancel so
-  // enfileirado se perderia.
+  // O halt pode chegar antes de o handle existir (o cancel viraria no-op e
+  // o Nav2 seguiria navegando apos o Ctrl-C): espera o handle (ate 1 s) e a
+  // RESPOSTA do cancel (ate 0,5 s), pois o processo encerra logo depois do
+  // halt e um cancel so enfileirado se perderia.
   if (!session.handle && session.goal_future.valid()) {
     if (rclcpp::spin_until_future_complete(node_, session.goal_future, 1s) ==
       rclcpp::FutureReturnCode::SUCCESS)
@@ -226,7 +222,7 @@ bool GoToWSBT::startDispatch()
 {
   const double wait_timeout = paramOr("server_wait_timeout", 10.0);
   if (use_docking_ && !use_opennav_approach_) {
-    // Fluxo novo (2026-08-18): Nav2 ate a staging, align faz o approach.
+    // Fluxo padrao: Nav2 ate a staging, align faz o approach.
     return startStagingNav();
   }
   if (use_docking_) {
@@ -249,7 +245,7 @@ bool GoToWSBT::startDispatch()
     return true;
   }
 
-  // Navegacao PURA (START/FINISH): mesma semantica do mission_runner.navigate_to.
+  // Navegacao PURA (START/FINISH): NavigateToPose ate a pose do dock, sem docking.
   const auto info = mission_config_->dock(dock_id_);
   if (!info) {
     RCLCPP_ERROR(logger(), "[%s] pose nao encontrada no docking.yaml.", dock_id_.c_str());
@@ -284,10 +280,10 @@ bool GoToWSBT::startDispatch()
 
 bool GoToWSBT::startStagingNav()
 {
-  // Fluxo novo (2026-08-18): navega ate a STAGING pose (mesma conta do
-  // SimpleNonChargingDock) e deixa TODO o approach para o align_to_dock com
-  // muro por LiDAR — o /dock_robot uniciclo que empurrava contra a mesa so'
-  // roda no rollback (use_opennav_approach=true).
+  // Navega ate a STAGING pose (mesma conta do SimpleNonChargingDock) e deixa
+  // TODO o approach para o align_to_dock com muro por LiDAR; o /dock_robot
+  // uniciclo (que empurrava contra a mesa) so roda no rollback
+  // (use_opennav_approach=true).
   const double wait_timeout = paramOr("server_wait_timeout", 10.0);
   const auto info = mission_config_->dock(dock_id_);
   if (!info) {
@@ -349,7 +345,8 @@ bool GoToWSBT::startAlign()
   bool use_lidar_refine = false;
   config().blackboard->get("use_lidar_refine", use_lidar_refine);
   goal.use_lidar_refine = use_lidar_refine;
-  // 30 -> 60 (2026-08-18): o align agora cobre o approach inteiro + retries.
+  // Fallback 60 s so sem align_timeout no blackboard (o executor grava 90):
+  // o align cobre o approach inteiro + retries.
   goal.timeout = paramOr("align_timeout", 60.0);
   RCLCPP_INFO(logger(), "[%s] alinhamento fino holonomico...", dock_id_.c_str());
   align_.goal_future = align_.client->async_send_goal(goal);

@@ -14,9 +14,12 @@ Este script NAO usa rclpy diretamente: ele apenas orquestra os processos via
 `ros2 run`, no mesmo espirito dos demais utilitarios do pacote. Ctrl+C e'
 repassado como SIGINT ao executor, que faz o halt limpo da BT (nunca SIGKILL).
 
-Exemplos:
-  ros2 run caramelo_navigation run_mission --map-name arena2_520 --task BMT.yaml --dry-run
-  ros2 run caramelo_navigation run_mission --map-name arena2_520 --task BMT.yaml --simulate-nav --yes
+As tasks vivem em missions/ na raiz do workspace (fonte unica); --task e'
+um caminho absoluto ou relativo ao CWD, sem fallback para share de pacote.
+
+Exemplos (a partir da raiz do workspace):
+  ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/task_BMT.yaml --dry-run
+  ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/task_BMT.yaml --simulate-nav --yes
 """
 import argparse
 import datetime
@@ -45,9 +48,9 @@ def _parse_args(argv):
     p.add_argument("--map-dir", default=None,
                    help="Raiz alternativa dos mapas (opcional).")
     p.add_argument("--task", required=True,
-                   help="YAML da competicao (ex.: BMT.yaml). Caminho relativo que "
-                        "nao existir no CWD e' procurado no share de manip_bt "
-                        "(behavior_tree_manip/).")
+                   help="YAML da competicao (ex.: missions/task_BMT.yaml). Caminho "
+                        "absoluto ou relativo ao CWD; missions/ na raiz do "
+                        "workspace e' a fonte unica (sem fallback para share).")
     p.add_argument("--dry-run", action="store_true",
                    help="So gera e mostra o plano; roda o executor com --dry-run.")
     p.add_argument("--simulate-nav", action="store_true",
@@ -131,31 +134,24 @@ def _preflight(args, actions=None) -> bool:
 
 
 def _resolve_task_yaml(task: str) -> Path:
-    """Resolve o YAML da competicao (CWD primeiro, depois o share de manip_bt)."""
+    """Resolve o YAML da competicao: caminho literal (absoluto ou relativo ao CWD).
+
+    missions/ na raiz do workspace e' a fonte unica das tasks; nao ha fallback
+    para o share de pacote. Se o arquivo nao existir, o erro lista os
+    missions/*.yaml visiveis a partir do CWD para o operador se orientar.
+    """
     path = Path(task).expanduser()
-    if path.exists():
+    if path.is_file():
         return path.resolve()
-    if not path.is_absolute():
-        try:
-            from ament_index_python.packages import (
-                PackageNotFoundError, get_package_share_directory,
-            )
-        except ImportError:
-            raise FileNotFoundError(
-                f"YAML da tarefa '{task}' nao existe no CWD e ament_index_python "
-                "nao esta disponivel para procurar no share de manip_bt.")
-        try:
-            share = Path(get_package_share_directory("manip_bt"))
-        except PackageNotFoundError:
-            raise FileNotFoundError(
-                f"YAML da tarefa '{task}' nao existe no CWD e o pacote manip_bt "
-                "nao foi encontrado (workspace buildado e com source feito?).")
-        candidate = share / "behavior_tree_manip" / task
-        if candidate.exists():
-            return candidate.resolve()
-        raise FileNotFoundError(
-            f"YAML da tarefa '{task}' nao encontrado nem no CWD nem em {candidate}.")
-    raise FileNotFoundError(f"YAML da tarefa nao encontrado: {path}")
+    candidatos = sorted(Path("missions").glob("*.yaml"))
+    if candidatos:
+        dica = ("\nTasks disponiveis em missions/:\n  - "
+                + "\n  - ".join(str(c) for c in candidatos))
+    else:
+        dica = ("\nNenhum missions/*.yaml a partir do CWD atual: rode a partir da "
+                "raiz do workspace (ex.: --task missions/task_BMT.yaml) ou passe "
+                "o caminho absoluto.")
+    raise FileNotFoundError(f"YAML da tarefa nao encontrado: {path}{dica}")
 
 
 def _validate_map_folder(map_folder: Path) -> None:
@@ -281,7 +277,7 @@ def main(argv=None) -> int:
         return 1
 
     print(f"Mapa:    {map_folder}")
-    print(f"Tarefa:  {task_yaml}")
+    print(f"Tarefa:  {task_yaml} (resolvido de --task {args.task})")
     print(f"AprilTag: {apriltag_cfg}")
 
     try:

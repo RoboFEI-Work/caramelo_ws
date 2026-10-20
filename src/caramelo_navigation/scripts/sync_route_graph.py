@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
-"""Generate Nav2 Route GeoJSON graphs from Caramelo service area YAML files."""
+"""Gera o route_graph.geojson (Nav2 Route Server) a partir do service_areas.yaml
+de cada mapa: um no' por area com pose valida (approach_pose se usa docking,
+senao final_robot_pose) e arestas para as --max-neighbors areas mais proximas.
+
+Quem usa: operador, depois de gravar as service areas (opcional: o
+navigation.launch.py so' sobe o route_server se o grafo tiver nos e arestas).
+Como roda: ros2 run caramelo_navigation sync_route_graph [--map-folder <pasta>]
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -16,7 +24,7 @@ from caramelo_service_area_common import (
 )
 
 
-DATE_GENERATED = "2026-07-06"
+DATE_GENERATED = date.today().isoformat()
 
 
 def pose_for_route(area: dict) -> dict:
@@ -189,25 +197,25 @@ def main() -> None:
         "--maps-root",
         type=Path,
         default=default_maps_root(),
-        help="Directory containing map folders. Used when --map-folder is omitted.",
+        help="Raiz com as pastas de mapa. Usada quando --map-folder e' omitido.",
     )
     parser.add_argument(
         "--map-folder",
         action="append",
         type=Path,
-        help="Specific map folder to update. Can be passed more than once.",
+        help="Pasta de mapa especifica a atualizar. Pode repetir.",
     )
     parser.add_argument(
         "--max-neighbors",
         type=int,
         default=3,
-        help="Number of nearest service areas connected from each route node.",
+        help="Quantas service areas mais proximas ligar a cada no' do grafo.",
     )
     args = parser.parse_args()
 
     for map_folder in map_folders_from_args(args):
         output = write_route_graph(map_folder, args.max_neighbors)
-        print(f"Generated {output}")
+        print(f"Gerado {output}")
 
 
 if __name__ == "__main__":

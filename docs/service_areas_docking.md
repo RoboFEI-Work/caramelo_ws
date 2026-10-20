@@ -196,3 +196,32 @@ Parametros marcados para ajustar no robo:
 - `linear_tolerance`;
 - `angular_tolerance`;
 - pose real de cada `final_robot_pose`.
+
+## Onde Ficam Os Parametros
+
+- Docking Server e alinhamento fino (`dock_align_node`): lista `parameters` em
+  `src/caramelo_navigation/launch/docking_server.launch.py` (velocidades,
+  tolerancias, `refine_desired_face_dist`, `nudge_*`). Nao copie valores para
+  docs: o launch e a fonte. Detalhes do alinhamento: `docking_alinhamento_holonomico.md`.
+- Por area: `approach_offset`, `linear_tolerance`, `angular_tolerance` e
+  `final_robot_pose` ficam em `service_areas.yaml`; depois rode
+  `validate_service_areas --map <mapa> --sync-docking`.
+- Dois jeitos de gravar a pose de um dock: pela GUI ("Salvar pose como dock",
+  topico `/save_dock_pose`, grava SO `docking.yaml`) ou por `service_areas.yaml`
+  + sync (`save_service_area_pose`, `validate_service_areas --sync-docking`).
+  Um sync a partir de `service_areas.yaml` regrava `docking.yaml` do zero e
+  descarta o que foi salvo so pela GUI — decisao pendente no README da raiz.
+
+## Route Graph (Opcional)
+
+O Nav2 Route Server usa `src/caramelo_mapping/maps/<mapa>/route_graph.geojson`,
+derivado de `service_areas.yaml` (poses `0,0,0` sao ignoradas):
+
+```bash
+ros2 run caramelo_navigation sync_route_graph --map-folder src/caramelo_mapping/maps/<mapa>
+```
+
+O launch so sobe o Route Server (`use_route_server`, default true) se o grafo
+tiver pelo menos 1 no e 1 aresta; senao pula sem quebrar o Nav2. Nada no fluxo
+de missao (`run_mission`) depende dele. Passo a passo e edicao manual do GeoJSON:
+`passo_a_passo_mapa_service_areas_docking_route.md` secoes 9 e 14.

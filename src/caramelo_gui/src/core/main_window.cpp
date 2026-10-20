@@ -201,8 +201,7 @@ QWidget * MainWindow::buildSidebar()
   addModule("Service Areas", 8, true);
   addModule("Waypoints", 9, true);
   addModule("Editor de Mapa", 10, true);
-  addModule("Testes", -1, false);
-  addModule("Simulacao", -1, false);
+  // Modulos planejados sem painel: Testes, Simulacao.
 
   connect(
     sidebar_, &QListWidget::currentItemChanged, this,

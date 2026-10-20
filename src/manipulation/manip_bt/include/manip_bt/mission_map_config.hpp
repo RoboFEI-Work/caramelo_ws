@@ -23,9 +23,9 @@ public:
     double yaw{0.0};
     std::string type;
     bool pose_is_placeholder{true};  // pose [0,0,0] = ainda nao gravada
-    // Offsets de staging do dock_plugins do docking.yaml (2026-08-18) — o
-    // fluxo novo navega ate a staging por NavigateToPose e o align faz o
-    // approach; fallback -0.45 quando o plugin nao esta no YAML.
+    // Offsets de staging do dock_plugins do docking.yaml: o GoToWS navega
+    // ate a staging por NavigateToPose e o align faz o approach; fallback
+    // -0.45 quando o plugin nao esta no YAML.
     double staging_x_offset{-0.45};
     double staging_yaw_offset{0.0};
     bool staging_from_yaml{false};
@@ -42,14 +42,14 @@ public:
   std::optional<DockInfo> dock(const std::string & dock_id) const;
   std::string dockType(const std::string & dock_id) const;
 
-  // Pose de STAGING do dock (2026-08-18): a pose do banco deslocada
+  // Pose de STAGING do dock: a pose do banco deslocada
   // staging_x_offset (negativo = para tras) ao longo do yaw — identica a
   // getStagingPose do SimpleNonChargingDock, entao rollback e fluxo novo
   // compartilham o mesmo ponto. nullopt se o dock nao existe.
   std::optional<DockInfo> stagingPose(const std::string & dock_id) const;
 
   // service_areas.yaml: docking.use_docking. Default quando ausente:
-  // false p/ START/FINISH, true p/ o resto (mesma semantica do mission_runner).
+  // false p/ START/FINISH (so pose de navegacao), true p/ o resto.
   bool useDocking(const std::string & dock_id) const;
   // service_areas.yaml: manipulation_enabled (default true quando ausente —
   // usado so' para warning, nao bloqueia).
@@ -59,7 +59,7 @@ public:
   // da pasta do mapa; sem entrada, deriva por normalizacao (WS_1 -> WS1).
   std::string dockIdForWs(const std::string & task_ws) const;
 
-  // 2026-10-19 (superficie livre): lados da mesa com PAREDE, do bloco
+  // Superficie livre: lados da mesa com PAREDE, do bloco
   // `ws_walls:` do ws_table_mapping.yaml ("WS_3: [left]" ou "WS_3: left,right").
   // Devolve a string normalizada "left" | "right" | "left,right" | "" (sem
   // parede / estacao ausente). Chave aceita com ou sem '_' (WS_3 == WS3).

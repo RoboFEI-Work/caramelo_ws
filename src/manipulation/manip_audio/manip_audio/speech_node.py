@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+"""speech_node: sintese de voz dos eventos do manipulador.
+
+Assina /manip/speech (std_msgs/String) e fala cada mensagem por uma fila
+(worker em thread, tamanho `queue_size`), sem bloquear quem publica.
+
+Backends (parametro `backend`):
+  * espeak (default): `executable` (espeak-ng), `voice`, `rate`, `pitch`,
+    `word_gap`, `volume`.
+  * piper: `piper_executable` (auto = procura ~/piper/piper,
+    ~/.local/bin/piper, piper-tts, piper), `piper_model` (.onnx obrigatorio),
+    `player_executable` (auto = primeiro player disponivel), `voice_effect`
+    (none | dog | dog_deep | cartoon_dog; requer ffplay) e
+    `effect_sample_rate`. Sem Piper ou modelo, cai para espeak com aviso.
+
+Lancado pelo manip_bringup/launch/manip_stack.launch.py (use_audio) com
+backend piper, modelo pt_BR-jeff e efeito dog.
+"""
 
 import queue
 import re
@@ -16,7 +33,7 @@ from std_msgs.msg import String
 class SpeechNode(Node):
 
     def __init__(self):
-        super().__init__('manip_speech')
+        super().__init__('speech_node')
 
         self.declare_parameter('backend', 'espeak')
         self.declare_parameter('executable', 'espeak-ng')

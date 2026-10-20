@@ -1,3 +1,13 @@
+// mtc_place_action_node: servidor da action /place_tag (my_robot_msgs/PlaceTag),
+// no place_action_server: retira do container de bordo o bloco da tag pedida e
+// solta no destino: slot nomeado (MesaX.N, memoria de slots usados por WS),
+// pilha sobre outra tag (stack_on), container por cor (ct_vermelho/ct_azul) ou
+// superficie livre (grade do workstation_surface_node + surface_place_planner).
+// Alvo fora de alcance => devolve o bloco ao container e responde
+// unreachable + suggested_base_shift_m (quem move a base e o manip_bt).
+// Apesar do prefixo 'mtc', nao usa MoveIt Task Constructor: move o braco pelo
+// MoveGroupInterface. Estado em container_state_file (yaml) e flock em
+// manipulator_lock_file. Sobe pelo manip_stack.launch.py (use_pick_place).
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -73,7 +83,7 @@ public:
             std::make_unique<manip_task_execution::ManipulatorExecutionLock>(lock_file);
         if (!execution_lock_->valid()) {
             throw std::runtime_error(
-                "Failed to open manipulator lock file '" + lock_file + "': " +
+                "Falha ao abrir o arquivo de lock do manipulador '" + lock_file + "': " +
                 execution_lock_->error());
         }
 
@@ -763,13 +773,6 @@ private:
         active_gripper_ = gripper;
     }
 
-    void clearActiveInterfaces()
-    {
-        std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
-        active_arm_.reset();
-        active_gripper_.reset();
-    }
-
     void releaseExecutionResources()
     {
         publishPlaceActive(false);
@@ -1013,7 +1016,7 @@ private:
         }
     }
 
-    void publish_stage(
+    void publishStage(
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
         const std::string & stage)
     {
@@ -2202,12 +2205,12 @@ private:
         const std::map<std::string, TableObstacle> & obstacles,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
-        publish_stage(goal_handle, "going_table_slot");
+        publishStage(goal_handle, "going_table_slot");
         if (!moveToJointTargetJoint2Last(arm, slot.q, "go slot " + slot.name)) {
             return false;
         }
 
-        publish_stage(goal_handle, "verifying_slot_arrival");
+        publishStage(goal_handle, "verifying_slot_arrival");
         Eigen::Vector3d actual = slot.p;
         for (int attempt = 0; attempt < 2; ++attempt) {
             if (!sleepInterruptibly(std::chrono::milliseconds(300))) {
@@ -2234,7 +2237,7 @@ private:
             }
             if (attempt == 0) {
                 RCLCPP_WARN(get_logger(), "[SLOT] fora da tolerancia — reenviando %s uma vez.", slot.name.c_str());
-                publish_stage(goal_handle, "going_table_slot_retry");
+                publishStage(goal_handle, "going_table_slot_retry");
                 arm->setStartStateToCurrentState();
                 arm->setNamedTarget(slot.name);
                 if (!planAndExecute(arm, "re-go slot " + slot.name)) {
@@ -2371,7 +2374,7 @@ private:
         }
 
         // 1) Olhar a mesa (+ o que ja foi visto de garra vazia, + memoria).
-        publish_stage(goal_handle, "observing_table");
+        publishStage(goal_handle, "observing_table");
         speak("Olhando a mesa antes de soltar");
         std::map<std::string, TableObstacle> obstacles = early_obstacles_;
         if (!observeTableObstacles(
@@ -2382,7 +2385,7 @@ private:
         addMemoryObstacles(ws, carried_tag, obstacles);
 
         // 2) Pontuar.
-        publish_stage(goal_handle, "selecting_slot");
+        publishStage(goal_handle, "selecting_slot");
         for (const auto & kv : obstacles) {
             const auto & ob = kv.second;
             RCLCPP_INFO(
@@ -2429,7 +2432,7 @@ private:
             get_logger(),
             "[SLOT] falhou em %s — subindo a pegar_obj e tentando %s (margem %+.1f cm).",
             best.name.c_str(), second.name.c_str(), second.margin * 100.0);
-        publish_stage(goal_handle, "recovering_pegar_obj");
+        publishStage(goal_handle, "recovering_pegar_obj");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
@@ -2464,7 +2467,7 @@ private:
                         get_logger(),
                         "[SLOT] XY livre [%+.3f %.3f %+.3f] margem %+.1f cm -> j [%.4f %.4f %.4f %.4f %.4f]",
                         p.x(), p.y(), p.z(), m * 100.0, q[0], q[1], q[2], q[3], q[4]);
-                    publish_stage(goal_handle, "place_free_xy");
+                    publishStage(goal_handle, "place_free_xy");
                     bool ok = moveToJointTargetJoint2Last(arm, q, "place free xy " + table_pose);
                     if (ok) {
                         if (!sleepInterruptibly(std::chrono::milliseconds(300))) {
@@ -2485,7 +2488,7 @@ private:
                     }
                     // Recuperar SEMPRE por cima: subir a pegar_obj antes de
                     // qualquer outro alvo na mesa.
-                    publish_stage(goal_handle, "place_free_xy_recover");
+                    publishStage(goal_handle, "place_free_xy_recover");
                     arm->setStartStateToCurrentState();
                     arm->setEndEffectorLink("tcp");
                     arm->setNamedTarget("pegar_obj");
@@ -2577,7 +2580,7 @@ private:
     //      elevacao); nenhum resolve => kUnreachable (fila de alcance);
     //   4. volta a pegar_obj se saiu de la, sobe para a elevacao (j1/j4/j5
     //      primeiro, j2/j3 por ultimo), desce na vertical, confere a chegada
-    //      por FK; soltar/subir/recolher ficam com run_place_cycle
+    //      por FK; soltar/subir/recolher ficam com runPlaceCycle
     //      (stack_lift_q_ = elevacao).
     // Toda saida sem entrega que nao e' falha de movimento deixa o braco em
     // pegar_obj (ou surface_arm_moved_ ligado para quem chama recolher).
@@ -2901,7 +2904,7 @@ private:
             opts.fallback_front_y ? std::to_string(*opts.fallback_front_y).substr(0, 5).c_str() : "-",
             opts.front_prior_tolerance_m);
 
-        publish_stage(goal_handle, "surface_observing");
+        publishStage(goal_handle, "surface_observing");
         speak("Olhando a mesa para achar um lugar livre");
         waitForCameraStream("PLACE superficie");
         publishSurfaceObserve(true);
@@ -2914,7 +2917,7 @@ private:
         for (std::size_t k = 0; k < poses.size(); ++k) {
             const std::string & pose = poses[k];
             if (!(k == 0 && pose == "pegar_obj")) {
-                publish_stage(goal_handle, "surface_observe_move");
+                publishStage(goal_handle, "surface_observe_move");
                 RCLCPP_INFO(get_logger(), "[SUPERFICIE] indo observar de %s.", pose.c_str());
                 arm->setStartStateToCurrentState();
                 arm->setEndEffectorLink("tcp");
@@ -3048,7 +3051,7 @@ private:
         }
 
         // ---- IK nos melhores candidatos ----
-        publish_stage(goal_handle, "surface_selecting");
+        publishStage(goal_handle, "surface_selecting");
         const std::vector<double> tilts = tiltLadderRad(surface_tilt_ladder_deg_);
         std::vector<SurfaceChoice> feasible;
         int tried = 0;
@@ -3101,7 +3104,7 @@ private:
 
         // ---- Aproximacao: sempre a partir de pegar_obj ----
         if (surface_arm_moved_) {
-            publish_stage(goal_handle, "surface_return_pegar_obj");
+            publishStage(goal_handle, "surface_return_pegar_obj");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget("pegar_obj");
@@ -3115,7 +3118,7 @@ private:
             const std::size_t n_obs = static_cast<std::size_t>(plan->n_obstacle > 0 ? 1 : 0);
             (void)n_obs;
             speak("Achei um lugar livre na mesa, entregando " + sideOf(ch.target));
-            publish_stage(goal_handle, "surface_approach");
+            publishStage(goal_handle, "surface_approach");
             RCLCPP_INFO(
                 get_logger(),
                 "[SUPERFICIE] alvo [%.3f %.3f %.3f] (ferramenta a %.0f graus, folga obj %.1f cm, borda %.1f cm, "
@@ -3144,7 +3147,7 @@ private:
                     err_xy * 100.0, surface_arrival_xy_tolerance_m_ * 100.0,
                     err_z * 100.0, surface_arrival_z_tolerance_m_ * 100.0);
                 (void)moveToJointTarget(arm, ch.q_lift, "surface back up (arrival)");
-                publish_stage(goal_handle, "surface_recover_pegar_obj");
+                publishStage(goal_handle, "surface_recover_pegar_obj");
                 arm->setStartStateToCurrentState();
                 arm->setEndEffectorLink("tcp");
                 arm->setNamedTarget("pegar_obj");
@@ -3165,7 +3168,7 @@ private:
             }
             last_slot_decision_ = SlotDecision{
                 "superficie", table_pose, ch.target, ch.cand.clearance_obstacle_m};
-            stack_lift_q_ = ch.q_lift;   // subida vertical apos soltar (run_place_cycle)
+            stack_lift_q_ = ch.q_lift;   // subida vertical apos soltar (runPlaceCycle)
             return SurfaceOutcome::kOk;
         }
         return SurfaceOutcome::kArrivalFailed;
@@ -3271,14 +3274,14 @@ private:
                 "[%.3f %.3f %.3f %.3f %.3f]",
                 base_frame.c_str(), fk_pos.x(), fk_pos.y(), fk_pos.z(), tilt * 180.0 / M_PI,
                 qj[0], qj[1], qj[2], qj[3], qj[4]);
-            publish_stage(goal_handle, "stack_joints_pre_pose");
+            publishStage(goal_handle, "stack_joints_pre_pose");
             speak("Colocando o bloco na posicao gravada");
             stack_arm_moved_ = true;
             if (!moveToJointTarget(arm, q_lift2, "stack joints pre-pose " + base_frame)) {
                 return StackOutcome::kMoveFailed;
             }
             stack_lift_q_ = q_lift2;  // subida apos soltar
-            publish_stage(goal_handle, "stack_joints_final");
+            publishStage(goal_handle, "stack_joints_final");
             if (!moveToJointTarget(arm, qj, "stack joints replay " + base_frame)) {
                 return StackOutcome::kMoveFailed;
             }
@@ -3286,7 +3289,7 @@ private:
             return StackOutcome::kOk;
         }
 
-        publish_stage(goal_handle, "stack_detecting_base");
+        publishStage(goal_handle, "stack_detecting_base");
         speak("Procurando o bloco de baixo " + spokenTargetName(base_frame));
         waitForCameraStream("PLACE");
 
@@ -3305,7 +3308,7 @@ private:
         // bloco carregado).
         constexpr double kTagXNearZero = 0.1;
         if (std::abs(base_tf.transform.translation.x) > kTagXNearZero) {
-            publish_stage(goal_handle, "stack_pre_approach");
+            publishStage(goal_handle, "stack_pre_approach");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(
@@ -3364,7 +3367,7 @@ private:
             }
             if (pre_ok) {
                 q_pre[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_pre[0], tilt_pre);
-                publish_stage(goal_handle, "stack_pre_ik_tcp2");
+                publishStage(goal_handle, "stack_pre_ik_tcp2");
                 RCLCPP_INFO(
                     get_logger(),
                     "[STACK] pre-ponto TCP2 (tcp_z %.2f, %.0f graus): garra ~%.0f mm antes do alvo para re-detectar.",
@@ -3374,7 +3377,7 @@ private:
                 if (!moveToJointTarget(arm, q_pre, "stack pre tcp2 " + base_frame)) {
                     return StackOutcome::kMoveFailed;
                 }
-                publish_stage(goal_handle, "stack_re_detecting_at_tcp2");
+                publishStage(goal_handle, "stack_re_detecting_at_tcp2");
                 // not_before = instante em que o braco parou: proibe que a
                 // "re-deteccao de perto" devolva a leitura tirada de longe.
                 const rclcpp::Time parou_tcp2 = this->get_clock()->now();
@@ -3512,14 +3515,14 @@ private:
             std::array<double, 5> so_j1{cur_j[0], cur_j[1], cur_j[2], cur_j[3], cur_j[4]};
             so_j1[0] = q_final[0];
             if (std::abs(so_j1[0] - cur_j[0]) > 1e-3) {
-                publish_stage(goal_handle, "stack_j1_aim");
+                publishStage(goal_handle, "stack_j1_aim");
                 stack_arm_moved_ = true;
                 if (!moveToJointTarget(arm, so_j1, "stack aim j1 " + base_frame)) {
                     return StackOutcome::kMoveFailed;
                 }
             }
 
-            publish_stage(goal_handle, "stack_re_detecting_after_j1");
+            publishStage(goal_handle, "stack_re_detecting_after_j1");
             const rclcpp::Time parou_j1 = this->get_clock()->now();
             if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
                 return StackOutcome::kMoveFailed;
@@ -3560,7 +3563,7 @@ private:
             RCLCPP_WARN(get_logger(), "[STACK] sem estado atual — aproximacao em movimento unico.");
         }
 
-        publish_stage(goal_handle, "stack_pre_pose");
+        publishStage(goal_handle, "stack_pre_pose");
         speak("Levando o bloco para cima da pilha");
         // Todas as juntas juntas (pedido do operador 2026-08-24) — sem o
         // "j2 por ultimo" dos slots.
@@ -3569,7 +3572,7 @@ private:
         }
         stack_lift_q_ = q_lift;  // subida apos soltar
 
-        publish_stage(goal_handle, "stack_final_approach");
+        publishStage(goal_handle, "stack_final_approach");
         if (!moveToJointTarget(arm, q_final, "stack descend onto " + base_frame)) {
             return StackOutcome::kMoveFailed;
         }
@@ -3740,7 +3743,7 @@ private:
             return StackOutcome::kBaseNotSeen;
         }
 
-        publish_stage(goal_handle, "container_detecting");
+        publishStage(goal_handle, "container_detecting");
         speak("Procurando o container " + cor);
         waitForCameraStream("PLACE");
 
@@ -3756,7 +3759,7 @@ private:
             const auto search_timeout = std::chrono::milliseconds(
                 static_cast<int>(std::max(0.5, container_search_timeout_sec_) * 1000.0));
             for (const char * pose : {"tag_direita", "tag_esquerda"}) {
-                publish_stage(goal_handle, "container_search");
+                publishStage(goal_handle, "container_search");
                 RCLCPP_INFO(
                     get_logger(), "[CONTAINER] %s nao visto de pegar_obj — olhando de %s.",
                     frame.c_str(), pose);
@@ -3791,7 +3794,7 @@ private:
         // Pre-alinhamento lateral (mesmo do empilhamento / place por TF).
         constexpr double kTagXNearZero = 0.1;
         if (std::abs(tf.transform.translation.x) > kTagXNearZero) {
-            publish_stage(goal_handle, "container_pre_approach");
+            publishStage(goal_handle, "container_pre_approach");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(
@@ -3910,7 +3913,7 @@ private:
             container_drop_clearance_m_, tilt_used * 180.0 / M_PI, frame_yaw,
             q[0], q[1], q[2], q[3], q[4]);
 
-        publish_stage(goal_handle, "container_approach");
+        publishStage(goal_handle, "container_approach");
         speak("Levando o bloco para dentro do container " + cor);
         container_arm_moved_ = true;
         // Pedido do operador (25/08): so' descer depois que as outras juntas
@@ -3962,7 +3965,7 @@ private:
     /// reach_shift quantos cm de lado a base precisa andar (mesma IK, mesma
     /// escada de inclinacao e mesma elevacao stack_pre_lift_m que a
     /// aproximacao usa) e marca a falha como "alvo_fora_de_alcance" — SEM
-    /// fallback de mesa e SEM soltar; o chamador (run_place_cycle) devolve o
+    /// fallback de mesa e SEM soltar; o chamador (runPlaceCycle) devolve o
     /// cubo ao container de bordo e execute() responde skipped/unreachable.
     /// Devolve false quando o caminho de sempre (fallback na mesa) deve
     /// seguir: tentativa final, bailout desligado ou contradicao da IK.
@@ -3991,7 +3994,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "unreachable_check");
+        publishStage(goal_handle, "unreachable_check");
         manip_task_execution::ReachShiftOptions opts;
         opts.candidates_m = unreachable_shift_candidates_m_;
         opts.tilts_rad = tiltLadderRad(tilt_ladder_deg);
@@ -4076,7 +4079,7 @@ private:
                     // outro. Base nao vista / chegada fora da tolerancia /
                     // fora de alcance sem bailout => NAO cai na mesa: sai
                     // como unreachable com sugestao 0 — o caminho existente
-                    // (run_place_cycle) devolve o cubo ao container de
+                    // (runPlaceCycle) devolve o cubo ao container de
                     // bordo e execute() responde skipped+unreachable; o no
                     // AMT1 re-registra os slots e repete 1x. WS_* inalterado.
                     if ((out == StackOutcome::kBaseNotSeen || out == StackOutcome::kNoIk ||
@@ -4199,7 +4202,7 @@ private:
         // para container por cor e pilha, cujos alvos vem da camera.
         if (!isTfPlaceTarget(table_pose)) {
             if (isShelfPlaceTarget(table_pose)) {
-                publish_stage(goal_handle, "shelf_waypoint");
+                publishStage(goal_handle, "shelf_waypoint");
                 speak("Passando pela pose intermediaria da prateleira");
                 if (!goToShelfWaypoint(arm, "place shelf waypoint before " + table_pose)) {
                     RCLCPP_ERROR(
@@ -4252,7 +4255,7 @@ private:
                             speak("Vou usar as posicoes fixas da mesa");
                         }
                         if (surface_arm_moved_) {
-                            publish_stage(goal_handle, "surface_return_pegar_obj");
+                            publishStage(goal_handle, "surface_return_pegar_obj");
                             arm->setStartStateToCurrentState();
                             arm->setEndEffectorLink("tcp");
                             arm->setNamedTarget("pegar_obj");
@@ -4287,7 +4290,7 @@ private:
             return planAndExecute(arm, "go " + table_pose);
         }
 
-        publish_stage(goal_handle, "detecting_place_tag");
+        publishStage(goal_handle, "detecting_place_tag");
         speak("Procurando o alvo de entrega " + spokenTargetName(table_pose));
         waitForCameraStream("PLACE");
 
@@ -4307,7 +4310,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "place_pre_approach");
+        publishStage(goal_handle, "place_pre_approach");
         speak("Alvo de entrega encontrado. Ajustando a aproximacao");
 
         constexpr double kTagXNearZero = 0.1;
@@ -4323,7 +4326,6 @@ private:
             target_tf.transform.translation.z);
 
         if (std::abs(tag_x) > kTagXNearZero) {
-            //speak("Corrigindo a aproximacao lateral para a entrega");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
 
@@ -4368,8 +4370,7 @@ private:
         // base_footprint), entao o offset em Z vale identico neste frame.
         target_tf.transform.translation.z += container_place_z_offset_;
 
-        publish_stage(goal_handle, "place_final_approach");
-        //speak("Fazendo a aproximacao final para entregar o bloco");
+        publishStage(goal_handle, "place_final_approach");
         return approachPlaceTargetCustomIk(
             arm, target_tf, "place above " + table_pose);
     }
@@ -4493,7 +4494,7 @@ private:
                 fill_reach_fields(false);
                 execution_guard.release();
                 if (cancellationRequested() || goal_handle->is_canceling()) {
-                    result->message = "Place canceled: " + message;
+                    result->message = "Place cancelado: " + message;
                     goal_handle->canceled(result);
                 } else {
                     result->message = message;
@@ -4509,7 +4510,7 @@ private:
                 result->fail_reason = "tag_nao_esta_em_container";
                 result->message = message;
                 fill_reach_fields(true);
-                publish_stage(goal_handle, "skipped_missing_container_tag");
+                publishStage(goal_handle, "skipped_missing_container_tag");
                 speak("Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa");
                 execution_guard.release();
                 goal_handle->succeed(result);
@@ -4542,8 +4543,8 @@ private:
                 &lookup_error))
         {
             if (skip_missing_place_tag_) {
-                finish_skip("Place skipped: tag '" + goal->tag_frame +
-                    "' is not in any occupied container: " + lookup_error);
+                finish_skip("Place pulado: tag '" + goal->tag_frame +
+                    "' nao esta em nenhum container ocupado: " + lookup_error);
                 return;
             }
             result->success = false;
@@ -4576,7 +4577,7 @@ private:
         gripper->setMaxAccelerationScalingFactor(1.0);
 
         const bool success =
-            run_place_cycle(
+            runPlaceCycle(
                 arm,
                 gripper,
                 container_pose,
@@ -4655,7 +4656,7 @@ private:
 
         if (result->success)
         {
-            publish_stage(goal_handle, "done");
+            publishStage(goal_handle, "done");
             speak("Entrega concluida com sucesso");
             execution_guard.release();
             goal_handle->succeed(result);
@@ -4665,7 +4666,7 @@ private:
             // Fila de alcance: nao e falha — o cubo esta de volta no
             // container de bordo e o executor desloca a base e volta.
             // success=true + skipped=true + unreachable=true (+ sugestao).
-            publish_stage(goal_handle, "skipped_unreachable");
+            publishStage(goal_handle, "skipped_unreachable");
             result->success = true;
             result->skipped = true;
             result->fail_reason = last_place_failure_reason_;
@@ -4673,7 +4674,7 @@ private:
             std::snprintf(
                 shift_txt, sizeof(shift_txt), "%+.2f", last_suggested_shift_m_);
             result->message =
-                "Place skipped: alvo visto mas fora de alcance (bloco devolvido ao " +
+                "Place pulado: alvo visto mas fora de alcance (bloco devolvido ao " +
                 container_pose + "; sugestao base " + std::string(shift_txt) + " m)";
             execution_guard.release();
             goal_handle->succeed(result);
@@ -4839,7 +4840,7 @@ private:
         if (container_arm_moved_ || stack_arm_moved_ || surface_arm_moved_) {
             // Braco em tag_direita/esquerda ou na pre-pose: volta ao caminho
             // validado (pegar_obj) antes de descer ao pote.
-            publish_stage(goal_handle, "returning_cube_pegar_obj");
+            publishStage(goal_handle, "returning_cube_pegar_obj");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget("pegar_obj");
@@ -4848,7 +4849,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "returning_cube_pre_container");
+        publishStage(goal_handle, "returning_cube_pre_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -4856,7 +4857,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "returning_cube_container");
+        publishStage(goal_handle, "returning_cube_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(container_pose);
@@ -4864,7 +4865,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "returning_cube_opening_gripper");
+        publishStage(goal_handle, "returning_cube_opening_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "return cube: open gripper")) {
@@ -4898,7 +4899,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "returning_cube_pre_container_out");
+        publishStage(goal_handle, "returning_cube_pre_container_out");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -4906,7 +4907,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "returning_cube_pegar_obj_final");
+        publishStage(goal_handle, "returning_cube_pegar_obj_final");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
@@ -4920,7 +4921,7 @@ private:
         return true;
     }
 
-    bool run_place_cycle(
+    bool runPlaceCycle(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string& container_pose,
@@ -4939,7 +4940,7 @@ private:
             if (slot_observe_empty_gripper_first_ &&
                 slotSelectionApplies(table_pose, goal->ws, &why))
             {
-                publish_stage(goal_handle, "going_observe_pose");
+                publishStage(goal_handle, "going_observe_pose");
                 arm->setStartStateToCurrentState();
                 arm->setEndEffectorLink("tcp");
                 arm->setNamedTarget("pegar_obj");
@@ -4963,16 +4964,14 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "opening_gripper");
-        //speak("Abrindo a garra para preparar a retirada do container");
+        publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "open gripper")) {
             return false;
         }
 
-        publish_stage(goal_handle, "going_pre_container");
-        //speak("Indo para a pre pose do container");
+        publishStage(goal_handle, "going_pre_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -4980,8 +4979,7 @@ private:
             return false;
         }
 
-        publish_stage(goal_handle, "going_container");
-        //speak("Indo ate o " + spokenTargetName(container_pose));
+        publishStage(goal_handle, "going_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(container_pose);
@@ -5000,8 +4998,7 @@ private:
             }
         }
 
-        publish_stage(goal_handle, "closing_gripper");
-        //speak("Fechando a garra no bloco dentro do container");
+        publishStage(goal_handle, "closing_gripper");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_close");
         if (!planAndExecute(gripper, "close gripper")) {
@@ -5012,7 +5009,7 @@ private:
         // Item 2.4: garra fechou no VAZIO dentro do container? Reabrir e
         // falhar com causa distinta — sem sucesso fantasma e sem setEmpty.
         if (verify_grasp_effort_ && verify_container_grasp_) {
-            publish_stage(goal_handle, "verifying_grasp");
+            publishStage(goal_handle, "verifying_grasp");
             speak("Verificando o bloco pela forca da garra");
             if (!verifyGraspByEffort(*effort_before_close, "PLACE")) {
                 last_place_failure_reason_ = "garra_vazia_no_container";
@@ -5025,8 +5022,7 @@ private:
             speak("A garra detectou o bloco");
         }
 
-        publish_stage(goal_handle, "returning_pre_container");
-        //speak("Retirando o bloco do container");
+        publishStage(goal_handle, "returning_pre_container");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pre_container");
@@ -5040,8 +5036,7 @@ private:
         // pre_container -> pirocao -> MesaSh. Mesa comum mantem o caminho
         // validado com pegar_obj.
         if (!isShelfPlaceTarget(table_pose)) {
-            publish_stage(goal_handle, "going_pegar_obj");
-            //speak("Indo para a pose de transporte");
+            publishStage(goal_handle, "going_pegar_obj");
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget("pegar_obj");
@@ -5055,8 +5050,7 @@ private:
 
         arm->setMaxAccelerationScalingFactor(1.0);
         
-        publish_stage(goal_handle, "going_table");
-        //speak("Levando o bloco para o destino");
+        publishStage(goal_handle, "going_table");
         if (!moveToPlaceTarget(arm, table_pose, goal_handle)) {
             // Fila de alcance (2026-08-28): alvo visto fora de alcance — o
             // cubo volta ao container de bordo antes de o goal sair como
@@ -5077,8 +5071,7 @@ private:
         arm->setMaxAccelerationScalingFactor(1.0);
         
 
-        publish_stage(goal_handle, "opening_gripper_final");
-        //speak("Abrindo a garra para soltar o bloco no destino");
+        publishStage(goal_handle, "opening_gripper_final");
         gripper->setStartStateToCurrentState();
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "open gripper final")) {
@@ -5111,7 +5104,7 @@ private:
                 if (verify_grasp_effort_) {
                     base = waitForFreshGripperEffort(std::chrono::milliseconds(600));
                 }
-                publish_stage(goal_handle, "container_closing_gripper");
+                publishStage(goal_handle, "container_closing_gripper");
                 gripper->setStartStateToCurrentState();
                 const std::map<std::string, double> jt{
                     {"manip_joint6", container_exit_gripper_position_},
@@ -5123,7 +5116,7 @@ private:
                     // Receio do operador (25/08): fechar pode pegar o bloco de
                     // volta. O esforco da garra denuncia: se carregou, reabre
                     // (o bloco cai de novo no container) e sai com a garra aberta.
-                    publish_stage(goal_handle, "container_verifying_empty");
+                    publishStage(goal_handle, "container_verifying_empty");
                     // So' o valor ABSOLUTO conta: a leitura de base logo apos
                     // abrir ainda pode trazer o esforco da pega anterior
                     // (1,09 Nm visto em 25/08) e mascarar uma re-pega.
@@ -5143,7 +5136,7 @@ private:
                 }
             }
             if (stack_lift_q_) {
-                publish_stage(goal_handle, "container_lift_after_release");
+                publishStage(goal_handle, "container_lift_after_release");
                 if (!moveToJointTarget(arm, *stack_lift_q_, "container lift after release")) {
                     RCLCPP_WARN(get_logger(), "[CONTAINER] subida vertical apos soltar falhou — recolhendo direto.");
                 }
@@ -5151,7 +5144,7 @@ private:
             }
             std::array<double, 5> q_rest{};
             if (namedPoseJoints(arm, "pegar_obj", q_rest)) {
-                publish_stage(goal_handle, "returning_pegar_obj_final");
+                publishStage(goal_handle, "returning_pegar_obj_final");
                 if (!moveToJointTargetJoints23First(arm, q_rest, "return pegar_obj after container")) {
                     RCLCPP_ERROR(
                         get_logger(),
@@ -5167,7 +5160,7 @@ private:
         // Empilhou: sobe na vertical ate a pre-pose antes de recolher, para
         // nao arrastar a pilha com a garra aberta. Melhor esforco.
         if (stack_lift_q_) {
-            publish_stage(goal_handle, "stack_lift_after_release");
+            publishStage(goal_handle, "stack_lift_after_release");
             if (!moveToJointTarget(arm, *stack_lift_q_, "stack lift after release")) {
                 RCLCPP_WARN(
                     get_logger(),
@@ -5182,7 +5175,7 @@ private:
         // Melhor esforco — o bloco ja foi entregue, nada aqui reprova a
         // entrega.
         if (isShelfPlaceTarget(table_pose)) {
-            publish_stage(goal_handle, "returning_shelf_waypoint_final");
+            publishStage(goal_handle, "returning_shelf_waypoint_final");
             if (!goToShelfWaypoint(
                     arm, "place shelf waypoint after " + table_pose)) {
                 RCLCPP_ERROR(
@@ -5195,8 +5188,7 @@ private:
             return true;
         }
 
-        publish_stage(goal_handle, "returning_pegar_obj_final");
-        //speak("Voltando para a pose segura depois da entrega");
+        publishStage(goal_handle, "returning_pegar_obj_final");
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget("pegar_obj");
