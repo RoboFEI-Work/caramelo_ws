@@ -36,12 +36,50 @@ jeito, mas nunca vira "borda"). Sem reta vista, a frente vem do docking
 imagem = desconhecido). Dedos/cubo na garra apagados pelos poligonos do
 container_detector (camera e garra solidarias).
 
+PROFUNDIDADE: mesa x chao (2026-10-21, apos o teste no robo). So' por cor o
+CHAO claro projetado no plano do tampo virava "tampo livre" e, sem borda
+detectada, o place aceitava pontos a menos de 2 cm da borda real. O D455
+publica a profundidade ALINHADA a cor (aligned_depth_to_color, 16UC1 em mm,
+0 = invalido). O tampo a 0,3-0,4 m costuma vir INVALIDO (zona cega), mas o
+chao e tudo o que esta alem da mesa vem VALIDO e MAIS LONGE que o plano do
+tampo. Entao, por pixel, compara-se a profundidade medida com a profundidade
+ESPERADA do raio ate o plano (expected_plane_range):
+    medida > esperada + depth_beyond_plane_m  -> LBL_BEYOND (fora da mesa),
+                                                 seja qual for a cor;
+    medida < esperada - depth_above_plane_m   -> LBL_NONWHITE (algo acima do
+                                                 tampo), mesmo que branco;
+    invalida / ausente / sem depth no ar      -> decisao por cor, como antes.
+Logo apos a ativacao o primeiro quadro de cor costuma chegar ANTES da
+primeira profundidade: fundir so' por cor nesse instante pintaria o chao de
+"tampo livre" (exatamente o bug). Por isso, com depth_enable, o no ESPERA a
+profundidade ate depth_grace_s (1 s) antes de cair para "so' cor".
+Na fusao LBL_BEYOND vota em votes_beyond; celula com votes_beyond >=
+votes_white_depth (brancos SO' de quadros que tinham profundidade: um quadro
+fundido so' por cor nao pode refutar "alem") vira CELL_OFF_TABLE DIRETO (sem
+depender das retas) e entra como "fora" na fronteira usada pela RANSAC, que
+assim acha a borda REAL da mesa.
+Sem profundidade o comportamento e' identico ao anterior.
+
+PROJECAO celula -> pixel (project_cells): alem do cone de
+MAX_RAY_HALF_ANGLE_DEG (55 graus) do eixo optico a celula NAO esta na imagem,
+mesmo que cv2.projectPoints devolva um pixel "dentro": com o D real da D455
+(k3 < 0) o polinomio radial deixa de crescer a ~59 graus e DOBRA para dentro
+da imagem pontos fora do campo de visao, que herdariam o rotulo de pixels do
+centro (1000+ celulas fantasmas e retas laterais falsas em 21/10).
+
+POLIGONOS: alem da grade, publica o contorno do tampo visto (PolygonStamped
+em .../table_polygon, maior componente livre|objeto simplificado) e as retas
+de borda (MarkerArray em .../edge_lines: LINE_LIST ns "edge" + ARROW ns
+"edge_normal" apontando para FORA) — so' quando ha assinante.
+
 Ativacao: so' enquanto /manip/surface_observe (Bool, latched) for true; a
 subida de false->true ZERA a fusao. always_on=true para calibrar.
 
 Calibracao offline (sem robo):
   workstation_surface_node.py --image foto.png [--config x.yaml] [--out overlay.png]
                               [--probe u,v] [--gripper-open]
+                              [--camera x,y,z,pitch --plane-z z --depth depth.png
+                               --intrinsics fx,fy,cx,cy]   # depth.png: 16 bits em mm
 Quem consome a grade: mtc_place_action_node (surface_place_planner).
 """
 import argparse
@@ -65,6 +103,18 @@ CELL_OBSTACLE = 100
 LBL_UNKNOWN = 0
 LBL_WHITE = 1       # tampo branco
 LBL_NONWHITE = 2    # objeto OU fora da mesa — decidido depois, pelas retas
+LBL_BEYOND = 3      # profundidade ALEM do plano do tampo: fora da mesa (chao), sem depender das retas
+
+# Namespaces dos marcadores de borda (edge_lines): lidos pelo vision_debug_node.
+EDGE_MARKER_NS = "edge"               # LINE_LIST com os 2 pontos da reta
+EDGE_NORMAL_MARKER_NS = "edge_normal"  # ARROW do meio da reta para FORA da mesa
+
+# Cone da projecao celula -> pixel (project_cells), em graus do eixo optico.
+# O FOV da D455 cor e' 90 x 65 graus (diagonal ~50; em 640x480 com fx=385 a
+# diagonal da imagem fica a 46 graus): 55 nao perde nada da imagem e fica
+# ABAIXO do raio em que a distorcao da D455 dobra (~59 graus). Mesmo valor
+# em vision_debug_node.py (MAX_HALF_ANGLE_DEG).
+MAX_RAY_HALF_ANGLE_DEG = 55.0
 
 
 # Dedos vermelhos da garra ABERTA (RealSense 640x480, 25/08) — copia dos
@@ -144,6 +194,19 @@ class SurfaceConfig:
     # de 25/08) — rejeitada; o nao-branco fica como OBJETO.
     edge_outside_check_m: float = 0.25
     edge_outside_max_white_frac: float = 0.10
+    # --- profundidade (D455 alinhada a cor; ver docstring "PROFUNDIDADE") ---
+    depth_enable: bool = True
+    depth_min_valid_m: float = 0.25    # abaixo disto o D455 nao mede (zona cega): invalido
+    # 3 cm: a mesa de 5 cm do rulebook tem o chao so 5 cm abaixo do tampo e com a
+    # camera quase vertical a diferenca de alcance e ~5 cm; 6 cm deixava a regra
+    # inerte. Ruido do D455 a 0,5-1 m ~0,5-1 cm.
+    depth_beyond_plane_m: float = 0.03 # medida > esperada + isto = alem do plano (fora da mesa)
+    depth_above_plane_m: float = 0.02  # medida < esperada - isto = acima do tampo (objeto)
+    depth_open_px: int = 3             # abertura (px escalados) que tira "flying pixels" das bordas
+    # Se mais que isto dos pixels conhecidos viessem "acima do tampo", o plano
+    # e' que esta errado (nao a mesa inteira coberta): a regra "acima" e'
+    # ignorada nesse quadro e o status avisa. "Alem" nao tem esse teto.
+    depth_above_max_frac: float = 0.5
 
 
 @dataclass
@@ -153,6 +216,10 @@ class FrameResult:
     table_frac: float
     n_nonwhite_blobs: int
     white_stats: Dict[str, Tuple[int, int, int]]
+    depth_used: bool = False     # houve rotulo de profundidade neste quadro
+    depth_beyond_frac: float = 0.0   # fracao dos pixels conhecidos marcados "alem do plano"
+    depth_above_frac: float = 0.0    # idem "acima do tampo" (antes do teto depth_above_max_frac)
+    depth_above_rejected: bool = False
 
 
 @dataclass
@@ -222,8 +289,15 @@ def exclusion_mask(cfg: SurfaceConfig, w: int, h: int, holding: bool) -> np.ndar
     return m
 
 
-def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True) -> FrameResult:
-    """Imagem -> rotulos por pixel (escalados): branco (tampo) / nao-branco / desconhecido."""
+def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True,
+                  depth_label: Optional[np.ndarray] = None) -> FrameResult:
+    """Imagem -> rotulos por pixel (escalados): branco (tampo) / nao-branco /
+    alem do plano / desconhecido.
+
+    depth_label: opcional, rotulos de classify_depth (LBL_BEYOND / LBL_NONWHITE /
+    LBL_UNKNOWN) na resolucao processada; onde ha decisao por profundidade ela
+    manda sobre a cor (alem do plano nunca e' tampo; acima do tampo nunca e'
+    livre). None = so' cor (comportamento original)."""
     scale = float(cfg.process_scale)
     small = cv2.resize(bgr_full, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) \
         if scale != 1.0 else bgr_full
@@ -241,6 +315,21 @@ def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True
 
     white = cv2.inRange(hsv, (0, 0, int(cfg.white_v_min)), (179, int(cfg.white_s_max), 255))
     white[known == 0] = 0
+    dl = None
+    depth_beyond_frac = depth_above_frac = 0.0
+    depth_above_rejected = False
+    if depth_label is not None and bool(cfg.depth_enable):
+        dl = np.asarray(depth_label, dtype=np.uint8)
+        if dl.shape != (h, w):
+            dl = cv2.resize(dl, (w, h), interpolation=cv2.INTER_NEAREST)
+        dl = np.where(known > 0, dl, np.uint8(LBL_UNKNOWN)).astype(np.uint8)
+        n_known = max(1, int(np.count_nonzero(known)))
+        depth_beyond_frac = float(np.count_nonzero(dl == LBL_BEYOND)) / n_known
+        depth_above_frac = float(np.count_nonzero(dl == LBL_NONWHITE)) / n_known
+        if depth_above_frac > float(cfg.depth_above_max_frac):
+            dl[dl == LBL_NONWHITE] = LBL_UNKNOWN     # plano errado, nao mesa coberta
+            depth_above_rejected = True
+        white[dl != LBL_UNKNOWN] = 0                 # alem ou acima do plano: nao e' tampo
     k_open = int(cfg.white_open_px)
     if k_open > 1:
         white = cv2.morphologyEx(white, cv2.MORPH_OPEN, np.ones((k_open, k_open), np.uint8))
@@ -284,7 +373,11 @@ def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True
     label = np.full((h, w), LBL_UNKNOWN, dtype=np.uint8)
     label[(white > 0) & (known > 0)] = LBL_WHITE
     label[nonwhite > 0] = LBL_NONWHITE
-    return FrameResult(label, table_frac >= cfg.table_min_frac, table_frac, n_blobs, wstats)
+    if dl is not None:
+        label[dl == LBL_BEYOND] = LBL_BEYOND       # por cima da dilatacao dos objetos
+    return FrameResult(label, table_frac >= cfg.table_min_frac, table_frac, n_blobs, wstats,
+                       depth_used=dl is not None, depth_beyond_frac=depth_beyond_frac,
+                       depth_above_frac=depth_above_frac, depth_above_rejected=depth_above_rejected)
 
 
 def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
@@ -297,11 +390,122 @@ def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
     ])
 
 
+def distortion_fold_tan(D: Optional[np.ndarray], r_max: float = 4.0) -> float:
+    """Raio normalizado (tan do angulo ao eixo optico) a partir do qual o modelo
+    radial plumb_bob / rational_polynomial de D (k1 k2 p1 p2 [k3 [k4 k5 k6]])
+    deixa de ser CRESCENTE: alem dele cv2.projectPoints devolve pixels que
+    voltam para dentro da imagem (dobra). inf se nao ha dobra ate r_max, se D
+    e' nulo ou se o tamanho de D nao e' 4/5/8. A parte tangencial e' ignorada."""
+    Dv = np.asarray(D, dtype=np.float64).ravel() if (D is not None and len(D)) else None
+    if Dv is None or not np.any(Dv) or Dv.size not in (4, 5, 8):
+        return float("inf")
+    k = np.zeros(8)
+    k[:Dv.size] = Dv
+    k1, k2, _p1, _p2, k3, k4, k5, k6 = k
+    r = np.linspace(0.0, float(r_max), 4001)
+    r2 = r * r
+    num = 1.0 + r2 * (k1 + r2 * (k2 + r2 * k3))
+    den = 1.0 + r2 * (k4 + r2 * (k5 + r2 * k6))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = r * num / den
+    bad = ~np.isfinite(f[1:]) | (np.diff(f) <= 0.0)
+    if not np.any(bad):
+        return float("inf")
+    return float(r[int(np.argmax(bad))])
+
+
+def depth_wait_pending(depth_why: Optional[str], since_active_s: Optional[float], grace_s: float) -> bool:
+    """True enquanto vale ESPERAR a profundidade em vez de fundir so' por cor:
+    ela esta ligada mas ainda nao chegou ("sem") ou esta desencontrada da cor
+    ("velha(...)"), e a ativacao foi ha menos de grace_s. Vencida a graca (ou
+    depth_enable=false, encoding errado...), o no funde so' por cor."""
+    if depth_why is None or since_active_s is None or float(grace_s) <= 0.0:
+        return False
+    if not (depth_why == "sem" or depth_why.startswith("velha")):
+        return False
+    return float(since_active_s) < float(grace_s)
+
+
+def expected_plane_range(K: np.ndarray, D: Optional[np.ndarray], cam_origin: np.ndarray, cam_rot: np.ndarray,
+                         plane_z: float, w: int, h: int, scale: float = 1.0) -> np.ndarray:
+    """Profundidade ESPERADA de cada pixel da imagem processada (h x w = imagem
+    cheia x scale) se o raio fosse ate o plano do tampo z = plane_z.
+
+    Devolve (h, w) float32 com o z no frame OPTICO do ponto onde o raio cruza o
+    plano — a mesma grandeza que o D455 publica (profundidade = z, nao a
+    distancia euclidiana). NaN onde o raio nao desce ate o plano (olha para
+    cima / paralelo) ou o plano fica atras da camera. K/D = camera_info da
+    cor (a profundidade alinhada tem a mesma geometria); cam_rot: colunas =
+    eixos da camera no frame base (base <- camera_optical)."""
+    w, h = int(w), int(h)
+    s = float(scale)
+    # Centro do pixel escalado i em coordenadas da imagem cheia: (i + 0.5) / s - 0.5.
+    us = (np.arange(w, dtype=np.float64) + 0.5) / s - 0.5
+    vs = (np.arange(h, dtype=np.float64) + 0.5) / s - 0.5
+    U, V = np.meshgrid(us, vs)
+    Kf = np.asarray(K, dtype=np.float64)
+    Dv = np.asarray(D, dtype=np.float64).ravel() if (D is not None and len(D)) else None
+    if Dv is not None and np.any(Dv):
+        pts = np.stack([U.ravel(), V.ravel()], axis=1).reshape(-1, 1, 2)
+        norm = cv2.undistortPoints(pts, Kf, Dv).reshape(-1, 2)
+        x, y = norm[:, 0], norm[:, 1]
+    else:
+        x = (U.ravel() - Kf[0, 2]) / Kf[0, 0]
+        y = (V.ravel() - Kf[1, 2]) / Kf[1, 1]
+    # Raio no frame optico com z = 1: o t da intersecao E' a profundidade.
+    R = np.asarray(cam_rot, dtype=np.float64)
+    dz_world = R[2, 0] * x + R[2, 1] * y + R[2, 2]          # componente z (base) do raio
+    dh = float(plane_z) - float(np.asarray(cam_origin, dtype=np.float64)[2])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = dh / dz_world
+    t = np.where((dz_world < -1e-9) & (t > 0.0), t, np.nan)
+    return t.reshape(h, w).astype(np.float32)
+
+
+def classify_depth(depth_m: np.ndarray, expected_m: np.ndarray, cfg: SurfaceConfig) -> np.ndarray:
+    """Rotulo por pixel SO' pela profundidade (h, w) uint8:
+        LBL_BEYOND   medida valida e > esperada + depth_beyond_plane_m (chao, alem da borda)
+        LBL_NONWHITE medida valida e < esperada - depth_above_plane_m (algo sobre o tampo)
+        LBL_UNKNOWN  sem decisao (0/NaN, perto demais, raio sem plano, ou entre as duas folgas)
+    depth_m em metros (0 ou NaN = invalido); expected_m de expected_plane_range.
+    Uma abertura de depth_open_px tira os "flying pixels" das bordas dos objetos."""
+    depth = np.asarray(depth_m, dtype=np.float32)
+    exp = np.asarray(expected_m, dtype=np.float32)
+    if depth.shape != exp.shape:
+        raise ValueError(f"classify_depth: profundidade {depth.shape} x esperada {exp.shape}")
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(depth) & (depth >= float(cfg.depth_min_valid_m)) & np.isfinite(exp)
+        beyond = valid & (depth > exp + float(cfg.depth_beyond_plane_m))
+        above = valid & (depth < exp - float(cfg.depth_above_plane_m))
+    k = int(cfg.depth_open_px)
+    if k > 1:
+        kern = np.ones((k, k), np.uint8)
+        beyond = cv2.morphologyEx(beyond.astype(np.uint8), cv2.MORPH_OPEN, kern) > 0
+        above = cv2.morphologyEx(above.astype(np.uint8), cv2.MORPH_OPEN, kern) > 0
+    out = np.full(depth.shape, LBL_UNKNOWN, dtype=np.uint8)
+    out[above] = LBL_NONWHITE
+    out[beyond] = LBL_BEYOND
+    return out
+
+
+def depth_image_to_m(arr: np.ndarray, encoding: str = "16UC1", depth_scale: float = 0.001) -> Optional[np.ndarray]:
+    """Imagem de profundidade crua -> metros float32 (0 = invalido, mantido).
+    16UC1 (D455: mm) x depth_scale; 32FC1 ja em metros. Outro encoding: None."""
+    enc = str(encoding or "").upper()
+    if enc in ("16UC1", "MONO16") or (enc == "" and arr.dtype == np.uint16):
+        return arr.astype(np.float32) * float(depth_scale)
+    if enc == "32FC1" or arr.dtype == np.float32:
+        return np.asarray(arr, dtype=np.float32)
+    return None
+
+
 def detect_edge_lines(white: np.ndarray, nonwhite: np.ndarray, cell_x: np.ndarray, cell_y: np.ndarray,
                       cfg: SurfaceConfig, rng: Optional[np.random.Generator] = None) -> List[EdgeLine]:
     """Retas longas na fronteira branco/nao-branco da grade (metros).
 
-    white/nonwhite: mascaras booleanas (height, width) da grade fundida.
+    white/nonwhite: mascaras booleanas (height, width) da grade fundida
+    (nonwhite inclui as celulas "alem do plano" pela profundidade: elas sao
+    "fora" com certeza e ajudam a reta a cair na borda REAL).
     Devolve ate edge_max_lines retas, com o lado positivo = fora da mesa.
     """
     rng = rng or np.random.default_rng(12345)
@@ -412,6 +616,8 @@ class SurfaceGridFusion:
         shape = (self.height, self.width)
         self.votes_white = np.zeros(shape, dtype=np.int32)
         self.votes_nonwhite = np.zeros(shape, dtype=np.int32)
+        self.votes_beyond = np.zeros(shape, dtype=np.int32)   # profundidade alem do plano
+        self.votes_white_depth = np.zeros(shape, dtype=np.int32)   # brancos de quadros COM profundidade
         self.frames = 0
         self.last_stamp = None
         self.lines: List[EdgeLine] = []
@@ -419,8 +625,9 @@ class SurfaceGridFusion:
     def project_cells(self, K: np.ndarray, D: Optional[np.ndarray], cam_origin: np.ndarray,
                       cam_rot: np.ndarray, plane_z: float, img_w: int, img_h: int):
         """Para cada celula, o pixel (u, v) da camera FULL-RES que a ve; NaN se
-        a celula esta fora da imagem, atras da camera, longe demais ou vista
-        de raspao."""
+        a celula esta fora da imagem, atras da camera, longe demais, vista de
+        raspao ou fora do cone de MAX_RAY_HALF_ANGLE_DEG (onde a distorcao de D
+        dobraria o ponto para dentro da imagem)."""
         X = self.cell_x.ravel()
         Y = self.cell_y.ravel()
         Z = np.full_like(X, float(plane_z))
@@ -430,8 +637,16 @@ class SurfaceGridFusion:
         with np.errstate(invalid="ignore", divide="ignore"):
             elev = np.degrees(np.arcsin(np.clip(np.abs(d[:, 2]) / np.maximum(dist, 1e-9), 0.0, 1.0)))
         Pc = (cam_rot.T @ d.T).T                              # (N, 3) no frame da camera (optico: z para frente)
+        # Cone: fora de MAX_RAY_HALF_ANGLE_DEG (e alem do raio em que o
+        # polinomio de D dobra) o ponto nao esta na imagem, mesmo que
+        # cv2.projectPoints devolva um pixel "dentro" dela. dist == |Pc|.
+        cos_cone = math.cos(math.radians(MAX_RAY_HALF_ANGLE_DEG))
+        r_fold = distortion_fold_tan(D)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r_norm = np.hypot(Pc[:, 0], Pc[:, 1]) / np.maximum(Pc[:, 2], 1e-9)
         ok = (Pc[:, 2] > 0.02) & (dist <= self.cfg.max_ray_length_m) & (elev >= self.cfg.min_ray_elevation_deg) \
-            & (d[:, 2] < 0.0)                                 # camera acima do plano
+            & (d[:, 2] < 0.0) \
+            & (Pc[:, 2] >= dist * cos_cone) & (r_norm <= 0.95 * r_fold)   # camera acima do plano; dentro do cone
         uv = np.full((X.shape[0], 2), np.nan, dtype=np.float32)
         if np.any(ok):
             pts = Pc[ok].reshape(-1, 1, 3).astype(np.float64)
@@ -446,9 +661,11 @@ class SurfaceGridFusion:
             uv[ok] = sub.astype(np.float32)
         return uv.reshape(self.height, self.width, 2)
 
-    def fuse(self, label_small: np.ndarray, scale: float, uv_full: np.ndarray, stamp=None) -> np.ndarray:
+    def fuse(self, label_small: np.ndarray, scale: float, uv_full: np.ndarray, stamp=None,
+             depth_used: bool = False) -> np.ndarray:
         """Amostra os rotulos (imagem escalada) nas celulas e soma votos.
-        Devolve o rotulo por celula desta vista (LBL_*)."""
+        depth_used: o quadro tinha rotulo de profundidade (so' esses brancos
+        podem disputar com "alem"). Devolve o rotulo por celula desta vista (LBL_*)."""
         map_x = uv_full[:, :, 0] * float(scale)
         map_y = uv_full[:, :, 1] * float(scale)
         nan = ~np.isfinite(map_x) | ~np.isfinite(map_y)
@@ -460,24 +677,35 @@ class SurfaceGridFusion:
         sampled[nan] = LBL_UNKNOWN
         self.votes_white += (sampled == LBL_WHITE)
         self.votes_nonwhite += (sampled == LBL_NONWHITE)
+        self.votes_beyond += (sampled == LBL_BEYOND)
+        if depth_used:
+            self.votes_white_depth += (sampled == LBL_WHITE)
         self.frames += 1
         self.last_stamp = stamp
         return sampled
 
     def masks(self):
-        seen = (self.votes_white + self.votes_nonwhite) > 0
-        nonwhite = seen & (self.votes_nonwhite >= self.votes_white)      # empate = nao-branco
-        white = seen & ~nonwhite & (self.votes_white >= self.cfg.free_min_votes)
-        return seen, white, nonwhite
+        """(seen, white, nonwhite, beyond) booleanos (height, width), disjuntos
+        entre si (menos seen). Alem do plano ganha de branco em empate (a
+        profundidade nao atravessa mesa) e so' brancos de quadros COM
+        profundidade votam contra ele: um quadro fundido so' por cor (depth
+        perdida/velha depois da graca) nao refuta "alem". Branco x nao-branco:
+        empate = nao-branco."""
+        seen = (self.votes_white + self.votes_nonwhite + self.votes_beyond) > 0
+        beyond = seen & (self.votes_beyond > 0) & (self.votes_beyond >= self.votes_white_depth)
+        nonwhite = seen & ~beyond & (self.votes_nonwhite >= self.votes_white)      # empate = nao-branco
+        white = seen & ~beyond & ~nonwhite & (self.votes_white >= self.cfg.free_min_votes)
+        return seen, white, nonwhite, beyond
 
     def cells(self, update_lines: bool = True) -> np.ndarray:
         """int8 (height, width) com os codigos CELL_*."""
-        seen, white, nonwhite = self.masks()
+        seen, white, nonwhite, beyond = self.masks()
         if update_lines:
-            self.lines = detect_edge_lines(white, nonwhite, self.cell_x, self.cell_y, self.cfg)
+            self.lines = detect_edge_lines(white, nonwhite | beyond, self.cell_x, self.cell_y, self.cfg)
         out = np.full((self.height, self.width), CELL_UNKNOWN, dtype=np.int8)
         out[nonwhite] = CELL_OBSTACLE
         out[white] = CELL_TABLE_FREE
+        out[beyond] = CELL_OFF_TABLE          # direto: nao depende das retas
         for ln in self.lines:
             outside = seen & (ln.signed(self.cell_x, self.cell_y) > 0.0)
             out[outside] = CELL_OFF_TABLE
@@ -492,7 +720,42 @@ class SurfaceGridFusion:
             "unknown": int(np.count_nonzero(c == CELL_UNKNOWN)),
             "frames": int(self.frames),
             "lines": len(self.lines),
+            "beyond": int(np.count_nonzero(self.votes_beyond > 0)),
         }
+
+
+def table_polygon_from_cells(cells: np.ndarray, cell_x: np.ndarray, cell_y: np.ndarray,
+                             epsilon_m: float = 0.015, min_cells: int = 50) -> List[Tuple[float, float]]:
+    """Contorno do TAMPO VISTO como poligono (metros, frame da grade): o maior
+    componente de celulas TABLE_FREE | OBSTACLE, contorno externo simplificado
+    (cv2.approxPolyDP, tolerancia epsilon_m). O contorno segue a borda das
+    celulas (a mascara e' ampliada 2x e dilatada 1 px: sobra 1/4 de celula para
+    fora). Lista vazia se nao ha tampo (menos de min_cells celulas)."""
+    cells = np.asarray(cells)
+    h, w = cells.shape
+    on = ((cells == CELL_TABLE_FREE) | (cells == CELL_OBSTACLE)).astype(np.uint8)
+    if int(np.count_nonzero(on)) < int(min_cells) or w < 2 or h < 2:
+        return []
+    n, lbl, stats, _ = cv2.connectedComponentsWithStats(on, connectivity=8)
+    if n < 2:
+        return []
+    k = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    m = (lbl == k).astype(np.uint8)
+    res_x = float(cell_x[0, 1] - cell_x[0, 0])
+    res_y = float(cell_y[1, 0] - cell_y[0, 0])
+    up = cv2.resize(m, (2 * w, 2 * h), interpolation=cv2.INTER_NEAREST)
+    up = cv2.dilate(up, np.ones((3, 3), np.uint8))
+    cs, _ = cv2.findContours(up, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cs:
+        return []
+    c = max(cs, key=cv2.contourArea)
+    eps_px = float(epsilon_m) / (max(abs(res_x), 1e-9) / 2.0)
+    approx = cv2.approxPolyDP(c, eps_px, True).reshape(-1, 2)
+    if approx.shape[0] < 3:
+        return []
+    x0 = float(cell_x[0, 0]) - res_x / 2.0
+    y0 = float(cell_y[0, 0]) - res_y / 2.0
+    return [(x0 + (float(px) + 0.5) * res_x / 2.0, y0 + (float(py) + 0.5) * res_y / 2.0) for px, py in approx]
 
 
 def draw_overlay(bgr_full: np.ndarray, scale: float, res: FrameResult, cfg: SurfaceConfig,
@@ -503,6 +766,7 @@ def draw_overlay(bgr_full: np.ndarray, scale: float, res: FrameResult, cfg: Surf
     tint = np.zeros_like(out)
     tint[lbl == LBL_WHITE] = (0, 200, 0)
     tint[lbl == LBL_NONWHITE] = (0, 0, 255)
+    tint[lbl == LBL_BEYOND] = (255, 80, 0)          # azul: alem do plano (chao) pela profundidade
     tint[lbl == LBL_UNKNOWN] = (128, 128, 128)
     out = cv2.addWeighted(out, 0.65, tint, 0.35, 0)
     h, w = res.label.shape[:2]
@@ -575,6 +839,8 @@ SIMPLE_KEYS = [
     "free_min_votes", "edge_inlier_m", "edge_min_length_m", "edge_min_coverage", "edge_max_lines",
     "edge_ransac_iters", "edge_outside_min_frac", "edge_band_m",
     "edge_outside_check_m", "edge_outside_max_white_frac",
+    "depth_enable", "depth_min_valid_m", "depth_beyond_plane_m", "depth_above_plane_m",
+    "depth_open_px", "depth_above_max_frac",
 ]
 
 
@@ -625,35 +891,74 @@ def run_offline(args) -> int:
         print(f"nao consegui abrir {args.image}", file=sys.stderr)
         return 2
     holding = not args.gripper_open
-    t0 = time.perf_counter()
-    res = segment_frame(bgr, cfg, holding=holding)
-    dt = (time.perf_counter() - t0) * 1000.0
     H, W = bgr.shape[:2]
+    # Camera sintetica (x y z pitch_deg em manip_base_link) + intrinsecos: usados
+    # pela projecao na grade e pela profundidade esperada.
+    cam_origin = cam_rot = K = None
+    if args.camera:
+        x, y, z, pitch = [float(v) for v in args.camera.split(",")]
+        a = math.radians(pitch)
+        zax = np.array([0.0, math.cos(a), -math.sin(a)])
+        xax = np.array([-1.0, 0.0, 0.0])
+        yax = np.cross(zax, xax)
+        cam_rot = np.stack([xax, yax, zax], axis=1)
+        cam_origin = np.array([x, y, z])
+        if args.intrinsics:
+            fx, fy, cx, cy = [float(v) for v in args.intrinsics.split(",")]
+        else:
+            fx, fy, cx, cy = 380.0, 380.0, W / 2.0, H / 2.0
+        K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+    depth_label = None
+    if args.depth:
+        if K is None:
+            print("--depth precisa de --camera (pose + plano para a profundidade esperada)", file=sys.stderr)
+            return 2
+        raw = cv2.imread(args.depth, cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            print(f"nao consegui abrir {args.depth}", file=sys.stderr)
+            return 2
+        if raw.ndim == 3:
+            raw = raw[:, :, 0]
+        depth_m = depth_image_to_m(raw, "16UC1" if raw.dtype == np.uint16 else "32FC1", args.depth_scale)
+        if depth_m.shape != (H, W):
+            depth_m = cv2.resize(depth_m, (W, H), interpolation=cv2.INTER_NEAREST)
+        s = float(cfg.process_scale)
+        w_s, h_s = int(round(W * s)), int(round(H * s))
+        small = cv2.resize(depth_m, (w_s, h_s), interpolation=cv2.INTER_NEAREST)
+        exp = expected_plane_range(K, None, cam_origin, cam_rot, args.plane_z, w_s, h_s, s)
+        depth_label = classify_depth(small, exp, cfg)
+        valid = np.isfinite(small) & (small >= cfg.depth_min_valid_m)
+        print(f"profundidade {args.depth}: {np.count_nonzero(valid) * 100.0 / small.size:.0f}% valida "
+              f"(>= {cfg.depth_min_valid_m} m); mediana valida "
+              f"{(np.median(small[valid]) if valid.any() else float('nan')):.3f} m; "
+              f"esperada no centro {exp[h_s // 2, w_s // 2]:.3f} m")
+    t0 = time.perf_counter()
+    res = segment_frame(bgr, cfg, holding=holding, depth_label=depth_label)
+    dt = (time.perf_counter() - t0) * 1000.0
     print(f"imagem {W}x{H}, process_scale {cfg.process_scale}, {dt:.1f} ms")
     print("garra: " + ("SEGURANDO cubo" if holding else "vazia (--gripper-open)"))
     print(f"branco: S<={cfg.white_s_max} V>={cfg.white_v_min}; HSV p5/p50/p95 no branco: {res.white_stats}")
     print(f"mesa {'VISTA' if res.table_found else 'NAO vista'}: {res.table_frac*100:.1f}% da imagem branca "
           f"(minimo {cfg.table_min_frac*100:.0f}%), {res.n_nonwhite_blobs} mancha(s) nao branca(s)")
+    if res.depth_used:
+        print(f"profundidade: alem do plano {res.depth_beyond_frac*100:.1f}% | acima do tampo "
+              f"{res.depth_above_frac*100:.1f}%" + (" (IGNORADA: plano errado?)" if res.depth_above_rejected else ""))
     lbl = res.label
     tot = lbl.size
-    for name, code in (("tampo branco", LBL_WHITE), ("nao branco", LBL_NONWHITE), ("desconhecido", LBL_UNKNOWN)):
+    for name, code in (("tampo branco", LBL_WHITE), ("nao branco", LBL_NONWHITE),
+                       ("alem do plano", LBL_BEYOND), ("desconhecido", LBL_UNKNOWN)):
         print(f"  {name:13s}: {np.count_nonzero(lbl == code) * 100.0 / tot:5.1f}%")
-    if args.camera:
-        # Projecao com uma camera sintetica (x y z pitch_deg): grade + retas.
-        x, y, z, pitch = [float(v) for v in args.camera.split(",")]
+    if K is not None:
+        # Projecao com a camera sintetica: grade + retas + poligono do tampo.
         fusion = SurfaceGridFusion(cfg)
-        a = math.radians(pitch)
-        zax = np.array([0.0, math.cos(a), -math.sin(a)])
-        xax = np.array([-1.0, 0.0, 0.0])
-        yax = np.cross(zax, xax)
-        R = np.stack([xax, yax, zax], axis=1)
-        K = np.array([[380.0, 0.0, W / 2.0], [0.0, 380.0, H / 2.0], [0.0, 0.0, 1.0]])
-        uv = fusion.project_cells(K, None, np.array([x, y, z]), R, args.plane_z, W, H)
-        fusion.fuse(res.label, cfg.process_scale, uv)
+        uv = fusion.project_cells(K, None, cam_origin, cam_rot, args.plane_z, W, H)
+        fusion.fuse(res.label, cfg.process_scale, uv, depth_used=res.depth_used)
         cells = fusion.cells()
         print("grade:", fusion.summary())
         for ln in fusion.lines:
             print("  reta:", ln.describe())
+        poly = table_polygon_from_cells(cells, fusion.cell_x, fusion.cell_y)
+        print("poligono do tampo: " + (", ".join(f"({px:+.2f},{py:.2f})" for px, py in poly) if poly else "nenhum"))
         if args.out:
             cv2.imwrite(args.out.replace(".png", "_grid.png"), grid_to_image(cells, 4, fusion.lines, fusion))
     if args.probe:
@@ -675,14 +980,20 @@ def ros_main(argv=None) -> int:
     from rclpy.node import Node
     from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy, QoSHistoryPolicy
     from rcl_interfaces.msg import SetParametersResult, ParameterDescriptor
+    from rclpy.serialization import deserialize_message
     from sensor_msgs.msg import CameraInfo, Image, JointState
-    from std_msgs.msg import Bool, Float64, String
+    from std_msgs.msg import Bool, ColorRGBA, Float64, String
     from nav_msgs.msg import OccupancyGrid
+    from geometry_msgs.msg import Point, Point32, PolygonStamped
+    from visualization_msgs.msg import Marker, MarkerArray
     from tf2_ros import Buffer, TransformListener
     from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
     from cv_bridge import CvBridge
     from rclpy.time import Time
     from rclpy.duration import Duration
+
+    def stamp_s(stamp) -> float:
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
     class WorkstationSurface(Node):
         def __init__(self):
@@ -695,6 +1006,11 @@ def ros_main(argv=None) -> int:
             dp("always_on", False)
             dp("image_topic", "/camera/camera/color/image_raw")
             dp("camera_info_topic", "/camera/camera/color/camera_info")
+            # Profundidade ALINHADA a cor (align_depth.enable no launch): mesma
+            # geometria/camera_info da cor. depth_enable e as folgas estao em SIMPLE_KEYS.
+            dp("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
+            dp("depth_max_age_s", 0.5)        # |stamp cor - stamp depth| maior que isto = ignora a profundidade
+            dp("depth_grace_s", 1.0)          # apos ativar, espera a profundidade ate isto antes de fundir so' por cor
             dp("observe_topic", "/manip/surface_observe")
             dp("plane_z_topic", "/manip/table_plane_z")
             dp("grid_topic", "/manip/workstation_surface/grid")
@@ -740,12 +1056,17 @@ def ros_main(argv=None) -> int:
             self.last_processed = 0.0
             self.last_cam_pose = None
             self.image_sub = None
+            self.depth_sub = None
+            self.depth_raw: Optional[bytes] = None      # ultima profundidade serializada (raw=True)
+            self.active_since: Optional[float] = None   # monotonic da ultima ativacao (graca da profundidade)
+            self._exp_cache = None                      # (chave, profundidade esperada) da ultima pose
             self.observe = False
             self.gripper_holding = True
             self.gripper_pos = None
             self.warned_tf = 0.0
             self.warned_no_info = False
             self.warned_no_plane = False
+            self.warned_depth_enc = False
             self._last_save_wall = 0.0
 
             self.tf_buffer = Buffer()
@@ -762,6 +1083,10 @@ def ros_main(argv=None) -> int:
             self.create_subscription(JointState, self.get_parameter("joint_states_topic").value,
                                      self._on_joint_states, 10)
             self.grid_pub = self.create_publisher(OccupancyGrid, self.get_parameter("grid_topic").value, latched)
+            # Vetores/poligonos (so' publicados com assinante): contorno do tampo
+            # visto e retas de borda, para o vision_debug e o RViz.
+            self.poly_pub = self.create_publisher(PolygonStamped, "/manip/workstation_surface/table_polygon", latched)
+            self.lines_pub = self.create_publisher(MarkerArray, "/manip/workstation_surface/edge_lines", latched)
             self.status_pub = self.create_publisher(String, "/manip/workstation_surface/status", 5)
             self.debug_pub = self.create_publisher(Image, "/manip/workstation_surface/debug_image", 1)
             self.grid_img_pub = self.create_publisher(Image, "/manip/workstation_surface/grid_image", 1)
@@ -829,6 +1154,7 @@ def ros_main(argv=None) -> int:
             if want and not self.observe:
                 self.fusion.reset()
                 self.last_cam_pose = None
+                self.active_since = time.monotonic()
                 self.get_logger().info("observacao iniciada: grade zerada.")
             elif not want and self.observe:
                 s = self.fusion.summary()
@@ -838,15 +1164,27 @@ def ros_main(argv=None) -> int:
 
         def _update_active(self):
             want = self.observe or bool(self.get_parameter("always_on").value)
+            sensor = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                                history=QoSHistoryPolicy.KEEP_LAST)
             if want and self.image_sub is None:
                 self.image_sub = self.create_subscription(
-                    Image, self.get_parameter("image_topic").value, self._on_image,
-                    QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                               history=QoSHistoryPolicy.KEEP_LAST))
-                self.get_logger().info("ativo: assinando a imagem.")
+                    Image, self.get_parameter("image_topic").value, self._on_image, sensor)
+                if bool(self.cfg.depth_enable):
+                    # raw=True: so' desserializa a profundidade do quadro processado (3 Hz),
+                    # nao os 15 Hz que chegam.
+                    self.depth_sub = self.create_subscription(
+                        Image, self.get_parameter("depth_topic").value, self._on_depth_raw, sensor, raw=True)
+                self.active_since = time.monotonic()
+                self.get_logger().info("ativo: assinando a imagem" +
+                                       (" e a profundidade alinhada." if self.depth_sub is not None else "."))
             elif not want and self.image_sub is not None:
                 self.destroy_subscription(self.image_sub)
                 self.image_sub = None
+                if self.depth_sub is not None:
+                    self.destroy_subscription(self.depth_sub)
+                    self.depth_sub = None
+                self.depth_raw = None
+                self.active_since = None
                 self.get_logger().info("inativo: imagem desassinada (0%% CPU).")
 
         # ---------------- entradas ----------------
@@ -876,6 +1214,108 @@ def ros_main(argv=None) -> int:
             if idx < len(msg.position):
                 self.gripper_pos = float(msg.position[idx])
                 self.gripper_holding = self.gripper_pos > float(self.cfg.gripper_holding_above)
+
+        def _on_depth_raw(self, raw: bytes):
+            self.depth_raw = raw
+
+        # ---------------- profundidade ----------------
+        def _expected_depth(self, origin, rot, plane_z, w, h, scale):
+            """expected_plane_range com cache: a camera fica parada durante a
+            observacao, entao a mesma pose/plano reaproveita a conta."""
+            key = (tuple(np.round(origin, 4)), tuple(np.round(rot.ravel(), 4)), round(float(plane_z), 4), w, h, scale)
+            if self._exp_cache is None or self._exp_cache[0] != key:
+                self._exp_cache = (key, expected_plane_range(self.K, self.D, origin, rot, plane_z, w, h, scale))
+            return self._exp_cache[1]
+
+        def _depth_labels(self, color_stamp, origin, rot, plane_z, W, H):
+            """Rotulos de profundidade (resolucao processada) para o quadro de cor
+            com esse stamp, ou (None, motivo)."""
+            if not bool(self.cfg.depth_enable):
+                return None, "off"
+            if self.depth_raw is None:
+                return None, "sem"
+            try:
+                dmsg = deserialize_message(self.depth_raw, Image)
+            except Exception as exc:  # noqa: BLE001
+                return None, f"erro({exc.__class__.__name__})"
+            age = abs(stamp_s(color_stamp) - stamp_s(dmsg.header.stamp))
+            if age > float(self.get_parameter("depth_max_age_s").value):
+                return None, f"velha({age:.2f}s)"
+            raw = self.bridge.imgmsg_to_cv2(dmsg, desired_encoding="passthrough")
+            depth_m = depth_image_to_m(raw, dmsg.encoding)
+            if depth_m is None:
+                if not self.warned_depth_enc:
+                    self.warned_depth_enc = True
+                    self.get_logger().warn(f"profundidade com encoding {dmsg.encoding!r} (esperava 16UC1/32FC1) — ignorada.")
+                return None, f"enc={dmsg.encoding}"
+            if depth_m.ndim == 3:
+                depth_m = depth_m[:, :, 0]
+            if depth_m.shape != (H, W):
+                # Alinhada a cor deveria ter o mesmo tamanho; redimensiona por NEAREST (0 continua 0).
+                depth_m = cv2.resize(depth_m, (W, H), interpolation=cv2.INTER_NEAREST)
+            scale = float(self.cfg.process_scale)
+            w_s, h_s = int(round(W * scale)), int(round(H * scale))
+            small = cv2.resize(depth_m, (w_s, h_s), interpolation=cv2.INTER_NEAREST) if scale != 1.0 else depth_m
+            exp = self._expected_depth(origin, rot, plane_z, w_s, h_s, scale)
+            return classify_depth(small, exp, self.cfg), "ok"
+
+        # ---------------- vetores / poligonos ----------------
+        def _publish_polygon(self, cells, stamp, plane_z):
+            pts = table_polygon_from_cells(cells, self.fusion.cell_x, self.fusion.cell_y)
+            msg = PolygonStamped()
+            msg.header.stamp = stamp
+            msg.header.frame_id = self.get_parameter("base_frame").value
+            msg.polygon.points = [Point32(x=float(x), y=float(y), z=float(plane_z)) for (x, y) in pts]
+            self.poly_pub.publish(msg)
+
+        def _publish_edge_lines(self, lines, stamp, plane_z):
+            """MarkerArray: DELETEALL + por reta um LINE_LIST (ns 'edge', os 2
+            extremos) e um ARROW (ns 'edge_normal') do meio para FORA; frente/
+            fundo em amarelo, laterais em ciano. Texto com describe()."""
+            frame = self.get_parameter("base_frame").value
+            arr = MarkerArray()
+            clear = Marker()
+            clear.header.frame_id = frame
+            clear.header.stamp = stamp
+            clear.action = Marker.DELETEALL
+            arr.markers.append(clear)
+            z = float(plane_z) + 0.005
+            for i, ln in enumerate(lines):
+                d = np.array([ln.b, -ln.a])
+                p0 = np.array([ln.cx, ln.cy]) - d * ln.length_m / 2.0
+                p1 = np.array([ln.cx, ln.cy]) + d * ln.length_m / 2.0
+                mid = np.array([ln.cx, ln.cy])
+                lateral = abs(ln.a) > abs(ln.b)
+                color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=1.0) if lateral else ColorRGBA(r=1.0, g=1.0, b=0.0, a=1.0)
+                seg = Marker()
+                seg.header.frame_id = frame
+                seg.header.stamp = stamp
+                seg.ns = EDGE_MARKER_NS
+                seg.id = i
+                seg.type = Marker.LINE_LIST
+                seg.action = Marker.ADD
+                seg.pose.orientation.w = 1.0
+                seg.scale.x = 0.01
+                seg.color = color
+                seg.points = [Point(x=float(p0[0]), y=float(p0[1]), z=z), Point(x=float(p1[0]), y=float(p1[1]), z=z)]
+                seg.text = ln.describe()
+                arr.markers.append(seg)
+                arrow = Marker()
+                arrow.header.frame_id = frame
+                arrow.header.stamp = stamp
+                arrow.ns = EDGE_NORMAL_MARKER_NS
+                arrow.id = i
+                arrow.type = Marker.ARROW
+                arrow.action = Marker.ADD
+                arrow.pose.orientation.w = 1.0
+                arrow.scale.x = 0.01
+                arrow.scale.y = 0.02
+                arrow.scale.z = 0.02
+                arrow.color = color
+                tip = mid + np.array([ln.a, ln.b]) * 0.05
+                arrow.points = [Point(x=float(mid[0]), y=float(mid[1]), z=z), Point(x=float(tip[0]), y=float(tip[1]), z=z)]
+                arr.markers.append(arrow)
+            self.lines_pub.publish(arr)
 
         def _camera_pose(self, stamp):
             base = self.get_parameter("base_frame").value
@@ -946,22 +1386,43 @@ def ros_main(argv=None) -> int:
                 self._publish_status(f"camera abaixo/na altura do plano (z_cam={origin[2]:.3f}, plano={plane_z:.3f}) — frame ignorado")
                 return
 
+            H, W = int(msg.height), int(msg.width)
+            depth_label, depth_why = self._depth_labels(msg.header.stamp, origin, rot, plane_z, W, H)
+            if depth_label is None:
+                since = None if self.active_since is None else time.monotonic() - self.active_since
+                grace = float(self.get_parameter("depth_grace_s").value)
+                if depth_wait_pending(depth_why, since, grace):
+                    # O primeiro quadro de cor chega antes da primeira profundidade:
+                    # fundir so' por cor agora pintaria o chao de "tampo livre".
+                    self.last_processed = 0.0        # tenta de novo ja no proximo quadro
+                    self._publish_status(f"aguardando profundidade ({depth_why}, {since:.1f}s de {grace:.1f}s) "
+                                         "— quadro nao fundido")
+                    return
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             holding = bool(self.gripper_holding)
-            res = segment_frame(bgr, self.cfg, holding=holding)
-            H, W = bgr.shape[:2]
+            res = segment_frame(bgr, self.cfg, holding=holding, depth_label=depth_label)
             uv = self.fusion.project_cells(self.K, self.D, origin, rot, plane_z, W, H)
-            view = self.fusion.fuse(res.label, float(self.cfg.process_scale), uv, stamp=msg.header.stamp)
+            view = self.fusion.fuse(res.label, float(self.cfg.process_scale), uv, stamp=msg.header.stamp,
+                                    depth_used=res.depth_used)
             n_seen = int(np.count_nonzero(view != LBL_UNKNOWN))
             cells = self.fusion.cells(update_lines=True)
             summary = self.fusion.summary()
             self._publish_grid(cells, msg.header.stamp)
+            if self.poly_pub.get_subscription_count() > 0:
+                self._publish_polygon(cells, msg.header.stamp, plane_z)
+            if self.lines_pub.get_subscription_count() > 0:
+                self._publish_edge_lines(self.fusion.lines, msg.header.stamp, plane_z)
             dt_ms = (time.perf_counter() - t0) * 1000.0
             lines_txt = "; ".join(ln.describe() for ln in self.fusion.lines) or "nenhuma"
+            if res.depth_used:
+                depth_txt = (f"depth=ok alem={res.depth_beyond_frac*100:.0f}% acima={res.depth_above_frac*100:.0f}%"
+                             + ("(IGNORADA: plano errado?)" if res.depth_above_rejected else ""))
+            else:
+                depth_txt = f"depth={depth_why}" + (" (so cor)" if depth_why in ("sem",) or depth_why.startswith("velha") else "")
             status = (f"frames={summary['frames']} mesa={'sim' if res.table_found else 'NAO'} "
                       f"({res.table_frac*100:.0f}% branco) manchas={res.n_nonwhite_blobs} "
                       f"vista={n_seen}cel | grade livre={summary['free']} obst={summary['obstacle']} "
-                      f"fora={summary['off']} desc={summary['unknown']} | bordas: {lines_txt} | "
+                      f"fora={summary['off']} desc={summary['unknown']} | bordas: {lines_txt} | {depth_txt} | "
                       f"garra={'segurando' if holding else 'vazia'} "
                       f"cam z={origin[2]:.3f} plano={plane_z:.3f}({src}) tf={'latest' if used_latest else 'stamp'} {dt_ms:.0f}ms")
             self._publish_status(status)
@@ -1047,6 +1508,10 @@ def main(argv=None) -> int:
         parser.add_argument("--camera", default=None,
                             help="x,y,z,pitch_deg de uma camera sintetica (manip_base_link) para projetar na grade")
         parser.add_argument("--plane-z", dest="plane_z", type=float, default=-0.029, help="cota do tampo (com --camera)")
+        parser.add_argument("--depth", default=None,
+                            help="PNG 16 bits (mm) da profundidade alinhada a cor, mesmo quadro de --image (exige --camera)")
+        parser.add_argument("--depth-scale", dest="depth_scale", type=float, default=0.001, help="m por unidade do PNG (D455: 0.001)")
+        parser.add_argument("--intrinsics", default=None, help="fx,fy,cx,cy da camera_info (default 380,380,W/2,H/2)")
         return run_offline(parser.parse_args(argv))
     return ros_main(argv)
 

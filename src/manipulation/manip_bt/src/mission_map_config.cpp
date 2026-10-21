@@ -19,7 +19,9 @@ namespace manip_bt
 namespace
 {
 
-const std::regex kDockIdPattern("^(START|FINISH|WS[0-9]+|SH[0-9]+|PP[0-9]+|RT[0-9]+)$");
+// ST = area de empilhamento (stacking area) do formato 2026.
+const std::regex kDockIdPattern(
+  "^(START|FINISH|WS[0-9]+|SH[0-9]+|PP[0-9]+|RT[0-9]+|ST[0-9]+)$");
 
 // LoadFile com o NOME do arquivo no erro (o ParserException do yaml-cpp so
 // diz linha/coluna e o operador nao saberia qual dos 3 YAMLs esta quebrado).
@@ -114,6 +116,7 @@ MissionMapConfig::MissionMapConfig(const std::string & map_folder)
   }
 
   const fs::path mapping_path = folder / "ws_table_mapping.yaml";
+  ws_mapping_path_ = mapping_path.string();
   if (fs::exists(mapping_path)) {
     const YAML::Node mapping = loadYamlOrThrow(mapping_path);
     const YAML::Node ws_map = mapping["ws_to_dock_id"];
@@ -250,7 +253,41 @@ std::string MissionMapConfig::dockIdForWs(const std::string & task_ws) const
   if (it != ws_to_dock_id_.end()) {
     return normalizeDockId(it->second);
   }
-  return normalizeDockId(task_ws);
+  // Formato 2026: PP e ST vem SEM sufixo. Vale o UNICO candidato
+  // "<ws>_<n>" / "<ws><n>" do ws_to_dock_id (PP -> PP_1); 2+ candidatos e'
+  // ambiguidade (erro); 0 cai na normalizacao (WS_1 -> WS1), que para
+  // "PP"/"ST" sozinhos falha com a dica do que acrescentar no mapping.
+  std::vector<std::string> candidates;
+  for (const auto & [key, _] : ws_to_dock_id_) {
+    if (key.size() > task_ws.size() && key.compare(0, task_ws.size(), task_ws) == 0) {
+      const char next = key[task_ws.size()];
+      if (next == '_' || std::isdigit(static_cast<unsigned char>(next))) {
+        candidates.push_back(key);
+      }
+    }
+  }
+  std::sort(candidates.begin(), candidates.end());
+  if (candidates.size() == 1) {
+    return normalizeDockId(ws_to_dock_id_.at(candidates.front()));
+  }
+  if (candidates.size() > 1) {
+    std::string joined;
+    for (const auto & c : candidates) {
+      joined += (joined.empty() ? "" : ", ") + c;
+    }
+    throw std::runtime_error(
+            "Estacao '" + task_ws + "' ambigua no ws_to_dock_id de " + ws_mapping_path_ +
+            " (candidatos: " + joined + ") — use o nome completo na task ou acrescente a "
+            "chave '" + task_ws + "'.");
+  }
+  try {
+    return normalizeDockId(task_ws);
+  } catch (const std::exception & ex) {
+    throw std::runtime_error(
+            std::string(ex.what()) + " Estacao '" + task_ws + "' sem entrada em ws_to_dock_id "
+            "de " + ws_mapping_path_ + " — acrescente '" + task_ws + "_1: " + task_ws +
+            "1' (e grave a pose do dock " + task_ws + "1 em docking.yaml/service_areas.yaml).");
+  }
 }
 
 std::string MissionMapConfig::normalizeDockId(const std::string & dock_id)
@@ -266,7 +303,7 @@ std::string MissionMapConfig::normalizeDockId(const std::string & dock_id)
   if (!std::regex_match(out, kDockIdPattern)) {
     throw std::runtime_error(
             "Estacao invalida '" + dock_id +
-            "'. Use a nomenclatura do rulebook: WS1, WS2, SH1, PP1, RT1, START ou FINISH.");
+            "'. Use a nomenclatura do rulebook: WS1, WS2, SH1, PP1, RT1, ST1, START ou FINISH.");
   }
   return out;
 }

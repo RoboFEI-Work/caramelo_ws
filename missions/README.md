@@ -1,12 +1,39 @@
 # missions/ — tarefas do Caramelo (fonte única)
 
 Cada `*.yaml` desta pasta é uma **tarefa** no formato do YAML da competição
-(RoboCup@Work / @Work Commander, formatos antigo e novo), consumida por:
+(RoboCup@Work / @Work Commander: formato oficial 2026 e os dois anteriores), consumida por:
 
 ```bash
 cd ~/caramelo_ws
 ros2 run caramelo_navigation run_mission --map-name <mapa> --task missions/<arquivo>
 ```
+
+## `tasks geradas/` — arquivos OFICIAIS do @Work Commander (edição 2026)
+
+Tasks geradas pela ferramenta oficial da competição, uma por prova (BMT, BTT1, BTT2, ATT1,
+ATT2, AMT, FINAL), no formato que a organização entrega às equipes (`*_seed<N>_equipe.yaml`;
+o cabeçalho de cada arquivo explica os campos). Esse é o **formato principal** que o
+`task_planner` entende — `docs/guia_missoes.md` §3.2 descreve o que o robô faz com cada
+sub-bloco (`table`, `containers`, `levels`, `slots`, `stack`). O nome tem espaço, então
+sempre entre aspas:
+
+```bash
+cd ~/caramelo_ws
+ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
+  --task "missions/tasks geradas/BMT_seed974164_equipe.yaml" --dry-run   # só o plano
+ros2 run caramelo_navigation run_mission --map-name arenalegal_2026 \
+  --task "missions/tasks geradas/ATT1_seed706244_equipe.yaml"
+```
+
+Na competição, copie o arquivo recebido para esta pasta e rode do mesmo jeito. Os mesmos 7
+arquivos são fixtures do teste automatizado do planner
+(`src/manipulation/manip_bt/test/fixtures/formato2026/`, `colcon test --packages-select
+manip_bt --ctest-args -R formato2026`) — ao trocar os originais aqui, atualize as cópias.
+Pré-requisitos no mapa: `ws_table_mapping.yaml` com `PP_1`/`ST_1` (estações `PP`/`ST` vêm sem
+sufixo e são resolvidas por prefixo) e pose do dock `ST1` gravada (ainda pendente no
+`arenalegal_2026`).
+
+## Tarefas escritas à mão (formatos anteriores)
 
 `--task` é um caminho relativo ao diretório atual (ou absoluto); não há fallback para
 share de pacote — esta pasta é a única fonte de tarefas. O `task_planner` (`manip_bt`)

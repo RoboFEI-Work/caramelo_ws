@@ -39,7 +39,8 @@ struct TagPose
 
 /// Resultado de assignSlots. `slots[k]` e a tag que ocupa o slot k no
 /// inicio (slot 0 = o primeiro na direcao pedida); observed_order[k] =
-/// slots[k].id; target_order = ids ordenados crescentes (mesmo tamanho).
+/// slots[k].id; target_order = ids ordenados crescentes (mesmo tamanho) ou,
+/// com `target_order` pedido, essa ordem restrita as tags vistas.
 struct SlotAssignment
 {
   std::vector<TagPose> slots;
@@ -47,6 +48,10 @@ struct SlotAssignment
   std::vector<int> target_order;
   std::vector<int> missing_tags;   ///< esperadas e nao vistas
   std::vector<int> ignored_tags;   ///< vistas e nao esperadas (nao ganham slot)
+  /// "" = ok. target_order pedido invalido: "target_order: id repetido N" |
+  /// "target_order: id N nao esperado" | "target_order: falta o id N". Nesse
+  /// caso target_order do resultado cai no crescente (quem chama decide).
+  std::string error;
 };
 
 /// Slots por x crescente (left_to_right) ou decrescente (right_to_left).
@@ -54,11 +59,16 @@ struct SlotAssignment
 /// slot (expected vazio = todas as vistas). Ids repetidos em `seen`: fica a
 /// primeira ocorrencia. target_order = ids vistos e esperados em ordem
 /// crescente — ordena parcial quando falta tag.
+/// `target_order` (2026, opcional): alvo explicito na direcao pedida; tem
+/// que ser permutacao de `expected` (ou de todas as vistas, com expected
+/// vazio). Ids esperados mas nao vistos sao removidos mantendo a ordem
+/// relativa; id repetido, nao esperado ou faltando => `error` preenchido.
 SlotAssignment assignSlots(
   const std::vector<TagPose> & seen,
   const std::vector<int> & expected,
   bool left_to_right = true,
-  double tie_eps = 0.01);
+  double tie_eps = 0.01,
+  const std::vector<int> & target_order = {});
 
 enum class SortOpType
 {

@@ -46,6 +46,9 @@ BT::PortsList Amt1SortBT::providedPorts()
     BT::InputPort<std::string>("table_pose", "pose de mesa (Mesa10), repassada aos picks/places"),
     BT::InputPort<std::string>(
       "expected_tags", "", "ids esperados separados por virgula (vazio = tudo o que for visto)"),
+    BT::InputPort<std::string>(
+      "target_order", "",
+      "alvo explicito esquerda -> direita, ids por virgula (vazio = crescente de id)"),
     BT::InputPort<std::string>("direction", "left_to_right", "left_to_right | right_to_left"),
     BT::InputPort<int>(
       "max_onboard", 3, "buffer de containers de bordo (0..3; 0 = todos os vazios)"),
@@ -204,6 +207,27 @@ BT::NodeStatus Amt1SortBT::onStart()
     return BT::NodeStatus::FAILURE;
   }
 
+  // target_order (2026): permutacao de expected_tags; vazio = crescente.
+  std::string target_text;
+  getInput("target_order", target_text);
+  std::vector<int32_t> target_order;
+  try {
+    target_order = parseExpectedTags(target_text);
+  } catch (const std::exception & ex) {
+    RCLCPP_ERROR(logger(), "%s target_order: %s", tag().c_str(), ex.what());
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!target_order.empty() && !expected_tags.empty()) {
+    const std::set<int32_t> expected_set(expected_tags.begin(), expected_tags.end());
+    const std::set<int32_t> target_set(target_order.begin(), target_order.end());
+    if (expected_set != target_set) {
+      RCLCPP_ERROR(
+        logger(), "%s target_order [%s] nao e permutacao de expected_tags [%s].",
+        tag().c_str(), joinIds(target_order).c_str(), joinIds(expected_tags).c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
   std::string direction = "left_to_right";
   getInput("direction", direction);
   if (direction.empty()) {
@@ -251,15 +275,18 @@ BT::NodeStatus Amt1SortBT::onStart()
   goal.ws = ws_;
   goal.table_pose = table_pose;
   goal.expected_tags = expected_tags;
+  goal.target_order = target_order;
   goal.direction = direction;
   goal.max_onboard = max_onboard;
   goal.observe_only = false;
 
   RCLCPP_INFO(
-    logger(), "%s ordenar %zu tag(s) [%s] na mesa %s, %s, max %d a bordo; prazo %.0f s "
-    "(watchdog de feedback %.0f s)...",
+    logger(), "%s ordenar %zu tag(s) [%s] na mesa %s, %s, alvo %s, max %d a bordo; prazo "
+    "%.0f s (watchdog de feedback %.0f s)...",
     tag().c_str(), expected_tags.size(), joinIds(expected_tags).c_str(), table_pose.c_str(),
-    direction.c_str(), max_onboard, timeout_, stage_timeout_);
+    direction.c_str(),
+    target_order.empty() ? "crescente" : ("[" + joinIds(target_order) + "]").c_str(),
+    max_onboard, timeout_, stage_timeout_);
 
   // Watchdog: rearmado a cada feedback (o server publica current_stage como
   // heartbeat, <= 5 s). Mudanca de estagio vai para o log. O prazo total

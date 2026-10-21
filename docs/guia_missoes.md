@@ -128,8 +128,10 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
 ## 3. Formato do YAML da missão
 
 Crie/edite arquivos em `~/caramelo_ws/missions/` (fonte única; `missions/README.md`
-lista os prontos). Subseções: 3.1 competição (antigo) · 3.2 novo do @Work Commander ·
-3.3 empilhar · 3.4 container por cor · 3.5 superfície livre · 3.6 AMT1 · 3.7 nível baixo.
+lista os prontos). Subseções: 3.1 competição (antigo) · 3.2 **YAML 2026 do @Work Commander
+(formato oficial, o principal)** · 3.3 empilhar · 3.4 container por cor · 3.5 superfície
+livre · 3.6 AMT1 · 3.7 nível baixo. O `task_planner` detecta o formato sozinho; os três
+convivem.
 
 ### 3.1 YAML da competição (formato antigo)
 
@@ -169,9 +171,90 @@ finish_state:                        # onde cada coisa deve TERMINAR
 - ids de tag disponíveis (cfg da competição): 1..7 → `tag_1..tag_7`,
   10..16 → `ct_10..ct_16` (potes), 20..28 → `tag_20..tag_28`, 42 → `tag_42`.
 
-### 3.2 YAML novo do @Work Commander
+### 3.2 YAML 2026 do @Work Commander (formato oficial)
 
-O planner aceita os dois formatos. O novo:
+É o arquivo que a ferramenta oficial **@Work Commander (edição 2026)** entrega às equipes —
+exemplos reais de todas as provas em `missions/tasks geradas/` (BMT, BTT1, BTT2, ATT1, ATT2,
+AMT, FINAL; os mesmos arquivos são fixtures do teste automatizado, ver abaixo). O cabeçalho
+de cada arquivo descreve o contrato; resumo real (ATT1, cortado):
+
+```yaml
+task_id: ATT1
+name: Advanced Transportation Test I
+active_service_areas: [ST, WS_1, WS_3, WS_5, WS_6, SH_1]   # PP e ST SEM sufixo
+objects:                      # só o id (a COR dos ATTCs NÃO é informada)
+- {id: 3}
+- {id: 14}
+- {id: 30}
+containers:                   # sem id: cor + estação
+- {color: RED, at: WS_3}
+stacking_areas:
+  ST: {reference_tag: 200}    # tag de referência da pilha (tags_36h11: tag_200)
+precision_tables:             # só nas provas com PP
+  PP: {slot_tags: [101, 102, 103, 104, 105, 106, 107]}
+start_state:
+  WS_1: {obj_ids: [3, 14], table: [14, 3]}
+  WS_3: {obj_ids: [], table: [], containers: {RED: []}}
+  ST:   {obj_ids: [], stack: []}
+  SH_1: {obj_ids: [], levels: {BOTTOM: [], TOP: []}}
+finish_state:
+  WS_3: {obj_ids: [3, 7], table: [3], containers: {RED: [7]}}
+  ST:   {obj_ids: [14, 30], stack: [14, 30]}            # base .. topo
+  SH_1: {obj_ids: [27], levels: {BOTTOM: [], TOP: [27]}}
+```
+
+Cada área tem `obj_ids` (todos os objetos, sem significado de posição) **e** um sub-bloco
+que diz ONDE eles estão; a união dos sub-blocos é igual a `obj_ids` (o planner usa a união e
+avisa se diferir). O que o robô faz com cada sub-bloco:
+
+| Sub-bloco | Significado | O que o planner gera |
+|---|---|---|
+| `table: [ids]` | soltos sobre a mesa, esquerda → direita | `pick`/`place` normais (a ordem esquerda→direita **não** gera ação) |
+| `containers: {RED: [ids]}` | dentro do container daquela cor | `place` com `container_color: RED\|BLUE` na estação (§3.4); objeto que **começa** dentro de container vira pick normal pela tag (aviso) |
+| `levels: {BOTTOM: [], TOP: []}` | prateleira `SH_*` | `pick`/`place` normais com `table_pose: MesaSh` + campo informativo `shelf_level: BOTTOM\|TOP` |
+| `slots: {101: id, 102: null}` | mesa de precisão `PP` (tag de referência do slot → objeto) | PP como **destino**: `place` com `at_tag: tag_<slot>` (soltar centrado na tag do slot); PP como **origem**: pick normal pela tag do objeto; `slots: null` no start = arranjo não informado (AMT) |
+| `stack: [base, …, topo]` | pilha sobre a tag de `stacking_areas.<ST>.reference_tag` | base: `place` com `stack_on: tag_200`; cada seguinte: `stack_on: tag_<anterior>` (§3.3), na mesma visita. Pilha que **já existe** no `start_state` é desfeita antes: quem está em cima sai primeiro e o `place` na tag/base espera o ocupante ser pego (o planner reserva lugar a bordo para isso) |
+
+Mais regras do formato:
+- **Detecção**: presença de `precision_tables`/`stacking_areas`, container sem `id` ou qualquer
+  sub-bloco acima. O log mostra `formato 2026 do @Work Commander detectado`.
+- **Estações sem sufixo** (`PP`, `ST`): o planner procura no `ws_table_mapping.yaml` a chave
+  exata e, se não houver, o **único** candidato `PP_<n>`/`ST_<n>` (`PP` → `PP_1: Mesa10`,
+  `ST` → `ST_1: Mesa15`); o executor faz o mesmo para o dock (`ws_to_dock_id`). Zero ou dois
+  candidatos = erro dizendo o que acrescentar. A fila de alcance (§5.2) usa os prefixos
+  `WS`/`PP` (sem `_`), então `PP` entra nela.
+- **Containers**: só `finish_state.<WS>.containers.<COR>` manda para container (sem inferência
+  por cor do objeto — o objeto não tem cor). Cor precisa ser RED/BLUE (detector).
+- **Tags**: ids 1..30 (`tag_<id>`), 101..107 (`tag_101..tag_107`, slots) e 200 (`tag_200`,
+  referência da pilha) estão em `tags_36h11.yaml`; id sem frame é **erro** do planner.
+- **AMT**: `task_id: AMT` / `name: Advanced Manipulation Test` (com ou sem o 1) → rotina
+  `amt1_sort` com `target_order` derivado de `finish_state.PP.slots` (§3.6).
+- Mesmo objeto em outro nível da prateleira ou em outro slot da PP (mesma estação) também
+  é pick + place. Objeto só no `start_state` vira aviso (não é pego); só no `finish_state`
+  é erro.
+
+**Limitações (ainda sem validação no robô)**: `at_tag` reaproveita o caminho do `stack_on`
+no nó de place (XY da tag, z da tag + `stack_place_z_offset`) — esse offset assume um cubo
+embaixo, então **soltar sobre uma tag na mesa precisa de um z-offset próprio** (pendência
+no `place_action_server`); `shelf_level` é só informativo (o pick/place da prateleira ainda
+não escolhe o nível — aviso `nivel da prateleira ainda nao e' usado` no executor); o
+**tamanho das tags 101..107/200** em `tags_36h11.yaml` (0,041) é chute: conferir com o
+rulebook/mesa real; a pose do dock **ST1** ainda não existe no `docking.yaml`/`service_areas.yaml`
+do `arenalegal_2026` (o executor aborta de forma clara); uma pilha que já existe no
+`start_state.<ST>.stack` é desfeita na ordem certa (ocupante da tag_200/base é pego antes do
+`place`, com lugar a bordo reservado para ele) e, se o ocupante não tiver destino, o planner
+falha com `ocupa esse lugar e nao sera pego` em vez de gerar um plano impossível — os
+arquivos oficiais sempre começam com `stack: []`, então isso só foi testado no planner
+(`test_task_planner_formato2026.py`, casos `START_STACK_CASES`), não no robô.
+
+**Teste automatizado** (sem ROS no ar, roda o binário sobre os 7 arquivos + fixtures antigos):
+```bash
+colcon test --packages-select manip_bt --ctest-args -R formato2026   # após o build
+# ou, com o install sourceado (acha o binário por `ros2 pkg prefix manip_bt` ou TASK_PLANNER_BIN):
+python3 -m pytest src/manipulation/manip_bt/test/test_task_planner_formato2026.py -q
+```
+
+#### Formato "novo 25/08" (anterior, ainda aceito)
 
 ```yaml
 schema_version: 1
@@ -187,15 +270,15 @@ finish_state:
   WS_6: {obj_ids: [30, 13, 4]}
 ```
 
-- Não há mais `containers:`/`cont_ids` nem tag nos containers: **sem bloco `containers:` no
+- Não há `containers:`/`cont_ids` nem tag nos containers: **sem bloco `containers:` no
   YAML, se o objeto tem cor (RED/BLUE) e vai para uma mesa comum, o place tenta o container
   dessa cor visto pela câmera** (`container_color` na ação); sem container visível (ou sem o
   detector no ar), solta na mesa. Formato antigo **com** `containers:` + "inside": só os objetos
   das constraints vão para container (pela COR do container, que precisa ser RED/BLUE); os
   outros vão para a mesa como antes.
-- Ids 1..30 têm frame `tag_<id>` em `tags_36h11.yaml`; objeto sem frame agora é **erro** do
-  planner (antes sumia do plano em silêncio). Objeto só no `start_state` vira aviso (não é
-  pego); só no `finish_state` é erro. `type` com "DECOY" é ignorado. `stacks:` continua (§3.3).
+- Objeto sem frame em `tags_36h11.yaml` é **erro** do planner (antes sumia do plano em
+  silêncio). Objeto só no `start_state` vira aviso (não é pego); só no `finish_state` é erro.
+  `type` com "DECOY" é ignorado. `stacks:` continua (§3.3).
 
 ### 3.3 Empilhar
 
@@ -248,6 +331,18 @@ cubo de 42 mm + folga — **calibrar no robô**), passando por uma pré-pose
 de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
 `stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
 `stack_tilt_ladder_deg` ([15, 30]).
+
+#### Formato 2026: pilha sobre a tag 200 e encaixe na mesa de precisão
+
+No YAML 2026 a pilha começa sobre o adesivo `tag_200` da área de empilhamento
+(`stack_on: tag_200` no primeiro cubo, depois `stack_on: tag_<anterior>`) e o
+place na mesa de precisão vai para a cavidade do slot (`at_tag: tag_101..107`,
+que o executor repassa como `stack_on`). O nó de place reconhece esses ids e
+muda de modo: encaixe com busca em espiral e verificação de assentamento, e
+pilha de até 4 com verificação após cada cubo. Tudo isso, com parâmetros,
+calibração e limitações, está em
+[place_precisao_e_pilha.md](place_precisao_e_pilha.md) — **ainda sem validação
+no robô**.
 
 ### 3.4 Container por cor (`container_color`)
 
@@ -329,12 +424,29 @@ direita** (vista do robô docado). As 6 posições são onde as tags estão no i
 os containers de bordo como buffer (precisa de **2 livres** no mínimo: pega A, pega B, solta B
 onde estava A…).
 
-**Como o planner reconhece**: `name` contendo "advanced manipulation task 1" (sem distinguir
-maiúsculas) OU `task_id` começando com `AMT1`. Aí ele ignora o planejamento de transferências e
+**Como o planner reconhece**: `name` contendo "advanced manipulation task/test" (com ou sem
+o " 1", sem distinguir maiúsculas; "task 2"/"task 10" não casam) OU `task_id` `AMT`/`AMT1`
+(`AMT-1`, `AMT_1`; `AMT2`/`AMT10` não). Aí ele ignora o planejamento de transferências e
 emite só `goto PP_1` + `amt1_sort` (a rotina inteira roda no nó `/amt1_sort`). Exemplo
 completo em [missions/task_AMT1_pp1.yaml](../missions/task_AMT1_pp1.yaml): `active_service_areas: [PP_1]`
 (obrigatório — estação fora da lista é descartada), 6 objetos em `start_state.PP_1`,
 `finish_state` igual ao `start_state`.
+
+**Alvo explícito por slot (`target_order`, formato 2026)**: o arquivo oficial da AMT
+(`missions/tasks geradas/AMT_*.yaml`, §3.2) nomeia a estação `PP` (→ `PP_1`), traz
+`start_state.PP.slots: null` (arranjo inicial não informado) e `finish_state.PP.slots:
+{101: 1, 102: 2, …, 106: 6, 107: null}` com `precision_tables.PP.slot_tags: [101..107]`. O
+planner lê os slots **na ordem dos `slot_tags`** (esquerda → direita), pula os `null` e emite
+`target_order: [1, 2, 3, 4, 5, 6]` na ação `amt1_sort` (além de `expected_tags`); o executor
+repassa ao goal (`Amt1Sort.target_order`) e `amt1_sort_planner::assignSlots` usa essa ordem
+em vez da crescente — tags esperadas mas não vistas são puladas mantendo a ordem relativa;
+id repetido, não esperado ou faltando é rejeitado (goal `REJECT` no executor/nó, ou
+`fail_reason: alvo_invalido` sem mover nada). `target_order` vazio/ausente = ordem crescente
+de id (missões antigas, `task_AMT1_pp1.yaml`). O robô fala "Vou deixar na ordem …" quando a
+ordem é explícita. **Limitação**: o nó continua definindo as 6 posições como as posições
+iniciais dos cubos (não lê as tags 101..107 dos slots) — se o alvo deixar um slot vazio no
+meio (ex.: `101: null, 102: 1, …`), o resultado físico é "os 6 cubos nas 6 posições iniciais,
+na ordem pedida", não "cada cubo sobre a tag do seu slot".
 
 **O que o robô faz** (nó `amt1_sort_action_node`, `manip_task_execution`): prólogo `home` →
 dock na PP1 → observa a mesa de `pegar_obj`, `tag_esquerda` e `tag_direita` (TF das tags) →
@@ -645,7 +757,7 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   inteira no nó `/amt1_sort`; params do executor `amt1_timeout` (1800 s, prazo total — estourar só
   avisa) e `amt1_stage_timeout` (300 s, watchdog por feedback — o único que cancela o goal).
 - Fila de alcance (28/08, ver §5.2): `reach_queue_enabled` (true),
-  `reach_queue_ws_prefixes` (`["WS_","PP_"]`), `reach_queue_max_nudges` (2),
+  `reach_queue_ws_prefixes` (`["WS","PP"]`, sem `_` desde o formato 2026: cobre `WS_1` e `PP`), `reach_queue_max_nudges` (2),
   `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
   `nudge_timeout` (20 s, goal do `nudge_base`).
 
@@ -853,4 +965,8 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
   dedup câmera × memória (§5.3); `nudge_base` não se movia (piso do ESC) — correção no
   `dock_align_node` (`docs/docking_alinhamento_holonomico.md`).
 - **2026-10-21** — visão de depuração `/manip/vision_debug/image` (tags, containers, mapa
-  da mesa e status sobre a imagem da câmera; §6.1).
+  da mesa e status sobre a imagem da câmera; §6.1); YAML 2026 do @Work Commander como
+  formato principal (sub-blocos table/containers/levels/slots/stack, `PP`/`ST` sem sufixo,
+  `at_tag`, `shelf_level`, `target_order` da AMT; §3.2, §3.6) com teste automatizado sobre
+  os arquivos oficiais; pilha já existente no `start_state` desfeita antes do `place` na
+  tag/base (revisão do mesmo dia).

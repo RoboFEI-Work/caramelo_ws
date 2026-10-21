@@ -31,6 +31,7 @@ ALLOWED_TYPES = {
     "shelf",
     "rotating_table",
     "precision_placement",
+    "stacking_area",
 }
 TYPE_ALIASES = {
     "START": "start",
@@ -45,6 +46,9 @@ TYPE_ALIASES = {
     "RT": "rotating_table",
     "ROTATING_TABLE": "rotating_table",
     "ROTATINGTABLE": "rotating_table",
+    "ST": "stacking_area",
+    "STACKING_AREA": "stacking_area",
+    "STACKINGAREA": "stacking_area",
 }
 TYPE_CODES = {
     "start": "START",
@@ -53,6 +57,7 @@ TYPE_CODES = {
     "shelf": "SH",
     "precision_placement": "PP",
     "rotating_table": "RT",
+    "stacking_area": "ST",
 }
 VALID_HEIGHTS = (0.00, 0.05, 0.10, 0.15)
 
@@ -156,6 +161,8 @@ def type_from_area_id(area_id: str) -> str:
         return "precision_placement"
     if area_id.startswith("RT"):
         return "rotating_table"
+    if area_id.startswith("ST"):
+        return "stacking_area"
     return "workstation"
 
 

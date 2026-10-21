@@ -16,6 +16,12 @@ string ws                # "PP_1"
 string table_pose        # "Mesa10" - repassado aos picks/places
 int32[] expected_tags    # ids esperados na mesa (6); vazio = tudo o que for visto
                          # (e sem busca lateral: nao ha o que procurar)
+int32[] target_order     # 2026: alvo EXPLICITO, ids na ordem esquerda -> direita
+                         # (na `direction` pedida); tem que ser permutacao de
+                         # expected_tags (tags nao vistas sao puladas mantendo a
+                         # ordem). Vazio = ordem crescente de id (comportamento
+                         # de sempre). Deriva de finish_state.PP.slots do yaml
+                         # do @Work Commander (task_planner -> target_order)
 string direction         # left_to_right (default) | right_to_left
 int32 max_onboard        # buffer (0..3); 0 = todos os containers vazios. Minimo util: 2
 bool observe_only        # so observa, planeja e fala; nao move cubo nem a base:

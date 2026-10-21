@@ -400,6 +400,97 @@ TEST(Amt1AssignSlots, EmptyExpectedTakesEverything)
   EXPECT_EQ(assignSlots({}, kTarget, true).missing_tags, kTarget);
 }
 
+// ------------------------------------------------- assignSlots + target_order
+
+namespace
+{
+const std::vector<TagPose> kSixSeen{
+  tag(5, -0.25, 0.30), tag(2, -0.15, 0.30), tag(3, -0.05, 0.30),
+  tag(1, 0.05, 0.30), tag(4, 0.15, 0.30), tag(6, 0.25, 0.30)};
+}  // namespace
+
+TEST(Amt1TargetOrder, EmptyKeepsAscending)
+{
+  const SlotAssignment a = assignSlots(kSixSeen, kTarget, true, 0.01, {});
+  EXPECT_TRUE(a.error.empty());
+  EXPECT_EQ(a.target_order, kTarget);
+}
+
+TEST(Amt1TargetOrder, IdentityOfAscending)
+{
+  const SlotAssignment a = assignSlots(kSixSeen, kTarget, true, 0.01, {1, 2, 3, 4, 5, 6});
+  EXPECT_TRUE(a.error.empty()) << a.error;
+  EXPECT_EQ(a.target_order, kTarget);
+  EXPECT_EQ(a.observed_order, (std::vector<int>{5, 2, 3, 1, 4, 6}));
+  const SortPlan plan = planSort(a.observed_order, a.target_order, 2);
+  ASSERT_TRUE(plan.error.empty());
+  EXPECT_EQ(simulatePlan(a.observed_order, plan.ops, 2).final_order, kTarget);
+}
+
+TEST(Amt1TargetOrder, ReverseOrderIsHonoured)
+{
+  const std::vector<int> reversed{6, 5, 4, 3, 2, 1};
+  const SlotAssignment a = assignSlots(kSixSeen, kTarget, true, 0.01, reversed);
+  EXPECT_TRUE(a.error.empty()) << a.error;
+  EXPECT_EQ(a.target_order, reversed);
+  const SortPlan plan = planSort(a.observed_order, a.target_order, 2);
+  ASSERT_TRUE(plan.error.empty());
+  EXPECT_EQ(simulatePlan(a.observed_order, plan.ops, 2).final_order, reversed);
+  // Mesa ja nessa ordem => nada a fazer.
+  const std::vector<TagPose> already{
+    tag(6, -0.25, 0.3), tag(5, -0.15, 0.3), tag(4, -0.05, 0.3),
+    tag(3, 0.05, 0.3), tag(2, 0.15, 0.3), tag(1, 0.25, 0.3)};
+  const SlotAssignment b = assignSlots(already, kTarget, true, 0.01, reversed);
+  EXPECT_TRUE(planSort(b.observed_order, b.target_order, 2).ops.empty());
+}
+
+TEST(Amt1TargetOrder, PartialWhenTagsMissingKeepsRelativeOrder)
+{
+  // Faltam 3 e 4: o alvo [6,5,4,3,2,1] vira [6,5,2,1] (ordem relativa).
+  const std::vector<TagPose> seen{
+    tag(6, -0.2, 0.3), tag(2, -0.1, 0.3), tag(5, 0.0, 0.3), tag(1, 0.1, 0.3)};
+  const SlotAssignment a = assignSlots(seen, kTarget, true, 0.01, {6, 5, 4, 3, 2, 1});
+  EXPECT_TRUE(a.error.empty()) << a.error;
+  EXPECT_EQ(a.observed_order, (std::vector<int>{6, 2, 5, 1}));
+  EXPECT_EQ(a.target_order, (std::vector<int>{6, 5, 2, 1}));
+  EXPECT_EQ(a.missing_tags, (std::vector<int>{3, 4}));
+  const SortPlan plan = planSort(a.observed_order, a.target_order, 2);
+  ASSERT_TRUE(plan.error.empty());
+  EXPECT_EQ(simulatePlan(a.observed_order, plan.ops, 2).final_order, a.target_order);
+}
+
+TEST(Amt1TargetOrder, InvalidOrdersReportErrorAndFallBack)
+{
+  // Id nao esperado.
+  SlotAssignment a = assignSlots(kSixSeen, kTarget, true, 0.01, {1, 2, 3, 4, 5, 9});
+  EXPECT_EQ(a.error, "target_order: id 9 nao esperado");
+  EXPECT_EQ(a.target_order, kTarget);   // fallback crescente
+  // Repetido.
+  a = assignSlots(kSixSeen, kTarget, true, 0.01, {1, 2, 2, 4, 5, 6});
+  EXPECT_EQ(a.error, "target_order: id repetido 2");
+  // Incompleto (falta o 6).
+  a = assignSlots(kSixSeen, kTarget, true, 0.01, {1, 2, 3, 4, 5});
+  EXPECT_EQ(a.error, "target_order: falta o id 6");
+  EXPECT_EQ(a.target_order, kTarget);
+  // Sem expected: o universo sao as tags vistas.
+  const std::vector<TagPose> two{tag(9, 0.2, 0.3), tag(4, -0.2, 0.3)};
+  EXPECT_TRUE(assignSlots(two, {}, true, 0.01, {9, 4}).error.empty());
+  EXPECT_EQ(assignSlots(two, {}, true, 0.01, {9, 4}).target_order, (std::vector<int>{9, 4}));
+  EXPECT_EQ(assignSlots(two, {}, true, 0.01, {9}).error, "target_order: falta o id 4");
+  EXPECT_EQ(assignSlots(two, {}, true, 0.01, {9, 4, 1}).error, "target_order: id 1 nao esperado");
+}
+
+TEST(Amt1TargetOrder, IgnoredTagsDoNotEnterTheTarget)
+{
+  const std::vector<TagPose> seen{
+    tag(42, -0.3, 0.3), tag(2, -0.1, 0.3), tag(1, 0.1, 0.3), tag(9, 0.4, 0.3)};
+  const SlotAssignment a = assignSlots(seen, {1, 2, 3}, true, 0.01, {3, 1, 2});
+  EXPECT_TRUE(a.error.empty()) << a.error;
+  EXPECT_EQ(a.observed_order, (std::vector<int>{2, 1}));
+  EXPECT_EQ(a.target_order, (std::vector<int>{1, 2}));
+  EXPECT_EQ(a.ignored_tags, (std::vector<int>{9, 42}));
+}
+
 // ------------------------------------------------------- registrationDelta
 
 TEST(Amt1Registration, MeanOfConsistentAnchors)

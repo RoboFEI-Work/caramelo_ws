@@ -16,7 +16,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
-DOCK_ID_PATTERN = re.compile(r"^(START|FINISH|WS[0-9]+|SH[0-9]+|PP[0-9]+|RT[0-9]+)$")
+# ST<n> = area de empilhamento (stacking area) do formato 2026 da competicao.
+DOCK_ID_PATTERN = re.compile(r"^(START|FINISH|WS[0-9]+|SH[0-9]+|PP[0-9]+|RT[0-9]+|ST[0-9]+)$")
 DEFAULT_DOCK_IDS = ["START", "FINISH", "WS1", "WS2", "WS3", "WS4", "SH1", "PP1", "RT1"]
 
 DEFAULT_DOCK_PLUGINS = {
@@ -61,7 +62,7 @@ def normalize_dock_id(dock_id: str) -> str:
     if not DOCK_ID_PATTERN.match(dock_id):
         raise ValueError(
             "Use a nomenclatura do rulebook: WS1, WS2, SH1, PP1, "
-            "RT1, START ou FINISH."
+            "RT1, ST1, START ou FINISH."
         )
     return dock_id
 

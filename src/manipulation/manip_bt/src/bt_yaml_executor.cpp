@@ -2,6 +2,8 @@
 // gerada pelo task_planner, monta a arvore de comportamento em XML e a executa
 // com as folhas GoToWS, PickTag, PlaceTag, ReachQueue, NudgeBase, Amt1Sort e
 // GoToNamedPose. Quem chama: caramelo_navigation/scripts/run_mission.py.
+// Chaves desconhecidas de uma acao sao ignoradas; as do formato 2026
+// (at_tag, shelf_level, target_order) sao lidas aqui — ver docs/guia_missoes.md §3.2.
 //
 // Uso: bt_yaml_executor <actions.yaml> [--dry-run] --ros-args -p map_folder:=...
 //   --dry-run  so imprime o plano e o XML gerado (nao executa nada).
@@ -237,6 +239,32 @@ void setStringOnBlackboard(
   blackboard->set(actionBlackboardKey(action_index, field), value);
 }
 
+// shelf_level (formato 2026: BOTTOM|TOP na SH_*). O pick/place da
+// prateleira ainda nao usa o nivel: a chave e' aceita, mostrada no plano e
+// IGNORADA, com um aviso (uma vez por execucao).
+std::string readShelfLevel(const YAML::Node & action, const std::size_t action_index)
+{
+  if (!action["shelf_level"] || action["shelf_level"].IsNull()) {
+    return "";
+  }
+  std::string level = action["shelf_level"].as<std::string>("");
+  std::transform(
+    level.begin(), level.end(), level.begin(),
+    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+  if (level.empty()) {
+    return "";
+  }
+  static bool warned = false;
+  if (!warned) {
+    warned = true;
+    RCLCPP_WARN(
+      rclcpp::get_logger("bt_yaml_executor"),
+      "actions[%zu] shelf_level=%s: nivel da prateleira ainda nao e' usado pelo "
+      "pick/place (so informativo).", action_index, level.c_str());
+  }
+  return level;
+}
+
 struct MissionBuildContext
 {
   manip_bt::MissionMapConfigPtr map_config;
@@ -252,8 +280,10 @@ struct MissionBuildContext
   // uma mesa comum (prefixos abaixo) rodam numa fila que adia os "fora de
   // alcance", ajusta a base de lado (NudgeBase, ate max_nudges vezes) e
   // termina com a passada final. false = XML identico ao de antes.
+  // Prefixos SEM '_' (2026): cobrem WS_1 e tambem PP (formato 2026 nomeia a
+  // mesa de precisao sem sufixo).
   bool reach_queue_enabled{true};
-  std::vector<std::string> reach_queue_ws_prefixes{"WS_", "PP_"};
+  std::vector<std::string> reach_queue_ws_prefixes{"WS", "PP"};
   int reach_queue_max_nudges{2};
   double reach_queue_max_shift_m{0.25};
   double reach_queue_min_shift_m{0.10};
@@ -391,7 +421,7 @@ std::string buildTreeXmlFromActions(
     };
 
   // Fila de alcance: abre no 1o pick/place depois do goto de uma
-  // estacao elegivel (dock+align e prefixo WS_/PP_) e fecha — com o NudgeBase
+  // estacao elegivel (dock+align e prefixo WS/PP) e fecha — com o NudgeBase
   // como ultimo filho — em home, goto ou no fim das acoes. UMA fila por
   // estacao: um home no meio da estacao fecha a fila e os
   // picks/places seguintes da MESMA estacao saem FORA dela (XML antigo,
@@ -549,6 +579,10 @@ std::string buildTreeXmlFromActions(
       const std::string table_pose_key = actionBlackboardKey(i, "table_pose");
       setStringOnBlackboard(blackboard, i, "table_pose", table_pose);
 
+      // shelf_level (formato 2026, BOTTOM|TOP): so informativo por enquanto —
+      // o pick na prateleira ainda nao escolhe o nivel.
+      const std::string shelf_level = readShelfLevel(action, i);
+
       open_reach_queue_if_needed();
       xml << "      <PickTag" << reach_leaf_name("pick", i)
           << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
@@ -557,7 +591,8 @@ std::string buildTreeXmlFromActions(
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] pick  tag=" + tag_frame +
-        (table_pose.empty() ? "" : " mesa=" + table_pose));
+        (table_pose.empty() ? "" : " mesa=" + table_pose) +
+        (shelf_level.empty() ? "" : " NIVEL " + shelf_level + " (informativo)"));
       continue;
     }
 
@@ -592,6 +627,29 @@ std::string buildTreeXmlFromActions(
       if (action["stack_on"]) {
         stack_on = action["stack_on"].as<std::string>("");
       }
+      // SLOT DA MESA DE PRECISAO (formato 2026): `at_tag: tag_102` = soltar
+      // centrado na tag de referencia do slot, que esta SOBRE A MESA. Vai
+      // ao no de place reaproveitando o stack_on (mesmo caminho: TF da tag,
+      // XY da tag, z da tag + stack_place_z_offset). Pendencia: o place
+      // precisa de um z-offset proprio para "tag na mesa" (o offset atual
+      // assume um cubo embaixo) — validar no robo.
+      std::string at_tag;
+      if (action["at_tag"]) {
+        at_tag = action["at_tag"].as<std::string>("");
+      }
+      if (!at_tag.empty()) {
+        if (at_tag.rfind("tag_", 0) != 0 || at_tag == tag_frame) {
+          throw std::runtime_error(
+            "action[" + std::to_string(i) + "]: at_tag='" + at_tag +
+            "' invalido (esperado tag_N diferente de tag_frame)");
+        }
+        if (!stack_on.empty()) {
+          throw std::runtime_error(
+            "action[" + std::to_string(i) + "]: at_tag e stack_on juntos nao fazem sentido "
+            "(soltar no slot da mesa de precisao OU em cima de um bloco)");
+        }
+        stack_on = at_tag;
+      }
       if (!stack_on.empty()) {
         const bool plausible =
           stack_on.rfind("tag_", 0) == 0 || stack_on.rfind("ct_", 0) == 0;
@@ -603,6 +661,9 @@ std::string buildTreeXmlFromActions(
       }
       const std::string stack_on_key = actionBlackboardKey(i, "stack_on");
       setStringOnBlackboard(blackboard, i, "stack_on", stack_on);
+
+      // shelf_level (formato 2026): so informativo — ver o pick.
+      const std::string shelf_level = readShelfLevel(action, i);
 
       // CONTAINER POR COR: `container_color: RED|BLUE` = soltar
       // dentro do container dessa cor visto pela camera na mesa de destino
@@ -632,8 +693,9 @@ std::string buildTreeXmlFromActions(
         }
         if (!stack_on.empty()) {
           throw std::runtime_error(
-            "action[" + std::to_string(i) + "]: container_color e stack_on juntos nao "
-            "fazem sentido (soltar num container OU em cima de um bloco)");
+            "action[" + std::to_string(i) + "]: container_color e " +
+            (at_tag.empty() ? "stack_on" : "at_tag") + " juntos nao fazem sentido (soltar "
+            "num container OU em cima de um bloco / no slot da mesa de precisao)");
         }
       }
       const std::string container_color_key = actionBlackboardKey(i, "container_color");
@@ -694,9 +756,11 @@ std::string buildTreeXmlFromActions(
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
         (place_ws.empty() ? "" : " ws=" + place_ws) +
-        (stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on) +
+        (!at_tag.empty() ? " NO SLOT " + at_tag + " (via stack_on)" :
+        stack_on.empty() ? "" : " EMPILHAR sobre " + stack_on) +
         (container_color.empty() ? "" : " NO CONTAINER " + container_color) +
-        (wall_sides.empty() ? "" : " PAREDE " + wall_sides));
+        (wall_sides.empty() ? "" : " PAREDE " + wall_sides) +
+        (shelf_level.empty() ? "" : " NIVEL " + shelf_level + " (informativo)"));
       continue;
     }
 
@@ -791,6 +855,64 @@ std::string buildTreeXmlFromActions(
           "actions[%zu] amt1_sort sem expected_tags — o no ordena tudo o que vir na mesa.", i);
       }
 
+      // target_order (formato 2026): alvo EXPLICITO esquerda -> direita, lista
+      // de ints ou string "1,2,3". Vazio/ausente = ordem crescente de id
+      // (comportamento de sempre). Tem que ser permutacao de expected_tags.
+      std::vector<int> target_order;
+      const YAML::Node order_node = action["target_order"];
+      try {
+        if (order_node && order_node.IsSequence()) {
+          for (const auto & t : order_node) {
+            try {
+              target_order.push_back(t.as<int>());
+            } catch (const YAML::Exception &) {
+              throw std::runtime_error("'" + YAML::Dump(t) + "' nao e inteiro");
+            }
+          }
+        } else if (order_node && order_node.IsScalar()) {
+          for (const int id :
+            manip_bt::Amt1SortBT::parseExpectedTags(order_node.as<std::string>()))
+          {
+            target_order.push_back(id);
+          }
+        } else if (order_node && !order_node.IsNull()) {
+          throw std::runtime_error("esperado lista de ints ou string \"1,2,3\"");
+        }
+      } catch (const std::exception & ex) {
+        std::string what = ex.what();
+        const std::string prefix = "expected_tags: ";
+        if (what.rfind(prefix, 0) == 0) {
+          what = what.substr(prefix.size());
+        }
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort target_order: " + what);
+      }
+      std::string target_csv;
+      for (std::size_t k = 0; k < target_order.size(); ++k) {
+        if (std::find(target_order.begin(), target_order.begin() + k, target_order[k]) !=
+          target_order.begin() + k)
+        {
+          throw std::runtime_error(
+                  "actions[" + std::to_string(i) + "] amt1_sort target_order com id repetido " +
+                  std::to_string(target_order[k]) + ".");
+        }
+        if (!expected_tags.empty() &&
+          std::find(expected_tags.begin(), expected_tags.end(), target_order[k]) ==
+          expected_tags.end())
+        {
+          throw std::runtime_error(
+                  "actions[" + std::to_string(i) + "] amt1_sort target_order tem o id " +
+                  std::to_string(target_order[k]) + " que nao esta em expected_tags.");
+        }
+        target_csv += (k == 0 ? "" : ",") + std::to_string(target_order[k]);
+      }
+      if (!target_order.empty() && target_order.size() != expected_tags.size()) {
+        throw std::runtime_error(
+                "actions[" + std::to_string(i) + "] amt1_sort target_order (" +
+                std::to_string(target_order.size()) + " ids) nao e permutacao de expected_tags (" +
+                std::to_string(expected_tags.size()) + " ids).");
+      }
+
       std::string direction = action["direction"].as<std::string>("left_to_right");
       if (direction.empty()) {
         direction = "left_to_right";
@@ -833,18 +955,29 @@ std::string buildTreeXmlFromActions(
       setStringOnBlackboard(blackboard, i, "direction", direction);
       blackboard->set(max_onboard_key, max_onboard);
 
+      // target_order so entra no XML quando existe: sem ele o XML fica
+      // byte a byte igual ao de antes (bancada run_amt1_scenario.sh).
+      std::string target_attr;
+      if (!target_csv.empty()) {
+        const std::string target_key = actionBlackboardKey(i, "target_order");
+        setStringOnBlackboard(blackboard, i, "target_order", target_csv);
+        target_attr = " target_order=\"" + escapeXmlAttr(blackboardPort(target_key)) + "\"";
+      }
+
       xml << "      <Amt1Sort name=\"amt1_" << i
           << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
           << "\" expected_tags=\"" << escapeXmlAttr(blackboardPort(tags_key))
           << "\" direction=\"" << escapeXmlAttr(blackboardPort(direction_key))
           << "\" max_onboard=\"" << escapeXmlAttr(blackboardPort(max_onboard_key))
-          << "\" timeout=\"{amt1_timeout}\" stage_timeout=\"{amt1_stage_timeout}\"/>\n";
+          << "\"" << target_attr
+          << " timeout=\"{amt1_timeout}\" stage_timeout=\"{amt1_stage_timeout}\"/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] amt1  ordenar " + std::to_string(expected_tags.size()) +
         " tags na " + sort_ws + " (mesa=" + table_pose + ", " + direction +
-        ", max_onboard=" + std::to_string(max_onboard) + ")");
+        ", max_onboard=" + std::to_string(max_onboard) + ")" +
+        (target_csv.empty() ? "" : " alvo explicito [" + target_csv + "]"));
       continue;
     }
 
@@ -987,7 +1120,7 @@ int main(int argc, char ** argv)
     // identico ao de antes (folhas sem final_attempt => true).
     ctx.reach_queue_enabled = node->declare_parameter<bool>("reach_queue_enabled", true);
     ctx.reach_queue_ws_prefixes = node->declare_parameter<std::vector<std::string>>(
-      "reach_queue_ws_prefixes", std::vector<std::string>{"WS_", "PP_"});
+      "reach_queue_ws_prefixes", std::vector<std::string>{"WS", "PP"});
     ctx.reach_queue_max_nudges = static_cast<int>(
       node->declare_parameter<int64_t>("reach_queue_max_nudges", 2));
     ctx.reach_queue_max_shift_m =

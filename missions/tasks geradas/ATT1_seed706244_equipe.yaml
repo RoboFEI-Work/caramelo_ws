@@ -1,0 +1,84 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: ATT1 — Advanced Transportation Test I | Duracao: 20 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = area de empilhamento: pilha sobre a tag de referencia, da BASE
+#                ao TOPO. A tag esta em stacking_areas.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Objetos sao identificados so pelo ID da AprilTag; IDs nao se repetem nesta
+# task. A cor dos ATTCs nao e' informada: identificar cor e' tarefa do robo.
+task_id: ATT1
+name: Advanced Transportation Test I
+duration_min: 20
+active_service_areas: [ST, WS_1, WS_3, WS_5, WS_6, SH_1]
+objects:
+- {id: 3}
+- {id: 7}
+- {id: 8}
+- {id: 14}
+- {id: 27}
+- {id: 30}
+containers:
+- {color: BLUE, at: WS_6}
+- {color: RED, at: WS_3}
+stacking_areas:
+  ST: {reference_tag: 200}
+start_state:
+  ST:
+    obj_ids: []
+    stack: []
+  WS_1:
+    obj_ids: [3, 14]
+    table: [14, 3]
+  WS_3:
+    obj_ids: [8]
+    table: [8]
+    containers:
+      RED: []
+  WS_5:
+    obj_ids: [7, 30]
+    table: [7, 30]
+  WS_6:
+    obj_ids: [27]
+    table: [27]
+    containers:
+      BLUE: []
+  SH_1:
+    obj_ids: []
+    levels:
+      BOTTOM: []
+      TOP: []
+finish_state:
+  ST:
+    obj_ids: [14, 30]
+    stack: [14, 30]
+  WS_1:
+    obj_ids: []
+    table: []
+  WS_3:
+    obj_ids: [3, 7]
+    table: [3]
+    containers:
+      RED: [7]
+  WS_5:
+    obj_ids: []
+    table: []
+  WS_6:
+    obj_ids: [8]
+    table: []
+    containers:
+      BLUE: [8]
+  SH_1:
+    obj_ids: [27]
+    levels:
+      BOTTOM: []
+      TOP: [27]

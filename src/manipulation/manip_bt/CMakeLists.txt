@@ -92,6 +92,17 @@ if(BUILD_TESTING)
   )
   target_compile_features(test_reach_queue PUBLIC cxx_std_17)
   ament_target_dependencies(test_reach_queue rclcpp behaviortree_cpp_v3)
+
+  # task_planner sobre os YAML oficiais do @Work Commander 2026
+  # (test/fixtures/formato2026/) + fixtures antigos: roda o BINARIO recem
+  # buildado (TASK_PLANNER_BIN), sem ROS no ar. Como rodar a mao:
+  #   colcon test --packages-select manip_bt --ctest-args -R formato2026
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_task_planner_formato2026
+    test/test_task_planner_formato2026.py
+    ENV TASK_PLANNER_BIN=${CMAKE_CURRENT_BINARY_DIR}/task_planner
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    TIMEOUT 120)
 endif()
 
 ament_package()

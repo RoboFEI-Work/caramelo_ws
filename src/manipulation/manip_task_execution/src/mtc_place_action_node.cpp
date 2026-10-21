@@ -1,8 +1,11 @@
 // mtc_place_action_node: servidor da action /place_tag (my_robot_msgs/PlaceTag),
 // no place_action_server: retira do container de bordo o bloco da tag pedida e
 // solta no destino: slot nomeado (MesaX.N, memoria de slots usados por WS),
-// pilha sobre outra tag (stack_on), container por cor (ct_vermelho/ct_azul) ou
-// superficie livre (grade do workstation_surface_node + surface_place_planner).
+// pilha sobre outra tag (stack_on), container por cor (ct_vermelho/ct_azul),
+// superficie livre (grade do workstation_surface_node + surface_place_planner),
+// encaixe num slot da mesa de precisao (stack_on = tag 101..107, no fundo da
+// cavidade) ou pilha sobre a tag de referencia (stack_on = tag 200), com
+// verificacao pela tag do cubo apos soltar (place_precision, 2026-10-21).
 // Alvo fora de alcance => devolve o bloco ao container e responde
 // unreachable + suggested_base_shift_m (quem move a base e o manip_bt).
 // Apesar do prefixo 'mtc', nao usa MoveIt Task Constructor: move o braco pelo
@@ -56,6 +59,7 @@
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
+#include "manip_task_execution/place_precision.hpp"
 #include "manip_task_execution/reach_shift.hpp"
 #include "manip_task_execution/surface_place_planner.hpp"
 #include "my_robot_msgs/action/place_tag.hpp"
@@ -127,6 +131,85 @@ public:
         // assentamento mecanico e a latencia de exposicao da camera. Era 300 ms
         // fixos na re-deteccao do TCP2 — curto para 15 fps.
         stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 600);
+        // 2026-10-21 - PLACE DE PRECISAO (formato 2026 da competicao). O
+        // executor manda stack_on = "tag_101".."tag_107" para ENCAIXAR o cubo
+        // num slot da mesa de precisao (tag adesiva de 41 mm colada no FUNDO
+        // da cavidade; cavidade com a forma do cubo e ~2 mm de folga) e
+        // stack_on = "tag_200" para o PRIMEIRO cubo da pilha (tag adesiva no
+        // tampo da zona de empilhamento); os seguintes vem com stack_on = tag
+        // do cubo anterior, como sempre. O no reconhece o tipo pelo id
+        // (place_precision.hpp) - nao ha campo novo na action. Ver
+        // docs/place_precisao_e_pilha.md.
+        slot_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
+            "slot_tag_ids", std::vector<int64_t>{101, 102, 103, 104, 105, 106, 107});
+        stack_reference_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
+            "stack_reference_tag_ids", std::vector<int64_t>{200});
+        // Profundidade da cavidade: fundo (plano da tag do slot) ate o tampo.
+        // Calibrar no robo (medir com paquimetro).
+        slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.041);
+        // Folga entre o fundo do cubo e o TAMPO na hora de soltar: o cubo cai
+        // dentro se estiver alinhado. Calibrar no robo.
+        slot_drop_clearance_m_ = this->declare_parameter<double>("slot_drop_clearance_m", 0.004);
+        // Pre-pose acima da soltura. 0,02 (igual ao stack_pre_lift_m real):
+        // na distancia de docking de hoje (~0,36 m) a pre-pose a 0 graus so'
+        // resolve com lift <= 2 cm (custom_ik_check) - com 5 cm a escada caia
+        // sempre em 15 graus e o cubo descia inclinado numa folga de 2 mm.
+        slot_pre_lift_m_ = this->declare_parameter<double>("slot_pre_lift_m", 0.02);
+        // Descida VERTICAL preferida (cubo inclinado nao entra em 2 mm de
+        // folga); 15 graus so' como ultimo recurso de alcance. A pre-pose
+        // pode usar uma inclinacao maior da escada que a descida final
+        // (solveDropLadder): o que importa e' o cubo vertical ao abrir.
+        slot_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
+            "slot_tilt_ladder_deg", std::vector<double>{0.0, 15.0});
+        // Verificacao apos soltar pela tag do PROPRIO cubo (decideSlotAction):
+        // encaixado se o topo ficou em z_slot + cubo (+- slot_seat_tolerance_m)
+        // - o xy NAO decide (duas leituras de poses diferentes do braco
+        // divergem 1-2 cm por FK; um cubo assentado nao pode estar fora da
+        // cavidade) e so' entra no log como diagnostico quando passa de
+        // slot_xy_tolerance_m. Calibrar no robo.
+        slot_seat_tolerance_m_ = this->declare_parameter<double>("slot_seat_tolerance_m", 0.008);
+        slot_xy_tolerance_m_ = this->declare_parameter<double>("slot_xy_tolerance_m", 0.008);
+        // Tag do cubo nao vista / leitura intermediaria: segunda leitura de
+        // mais alto (camera mais longe dos dedos abertos). Calibrar no robo.
+        slot_reobserve_extra_z_m_ =
+            this->declare_parameter<double>("slot_reobserve_extra_z_m", 0.04);
+        // Busca em espiral quando nao encaixa (passo/raio) e numero maximo
+        // de solturas. Calibrar no robo.
+        slot_search_step_m_ = this->declare_parameter<double>("slot_search_step_m", 0.003);
+        slot_search_radius_m_ = this->declare_parameter<double>("slot_search_radius_m", 0.009);
+        slot_max_attempts_ = this->declare_parameter<int>("slot_max_attempts", 6);
+        // Correcao pelo erro MEDIDO (onde a camera viu o cubo cair x onde o
+        // TCP foi mandado), somada a espiral; limitada a slot_correction_max_m.
+        // Calibrar no robo (false = so' a espiral).
+        slot_use_measured_correction_ =
+            this->declare_parameter<bool>("slot_use_measured_correction", true);
+        slot_correction_max_m_ = this->declare_parameter<double>("slot_correction_max_m", 0.02);
+        // Tag de referencia (tag 200): fundo do cubo = tag + folga. Calibrar no robo.
+        ref_drop_clearance_m_ = this->declare_parameter<double>("ref_drop_clearance_m", 0.005);
+        // Verificacao apos soltar na pilha/referencia (tag do cubo solto, lida
+        // de cima): xy e z dentro disso = ok; fora = re-pega e corrige UMA vez.
+        // Calibrar no robo. (stack_arrival_tolerance_m continua sendo a
+        // conferencia de CHEGADA por FK, desligada por default.)
+        stack_verify_after_release_ =
+            this->declare_parameter<bool>("stack_verify_after_release", true);
+        stack_verify_xy_tolerance_m_ =
+            this->declare_parameter<double>("stack_verify_xy_tolerance_m", 0.012);
+        stack_verify_z_tolerance_m_ =
+            this->declare_parameter<double>("stack_verify_z_tolerance_m", 0.012);
+        // Alinha as faces do cubo carregado as da base pelo multiplo de 90
+        // graus mais proximo do punho atual (false = computeWristForCubeYaw
+        // de sempre, menor |q5|).
+        stack_align_yaw_ = this->declare_parameter<bool>("stack_align_yaw", true);
+        // Base da pilha nao vista (ocluida pelo cubo na garra / fora do
+        // quadro): usa o ultimo registro 'stack:' da memoria de slots da WS.
+        stack_memory_fallback_ = this->declare_parameter<bool>("stack_memory_fallback", true);
+        // Altura maxima da pilha (cubos) so' para aviso; o alcance real quem
+        // decide e' a IK (fila de alcance).
+        stack_max_level_ = this->declare_parameter<int>("stack_max_level", 4);
+        // Espera pela tag nas leituras de verificacao/memoria (ms): menor que
+        // os 5 s da deteccao inicial. Calibrar no robo.
+        precision_verify_timeout_ms_ =
+            this->declare_parameter<int>("precision_verify_timeout_ms", 2500);
         // 2026-08-25 — CONTAINER POR COR na MESA (NAO confundir com os potes a
         // bordo container1..3 / container_state_store). PlaceTag.goal.
         // container_color = RED|BLUE. O container_detector publica os frames
@@ -545,10 +628,14 @@ private:
     /// Onde o bloco foi (ou vai ser) solto — alimenta a memoria de slots.
     struct SlotDecision
     {
-        std::string slot;          ///< pose nomeada ou "free_xy"
+        std::string slot;          ///< pose nomeada, "free_xy", "stack:<base>" ou "slot:<tag>"
         std::string table_pose;    ///< nome-base da mesa
         Eigen::Vector3d p{0.0, 0.0, 0.0};
         double margin{0.0};
+        /// 2026-10-21: posicao do CUBO (tag, face de cima) vista pela camera
+        /// apos soltar, ou o topo esperado - vale sobre a FK do TCP na
+        /// memoria (pilha: z do topo para o proximo nivel).
+        std::optional<Eigen::Vector3d> cube_p;
     };
 
     // Estado por goal (zerado em execute()).
@@ -568,6 +655,51 @@ private:
     int stack_settle_ms_{600};
     /// Juntas da pre-pose acima da pilha do ciclo atual (subida apos soltar).
     std::optional<std::array<double, 5>> stack_lift_q_;
+
+    // ---- Place de precisao (2026-10-21), ver placeIntoPrecisionSlot e
+    // verifyAndCorrectStackedCube. Defaults = os do declare_parameter.
+    std::vector<int64_t> slot_tag_ids_;
+    std::vector<int64_t> stack_reference_tag_ids_;
+    double slot_cavity_depth_m_{0.041};
+    double slot_drop_clearance_m_{0.004};
+    double slot_pre_lift_m_{0.02};
+    std::vector<double> slot_tilt_ladder_deg_{0.0, 15.0};
+    double slot_seat_tolerance_m_{0.008};
+    double slot_xy_tolerance_m_{0.008};
+    double slot_reobserve_extra_z_m_{0.04};
+    /// Leituras da tag do cubo por soltura no slot (1 + uma re-observacao).
+    static constexpr int kSlotMaxObservations = 2;
+    double slot_search_step_m_{0.003};
+    double slot_search_radius_m_{0.009};
+    int slot_max_attempts_{6};
+    bool slot_use_measured_correction_{true};
+    double slot_correction_max_m_{0.02};
+    double ref_drop_clearance_m_{0.005};
+    bool stack_verify_after_release_{true};
+    double stack_verify_xy_tolerance_m_{0.012};
+    double stack_verify_z_tolerance_m_{0.012};
+    bool stack_align_yaw_{true};
+    bool stack_memory_fallback_{true};
+    int stack_max_level_{4};
+    int precision_verify_timeout_ms_{2500};
+    /// Soltura feita DENTRO do modo de precisao (garra ja aberta): o
+    /// runPlaceCycle pula a abertura final.
+    bool release_done_in_place_{false};
+    /// O cubo saiu da garra e ficou na mesa sem encaixar (slot_nao_encaixou):
+    /// o goal falha, mas o container de bordo e' marcado vazio e a posicao
+    /// vai para a memoria de slots.
+    bool cube_left_on_table_{false};
+    /// Verificacao pendente apos soltar na pilha/referencia (runPlaceCycle).
+    struct PostReleaseCheck
+    {
+        std::string base_frame;
+        manip_task_execution::StackTargetKind kind{manip_task_execution::StackTargetKind::kCube};
+        Eigen::Vector3d expected_top{0.0, 0.0, 0.0};  ///< onde a tag do cubo solto deve ficar
+        double yaw{0.0};                               ///< yaw da base (linha dos dedos)
+        Eigen::Vector3d tcp_target{0.0, 0.0, 0.0};    ///< TCP mandado na soltura
+        double fk_err_xy_m{-1.0};                      ///< erro XY por FK na soltura
+    };
+    std::optional<PostReleaseCheck> post_release_check_;
 
     // Container por cor na mesa (2026-08-25), ver placeIntoContainer.
     std::string container_frame_red_;
@@ -2483,7 +2615,7 @@ private:
                         }
                     }
                     if (ok) {
-                        last_slot_decision_ = SlotDecision{"free_xy", table_pose, p, m};
+                        last_slot_decision_ = SlotDecision{"free_xy", table_pose, p, m, std::nullopt};
                         return true;
                     }
                     // Recuperar SEMPRE por cima: subir a pegar_obj antes de
@@ -2521,7 +2653,7 @@ private:
         if (!goToNamedSlot(arm, slot, obstacles, goal_handle)) {
             return false;
         }
-        last_slot_decision_ = SlotDecision{slot.name, table_pose, slot.p, slot.margin};
+        last_slot_decision_ = SlotDecision{slot.name, table_pose, slot.p, slot.margin, std::nullopt};
         return true;
     }
 
@@ -2535,7 +2667,11 @@ private:
             return;
         }
         Eigen::Vector3d actual = last_slot_decision_->p;
-        (void)tcpErrorByFk(arm, last_slot_decision_->p, &actual);
+        if (last_slot_decision_->cube_p) {
+            actual = *last_slot_decision_->cube_p;   // posicao do cubo (precisao/pilha)
+        } else {
+            (void)tcpErrorByFk(arm, last_slot_decision_->p, &actual);
+        }
 
         // Grava no frame da pose de docking: desconta o deslocamento lateral
         // acumulado da base (fila de alcance, 2026-08-28), para a leitura
@@ -3167,7 +3303,7 @@ private:
                     (actual.y() - ch.target.y()) * 100.0, (actual.z() - ch.target.z()) * 100.0);
             }
             last_slot_decision_ = SlotDecision{
-                "superficie", table_pose, ch.target, ch.cand.clearance_obstacle_m};
+                "superficie", table_pose, ch.target, ch.cand.clearance_obstacle_m, std::nullopt};
             stack_lift_q_ = ch.q_lift;   // subida vertical apos soltar (runPlaceCycle)
             return SurfaceOutcome::kOk;
         }
@@ -3215,9 +3351,9 @@ private:
         const std::string & base_frame,
         geometry_msgs::msg::TransformStamped & out_tf,
         const std::optional<rclcpp::Time> & not_before,
-        const std::string & cycle_name)
+        const std::string & cycle_name,
+        const std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
     {
-        const auto timeout = std::chrono::milliseconds(5000);
         if (stack_tag_samples_ > 1) {
             if (sampleTagTransformMedian(
                     ik_reference_frame_, base_frame, out_tf, timeout,
@@ -3242,14 +3378,23 @@ private:
         const std::string & base_frame,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
-        const std::vector<double> & place_joints = {})
+        const std::vector<double> & place_joints = {},
+        const manip_task_execution::StackTargetKind kind =
+            manip_task_execution::StackTargetKind::kCube,
+        const std::string & ws = "")
     {
+        using manip_task_execution::StackTargetKind;
+        // 2026-10-21: kReference (tag 200 no tampo) = mesmo fluxo com a cota
+        // tag + folga + cubo; kCube = stack_place_z_offset de sempre. O yaw
+        // atual dos dedos alimenta o alinhamento de 90 graus (stack_align_yaw).
+        const double z_offset = stackTcpZOffset(kind);
+        const std::optional<double> finger_yaw_now = currentFingerYaw(arm);
         // 2026-08-31 (pedido do operador): JUNTAS GRAVADAS na pega deste slot
         // — vai direto para elas (mesma configuracao em que a garra fechou),
         // sem IK do ponto e sem depender da camera. Pre-pose = mesmo ponto
         // stack_pre_lift_m acima (IK; sem solucao = descida direta). Chegada
         // por FK dispensada: juntas sao exatas.
-        if (place_joints.size() >= 5) {
+        if (place_joints.size() >= 5 && kind == StackTargetKind::kCube) {
             std::array<double, 5> qj{
                 place_joints[0], place_joints[1], place_joints[2], place_joints[3], place_joints[4]};
             Eigen::Vector3d fk_pos;
@@ -3285,18 +3430,45 @@ private:
             if (!moveToJointTarget(arm, qj, "stack joints replay " + base_frame)) {
                 return StackOutcome::kMoveFailed;
             }
-            last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, fk_pos, 0.0};
+            last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, fk_pos, 0.0, std::nullopt};
             return StackOutcome::kOk;
         }
 
         publishStage(goal_handle, "stack_detecting_base");
-        speak("Procurando o bloco de baixo " + spokenTargetName(base_frame));
+        speak(
+            isReferenceKind(kind) ? "Procurando a marca da pilha" :
+            "Procurando o bloco de baixo " + spokenTargetName(base_frame));
         waitForCameraStream("PLACE");
 
         geometry_msgs::msg::TransformStamped base_tf;
+        bool from_memory = false;
         if (!stackReadBase(base_frame, base_tf, std::nullopt, "stack detect " + base_frame)) {
-            return StackOutcome::kBaseNotSeen;
+            bool seen = false;
+            // 2026-10-21: tag de referencia fora do quadro de pegar_obj -
+            // varredura lateral, como o container por cor.
+            if (kind == StackTargetKind::kReference && container_search_lateral_) {
+                seen = searchTagLateral(arm, base_frame, base_tf, stack_arm_moved_, goal_handle, "stack");
+                if (cancellationRequested()) {
+                    return StackOutcome::kMoveFailed;
+                }
+            }
+            // 2026-10-21: base ocluida pelo cubo na garra / fora do quadro -
+            // ultimo registro 'stack:' dela na memoria da WS.
+            if (!seen && kind == StackTargetKind::kCube && stack_memory_fallback_ &&
+                stackBaseFromMemory(ws, base_frame, base_tf))
+            {
+                from_memory = true;
+                speak("Nao vi o bloco de baixo, vou empilhar pela memoria");
+            }
+            if (!seen && !from_memory) {
+                return StackOutcome::kBaseNotSeen;
+            }
         }
+        // Com a base pela memoria as releituras esperam pouco (a tag
+        // provavelmente continua ocluida); se uma vier, ela vence.
+        const auto read_timeout = [&]() {
+                return from_memory ? verifyTimeout() : std::chrono::milliseconds(5000);
+            };
         RCLCPP_INFO(
             get_logger(), "[STACK] base %s <- %s: x=%.4f y=%.4f z=%.4f",
             ik_reference_frame_.c_str(), base_frame.c_str(),
@@ -3321,9 +3493,12 @@ private:
             if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
                 return StackOutcome::kMoveFailed;
             }
-            if (!stackReadBase(
-                    base_frame, base_tf, parou_lateral, "stack final " + base_frame))
+            if (stackReadBase(
+                    base_frame, base_tf, parou_lateral, "stack final " + base_frame,
+                    read_timeout()))
             {
+                from_memory = false;
+            } else if (!from_memory) {
                 return StackOutcome::kBaseNotSeen;
             }
         }
@@ -3341,12 +3516,31 @@ private:
         Eigen::Vector3d target(
             base_tf.transform.translation.x,
             base_tf.transform.translation.y,
-            base_tf.transform.translation.z + stack_place_z_offset_);
-        double base_yaw = manip_task_execution::projectedFrameYaw(
-            Eigen::Quaterniond(
-                base_tf.transform.rotation.w, base_tf.transform.rotation.x,
-                base_tf.transform.rotation.y, base_tf.transform.rotation.z)
-            .toRotationMatrix());
+            base_tf.transform.translation.z + z_offset);
+        // Pela memoria nao ha' yaw: mantem a linha dos dedos atual.
+        double base_yaw = from_memory ? finger_yaw_now.value_or(0.0) : frameYaw(base_tf);
+
+        // Nivel da pilha (2026-10-21): cubos abaixo pela cadeia 'stack:' da
+        // memoria (base sem registro conta como 1 cubo). So' aviso: o
+        // alcance real quem decide e' a IK (fila de alcance).
+        {
+            const int cubes_below =
+                kind == StackTargetKind::kCube ? std::max(1, stackLevelForFrame(ws, base_frame)) : 0;
+            const int new_level = cubes_below + 1;
+            RCLCPP_INFO(
+                get_logger(),
+                "[STACK] nivel do cubo novo: %d (%d cubo(s) abaixo; tag base z=%.3f; topo "
+                "esperado z=%.3f)",
+                new_level, cubes_below, base_tf.transform.translation.z,
+                manip_task_execution::expectedPileTopZ(
+                    base_tf.transform.translation.z, 1, cube_height_m_));
+            if (new_level > stack_max_level_) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[STACK] nivel %d acima de stack_max_level=%d - tentando mesmo assim.",
+                    new_level, stack_max_level_);
+            }
+        }
 
         // Fase TCP2 (2026-08-31, pedido do operador): mesma pre-aproximacao
         // do pick — IK com o frame tcp2 como ferramenta (a garra para ~13 cm
@@ -3366,7 +3560,7 @@ private:
                 }
             }
             if (pre_ok) {
-                q_pre[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_pre[0], tilt_pre);
+                q_pre[4] = wristForCubeYaw(base_yaw, q_pre[0], tilt_pre, finger_yaw_now);
                 publishStage(goal_handle, "stack_pre_ik_tcp2");
                 RCLCPP_INFO(
                     get_logger(),
@@ -3386,13 +3580,15 @@ private:
                 }
                 geometry_msgs::msg::TransformStamped fresh;
                 if (stackReadBase(
-                        base_frame, fresh, parou_tcp2, "stack re_detect_tcp2 " + base_frame))
+                        base_frame, fresh, parou_tcp2, "stack re_detect_tcp2 " + base_frame,
+                        read_timeout()))
                 {
+                    from_memory = false;
                     base_tf = fresh;
                     target = Eigen::Vector3d(
                         base_tf.transform.translation.x,
                         base_tf.transform.translation.y,
-                        base_tf.transform.translation.z + stack_place_z_offset_);
+                        base_tf.transform.translation.z + z_offset);
                     base_yaw = manip_task_execution::projectedFrameYaw(
                         Eigen::Quaterniond(
                             base_tf.transform.rotation.w, base_tf.transform.rotation.x,
@@ -3424,17 +3620,23 @@ private:
         std::array<double, 5> q_final{};
         std::array<double, 5> q_lift{};
         double tilt_used = 0.0;
+        // Compensacao de inclinacao em z (rodada 2): so' na tag de referencia
+        // (folga de 5 mm sobre o adesivo; a 30 graus a quina baixa do cubo
+        // desce 4,9 mm). kCube segue com o stack_place_z_offset de sempre.
+        const double comp_w = isReferenceKind(kind) ? cube_height_m_ : 0.0;
+        double z_comp = 0.0;
 
         auto solve_ladder =
             [&](std::array<double, 5> & q_f, std::array<double, 5> & q_l, double & tilt_out,
                 double & yaw_out, Eigen::Vector3d & target_out,
                 const std::optional<rclcpp::Time> & not_before, const std::string & label) -> Ladder {
                 geometry_msgs::msg::TransformStamped tf_now;
-                if (stackReadBase(base_frame, tf_now, not_before, label)) {
+                if (stackReadBase(base_frame, tf_now, not_before, label, read_timeout())) {
+                    from_memory = false;
                     target_out = Eigen::Vector3d(
                         tf_now.transform.translation.x,
                         tf_now.transform.translation.y,
-                        tf_now.transform.translation.z + stack_place_z_offset_);
+                        tf_now.transform.translation.z + z_offset);
                     yaw_out = manip_task_execution::projectedFrameYaw(
                         Eigen::Quaterniond(
                             tf_now.transform.rotation.w, tf_now.transform.rotation.x,
@@ -3462,13 +3664,16 @@ private:
                     target_out = target;
                     yaw_out = base_yaw;
                 }
-                const Eigen::Vector3d lift =
-                    target_out + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
                 for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
-                    if (manip_task_execution::solveIk(target_out, tilt, 0.0, q_f) &&
+                    const double dz = comp_w > 0.0 ?
+                        manip_task_execution::tiltDropZCompensation(tilt, comp_w, cube_height_m_) : 0.0;
+                    const Eigen::Vector3d cmd = target_out + Eigen::Vector3d(0.0, 0.0, dz);
+                    const Eigen::Vector3d lift = cmd + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_);
+                    if (manip_task_execution::solveIk(cmd, tilt, 0.0, q_f) &&
                         manip_task_execution::solveIk(lift, tilt, 0.0, q_l))
                     {
                         tilt_out = tilt;
+                        z_comp = dz;
                         return Ladder::kOk;
                     }
                 }
@@ -3490,15 +3695,15 @@ private:
             last_unreachable_targets_ = {target};
             return StackOutcome::kUnreachable;
         }
-        q_final[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_final[0], tilt_used);
-        q_lift[4] = manip_task_execution::computeWristForCubeYaw(base_yaw, q_lift[0], tilt_used);
+        q_final[4] = wristForCubeYaw(base_yaw, q_final[0], tilt_used, finger_yaw_now);
+        q_lift[4] = wristForCubeYaw(base_yaw, q_lift[0], tilt_used, finger_yaw_now);
         RCLCPP_INFO(
             get_logger(),
-            "[STACK] alvo [%.3f %.3f %.3f] (base z=%.3f + %.3f), ferramenta a %.0f graus, "
-            "yaw base=%.3f -> pre-pose j [%.3f %.3f %.3f %.3f %.3f], final j "
-            "[%.3f %.3f %.3f %.3f %.3f]",
+            "[STACK] alvo [%.3f %.3f %.3f] (base z=%.3f + %.3f; compensacao de inclinacao "
+            "%+.1f mm), ferramenta a %.0f graus, yaw base=%.3f -> pre-pose j "
+            "[%.3f %.3f %.3f %.3f %.3f], final j [%.3f %.3f %.3f %.3f %.3f]",
             target.x(), target.y(), target.z(), base_tf.transform.translation.z,
-            stack_place_z_offset_, tilt_used * 180.0 / M_PI, base_yaw,
+            z_offset, z_comp * 1000.0, tilt_used * 180.0 / M_PI, base_yaw,
             q_lift[0], q_lift[1], q_lift[2], q_lift[3], q_lift[4],
             q_final[0], q_final[1], q_final[2], q_final[3], q_final[4]);
 
@@ -3549,9 +3754,9 @@ private:
                 base_yaw = yaw2;
                 target = target2;
                 q_final[4] =
-                    manip_task_execution::computeWristForCubeYaw(base_yaw, q_final[0], tilt_used);
+                    wristForCubeYaw(base_yaw, q_final[0], tilt_used, finger_yaw_now);
                 q_lift[4] =
-                    manip_task_execution::computeWristForCubeYaw(base_yaw, q_lift[0], tilt_used);
+                    wristForCubeYaw(base_yaw, q_lift[0], tilt_used, finger_yaw_now);
             } else {
                 RCLCPP_WARN(
                     get_logger(),
@@ -3594,9 +3799,11 @@ private:
         // so aumentava a chance de desistir de uma pilha que ia dar certo.
         //
         // O numero continua no log, como informacao. stack_arrival_tolerance_m
-        // maior que 0 religa a recusa.
-        Eigen::Vector3d actual = target;
-        const double err = tcpErrorByFk(arm, target, &actual);
+        // maior que 0 religa a recusa. Comparado ao alvo COMANDADO (com a
+        // compensacao de inclinacao, quando ha').
+        const Eigen::Vector3d target_cmd = target + Eigen::Vector3d(0.0, 0.0, z_comp);
+        Eigen::Vector3d actual = target_cmd;
+        const double err = tcpErrorByFk(arm, target_cmd, &actual);
         if (err >= 0.0) {
             RCLCPP_INFO(
                 get_logger(),
@@ -3616,10 +3823,1193 @@ private:
             return StackOutcome::kNoIk;
         }
 
-        last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, target, 0.0};
+        // Memoria (2026-10-21): z do TOPO do cubo solto (cadeia 'stack:'), nao
+        // a FK do TCP; a verificacao apos soltar troca pelo valor VISTO.
+        const Eigen::Vector3d expected_top(
+            target.x(), target.y(), target.z() - z_offset + cube_height_m_);
+        last_slot_decision_ = SlotDecision{
+            "stack:" + base_frame, table_pose, target, 0.0, expected_top};
+        const double err_xy =
+            err < 0.0 ? -1.0 : std::hypot(actual.x() - target.x(), actual.y() - target.y());
+        // tcp_target = alvo NOMINAL (a re-soltura recalcula a compensacao).
+        post_release_check_ = PostReleaseCheck{
+            base_frame, kind, expected_top, base_yaw, target, err_xy};
         RCLCPP_INFO(
             get_logger(), "[STACK] em posicao sobre %s — soltando.", base_frame.c_str());
         return StackOutcome::kOk;
+    }
+
+    // =====================================================================
+    // PLACE DE PRECISAO (2026-10-21, formato 2026 da competicao).
+    //
+    // Tres alvos possiveis em goal.stack_on, reconhecidos pelo id da tag
+    // (place_precision.hpp; parametros slot_tag_ids / stack_reference_tag_ids):
+    //   kSlot      tag 101..107 colada no FUNDO de uma cavidade da mesa de
+    //              precisao (cavidade com a forma do cubo, ~2 mm de folga):
+    //              ENCAIXAR - placeIntoPrecisionSlot (solta, confere pela tag
+    //              do proprio cubo, re-pega e busca em espiral se nao entrou);
+    //   kReference tag 200 colada no tampo da zona de empilhamento: 1o cubo
+    //              da pilha - placeStackedOnFrame com z = tag + folga + cubo;
+    //   kCube      tag de um cubo ja na mesa - placeStackedOnFrame de sempre
+    //              (+ memoria quando a base nao e' vista, + verificacao).
+    // A profundidade da RealSense nao serve a < 0,4 m: tudo e' TAG + FK.
+    // Helpers abaixo sao compartilhados pelo slot e pela verificacao da
+    // pilha (verifyAndCorrectStackedCube). Ver docs/place_precisao_e_pilha.md.
+    // =====================================================================
+
+    /// Cota do TCP acima da tag alvo na soltura, por tipo de alvo (o TCP fica
+    /// no plano da face de CIMA do cubo carregado - convencao do pick).
+    double stackTcpZOffset(manip_task_execution::StackTargetKind kind) const
+    {
+        using manip_task_execution::StackTargetKind;
+        switch (kind) {
+            case StackTargetKind::kReference:
+                return cube_height_m_ + ref_drop_clearance_m_;
+            case StackTargetKind::kSlot:
+                return cube_height_m_ + slot_cavity_depth_m_ + slot_drop_clearance_m_;
+            default:
+                return stack_place_z_offset_;
+        }
+    }
+
+    static bool isReferenceKind(manip_task_execution::StackTargetKind kind)
+    {
+        return kind == manip_task_execution::StackTargetKind::kReference;
+    }
+
+    /// Yaw atual da LINHA DOS DEDOS (eixo X do TCP projetado no plano XY da
+    /// base do braco), pela FK das juntas atuais. nullopt sem estado.
+    std::optional<double> currentFingerYaw(
+        const std::shared_ptr<MoveGroupInterface> & arm) const
+    {
+        const auto state = arm->getCurrentState(2.0);
+        if (!state) {
+            return std::nullopt;
+        }
+        std::vector<double> jv;
+        state->copyJointGroupPositions(arm->getName(), jv);
+        if (jv.size() < 5) {
+            return std::nullopt;
+        }
+        std::array<double, 5> q{};
+        std::copy_n(jv.begin(), 5, q.begin());
+        Eigen::Vector3d p;
+        Eigen::Matrix3d rot;
+        manip_task_execution::forwardKinematics(q, manip_task_execution::ArmModel{}, p, rot);
+        return manip_task_execution::projectedFrameYaw(rot);
+    }
+
+    /// Punho que alinha as FACES do cubo carregado ao yaw da tag alvo. Com
+    /// stack_align_yaw e o yaw atual dos dedos conhecido, escolhe o multiplo
+    /// de 90 graus mais proximo do punho ATUAL (nearestQuarterTurn: menor giro
+    /// do cubo na garra); senao computeWristForCubeYaw (menor |q5|), que e' o
+    /// comportamento de sempre.
+    double wristForCubeYaw(
+        double tag_yaw, double q1, double tilt,
+        const std::optional<double> & finger_yaw_now) const
+    {
+        if (stack_align_yaw_ && finger_yaw_now) {
+            const double aligned =
+                *finger_yaw_now + manip_task_execution::nearestQuarterTurn(tag_yaw, *finger_yaw_now);
+            return manip_task_execution::computeWristForTagYaw(aligned, q1, tilt);
+        }
+        return manip_task_execution::computeWristForCubeYaw(tag_yaw, q1, tilt);
+    }
+
+    static double frameYaw(const geometry_msgs::msg::TransformStamped & tf)
+    {
+        return manip_task_execution::projectedFrameYaw(
+            Eigen::Quaterniond(
+                tf.transform.rotation.w, tf.transform.rotation.x,
+                tf.transform.rotation.y, tf.transform.rotation.z).toRotationMatrix());
+    }
+
+    static Eigen::Vector3d framePosition(const geometry_msgs::msg::TransformStamped & tf)
+    {
+        return Eigen::Vector3d(
+            tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z);
+    }
+
+    std::chrono::milliseconds verifyTimeout() const
+    {
+        return std::chrono::milliseconds(std::max(300, precision_verify_timeout_ms_));
+    }
+
+    /// Procura a tag de tag_direita/tag_esquerda quando nao foi vista de
+    /// pegar_obj (mesma varredura do container por cor). `moved` vira true
+    /// assim que o braco sai de pegar_obj. false tambem em cancelamento.
+    bool searchTagLateral(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & frame,
+        geometry_msgs::msg::TransformStamped & out_tf,
+        bool & moved,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & stage_prefix)
+    {
+        for (const char * pose : {"tag_direita", "tag_esquerda"}) {
+            publishStage(goal_handle, stage_prefix + "_search");
+            RCLCPP_INFO(
+                get_logger(), "[%s] %s nao vista de pegar_obj - olhando de %s.",
+                stage_prefix.c_str(), frame.c_str(), pose);
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget(pose);
+            moved = true;
+            if (!planAndExecute(arm, stage_prefix + " search " + pose)) {
+                return false;
+            }
+            const rclcpp::Time parou = this->get_clock()->now();
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+                return false;
+            }
+            if (stackReadBase(
+                    frame, out_tf, parou, stage_prefix + " search " + std::string(pose),
+                    verifyTimeout()))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Registros da memoria de slots da WS no formato do place_precision
+    /// (x ja no frame atual: + deslocamento lateral acumulado da base).
+    std::vector<manip_task_execution::StackMemoryEntry> stackMemoryEntries(
+        const std::string & ws) const
+    {
+        std::vector<manip_task_execution::StackMemoryEntry> out;
+        if (!slot_memory_enabled_ || ws.empty()) {
+            return out;
+        }
+        std::vector<manip_task_execution::TableSlotRecord> records;
+        std::string err;
+        const double now_sec = this->get_clock()->now().seconds();
+        if (!container_state_store_->getTableSlotsUsed(
+                ws, slot_memory_ttl_sec_, now_sec, &records, &err))
+        {
+            RCLCPP_WARN(
+                get_logger(), "[STACK] memoria de slots ilegivel (%s) - sem memoria da pilha.",
+                err.c_str());
+            return out;
+        }
+        const double offset = base_shift_total_.load(std::memory_order_relaxed);
+        for (const auto & rec : records) {
+            if (rec.frame != ik_reference_frame_) {
+                continue;
+            }
+            manip_task_execution::StackMemoryEntry e;
+            e.slot = rec.slot;
+            e.tag_frame = rec.tag_frame;
+            e.x = rec.x + offset;
+            e.y = rec.y;
+            e.z = rec.z;
+            out.push_back(e);
+        }
+        return out;
+    }
+
+    /// Quantos cubos ha' na cadeia 'stack:' que termina em `base_frame`
+    /// (0 = sem registro). Ver stackLevelFromMemory.
+    int stackLevelForFrame(const std::string & ws, const std::string & base_frame) const
+    {
+        return manip_task_execution::stackLevelFromMemory(stackMemoryEntries(ws), base_frame);
+    }
+
+    /// Base da pilha pela MEMORIA (2026-10-21): ultimo registro 'stack:' da WS
+    /// cujo tag_frame == base_frame (o cubo que nos mesmos pusemos la). O z
+    /// gravado e' o TOPO desse cubo = onde a tag dele esta. Sem yaw na
+    /// memoria: rotacao identidade (quem chama mantem o punho).
+    bool stackBaseFromMemory(
+        const std::string & ws,
+        const std::string & base_frame,
+        geometry_msgs::msg::TransformStamped & out_tf) const
+    {
+        const auto rec = manip_task_execution::findStackMemory(stackMemoryEntries(ws), base_frame);
+        if (!rec) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[STACK] base %s nao vista e sem registro 'stack:' na memoria da WS '%s'.",
+                base_frame.c_str(), ws.c_str());
+            return false;
+        }
+        out_tf = geometry_msgs::msg::TransformStamped{};
+        out_tf.header.stamp = this->get_clock()->now();
+        out_tf.header.frame_id = ik_reference_frame_;
+        out_tf.child_frame_id = base_frame;
+        out_tf.transform.translation.x = rec->x;
+        out_tf.transform.translation.y = rec->y;
+        out_tf.transform.translation.z = rec->z;
+        out_tf.transform.rotation.w = 1.0;
+        RCLCPP_WARN(
+            get_logger(),
+            "[STACK] base %s pela MEMORIA (%s): [%.3f %.3f %.3f] - empilhando pela memoria.",
+            base_frame.c_str(), rec->slot.c_str(), rec->x, rec->y, rec->z);
+        return true;
+    }
+
+    /// Escada da SOLTURA (rodada 2): para cada inclinacao t da escada resolve
+    /// o alvo (+ compensacao de inclinacao em z, tiltDropZCompensation, se
+    /// `comp_w` > 0) e a pre-pose `pre_lift` acima. Com `mixed_pre_tilt`,
+    /// quando a pre-pose nao resolve na MESMA inclinacao, aceita a pre-pose
+    /// numa inclinacao MAIOR da escada: no slot a descida final vertical vale
+    /// mais que a pre-pose vertical (a 0,36 m a pre-pose a 0 graus so'
+    /// resolve com lift <= 2 cm). Sai o alvo comandado (compensado) e as
+    /// duas inclinacoes.
+    static bool solveDropLadder(
+        const Eigen::Vector3d & target,
+        double pre_lift,
+        const std::vector<double> & ladder_deg,
+        double comp_w,
+        double comp_h,
+        bool mixed_pre_tilt,
+        std::array<double, 5> & q_final,
+        std::array<double, 5> & q_lift,
+        double & tilt_final,
+        double & tilt_pre,
+        Eigen::Vector3d & target_cmd)
+    {
+        const std::vector<double> tilts = tiltLadderRad(ladder_deg);
+        for (std::size_t i = 0; i < tilts.size(); ++i) {
+            const double t = tilts[i];
+            const double dz = comp_w > 0.0 ?
+                manip_task_execution::tiltDropZCompensation(t, comp_w, comp_h) : 0.0;
+            const Eigen::Vector3d cmd = target + Eigen::Vector3d(0.0, 0.0, dz);
+            if (!manip_task_execution::solveIk(cmd, t, 0.0, q_final)) {
+                continue;
+            }
+            const Eigen::Vector3d lift = cmd + Eigen::Vector3d(0.0, 0.0, pre_lift);
+            const std::size_t j_end = mixed_pre_tilt ? tilts.size() : i + 1;
+            for (std::size_t j = i; j < j_end; ++j) {
+                if (manip_task_execution::solveIk(lift, tilts[j], 0.0, q_lift)) {
+                    tilt_final = t;
+                    tilt_pre = tilts[j];
+                    target_cmd = cmd;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Recolhe o braco a pegar_obj (melhor esforco, j2/j3 primeiro = sobe na
+    /// vertical) depois de deixar o cubo na mesa de precisao / pilha sem
+    /// entrega: toda saida que nao e' falha de movimento deixa o braco em
+    /// pegar_obj (como a superficie e o fallback da pilha), senao o proximo
+    /// passo do executor parte com o braco estendido sobre a mesa.
+    void retractAfterLeavingCube(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & tag)
+    {
+        publishStage(goal_handle, tag + "_retract");
+        std::array<double, 5> q_rest{};
+        bool ok = false;
+        if (namedPoseJoints(arm, "pegar_obj", q_rest)) {
+            ok = moveToJointTargetJoints23First(arm, q_rest, tag + " retract pegar_obj");
+        } else {
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            ok = planAndExecute(arm, tag + " retract pegar_obj");
+        }
+        if (!ok) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[%s] cubo ficou na mesa e o retorno a pegar_obj falhou - braco pode estar "
+                "estendido sobre a mesa.", tag.c_str());
+            speak("Nao consegui recolher o braco");
+        }
+    }
+
+    /// Resolve a escada de inclinacao para um ponto do TCP E a pre-pose
+    /// `pre_lift` acima dele (mesma inclinacao nas duas).
+    static bool solveLadderWithLift(
+        const Eigen::Vector3d & target,
+        double pre_lift,
+        const std::vector<double> & ladder_deg,
+        std::array<double, 5> & q_final,
+        std::array<double, 5> & q_lift,
+        double & tilt_out)
+    {
+        const Eigen::Vector3d lift = target + Eigen::Vector3d(0.0, 0.0, pre_lift);
+        for (const double tilt : tiltLadderRad(ladder_deg)) {
+            if (manip_task_execution::solveIk(target, tilt, 0.0, q_final) &&
+                manip_task_execution::solveIk(lift, tilt, 0.0, q_lift))
+            {
+                tilt_out = tilt;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// O que a camera viu do cubo depois de soltar.
+    struct CubeObservation
+    {
+        bool seen{false};
+        Eigen::Vector3d p{0.0, 0.0, 0.0};   ///< tag do cubo (face de cima), manip_base_link
+        double yaw{0.0};
+    };
+
+    /// Olha o cubo SOLTO de cima (2026-10-21): IK com o frame tcp2 como
+    /// ferramenta sobre `expected_top` (garra ~13 cm acima da tag - a mesma
+    /// distancia em que a re-deteccao do pick/pilha ja funciona), espera o
+    /// braco assentar e le a tag do cubo por MEDIANA (so leituras de depois
+    /// da parada). Sem IK para essa pose, le de onde o braco esta.
+    /// `extra_z` > 0 = segunda leitura de mais alto (camera mais longe dos
+    /// dedos abertos).
+    CubeObservation observePlacedCube(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & cube_frame,
+        const Eigen::Vector3d & expected_top,
+        double yaw_hint,
+        const std::vector<double> & ladder_deg,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & stage,
+        double extra_z = 0.0)
+    {
+        publishStage(goal_handle, stage);
+        CubeObservation obs;
+        rclcpp::Time not_before = this->get_clock()->now();
+        if (stack_pre_ik_tcp2_z_ > 0.0) {
+            manip_task_execution::ArmModel tcp2_model{};
+            tcp2_model.tcp_z = stack_pre_ik_tcp2_z_ + std::max(0.0, extra_z);
+            std::array<double, 5> q{};
+            bool ok = false;
+            double tilt_ok = 0.0;
+            for (const double tilt : tiltLadderRad(ladder_deg)) {
+                if (manip_task_execution::solveIk(expected_top, tilt, 0.0, q, tcp2_model)) {
+                    ok = true;
+                    tilt_ok = tilt;
+                    break;
+                }
+            }
+            if (ok) {
+                q[4] = manip_task_execution::computeWristForCubeYaw(yaw_hint, q[0], tilt_ok);
+                if (!moveToJointTarget(arm, q, "verify pose over " + cube_frame)) {
+                    return obs;
+                }
+                not_before = this->get_clock()->now();
+            } else {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[VERIFY] sem IK para a pose de verificacao sobre %s - lendo de onde estou.",
+                    cube_frame.c_str());
+            }
+        }
+        if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+            return obs;
+        }
+        geometry_msgs::msg::TransformStamped tf;
+        if (!stackReadBase(cube_frame, tf, not_before, "verify " + cube_frame, verifyTimeout())) {
+            RCLCPP_WARN(
+                get_logger(), "[VERIFY] tag %s nao vista depois de soltar (ocluida?).",
+                cube_frame.c_str());
+            return obs;
+        }
+        obs.seen = true;
+        obs.p = framePosition(tf);
+        obs.yaw = frameYaw(tf);
+        return obs;
+    }
+
+    enum class RegraspResult { kHolding, kNotGrabbed, kMoveFailed, kMoveFailedHolding };
+
+    /// Re-pega um cubo ja solto (2026-10-21): TCP no plano da tag dele
+    /// (convencao do pick), dedos nas faces (yaw da tag), fecha e confere o
+    /// esforco da garra (verify_grasp_effort). kNotGrabbed = o cubo continua
+    /// na mesa, garra aberta. kMoveFailedHolding = falhou DEPOIS de fechar
+    /// (o cubo pode estar na garra).
+    RegraspResult regraspCube(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const Eigen::Vector3d & cube_p,
+        double cube_yaw,
+        const std::vector<double> & ladder_deg,
+        double pre_lift,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & stage_prefix)
+    {
+        std::array<double, 5> q_final{};
+        std::array<double, 5> q_lift{};
+        double tilt = 0.0;
+        if (!solveLadderWithLift(cube_p, pre_lift, ladder_deg, q_final, q_lift, tilt)) {
+            RCLCPP_ERROR(
+                get_logger(), "[%s] sem IK para re-pegar o cubo em [%.3f %.3f %.3f].",
+                stage_prefix.c_str(), cube_p.x(), cube_p.y(), cube_p.z());
+            return RegraspResult::kNotGrabbed;
+        }
+        q_final[4] = manip_task_execution::computeWristForCubeYaw(cube_yaw, q_final[0], tilt);
+        q_lift[4] = q_final[4];
+        publishStage(goal_handle, stage_prefix + "_regrasp");
+        speak("Vou pegar o cubo de volta");
+        if (!moveToJointTarget(arm, q_lift, stage_prefix + " regrasp pre-pose")) {
+            return RegraspResult::kMoveFailed;
+        }
+        if (!moveToJointTarget(arm, q_final, stage_prefix + " regrasp descend")) {
+            return RegraspResult::kMoveFailed;
+        }
+        std::optional<GripperEffortSample> baseline;
+        if (verify_grasp_effort_) {
+            baseline = waitForFreshGripperEffort(std::chrono::milliseconds(600));
+        }
+        gripper->setStartStateToCurrentState();
+        gripper->setNamedTarget("gripper_close");
+        if (!planAndExecute(gripper, stage_prefix + " regrasp close")) {
+            return RegraspResult::kMoveFailed;
+        }
+        if (verify_grasp_effort_) {
+            if (!baseline) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[%s] sem telemetria de esforco na re-pega - assumindo que peguei.",
+                    stage_prefix.c_str());
+            } else if (!verifyGraspByEffort(*baseline, stage_prefix + "-REGRASP")) {
+                RCLCPP_WARN(
+                    get_logger(), "[%s] a garra fechou sem o cubo - reabrindo.", stage_prefix.c_str());
+                speak("Nao consegui pegar o cubo de volta");
+                gripper->setStartStateToCurrentState();
+                gripper->setNamedTarget("gripper_open");
+                (void)planAndExecute(gripper, stage_prefix + " regrasp reopen");
+                (void)moveToJointTarget(arm, q_lift, stage_prefix + " regrasp lift (vazio)");
+                return RegraspResult::kNotGrabbed;
+            }
+        }
+        if (!moveToJointTarget(arm, q_lift, stage_prefix + " regrasp lift")) {
+            return RegraspResult::kMoveFailedHolding;
+        }
+        return RegraspResult::kHolding;
+    }
+
+    enum class DropResult { kDone, kNoIk, kMoveFailed, kGripperFailed, kLiftFailed };
+
+    /// Solta o cubo carregado com o TCP em `target` e os dedos no yaw da tag
+    /// alvo (2026-10-21): pre-pose `pre_lift` acima, descida vertical, abre a
+    /// garra, sobe de volta. Marca release_done_in_place_ (runPlaceCycle nao
+    /// abre de novo) e cube_left_on_table_ (ate' alguem re-pegar/aceitar).
+    /// kLiftFailed = soltou mas nao subiu. `fk_err_xy` = erro XY do TCP por
+    /// FK na soltura (< 0 sem estado); `fk_actual` = onde a ponta parou.
+    /// `tilt_comp` soma a compensacao de inclinacao em z (quina baixa do cubo
+    /// mantem a folga nominal); `mixed_pre_tilt` deixa a pre-pose numa
+    /// inclinacao maior que a descida final (ver solveDropLadder).
+    DropResult dropCubeAt(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const Eigen::Vector3d & target,
+        double finger_yaw,
+        const std::optional<double> & finger_yaw_now,
+        const std::vector<double> & ladder_deg,
+        double pre_lift,
+        bool tilt_comp,
+        bool mixed_pre_tilt,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const std::string & stage,
+        double * fk_err_xy,
+        Eigen::Vector3d * fk_actual,
+        double * tilt_used)
+    {
+        std::array<double, 5> q_final{};
+        std::array<double, 5> q_lift{};
+        double tilt = 0.0;
+        double tilt_pre = 0.0;
+        Eigen::Vector3d cmd = target;
+        if (!solveDropLadder(
+                target, pre_lift, ladder_deg, tilt_comp ? cube_height_m_ : 0.0, cube_height_m_,
+                mixed_pre_tilt, q_final, q_lift, tilt, tilt_pre, cmd))
+        {
+            return DropResult::kNoIk;
+        }
+        q_final[4] = wristForCubeYaw(finger_yaw, q_final[0], tilt, finger_yaw_now);
+        q_lift[4] = wristForCubeYaw(finger_yaw, q_lift[0], tilt_pre, finger_yaw_now);
+        if (tilt_used) {
+            *tilt_used = tilt;
+        }
+        RCLCPP_INFO(
+            get_logger(),
+            "[%s] soltar em [%.3f %.3f %.3f] (compensacao de inclinacao %+.1f mm) dedos "
+            "yaw=%.3f, final a %.0f graus, pre-pose a %.0f graus -> pre j "
+            "[%.3f %.3f %.3f %.3f %.3f], final j [%.3f %.3f %.3f %.3f %.3f]",
+            stage.c_str(), cmd.x(), cmd.y(), cmd.z(), (cmd.z() - target.z()) * 1000.0,
+            finger_yaw, tilt * 180.0 / M_PI, tilt_pre * 180.0 / M_PI,
+            q_lift[0], q_lift[1], q_lift[2], q_lift[3], q_lift[4],
+            q_final[0], q_final[1], q_final[2], q_final[3], q_final[4]);
+        publishStage(goal_handle, stage);
+        stack_arm_moved_ = true;
+        if (!moveToJointTarget(arm, q_lift, stage + " pre-pose")) {
+            return DropResult::kMoveFailed;
+        }
+        if (!moveToJointTarget(arm, q_final, stage + " descend")) {
+            return DropResult::kMoveFailed;
+        }
+        Eigen::Vector3d actual = cmd;
+        const double err3d = tcpErrorByFk(arm, cmd, &actual);
+        if (fk_actual) {
+            *fk_actual = actual;
+        }
+        if (fk_err_xy) {
+            *fk_err_xy = err3d < 0.0 ? -1.0 : std::hypot(actual.x() - cmd.x(), actual.y() - cmd.y());
+        }
+        if (err3d >= 0.0) {
+            RCLCPP_INFO(
+                get_logger(), "[%s] FK na soltura: erro 3D %.1f mm, XY %.1f mm (informativo).",
+                stage.c_str(), err3d * 1000.0,
+                std::hypot(actual.x() - cmd.x(), actual.y() - cmd.y()) * 1000.0);
+        }
+        gripper->setStartStateToCurrentState();
+        gripper->setNamedTarget("gripper_open");
+        if (!planAndExecute(gripper, stage + " open gripper")) {
+            return DropResult::kGripperFailed;
+        }
+        release_done_in_place_ = true;
+        cube_left_on_table_ = true;
+        if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_) / 2))) {
+            return DropResult::kLiftFailed;
+        }
+        if (!moveToJointTarget(arm, q_lift, stage + " lift after release")) {
+            return DropResult::kLiftFailed;
+        }
+        return DropResult::kDone;
+    }
+
+    // =====================================================================
+    // ENCAIXE NO SLOT DA MESA DE PRECISAO (2026-10-21).
+    //
+    // Geometria: a tag do slot esta no FUNDO da cavidade (z_tag); o tampo
+    // fica slot_cavity_depth_m acima. O TCP (face de cima do cubo carregado)
+    // desce na VERTICAL ate z_tag + cavidade + folga + cubo: o fundo do cubo
+    // para slot_drop_clearance_m acima do tampo e, se estiver alinhado em
+    // (x, y) e yaw (faces paralelas as paredes), cai dentro ao abrir.
+    //
+    // O braco chega hoje com ~1-2 cm de erro e a folga e' de 2 mm, entao uma
+    // descida so' nao basta: depois de soltar, o braco sobe, olha a tag do
+    // PROPRIO cubo (ate' 2 leituras, a 2a de mais alto) e decide
+    // (place_precision::decideSlotAction):
+    //   encaixado    = topo em z_tag + cubo (+- slot_seat_tolerance_m) ->
+    //                  sucesso. O xy NAO decide (as duas tags sao lidas de
+    //                  poses diferentes do braco: 1-2 cm de FK); um cubo
+    //                  assentado nao pode estar fora da cavidade;
+    //   na borda     = topo >= z_tag + cavidade + cubo - tol (apoiado por
+    //                  cima) -> re-pega o cubo (regraspCube, TCP NUNCA abaixo
+    //                  da borda: os dedos chegam ao tampo), corrige pelo erro
+    //                  MEDIDO (onde caiu x onde foi mandado) + proximo ponto
+    //                  da espiral (spiralOffsets) e solta de novo, ate'
+    //                  slot_max_attempts;
+    //   meio dentro / tombado / abaixo do fundo = NAO re-pega (os dedos iriam
+    //                  abaixo do tampo): olha de novo e, se continuar, deixa;
+    //   nao visto    = olha de novo de mais alto; se continuar, NAO declara
+    //                  encaixe nem re-pega as cegas: 'slot_nao_verificado'.
+    // Falha final: o cubo fica onde esta (cube_left_on_table_: o container de
+    // bordo e' liberado e a posicao vai para a memoria), fail_reason
+    // 'slot_nao_encaixou' / 'slot_nao_verificado', e o braco RECOLHE a
+    // pegar_obj. NUNCA cai na mesa comum. Sem planning scene da mesa: a
+    // unica guarda contra empurrar a mesa e' nunca comandar z abaixo da
+    // borda.
+    // Estagios: slot_detecting, slot_aligning, slot_inserting, slot_verifying,
+    // slot_reobserving, slot_retry_N, slot_retract (+ slot_search,
+    // slot_regrasp).
+    // =====================================================================
+    StackOutcome placeIntoPrecisionSlot(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const std::string & slot_frame,
+        const std::string & table_pose,
+        const std::string & cube_frame,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        using manip_task_execution::PlacementDecision;
+        using manip_task_execution::SeatState;
+        using manip_task_execution::StackTargetKind;
+
+        publishStage(goal_handle, "slot_detecting");
+        speak("Procurando o encaixe " + spokenTargetName(slot_frame));
+        waitForCameraStream("PLACE");
+
+        geometry_msgs::msg::TransformStamped slot_tf;
+        if (!stackReadBase(slot_frame, slot_tf, std::nullopt, "slot detect " + slot_frame)) {
+            bool seen = false;
+            if (container_search_lateral_) {
+                seen = searchTagLateral(arm, slot_frame, slot_tf, stack_arm_moved_, goal_handle, "slot");
+                if (cancellationRequested()) {
+                    return StackOutcome::kMoveFailed;
+                }
+            }
+            if (!seen) {
+                return StackOutcome::kBaseNotSeen;
+            }
+        }
+        if (slot_tf.transform.translation.y < 0.10) {
+            RCLCPP_WARN(
+                get_logger(), "[SLOT] %s em y=%.3f (atras/sob o braco) - nao encaixo.",
+                slot_frame.c_str(), slot_tf.transform.translation.y);
+            return StackOutcome::kBaseNotSeen;
+        }
+
+        // Pre-alinhamento lateral (mesmo do empilhamento): a camera do punho
+        // ve melhor o slot por cima quando ele esta longe do centro.
+        constexpr double kTagXNearZero = 0.1;
+        if (std::abs(slot_tf.transform.translation.x) > kTagXNearZero) {
+            publishStage(goal_handle, "slot_pre_approach");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget(
+                slot_tf.transform.translation.x > 0.0 ? "tag_direita" : "tag_esquerda");
+            stack_arm_moved_ = true;
+            if (!planAndExecute(arm, "slot go tag_lateral")) {
+                return StackOutcome::kMoveFailed;
+            }
+            const rclcpp::Time parou_lateral = this->get_clock()->now();
+            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (!stackReadBase(slot_frame, slot_tf, parou_lateral, "slot final " + slot_frame)) {
+                return StackOutcome::kBaseNotSeen;
+            }
+        }
+
+        Eigen::Vector3d slot_p = framePosition(slot_tf);
+        double slot_yaw = frameYaw(slot_tf);
+        const std::optional<double> finger_yaw_now = currentFingerYaw(arm);
+        const double z_offset = stackTcpZOffset(StackTargetKind::kSlot);
+        RCLCPP_INFO(
+            get_logger(),
+            "[SLOT] slot %s em [%.4f %.4f %.4f] yaw=%.3f; TCP de soltura %.3f acima "
+            "(cubo %.3f + cavidade %.3f + folga %.3f)",
+            slot_frame.c_str(), slot_p.x(), slot_p.y(), slot_p.z(), slot_yaw, z_offset,
+            cube_height_m_, slot_cavity_depth_m_, slot_drop_clearance_m_);
+
+        // Pre-aproximacao TCP2 + re-leitura de perto (mesma da pilha/pick:
+        // "de longe a camera erra o ponto; de perto acerta").
+        publishStage(goal_handle, "slot_aligning");
+        if (stack_pre_ik_tcp2_ && stack_pre_ik_tcp2_z_ > 0.0) {
+            manip_task_execution::ArmModel tcp2_model{};
+            tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
+            const Eigen::Vector3d target0 = slot_p + Eigen::Vector3d(0.0, 0.0, z_offset);
+            std::array<double, 5> q_pre{};
+            bool pre_ok = false;
+            double tilt_pre = 0.0;
+            for (const double tilt : tiltLadderRad(slot_tilt_ladder_deg_)) {
+                if (manip_task_execution::solveIk(target0, tilt, 0.0, q_pre, tcp2_model)) {
+                    pre_ok = true;
+                    tilt_pre = tilt;
+                    break;
+                }
+            }
+            if (pre_ok) {
+                q_pre[4] = wristForCubeYaw(slot_yaw, q_pre[0], tilt_pre, finger_yaw_now);
+                stack_arm_moved_ = true;
+                if (!moveToJointTarget(arm, q_pre, "slot pre tcp2 " + slot_frame)) {
+                    return StackOutcome::kMoveFailed;
+                }
+                const rclcpp::Time parou_tcp2 = this->get_clock()->now();
+                if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+                    return StackOutcome::kMoveFailed;
+                }
+                geometry_msgs::msg::TransformStamped fresh;
+                if (stackReadBase(slot_frame, fresh, parou_tcp2, "slot re_detect_tcp2 " + slot_frame)) {
+                    const Eigen::Vector3d d = framePosition(fresh) - slot_p;
+                    slot_p = framePosition(fresh);
+                    slot_yaw = frameYaw(fresh);
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SLOT] re-leitura de perto: slot moveu dx=%+.1f dy=%+.1f dz=%+.1f mm, yaw=%.3f",
+                        d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0, slot_yaw);
+                } else {
+                    RCLCPP_WARN(
+                        get_logger(), "[SLOT] sem leitura nova de %s de perto - sigo com a de longe.",
+                        slot_frame.c_str());
+                }
+            } else {
+                RCLCPP_WARN(get_logger(), "[SLOT] pre-ponto TCP2 sem IK - sigo direto para a descida.");
+            }
+        }
+
+        const auto spiral = manip_task_execution::spiralOffsets(
+            slot_search_step_m_, slot_search_radius_m_);
+        const int max_attempts = std::max(1, slot_max_attempts_);
+        // Borda da cavidade: onde fica a tag de um cubo APOIADO POR CIMA e o
+        // piso do TCP em qualquer re-pega (os dedos chegam ao tampo, nunca
+        // abaixo - sem planning scene da mesa, isto e' a unica guarda).
+        const double z_rim = manip_task_execution::slotRimCubeTagZ(
+            slot_p.z(), cube_height_m_, slot_cavity_depth_m_);
+        Eigen::Vector2d corr(0.0, 0.0);
+        double yaw_corr = 0.0;
+        std::optional<Eigen::Vector3d> first_target;
+        const Eigen::Vector3d expected_top(
+            slot_p.x(), slot_p.y(),
+            manip_task_execution::seatedCubeTagZ(slot_p.z(), cube_height_m_));
+
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            const auto & off = spiral[std::min<std::size_t>(attempt, spiral.size() - 1)];
+            Eigen::Vector3d target(
+                slot_p.x() + off.dx + corr.x(), slot_p.y() + off.dy + corr.y(), slot_p.z() + z_offset);
+            const double finger_yaw = slot_yaw + yaw_corr;
+            if (attempt > 0) {
+                publishStage(goal_handle, "slot_retry_" + std::to_string(attempt));
+                speak("Tentando encaixar de novo");
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SLOT] tentativa %d/%d: espiral (%+.1f %+.1f) mm + correcao (%+.1f %+.1f) mm, "
+                    "yaw %+.1f graus",
+                    attempt + 1, max_attempts, off.dx * 1000.0, off.dy * 1000.0,
+                    corr.x() * 1000.0, corr.y() * 1000.0, yaw_corr * 180.0 / M_PI);
+            } else {
+                speak("Encaixando o cubo");
+            }
+
+            double fk_err_xy = -1.0;
+            Eigen::Vector3d fk_actual = target;
+            double tilt = 0.0;
+            DropResult dr = dropCubeAt(
+                arm, gripper, target, finger_yaw, finger_yaw_now, slot_tilt_ladder_deg_,
+                slot_pre_lift_m_, true, true, goal_handle, "slot_inserting", &fk_err_xy, &fk_actual,
+                &tilt);
+            if (dr == DropResult::kNoIk && attempt > 0 && first_target) {
+                // Deslocamento da espiral sem IK: volta ao ponto da 1a soltura
+                // (resolveu) em vez de sair com o cubo na garra.
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SLOT] sem IK para este deslocamento - soltando no ponto da primeira soltura.");
+                target = *first_target;
+                dr = dropCubeAt(
+                    arm, gripper, target, finger_yaw, finger_yaw_now, slot_tilt_ladder_deg_,
+                    slot_pre_lift_m_, true, true, goal_handle, "slot_inserting", &fk_err_xy,
+                    &fk_actual, &tilt);
+            }
+            if (dr == DropResult::kNoIk) {
+                if (attempt == 0) {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "[SLOT] IK propria nao achou solucao (com pre-pose) para [%.3f %.3f %.3f] - "
+                        "fora de alcance.",
+                        target.x(), target.y(), target.z());
+                    last_unreachable_targets_ = {target};
+                    return StackOutcome::kUnreachable;
+                }
+                // Nao deveria acontecer (o ponto da 1a soltura resolveu): o
+                // cubo esta na garra apos a re-pega - sai como fora de alcance
+                // para o caminho de sempre devolve-lo ao container de bordo
+                // (passa por pegar_obj) em vez de abortar com o braco estendido.
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[SLOT] sem IK nem no ponto da primeira soltura - devolvendo o cubo ao container.");
+                last_unreachable_targets_ = {target};
+                return StackOutcome::kUnreachable;
+            }
+            if (attempt == 0) {
+                first_target = target;
+            }
+            if (dr == DropResult::kGripperFailed) {
+                last_place_failure_reason_ = "garra_nao_abriu_no_destino";
+                return StackOutcome::kMoveFailed;
+            }
+            if (dr == DropResult::kMoveFailed) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (dr == DropResult::kLiftFailed) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (tilt > 1e-6) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SLOT] descida final com %.0f graus de inclinacao (0 graus sem IK aqui) - "
+                    "encaixe de BAIXA confianca: cubo inclinado dificilmente entra em 2 mm de folga.",
+                    tilt * 180.0 / M_PI);
+            }
+
+            // Verificacao pela tag do proprio cubo: ate' kSlotMaxObservations
+            // leituras (a segunda de mais alto) antes de decidir
+            // (decideSlotAction). Nunca sucesso sem ver; nunca re-pega as
+            // cegas; nunca re-pega um cubo assentado ou meio dentro.
+            manip_task_execution::SlotLimits slim;
+            slim.z_slot_tag = slot_p.z();
+            slim.cube_height_m = cube_height_m_;
+            slim.cavity_depth_m = slot_cavity_depth_m_;
+            slim.seat_tol_m = slot_seat_tolerance_m_;
+            slim.attempts_done = attempt + 1;
+            slim.max_attempts = max_attempts;
+            slim.max_observations = kSlotMaxObservations;
+            CubeObservation obs;
+            manip_task_execution::SlotAction action = manip_task_execution::SlotAction::kLeave;
+            double err_xy = 0.0;
+            for (int look = 0; look < kSlotMaxObservations; ++look) {
+                obs = observePlacedCube(
+                    arm, cube_frame, expected_top, finger_yaw, slot_tilt_ladder_deg_, goal_handle,
+                    look == 0 ? "slot_verifying" : "slot_reobserving",
+                    look == 0 ? 0.0 : slot_reobserve_extra_z_m_);
+                if (cancellationRequested()) {
+                    return StackOutcome::kMoveFailed;
+                }
+                manip_task_execution::SlotObservation so;
+                so.seen = obs.seen;
+                if (obs.seen) {
+                    const SeatState seat = manip_task_execution::slotSeatState(
+                        obs.p.z(), slot_p.z(), cube_height_m_, slot_cavity_depth_m_,
+                        slot_seat_tolerance_m_);
+                    err_xy = std::hypot(obs.p.x() - slot_p.x(), obs.p.y() - slot_p.y());
+                    so.z_cube_tag = obs.p.z();
+                    so.err_xy_m = err_xy;
+                    const bool on_rim = seat == SeatState::kUnseated &&
+                        obs.p.z() >= z_rim - slot_seat_tolerance_m_;
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SLOT] cubo %s visto em [%.4f %.4f %.4f] yaw=%.3f (leitura %d/%d): dxy=%.1f mm, "
+                        "dz=%+.1f mm do assentado, %+.1f mm da borda -> %s (tolerancia z %.0f mm)",
+                        cube_frame.c_str(), obs.p.x(), obs.p.y(), obs.p.z(), obs.yaw, look + 1,
+                        kSlotMaxObservations, err_xy * 1000.0,
+                        (obs.p.z() - expected_top.z()) * 1000.0, (obs.p.z() - z_rim) * 1000.0,
+                        seat == SeatState::kSeated ? "ENCAIXADO" :
+                        on_rim ? "APOIADO NA BORDA" :
+                        seat == SeatState::kUnseated ? "MEIO DENTRO / TOMBADO" :
+                        "leitura inconsistente (abaixo do fundo)",
+                        slot_seat_tolerance_m_ * 1000.0);
+                } else {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[SLOT] cubo %s NAO visto apos soltar (leitura %d/%d; erro FK XY na soltura "
+                        "%.1f mm, so' informativo).",
+                        cube_frame.c_str(), look + 1, kSlotMaxObservations, fk_err_xy * 1000.0);
+                }
+                slim.observations_done = look + 1;
+                action = manip_task_execution::decideSlotAction(so, slim);
+                RCLCPP_INFO(
+                    get_logger(), "[SLOT] decisao apos a soltura %d/%d (leitura %d): %s",
+                    attempt + 1, max_attempts, look + 1,
+                    manip_task_execution::slotActionName(action));
+                if (action != manip_task_execution::SlotAction::kReobserve) {
+                    break;
+                }
+            }
+
+            if (action == manip_task_execution::SlotAction::kAccept) {
+                if (err_xy > slot_xy_tolerance_m_) {
+                    // Diagnostico de FK: a tag do slot foi lida do pre-ponto
+                    // TCP2 e a do cubo da pose de verificacao - configuracoes
+                    // diferentes do braco. O assentamento em z e' a evidencia.
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[SLOT] encaixado em z mas dxy=%.1f mm > %.0f mm entre as duas leituras - "
+                        "discrepancia de FK entre poses, nao do encaixe.",
+                        err_xy * 1000.0, slot_xy_tolerance_m_ * 1000.0);
+                }
+                speak("Encaixei o cubo");
+                last_slot_decision_ = SlotDecision{
+                    "slot:" + slot_frame, table_pose, target, 0.0, obs.p};
+                cube_left_on_table_ = false;
+                return StackOutcome::kOk;
+            }
+            if (action == manip_task_execution::SlotAction::kRegrasp) {
+                // Apoiado na borda: TCP no plano da tag vista, mas nunca
+                // abaixo da borda (leitura baixa mandaria os dedos para
+                // dentro do tampo).
+                const Eigen::Vector3d grasp_p(
+                    obs.p.x(), obs.p.y(), manip_task_execution::slotRegraspTcpZ(obs.p.z(), z_rim));
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SLOT] re-pega na borda: TCP z=%.4f (visto %.4f, borda %.4f; piso = borda).",
+                    grasp_p.z(), obs.p.z(), z_rim);
+                const RegraspResult rr = regraspCube(
+                    arm, gripper, grasp_p, obs.yaw, slot_tilt_ladder_deg_, slot_pre_lift_m_,
+                    goal_handle, "slot");
+                if (rr == RegraspResult::kMoveFailed) {
+                    return StackOutcome::kMoveFailed;
+                }
+                if (rr == RegraspResult::kMoveFailedHolding) {
+                    cube_left_on_table_ = false;
+                    last_place_failure_reason_ = "falha_com_bloco_na_garra";
+                    return StackOutcome::kMoveFailed;
+                }
+                if (rr == RegraspResult::kHolding) {
+                    cube_left_on_table_ = false;
+                    if (slot_use_measured_correction_) {
+                        // Erro sistematico medido: onde o cubo caiu x onde o
+                        // TCP foi mandado. Proxima soltura compensa.
+                        Eigen::Vector2d err(obs.p.x() - target.x(), obs.p.y() - target.y());
+                        corr -= err;
+                        const double n = corr.norm();
+                        if (n > slot_correction_max_m_ && n > 0.0) {
+                            corr *= slot_correction_max_m_ / n;
+                        }
+                        const double dyaw = manip_task_execution::nearestQuarterTurn(finger_yaw, obs.yaw);
+                        constexpr double kMaxYawCorr = 10.0 * M_PI / 180.0;
+                        yaw_corr = std::max(-kMaxYawCorr, std::min(kMaxYawCorr, yaw_corr + dyaw));
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "[SLOT] correcao medida: cubo caiu (%+.1f %+.1f) mm do mandado, yaw %+.1f graus "
+                            "-> correcao acumulada (%+.1f %+.1f) mm, yaw %+.1f graus",
+                            err.x() * 1000.0, err.y() * 1000.0, dyaw * 180.0 / M_PI,
+                            corr.x() * 1000.0, corr.y() * 1000.0, yaw_corr * 180.0 / M_PI);
+                    }
+                    continue;
+                }
+                // kNotGrabbed: a garra fechou vazia na borda - o cubo nao
+                // esta onde foi visto; fica na mesa (abaixo).
+            }
+
+            // kLeave (ou re-pega sem sucesso): o cubo fica onde esta - nunca
+            // uma descida abaixo da borda. Recolhe o braco antes de sair.
+            if (!obs.seen) {
+                last_place_failure_reason_ = "slot_nao_verificado";
+                speak("Nao vi o cubo depois de soltar, nao sei se encaixou");
+                last_slot_decision_ = SlotDecision{
+                    "slot_nao_verificado:" + slot_frame, table_pose, target, 0.0,
+                    Eigen::Vector3d(fk_actual.x(), fk_actual.y(), expected_top.z())};
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[SLOT] %s solto em %s mas NAO visto em %d leitura(s) - nao declaro encaixe "
+                    "(slot_nao_verificado); cubo fica na mesa.",
+                    cube_frame.c_str(), slot_frame.c_str(), kSlotMaxObservations);
+            } else {
+                last_place_failure_reason_ = "slot_nao_encaixou";
+                speak("Nao consegui encaixar o cubo no slot");
+                last_slot_decision_ = SlotDecision{
+                    "slot_falhou:" + slot_frame, table_pose, target, 0.0, obs.p};
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[SLOT] nao encaixei %s em %s apos %d soltura(s) - cubo fica na mesa em "
+                    "[%.3f %.3f %.3f].",
+                    cube_frame.c_str(), slot_frame.c_str(), attempt + 1,
+                    obs.p.x(), obs.p.y(), obs.p.z());
+            }
+            retractAfterLeavingCube(arm, goal_handle, "slot");
+            return StackOutcome::kNoIk;
+        }
+        // Nao deveria chegar aqui: a ultima soltura nunca re-pega
+        // (decideSlotAction) e sai acima. Defesa: cubo na mesa, recolhe.
+        if (last_place_failure_reason_.empty()) {
+            last_place_failure_reason_ = cube_left_on_table_ ? "slot_nao_encaixou" : "encaixe_falhou";
+        }
+        if (cube_left_on_table_) {
+            retractAfterLeavingCube(arm, goal_handle, "slot");
+        }
+        return StackOutcome::kNoIk;
+    }
+
+    /// Desfechos do encaixe no slot (moveToPlaceTarget). Nunca cai na mesa:
+    /// um cubo solto fora da cavidade atrapalha a mesa de precisao inteira.
+    /// kBaseNotSeen / fora de alcance => o cubo volta ao container de bordo
+    /// (unreachable; com bailout vem a sugestao de deslocamento da base).
+    bool handleSlotOutcome(
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        StackOutcome out,
+        const std::string & slot_frame)
+    {
+        if (out == StackOutcome::kOk) {
+            return true;
+        }
+        if (out == StackOutcome::kUnreachable &&
+            tryUnreachableBailout(
+                goal_handle, slot_tilt_ladder_deg_, "SLOT",
+                "O encaixe " + spokenTargetName(slot_frame)))
+        {
+            return false;
+        }
+        if (out == StackOutcome::kBaseNotSeen || out == StackOutcome::kUnreachable) {
+            last_place_failure_reason_ =
+                out == StackOutcome::kBaseNotSeen ? "base_nao_vista" : "alvo_fora_de_alcance";
+            last_failure_unreachable_ = true;
+            last_suggested_shift_m_ = 0.0;
+            RCLCPP_WARN(
+                get_logger(),
+                "[SLOT] nao encaixei em %s (%s) e NAO vou soltar na mesa - devolvendo o bloco "
+                "ao container de bordo (unreachable, sugestao 0).",
+                slot_frame.c_str(), last_place_failure_reason_.c_str());
+            speak("Nao achei o encaixe, vou guardar o bloco de volta");
+            return false;
+        }
+        if (out == StackOutcome::kNoIk) {
+            // 'slot_nao_encaixou' ja preenchido: o cubo ficou na mesa.
+            return false;
+        }
+        if (last_place_failure_reason_.empty()) {
+            last_place_failure_reason_ = cube_left_on_table_ ? "slot_nao_encaixou" : "encaixe_falhou";
+        }
+        return false;
+    }
+
+    // =====================================================================
+    // VERIFICACAO APOS SOLTAR NA PILHA / TAG DE REFERENCIA (2026-10-21).
+    // Chamada pelo runPlaceCycle depois de abrir a garra e subir: olha a tag
+    // do cubo solto de cima (observePlacedCube); (x, y) deve bater com a base
+    // e z com base + cubo (stack_verify_*_tolerance_m). Fora: re-pega
+    // (regraspCube), corrige pelo erro medido e solta UMA vez mais. Em
+    // qualquer caso a memoria de slots e' regravada com a posicao VISTA do
+    // topo (cadeia 'stack:' usada pela memoria da pilha e pelo nivel).
+    // Melhor esforco: so' reprova a entrega se o cubo puder ter ficado na
+    // garra (devolve false -> falha_com_bloco_na_garra).
+    // =====================================================================
+    bool verifyAndCorrectStackedCube(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const std::string & cube_frame,
+        const std::string & ws,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+    {
+        using manip_task_execution::PlacementDecision;
+        const PostReleaseCheck chk = *post_release_check_;
+        const std::string tag = isReferenceKind(chk.kind) ? "REF" : "STACK";
+        const std::optional<double> finger_yaw_now = currentFingerYaw(arm);
+
+        CubeObservation obs = observePlacedCube(
+            arm, cube_frame, chk.expected_top, chk.yaw, stack_tilt_ladder_deg_, goal_handle,
+            "stack_verifying");
+        if (cancellationRequested()) {
+            return true;
+        }
+        manip_task_execution::PlacementObservation po;
+        po.seen = obs.seen;
+        po.fk_err_xy_m = chk.fk_err_xy_m;
+        if (obs.seen) {
+            po.err_xy_m = std::hypot(obs.p.x() - chk.expected_top.x(), obs.p.y() - chk.expected_top.y());
+            po.err_z_m = obs.p.z() - chk.expected_top.z();
+            RCLCPP_INFO(
+                get_logger(),
+                "[%s] cubo %s visto em [%.4f %.4f %.4f]: dxy=%.1f mm, dz=%+.1f mm (esperado topo z=%.3f; "
+                "tolerancias xy %.0f mm, z %.0f mm)",
+                tag.c_str(), cube_frame.c_str(), obs.p.x(), obs.p.y(), obs.p.z(),
+                po.err_xy_m * 1000.0, po.err_z_m * 1000.0, chk.expected_top.z(),
+                stack_verify_xy_tolerance_m_ * 1000.0, stack_verify_z_tolerance_m_ * 1000.0);
+        }
+        manip_task_execution::PlacementLimits lim;
+        lim.xy_tol_m = stack_verify_xy_tolerance_m_;
+        lim.z_tol_m = stack_verify_z_tolerance_m_;
+        lim.fk_proxy_tol_m = -1.0;   // pilha: nunca re-pega as cegas
+        lim.attempts_done = 1;
+        lim.max_attempts = 2;
+        lim.retry_unseen = false;
+        const PlacementDecision decision = manip_task_execution::decidePlacement(po, lim);
+        RCLCPP_INFO(
+            get_logger(), "[%s] decisao da verificacao: %s", tag.c_str(),
+            manip_task_execution::placementDecisionName(decision));
+
+        Eigen::Vector3d cube_p = obs.seen ? obs.p : chk.expected_top;
+        // O cubo visto esta SOBRE a base? Falso = caiu/tombou: a memoria
+        // guarda a posicao como obstaculo ('stack_caiu:'), nao como pilha.
+        bool on_pile = true;
+        const auto off_pile = [&](double z) {
+                return z < chk.expected_top.z() - cube_height_m_ / 2.0;
+            };
+        if (decision == PlacementDecision::kAcceptUnverified) {
+            RCLCPP_WARN(
+                get_logger(), "[%s] pilha nao verificada (tag do cubo nao vista) - memoria com o z esperado.",
+                tag.c_str());
+        }
+        if (decision == PlacementDecision::kRetry) {
+            // Rodada 2: a re-pega tem PISO (topo esperado - cubo - tol: o cubo
+            // pode no maximo ter caido um nivel) e a correcao xy so' vale com
+            // o cubo SOBRE a base; tombado/caido volta ao alvo original.
+            using manip_task_execution::PileFix;
+            const double floor_z = manip_task_execution::pileRegraspFloorZ(
+                chk.expected_top.z(), cube_height_m_, stack_verify_z_tolerance_m_);
+            const PileFix fix = manip_task_execution::pileFixFor(
+                obs.p.z(), chk.expected_top.z(), cube_height_m_, stack_verify_z_tolerance_m_);
+            RCLCPP_INFO(
+                get_logger(), "[%s] cubo visto z=%.4f (topo esperado %.4f, piso de re-pega %.4f): %s",
+                tag.c_str(), obs.p.z(), chk.expected_top.z(), floor_z,
+                manip_task_execution::pileFixName(fix));
+            on_pile = !off_pile(obs.p.z());
+            if (fix == PileFix::kLeave) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[%s] cubo %.1f mm abaixo do piso de re-pega - caiu da pilha; nao desco ate' la, "
+                    "fica onde esta.",
+                    tag.c_str(), (floor_z - obs.p.z()) * 1000.0);
+                speak("O bloco caiu da pilha, vou deixar onde esta");
+            } else {
+                publishStage(goal_handle, "stack_recorrect");
+                speak("O bloco ficou fora do lugar, vou ajeitar");
+                Eigen::Vector3d grasp_p = obs.p;
+                grasp_p.z() = std::max(obs.p.z(), floor_z);
+                const RegraspResult rr = regraspCube(
+                    arm, gripper, grasp_p, obs.yaw, stack_tilt_ladder_deg_, stack_pre_lift_m_,
+                    goal_handle, isReferenceKind(chk.kind) ? "ref" : "stack");
+                if (rr == RegraspResult::kMoveFailedHolding) {
+                    RCLCPP_ERROR(get_logger(), "[%s] falha apos fechar a garra na re-pega - o cubo pode estar na garra.", tag.c_str());
+                    return false;
+                }
+                if (rr == RegraspResult::kHolding) {
+                    Eigen::Vector3d target2 = chk.tcp_target;
+                    if (fix == PileFix::kCorrectXy) {
+                        Eigen::Vector2d err(obs.p.x() - chk.expected_top.x(), obs.p.y() - chk.expected_top.y());
+                        const double n = err.norm();
+                        if (n > slot_correction_max_m_ && n > 0.0) {
+                            err *= slot_correction_max_m_ / n;
+                        }
+                        target2 -= Eigen::Vector3d(err.x(), err.y(), 0.0);
+                        RCLCPP_INFO(
+                            get_logger(), "[%s] correcao xy (%+.1f %+.1f) mm sobre o alvo original.",
+                            tag.c_str(), -err.x() * 1000.0, -err.y() * 1000.0);
+                    } else {
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "[%s] cubo tinha saido da base (dz=%+.1f mm): solto de novo no alvo original, "
+                            "sem correcao.",
+                            tag.c_str(), (obs.p.z() - chk.expected_top.z()) * 1000.0);
+                    }
+                    const bool comp = isReferenceKind(chk.kind);
+                    double fk_err_xy = -1.0;
+                    Eigen::Vector3d fk_actual = target2;
+                    DropResult dr = dropCubeAt(
+                        arm, gripper, target2, chk.yaw, finger_yaw_now, stack_tilt_ladder_deg_,
+                        stack_pre_lift_m_, comp, false, goal_handle, "stack_recorrect_drop",
+                        &fk_err_xy, &fk_actual, nullptr);
+                    if (dr == DropResult::kNoIk && fix == PileFix::kCorrectXy) {
+                        RCLCPP_WARN(get_logger(), "[%s] sem IK no alvo corrigido - soltando no alvo original.", tag.c_str());
+                        target2 = chk.tcp_target;
+                        dr = dropCubeAt(
+                            arm, gripper, target2, chk.yaw, finger_yaw_now, stack_tilt_ladder_deg_,
+                            stack_pre_lift_m_, comp, false, goal_handle, "stack_recorrect_drop",
+                            &fk_err_xy, &fk_actual, nullptr);
+                    }
+                    if (dr == DropResult::kNoIk || dr == DropResult::kMoveFailed ||
+                        dr == DropResult::kGripperFailed)
+                    {
+                        RCLCPP_ERROR(
+                            get_logger(), "[%s] nao consegui soltar o cubo de novo - pode ter ficado na garra.",
+                            tag.c_str());
+                        cube_left_on_table_ = false;
+                        return false;
+                    }
+                    cube_left_on_table_ = false;
+                    const CubeObservation obs2 = observePlacedCube(
+                        arm, cube_frame, chk.expected_top, chk.yaw, stack_tilt_ladder_deg_, goal_handle,
+                        "stack_verifying_2");
+                    if (obs2.seen) {
+                        cube_p = obs2.p;
+                        on_pile = !off_pile(obs2.p.z());
+                        const double dxy = std::hypot(
+                            obs2.p.x() - chk.expected_top.x(), obs2.p.y() - chk.expected_top.y());
+                        RCLCPP_INFO(
+                            get_logger(), "[%s] apos a correcao: dxy=%.1f mm, dz=%+.1f mm (%s).",
+                            tag.c_str(), dxy * 1000.0, (obs2.p.z() - chk.expected_top.z()) * 1000.0,
+                            !on_pile ? "caiu da pilha de novo - fica" :
+                            dxy <= stack_verify_xy_tolerance_m_ ? "ok" : "ainda fora, aceito com aviso");
+                    } else {
+                        cube_p = Eigen::Vector3d(target2.x(), target2.y(), chk.expected_top.z());
+                        on_pile = true;
+                        RCLCPP_WARN(get_logger(), "[%s] cubo nao visto apos a correcao - memoria com o esperado.", tag.c_str());
+                    }
+                } else {
+                    RCLCPP_WARN(get_logger(), "[%s] nao re-peguei o cubo - fica como esta.", tag.c_str());
+                }
+            }
+        }
+
+        // Memoria: topo VISTO (ou esperado) do cubo, para o proximo nivel.
+        // Cubo fora da base: registro 'stack_caiu:' (obstaculo, nao conta na
+        // cadeia da pilha).
+        if (last_slot_decision_) {
+            last_slot_decision_->cube_p = cube_p;
+            if (!on_pile) {
+                last_slot_decision_->slot = "stack_caiu:" + chk.base_frame;
+            }
+            if (slot_memory_enabled_ && !cube_frame.empty()) {
+                std::size_t removed = 0;
+                std::string err;
+                (void)container_state_store_->removeTableSlotsForTag(cube_frame, &removed, &err);
+            }
+            recordSlotUsed(arm, ws, cube_frame);
+        }
+        return true;
     }
 
     // =====================================================================
@@ -3947,7 +5337,7 @@ private:
             return StackOutcome::kNoIk;
         }
 
-        last_slot_decision_ = SlotDecision{frame, table_pose, target, 0.0};
+        last_slot_decision_ = SlotDecision{frame, table_pose, target, 0.0, std::nullopt};
         stack_lift_q_ = q_lift;            // saida: sobe na vertical antes de recolher
         container_exit_pending_ = true;    // ... com a garra FECHADA (pedido do operador 25/08)
         RCLCPP_INFO(
@@ -4041,6 +5431,7 @@ private:
 
     bool moveToPlaceTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::shared_ptr<MoveGroupInterface> & gripper,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
@@ -4049,18 +5440,40 @@ private:
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
         surface_arm_moved_ = false;
+        release_done_in_place_ = false;
+        post_release_check_.reset();
         {
             const auto goal = goal_handle->get_goal();
             if (!goal->stack_on.empty()) {
+                // 2026-10-21: o tipo do alvo vem do id da tag (slot da mesa de
+                // precisao / tag de referencia da pilha / cubo).
+                const manip_task_execution::StackTargetKind kind =
+                    manip_task_execution::classifyStackTarget(
+                        goal->stack_on, slot_tag_ids_, stack_reference_tag_ids_);
                 if (isShelfPlaceTarget(table_pose)) {
                     RCLCPP_WARN(
                         get_logger(),
                         "[STACK] empilhar na prateleira (%s) nao e suportado — place normal.",
                         table_pose.c_str());
+                } else if (kind == manip_task_execution::StackTargetKind::kSlot) {
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SLOT] stack_on=%s e' um slot da mesa de precisao - encaixe (ws '%s').",
+                        goal->stack_on.c_str(), goal->ws.c_str());
+                    const StackOutcome out = placeIntoPrecisionSlot(
+                        arm, gripper, goal->stack_on, table_pose, goal->tag_frame, goal_handle);
+                    return handleSlotOutcome(goal_handle, out, goal->stack_on);
                 } else {
+                    if (kind == manip_task_execution::StackTargetKind::kReference) {
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "[STACK] stack_on=%s e' a tag de referencia da pilha - primeiro cubo.",
+                            goal->stack_on.c_str());
+                    }
                     const StackOutcome out = placeStackedOnFrame(
                         arm, goal->stack_on, table_pose, goal_handle,
-                        std::vector<double>(goal->place_joints.begin(), goal->place_joints.end()));
+                        std::vector<double>(goal->place_joints.begin(), goal->place_joints.end()),
+                        kind, normalizedWs(goal->ws));
                     if (out == StackOutcome::kOk) {
                         return true;
                     }
@@ -4082,9 +5495,15 @@ private:
                     // (runPlaceCycle) devolve o cubo ao container de
                     // bordo e execute() responde skipped+unreachable; o no
                     // AMT1 re-registra os slots e repete 1x. WS_* inalterado.
+                    // 2026-10-21 (rodada 2): a tag de referencia (kReference,
+                    // tag 200) e' o MARCO da pilha - nao vista / sem alcance
+                    // tambem NAO cai na mesa comum (a pilha inteira nasceria
+                    // fora do marco): mesmo caminho do PP (cubo volta ao
+                    // container de bordo, unreachable, sugestao 0).
                     if ((out == StackOutcome::kBaseNotSeen || out == StackOutcome::kNoIk ||
                         out == StackOutcome::kUnreachable) &&
-                        normalizedWs(goal->ws).rfind("PP", 0) == 0)
+                        (normalizedWs(goal->ws).rfind("PP", 0) == 0 ||
+                        kind == manip_task_execution::StackTargetKind::kReference))
                     {
                         last_place_failure_reason_ =
                             out == StackOutcome::kBaseNotSeen ? "base_nao_vista" :
@@ -4099,11 +5518,16 @@ private:
                         }
                         RCLCPP_WARN(
                             get_logger(),
-                            "[STACK] PP (%s): nao empilhei sobre %s (%s) e NAO vou soltar na mesa "
+                            "[STACK] %s (%s): nao empilhei sobre %s (%s) e NAO vou soltar na mesa "
                             "— devolvendo o bloco ao container de bordo (unreachable, sugestao 0).",
+                            kind == manip_task_execution::StackTargetKind::kReference ?
+                            "marco da pilha" : "PP",
                             goal->ws.c_str(), goal->stack_on.c_str(),
                             last_place_failure_reason_.c_str());
-                        speak("Nao achei o lugar certo na mesa de precisao, vou guardar o bloco de volta");
+                        speak(
+                            kind == manip_task_execution::StackTargetKind::kReference ?
+                            "Nao achei a marca da pilha, vou guardar o bloco de volta" :
+                            "Nao achei o lugar certo na mesa de precisao, vou guardar o bloco de volta");
                         return false;
                     }
                     if (out == StackOutcome::kMoveFailed || !stack_fallback_to_table_) {
@@ -4462,6 +5886,9 @@ private:
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
         surface_arm_moved_ = false;
+        release_done_in_place_ = false;
+        cube_left_on_table_ = false;
+        post_release_check_.reset();
 
         auto result =
             std::make_shared<PlaceTag::Result>();
@@ -4588,6 +6015,22 @@ private:
         // portas genericas de plan/execute viram "ik_ou_execucao_falhou".
         if (!success && last_place_failure_reason_.empty()) {
             last_place_failure_reason_ = "ik_ou_execucao_falhou";
+        }
+        // 2026-10-21: o cubo saiu da garra e ficou na mesa sem encaixar
+        // (slot_nao_encaixou): a entrega falhou, mas o container de bordo
+        // esta vazio de fato - sem isto o proximo pick deste bloco iria
+        // procura-lo no pote.
+        if (!success && cube_left_on_table_) {
+            std::string err;
+            if (container_state_store_->setEmpty(container_pose, &err)) {
+                RCLCPP_WARN(
+                    get_logger(), "[PLACE] cubo ficou na mesa sem encaixar - %s marcado vazio.",
+                    container_pose.c_str());
+            } else {
+                RCLCPP_ERROR(
+                    get_logger(), "[PLACE] cubo na mesa e nao consegui marcar %s vazio: %s",
+                    container_pose.c_str(), err.c_str());
+            }
         }
         // Fila de alcance (2026-08-28): saida cedo (alvo visto, sem IK, ainda
         // nao e a tentativa final, cubo ja devolvido ao container de bordo) —
@@ -5051,7 +6494,21 @@ private:
         arm->setMaxAccelerationScalingFactor(1.0);
         
         publishStage(goal_handle, "going_table");
-        if (!moveToPlaceTarget(arm, table_pose, goal_handle)) {
+        if (!moveToPlaceTarget(arm, gripper, table_pose, goal_handle)) {
+            // 2026-10-21: o cubo saiu da garra no modo de precisao e ficou
+            // na mesa sem encaixar - nao ha' o que devolver; a memoria de
+            // slots guarda onde ele ficou (obstaculo) e execute() libera o
+            // container de bordo.
+            if (cube_left_on_table_) {
+                if (slot_memory_enabled_ && !goal->tag_frame.empty()) {
+                    std::size_t removed = 0;
+                    std::string err;
+                    (void)container_state_store_->removeTableSlotsForTag(
+                        goal->tag_frame, &removed, &err);
+                }
+                recordSlotUsed(arm, place_ws, goal->tag_frame);
+                return false;
+            }
             // Fila de alcance (2026-08-28): alvo visto fora de alcance — o
             // cubo volta ao container de bordo antes de o goal sair como
             // skipped/unreachable (execute()). Se a devolucao falhar, vira a
@@ -5071,12 +6528,17 @@ private:
         arm->setMaxAccelerationScalingFactor(1.0);
         
 
-        publishStage(goal_handle, "opening_gripper_final");
-        gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
-        if (!planAndExecute(gripper, "open gripper final")) {
-            last_place_failure_reason_ = "garra_nao_abriu_no_destino";
-            return false;
+        if (release_done_in_place_) {
+            // 2026-10-21: a garra ja abriu dentro do encaixe (slot).
+            RCLCPP_INFO(get_logger(), "[PLACE] garra ja aberta no modo de precisao - sem abertura final.");
+        } else {
+            publishStage(goal_handle, "opening_gripper_final");
+            gripper->setStartStateToCurrentState();
+            gripper->setNamedTarget("gripper_open");
+            if (!planAndExecute(gripper, "open gripper final")) {
+                last_place_failure_reason_ = "garra_nao_abriu_no_destino";
+                return false;
+            }
         }
         // 2026-10-19: o bloco tem morada nova (mesa, superficie, pilha ou
         // container) — o registro antigo dele em QUALQUER WS morre antes de
@@ -5167,6 +6629,19 @@ private:
                     "[STACK] subida apos soltar falhou — recolhendo direto.");
             }
             stack_lift_q_.reset();
+        }
+
+        // 2026-10-21: verificacao apos soltar na pilha/referencia - le a tag
+        // do cubo solto de cima; fora da tolerancia, re-pega e corrige UMA
+        // vez. So' reprova se o cubo puder ter ficado na garra.
+        if (post_release_check_ && stack_verify_after_release_) {
+            const bool ok = verifyAndCorrectStackedCube(
+                arm, gripper, goal->tag_frame, place_ws, goal_handle);
+            post_release_check_.reset();
+            if (!ok) {
+                last_place_failure_reason_ = "falha_com_bloco_na_garra";
+                return false;
+            }
         }
 
         // Caminho inverso na prateleira (pedido do operador 2026-08-17):

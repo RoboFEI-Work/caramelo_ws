@@ -8,17 +8,24 @@
 # /manip/table_plane_z, frame manip_base_link) e' projetada na imagem e recebe
 # o rotulo do pixel. Varias vistas (pegar_obj, tag_direita, tag_esquerda) sao
 # fundidas por votos enquanto /manip/surface_observe for true.
+# Profundidade (2026-10-21): a depth ALINHADA a cor do D455 separa mesa de
+# chao — pixel medido mais LONGE que o plano do tampo e' "fora da mesa" seja
+# qual for a cor (o chao claro deixava de ser chao); mais PERTO e' objeto.
+# Tampo a 0,3-0,4 m vem invalido (zona cega) e cai na decisao por cor.
 #
 # Calibrar sem robo:
 #   ros2 run manip_bringup workstation_surface_node.py --image foto.png \
 #       --config src/manipulation/manip_bringup/config/workstation_surface.yaml \
 #       --gripper-yaml src/manipulation/manip_bringup/config/container_detector.yaml \
-#       --out overlay.png            # verde=tampo, vermelho=objeto, azul=fora, cinza=desconhecido
+#       --out overlay.png            # verde=tampo, vermelho=objeto, azul=alem do plano (chao), cinza=desconhecido
 #   ... --probe u,v                  # HSV de um pixel
+#   ... --camera=-0.011,0.164,0.311,84.4 --plane-z 0.083 --intrinsics fx,fy,cx,cy \
+#       --depth depth.png            # par cor+profundidade (PNG 16 bits em mm): grade + retas + poligono
 # Ao vivo: ros2 param set /workstation_surface white_v_min 90
-#          ros2 topic echo /manip/workstation_surface/status
+#          ros2 topic echo /manip/workstation_surface/status   (campo depth=ok alem=..% acima=..%)
 #          rqt_image_view /manip/workstation_surface/debug_image (ou grid_image)
-#          RViz: OccupancyGrid em /manip/workstation_surface/grid (frame manip_base_link)
+#          RViz: OccupancyGrid em /manip/workstation_surface/grid (frame manip_base_link),
+#                Polygon em .../table_polygon, MarkerArray em .../edge_lines (so' com assinante)
 workstation_surface:
   ros__parameters:
     # --- ativacao / custo ---
@@ -83,3 +90,16 @@ workstation_surface:
     edge_band_m: 0.06
     edge_outside_check_m: 0.25     # alem de uma borda real nao pode haver tampo branco...
     edge_outside_max_white_frac: 0.10   # ...(dois containers alinhados fizeram reta de 39 cm em 25/08)
+
+    # --- profundidade: mesa x chao (D455 alinhada a cor, 16UC1 em mm, 0 = invalido) ---
+    depth_enable: true             # false = so' cor (comportamento de 19/10)
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    depth_max_age_s: 0.5           # par cor/profundidade mais desencontrado que isto = ignora a profundidade
+    depth_grace_s: 1.0             # apos ativar, espera a profundidade ate isto (status "aguardando profundidade")
+                                   # antes de fundir so' por cor: o 1o quadro de cor chega antes da 1a profundidade
+    depth_min_valid_m: 0.25        # abaixo disto o D455 nao mede (zona cega): invalido -> decide a cor
+    depth_beyond_plane_m: 0.03     # medida > esperada + isto = alem do plano = FORA da mesa, seja qual for a cor
+                                   # (3 cm: na mesa de 5 cm o chao fica so 5 cm abaixo; 6 cm nao disparava)
+    depth_above_plane_m: 0.02      # medida < esperada - isto = algo sobre o tampo = objeto, mesmo branco
+    depth_open_px: 3               # abertura (px escalados) que tira os "flying pixels" das bordas dos objetos
+    depth_above_max_frac: 0.5      # "acima" em mais que isto dos pixels = plano errado: regra ignorada no quadro

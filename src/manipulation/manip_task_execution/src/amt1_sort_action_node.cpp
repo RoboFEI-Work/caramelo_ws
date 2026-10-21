@@ -443,6 +443,7 @@ private:
         std::string ws;
         std::string table_pose;
         std::vector<int> expected;
+        std::vector<int> target_order;   ///< 2026: alvo explicito (vazio = crescente)
         bool left_to_right{true};
         bool observe_only{false};
         int buffer{0};
@@ -3461,6 +3462,28 @@ private:
             RCLCPP_WARN(get_logger(), "[AMT1] goal rejeitado: max_onboard %d fora de 0..3.", goal->max_onboard);
             return rclcpp_action::GoalResponse::REJECT;
         }
+        // target_order (2026): sem repetidos e, com expected_tags, permutacao
+        // exata deles (tags nao vistas sao puladas depois, em assignSlots).
+        {
+            const std::vector<int> target(goal->target_order.begin(), goal->target_order.end());
+            const std::vector<int> expected(goal->expected_tags.begin(), goal->expected_tags.end());
+            const std::set<int> target_set(target.begin(), target.end());
+            if (target_set.size() != target.size()) {
+                RCLCPP_WARN(
+                    get_logger(), "[AMT1] goal rejeitado: target_order [%s] com id repetido.",
+                    joinInts(target).c_str());
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+            if (!target.empty() && !expected.empty() &&
+                target_set != std::set<int>(expected.begin(), expected.end()))
+            {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[AMT1] goal rejeitado: target_order [%s] nao e permutacao de expected_tags [%s].",
+                    joinInts(target).c_str(), joinInts(expected).c_str());
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+        }
         bool expected_active = false;
         if (!goal_active_.compare_exchange_strong(expected_active, true)) {
             RCLCPP_WARN(get_logger(), "[AMT1] goal rejeitado: ja ha uma ordenacao em curso.");
@@ -3469,9 +3492,11 @@ private:
         cancel_requested_.store(false);
         RCLCPP_INFO(
             get_logger(),
-            "[AMT1] goal aceito: ws=%s table_pose=%s expected=[%s] direction=%s max_onboard=%d observe_only=%s",
+            "[AMT1] goal aceito: ws=%s table_pose=%s expected=[%s] target=[%s] direction=%s max_onboard=%d observe_only=%s",
             goal->ws.c_str(), goal->table_pose.c_str(),
             joinInts(std::vector<int>(goal->expected_tags.begin(), goal->expected_tags.end())).c_str(),
+            goal->target_order.empty() ? "crescente" :
+            joinInts(std::vector<int>(goal->target_order.begin(), goal->target_order.end())).c_str(),
             dir.empty() ? "left_to_right" : dir.c_str(), goal->max_onboard,
             goal->observe_only ? "true" : "false");
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
@@ -3625,6 +3650,7 @@ private:
         gs.ws = normalizedWs(goal->ws);
         gs.table_pose = goal->table_pose;
         gs.expected = std::vector<int>(goal->expected_tags.begin(), goal->expected_tags.end());
+        gs.target_order = std::vector<int>(goal->target_order.begin(), goal->target_order.end());
         gs.left_to_right = toLower(goal->direction) != "right_to_left";
         gs.observe_only = goal->observe_only;
         arm_state_known_ = true;
@@ -3809,13 +3835,22 @@ private:
             tp.yaw = kv.second.yaw_ref;
             seen.push_back(tp);
         }
-        gs.assignment = amt1::assignSlots(seen, gs.expected, gs.left_to_right, slot_tie_eps_m_);
+        gs.assignment = amt1::assignSlots(
+            seen, gs.expected, gs.left_to_right, slot_tie_eps_m_, gs.target_order);
         RCLCPP_INFO(
             get_logger(),
             "[AMT1] vistas %zu tag(s): ordem [%s] alvo [%s] faltam [%s] ignoradas [%s]",
             gs.samples.size(), joinInts(gs.assignment.observed_order).c_str(),
             joinInts(gs.assignment.target_order).c_str(),
             joinInts(gs.assignment.missing_tags).c_str(), joinInts(gs.assignment.ignored_tags).c_str());
+        if (!gs.assignment.error.empty()) {
+            // target_order do goal nao bate com as tags esperadas: nao mover nada.
+            gs.fail_reason = "alvo_invalido";
+            gs.message = gs.assignment.error;
+            RCLCPP_ERROR(get_logger(), "[AMT1] %s", gs.message.c_str());
+            finish(gs);
+            return;
+        }
 
         if (!gs.assignment.missing_tags.empty()) {
             speak("Nao vi as tags " + joinInts(gs.assignment.missing_tags));
@@ -3893,9 +3928,11 @@ private:
         }
         if (!gs.assignment.target_order.empty()) {
             speak(
-                "Ordem atual: " + joinInts(gs.assignment.observed_order) + ". Vou ordenar de " +
-                std::to_string(gs.assignment.target_order.front()) + " a " +
-                std::to_string(gs.assignment.target_order.back()));
+                "Ordem atual: " + joinInts(gs.assignment.observed_order) + ". " +
+                (gs.target_order.empty() ?
+                "Vou ordenar de " + std::to_string(gs.assignment.target_order.front()) + " a " +
+                std::to_string(gs.assignment.target_order.back()) :
+                "Vou deixar na ordem " + joinInts(gs.assignment.target_order)));
         }
 
         // 4. Plano.

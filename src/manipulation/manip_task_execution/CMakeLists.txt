@@ -78,6 +78,16 @@ target_include_directories(surface_place_planner PUBLIC
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 target_compile_features(surface_place_planner PUBLIC cxx_std_17)
 
+# Place de precisao (2026-10-21): classificacao do stack_on (slot da mesa de
+# precisao / tag de referencia da pilha / cubo), giro de 90 graus mais
+# proximo, espiral de busca do encaixe, assentamento no slot, nivel da pilha
+# pela memoria e decisao de verificacao apos soltar. Sem ROS: gtest.
+add_library(place_precision src/place_precision.cpp)
+target_include_directories(place_precision PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+target_compile_features(place_precision PUBLIC cxx_std_17)
+
 # Executavel de conferencia: compara o solver C++ com o script Python do
 # operador numa grade de alvos (pega erro de transcricao).
 add_executable(custom_ik_check src/custom_ik_check.cpp)
@@ -124,7 +134,7 @@ ament_target_dependencies(
   "tf2_geometry_msgs"
 )
 target_link_libraries(mtc_place_action_node
-  container_state_store custom_ik reach_shift surface_place_planner)
+  container_state_store custom_ik reach_shift surface_place_planner place_precision)
 
 # AMT1 (2026-08-28): servidor /amt1_sort — observa a mesa de precision
 # placement, planeja (amt1_sort_planner) e executa picks/places como CLIENTE
@@ -157,6 +167,7 @@ install(
     reach_shift
     amt1_sort_planner
     surface_place_planner
+    place_precision
     custom_ik_check
     mtc_pick_action_node
     mtc_place_action_node
@@ -172,7 +183,7 @@ if(BUILD_TESTING)
   # Linters desligados: copyright/cpplint (fontes sem cabecalho de licenca) e
   # uncrustify (9 arquivos fora do padrao, entre eles os 3 nos em indent 4;
   # reformatar com 'ament_uncrustify --reformat' num commit so de formatacao
-  # e entao remover a linha). Os 4 gtests continuam rodando.
+  # e entao remover a linha). Os gtests continuam rodando.
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   set(ament_cmake_uncrustify_FOUND TRUE)
@@ -200,6 +211,11 @@ if(BUILD_TESTING)
   # temporario por teste (sem ROS).
   ament_add_gtest(test_container_state_store test/test_container_state_store.cpp TIMEOUT 60)
   target_link_libraries(test_container_state_store container_state_store)
+
+  # Place de precisao (2026-10-21): helpers puros do encaixe no slot e da
+  # pilha (classificacao, giro de 90, espiral, assentamento, nivel, decisao).
+  ament_add_gtest(test_place_precision test/test_place_precision.cpp TIMEOUT 60)
+  target_link_libraries(test_place_precision place_precision)
 endif()
 
 ament_package()

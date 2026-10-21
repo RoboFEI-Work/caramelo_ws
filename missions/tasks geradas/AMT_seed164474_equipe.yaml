@@ -1,0 +1,43 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: AMT — Advanced Manipulation Test | Duracao: 15 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = area de empilhamento: pilha sobre a tag de referencia, da BASE
+#                ao TOPO. A tag esta em stacking_areas.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Objetos sao identificados so pelo ID da AprilTag; IDs nao se repetem nesta
+# task. A cor dos ATTCs nao e' informada: identificar cor e' tarefa do robo.
+# AMT: o arranjo INICIAL da mesa de precisao nao e' informado (slots: null em
+# start_state). O robo deve ler as tags para descobrir em que slot cada objeto
+# esta e reorganizar conforme finish_state.
+task_id: AMT
+name: Advanced Manipulation Test
+duration_min: 15
+active_service_areas: [PP]
+objects:
+- {id: 1}
+- {id: 2}
+- {id: 3}
+- {id: 4}
+- {id: 5}
+- {id: 6}
+precision_tables:
+  PP:
+    slot_tags: [101, 102, 103, 104, 105, 106, 107]
+start_state:
+  PP:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: null
+finish_state:
+  PP:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: null}

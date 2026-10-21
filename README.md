@@ -176,6 +176,7 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | [docs/guia_missoes.md](docs/guia_missoes.md) | **Runbook de competição**: subir, rodar, formato do YAML (empilhar, container por cor, superfície livre, AMT1, nível baixo), arquivos por mapa, executor, problemas comuns. |
 | [docs/containers_por_cor.md](docs/containers_por_cor.md) | Manutenção do place em container sem tag: o que ajustar quando o pote, a cor, a garra ou a câmera mudam. |
 | [docs/place_superficie_livre.md](docs/place_superficie_livre.md) | Place em superfície livre: a câmera do punho escolhe onde soltar (rulebook 4.4); ainda sem teste no robô. |
+| [docs/place_precisao_e_pilha.md](docs/place_precisao_e_pilha.md) | Formato 2026: encaixe na cavidade da mesa de precisão (tags 101–107) e pilha de até 4 sobre a tag 200, com verificação após soltar; ainda sem teste no robô. |
 | [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | `dock_align_node`: alinhamento fino com rodas mecanum, `nudge_base`, guardas, calibração. |
 | [docs/service_areas_docking.md](docs/service_areas_docking.md) | Conceitos de service areas e docking, onde ficam os parâmetros, route graph. |
 | [docs/passo_a_passo_mapa_service_areas_docking_route.md](docs/passo_a_passo_mapa_service_areas_docking_route.md) | Arena nova por terminal: mapa → áreas → docking → rotas → testes. |

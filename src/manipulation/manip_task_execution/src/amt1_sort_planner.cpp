@@ -15,7 +15,8 @@ SlotAssignment assignSlots(
   const std::vector<TagPose> & seen,
   const std::vector<int> & expected,
   bool left_to_right,
-  double tie_eps)
+  double tie_eps,
+  const std::vector<int> & target_order)
 {
   SlotAssignment out;
 
@@ -72,6 +73,38 @@ SlotAssignment assignSlots(
   }
   out.target_order = out.observed_order;
   std::sort(out.target_order.begin(), out.target_order.end());
+  if (target_order.empty()) {
+    return out;
+  }
+
+  // Alvo explicito (2026): permutacao do universo (expected, ou todas as
+  // vistas sem expected), restrita as tags que ganharam slot.
+  const std::set<int> universe = expected_ids.empty() ?
+    std::set<int>(out.observed_order.begin(), out.observed_order.end()) : expected_ids;
+  std::set<int> requested;
+  for (const int id : target_order) {
+    if (!requested.insert(id).second) {
+      out.error = "target_order: id repetido " + std::to_string(id);
+      return out;
+    }
+    if (universe.count(id) == 0) {
+      out.error = "target_order: id " + std::to_string(id) + " nao esperado";
+      return out;
+    }
+  }
+  for (const int id : universe) {
+    if (requested.count(id) == 0) {
+      out.error = "target_order: falta o id " + std::to_string(id);
+      return out;
+    }
+  }
+  const std::set<int> with_slot(out.observed_order.begin(), out.observed_order.end());
+  out.target_order.clear();
+  for (const int id : target_order) {
+    if (with_slot.count(id) > 0) {
+      out.target_order.push_back(id);
+    }
+  }
   return out;
 }
 

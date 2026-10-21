@@ -23,8 +23,10 @@ namespace manip_bt
 // esta folha so manda o goal, acompanha o feedback e traduz o resultado.
 //
 // Portas: ws, table_pose, expected_tags (string "1,2,3" -> int32[]),
-// direction (left_to_right | right_to_left), max_onboard (int, 0..3; 0 =
-// todos os containers vazios), timeout (prazo total, s, default 1800) e
+// target_order (string "3,1,2" -> int32[]; alvo explicito esquerda ->
+// direita do formato 2026, vazio = ordem crescente de id), direction
+// (left_to_right | right_to_left), max_onboard (int, 0..3; 0 = todos os
+// containers vazios), timeout (prazo total, s, default 1800) e
 // stage_timeout (silencio maximo de feedback, s, default 300).
 // server_wait_timeout vem do blackboard (mesmo padrao do PickTagBT).
 //

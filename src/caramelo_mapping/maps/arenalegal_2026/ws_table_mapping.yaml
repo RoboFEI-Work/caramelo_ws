@@ -13,6 +13,10 @@ ws_to_table_pose:
   WS_6: Mesa15
   SH_1: MesaSh
   PP_1: Mesa10
+  # 2026-10-21: ST = area de empilhamento do formato 2026 (task nomeia "ST",
+  # sem sufixo; planner e executor resolvem por prefixo -> ST_1). Altura a
+  # conferir na arena.
+  ST_1: Mesa15
 ws_to_dock_id:
   WS_1: WS1
   WS_2: WS2
@@ -22,6 +26,9 @@ ws_to_dock_id:
   WS_6: WS6
   SH_1: SH1
   PP_1: PP1
+  # gravar a pose do dock ST1 em service_areas.yaml (e docking.yaml) antes de
+  # usar: sem ela o executor aborta com "estacao nao existe no docking.yaml".
+  ST_1: ST1
 # 2026-10-19 (superficie livre): lados da mesa encostados numa PAREDE, vistos
 # pelo ROBO docado de frente para a mesa (rulebook 4.4: a zona de manipulacao
 # comeca a 10 cm da parede). O executor manda isto no goal do place
