@@ -100,6 +100,9 @@ rviz2 -d ~/caramelo_ws/src/caramelo_localization/rviz/global_localization.rviz
 # T3: RViz da MANIPULACAO (braco em tempo real + PAINEL DA CAMERA embutido)
 rviz2 -d ~/caramelo_ws/src/manipulation/manip_bringup/config/manip_moveit_rasp.rviz
 #   (so a camera: ros2 run rqt_image_view rqt_image_view /camera/camera/color/image_raw)
+#   (camera + o que o robo ENTENDEU — tags, containers, mapa da mesa — em OUTRO
+#    terminal, ou use_vision_viewer:=true no launch; ver §6.1:
+#    ros2 run rqt_image_view rqt_image_view /manip/vision_debug/image)
 
 # T4: enviar a task (mostra o plano e pergunta s/N; Ctrl-C cancela limpo)
 cd ~/caramelo_ws && ros2 run caramelo_navigation run_mission \
@@ -799,6 +802,37 @@ Parâmetros do `place_action_server`: `slot_memory_enabled` (true) e `slot_memor
   manuais extras. E após mexer no bashrc: FECHAR o terminal e abrir outro
   (`exec bash` não limpa — o path antigo fica herdado nas variáveis).
 
+### 6.1 Ver o que a câmera enxerga
+
+A imagem crua (`/camera/camera/color/image_raw`) não mostra nada do que a percepção
+entendeu. O nó `vision_debug` (sobe por padrão no `manip_stack`, `use_vision_debug`)
+publica a mesma imagem **anotada** em `/manip/vision_debug/image` — e não gasta nada
+enquanto ninguém olha (só processa com um espectador, até 10 Hz).
+
+```bash
+# num terminal, com o stack no ar:
+ros2 run rqt_image_view rqt_image_view /manip/vision_debug/image
+# ou já aberto pelo launch:
+ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=<mapa> use_vision_viewer:=true
+```
+
+O que aparece por cima da imagem:
+
+| Desenho | Significado |
+|---|---|
+| Contorno **verde** com ponto no centro, `tag_<id>` e `m=<margem>` | AprilTag vista agora (`/detections`); a margem de decisão maior = leitura mais firme. |
+| Contorno **amarelo** | Tag lida com bit corrigido (`hamming > 0`) — menos confiável. |
+| Caixa **vermelha** / **azul** com a distância | Container por cor (`ct_vermelho` / `ct_azul`): borda nominal 170 × 105 mm (traço grosso) e fundo 70 mm abaixo (traço fino). |
+| Tinta **verde** / **vermelha** / **cinza** no tampo | Mapa da mesa (`/manip/workstation_surface/grid`) projetado de volta: tampo livre / objeto / fora da mesa. Sem tinta = desconhecido. |
+| Barra no topo | `PICK` / `PLACE` / `observando mesa`, ids das tags vistas, containers e distância, idade do mapa (e quantas células livre/objeto/fora), última frase falada, fps real e tempo de processamento. `tf=latest` = TF da câmera sem o stamp da imagem (braço se movendo). |
+
+Limitações (por desenho, não por defeito): tags só aparecem **enquanto vistas**
+(0,5 s de idade); containers e mapa só existem **durante o place** (o
+`container_detector` publica TF só com `/manip/place_active` e só enquanto vê o pote,
+1 s de idade; o mapa é latched e fica desenhado até 10 s após a última fusão). Fora
+do place a imagem mostra só a câmera, as tags e a barra. Ajustes ao vivo:
+`ros2 param set /vision_debug grid_alpha 0.5` (ou `rate_hz`, `grid_max_age_s`...).
+
 ## 7. Histórico de mudanças
 
 Datas que estavam nos títulos das seções (a cronologia completa fica no git):
@@ -818,3 +852,5 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
 - **2026-10-19** — place em superfície livre (§3.5); memória de slots com TTL 600 s e
   dedup câmera × memória (§5.3); `nudge_base` não se movia (piso do ESC) — correção no
   `dock_align_node` (`docs/docking_alinhamento_holonomico.md`).
+- **2026-10-21** — visão de depuração `/manip/vision_debug/image` (tags, containers, mapa
+  da mesa e status sobre a imagem da câmera; §6.1).

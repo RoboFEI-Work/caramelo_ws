@@ -166,6 +166,7 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | `ros2 run manip_task_execution custom_ik_check [x y z [modo] [free] \| shift x y z [lift]]` | Confere a IK própria e a tabela da fila de alcance sem robô. |
 | `src/manipulation/manip_bt/test/run_reach_queue_scenario.sh`, `run_amt1_scenario.sh` | Bancada sem robô (`ROS_DOMAIN_ID=99`) com os fakes `fake_nav_actions.py`, `fake_pick_place.py`, `fake_amt1_table.py`, `fake_amt1_sort.py`. |
 | `ros2 run manip_bringup container_detector_node.py --image foto.png --out overlay.png` | Detector de containers offline (idem `workstation_surface_node.py --image`). Fotos em `docs/imagens/containers/`. |
+| `ros2 run rqt_image_view rqt_image_view /manip/vision_debug/image` | Câmera do punho **anotada** ao vivo (tags, containers por cor, mapa da mesa, estado pick/place, fala) — nó `vision_debug` do `manip_stack`, custo zero sem espectador; `use_vision_viewer:=true` no launch abre direto. [docs/guia_missoes.md §6.1](docs/guia_missoes.md). |
 | `ros2 run caramelo_navigation generate_caramelo_omni_lattice` | Regenera as primitivas do SmacLattice (`config/lattice/`). |
 
 ## 7. Documentação

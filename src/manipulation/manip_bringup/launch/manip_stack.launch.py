@@ -48,6 +48,8 @@ def generate_launch_description():
     container_detector_always_on = LaunchConfiguration("container_detector_always_on")
     use_surface_detector = LaunchConfiguration("use_surface_detector")
     surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
+    use_vision_debug = LaunchConfiguration("use_vision_debug")
+    use_vision_viewer = LaunchConfiguration("use_vision_viewer")
 
     manip_bringup_share = get_package_share_directory("manip_bringup")
     moveit_config_share = get_package_share_directory("manip_moveit_config")
@@ -109,6 +111,20 @@ def generate_launch_description():
             "surface_detector_always_on",
             default_value="false",
             description="Mapa da mesa processa sempre (calibracao/bag), nao so na observacao",
+        ),
+        # --- Visao de depuracao ---
+        DeclareLaunchArgument(
+            "use_vision_debug",
+            default_value="true",
+            description=(
+                "Imagem da camera anotada (tags, containers, mapa da mesa, status) em "
+                "/manip/vision_debug/image (vision_debug_node.py); custo zero sem espectador."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_vision_viewer",
+            default_value="false",
+            description="Abre o rqt_image_view ja em /manip/vision_debug/image",
         ),
         DeclareLaunchArgument(
             "place_surface_planner",
@@ -581,6 +597,33 @@ def generate_launch_description():
         ],
     )
 
+    # --- Visao de depuracao ---
+    # Uma imagem so' com tudo que a percepcao entendeu da camera do punho:
+    # tags (/detections), containers por cor (TF ct_*), mapa da mesa (grade
+    # projetada de volta) e barra de status. So assina a imagem enquanto
+    # alguem assina /manip/vision_debug/image (sem espectador: custo zero e
+    # nao conta como "viewer" para o perception_gate); com espectador, ate
+    # 10 Hz. nice +15 como os outros nos de imagem.
+    vision_debug = Node(
+        package="manip_bringup",
+        executable="vision_debug_node.py",
+        name="vision_debug",
+        output="screen",
+        prefix="nice -n 15",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_vision_debug),
+    )
+
+    # Espectador pronto (opcional): rqt_image_view ja aberto no topico anotado.
+    vision_viewer = Node(
+        package="rqt_image_view",
+        executable="rqt_image_view",
+        output="screen",
+        condition=IfCondition(use_vision_viewer),
+        arguments=["/manip/vision_debug/image"],
+    )
+
     # --- Gate da percepcao ---
     # A camera so streama durante pick/place. Desacoplado: sem este no, tudo
     # se comporta como antes (camera sempre ligada). Ver o docstring do script.
@@ -739,6 +782,8 @@ def generate_launch_description():
         apriltag,
         container_detector,
         workstation_surface,
+        vision_debug,
+        vision_viewer,
         speech,
         pick_telemetry,
         rviz,

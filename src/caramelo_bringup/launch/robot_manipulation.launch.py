@@ -124,6 +124,19 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "use_vision_debug",
+            default_value="true",
+            description=(
+                "Imagem da camera anotada (tags, containers, mapa da mesa) em "
+                "/manip/vision_debug/image; custo zero sem espectador"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_vision_viewer",
+            default_value="false",
+            description="Abre o rqt_image_view ja em /manip/vision_debug/image",
+        ),
+        DeclareLaunchArgument(
             "use_gui",
             default_value="false",
             description="GUI fora do escopo; abrir manualmente (sem efeito por ora)",
@@ -226,6 +239,8 @@ def generate_launch_description():
                 "container_detector_always_on": LaunchConfiguration("container_detector_always_on"),
                 "use_rviz_manip": use_rviz_manip,
                 "use_commander": LaunchConfiguration("use_commander"),
+                "use_vision_debug": LaunchConfiguration("use_vision_debug"),
+                "use_vision_viewer": LaunchConfiguration("use_vision_viewer"),
                 "camera_profile": LaunchConfiguration("camera_profile"),
                 "verify_grasp_effort": LaunchConfiguration("verify_grasp_effort"),
                 "max_pose_error_m": LaunchConfiguration("max_pose_error_m"),

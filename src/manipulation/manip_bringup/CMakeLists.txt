@@ -18,6 +18,7 @@ install(
     scripts/perception_gate_node.py
     scripts/container_detector_node.py
     scripts/workstation_surface_node.py
+    scripts/vision_debug_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -28,6 +29,9 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   # Mapa da mesa: segmentacao + projecao + fusao, sem ROS.
   ament_add_pytest_test(test_workstation_surface test/test_workstation_surface.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Visao de depuracao: projecao, pintura da grade, tags, barra, gate de idade, sem ROS.
+  ament_add_pytest_test(test_vision_debug test/test_vision_debug.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
