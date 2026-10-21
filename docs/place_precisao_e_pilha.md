@@ -10,7 +10,7 @@ No formato 2026 da competição, as tags **101 a 107** e **200** não são cubos
 
 | Tag | Onde está | O que o robô faz |
 |---|---|---|
-| 101–107 | No **fundo** de cada cavidade da mesa de *precision placement* (cavidade com a forma do cubo, ~2 mm de folga, como brinquedo de encaixe) | **Encaixa** o cubo: desce na vertical, solta, olha a tag do próprio cubo. Assentado em z = sucesso; apoiado na **borda** = re-pega (TCP nunca abaixo da borda) e tenta de novo com busca em espiral + correção pelo erro medido; meio dentro / não visto = não desce, deixa o cubo, avisa e recolhe o braço |
+| 101–107 | No **fundo** de cada cavidade da mesa de *precision placement* (cavidade com a forma do cubo, ~2 mm de folga e só **3–6 mm de profundidade**, como brinquedo de encaixe) | **Encaixa** o cubo: desce na vertical, solta, olha a tag do próprio cubo. Assentado em z = sucesso; apoiado na **borda** = re-pega (TCP nunca abaixo da borda) e tenta de novo com busca em espiral + correção pelo erro medido; meio dentro / não visto = não desce, deixa o cubo, avisa e recolhe o braço |
 | 200 | No **tampo** da zona de empilhamento | **Primeiro cubo da pilha**: solta sobre a marca com folga (compensando a inclinação da ferramenta), confere pela tag do cubo e corrige uma vez se saiu do lugar. Marca não vista / fora de alcance: o cubo volta ao container de bordo — **nunca** cai na mesa comum |
 | tag de um cubo (ex. `tag_4`) | Topo de um cubo já na mesa | **Pilha** como antes, mais: alinhamento de 90°, base pela memória quando a câmera não a vê, nível da pilha, verificação após soltar com uma correção |
 
@@ -53,8 +53,15 @@ carregado (convenção do pick), então o TCP de soltura é
 z_tcp = z_tag + slot_cavity_depth_m + slot_drop_clearance_m + cube_height_m
 ```
 
-(fundo do cubo `slot_drop_clearance_m` = 4 mm acima do tampo). Se (x, y) e yaw estiverem
+(fundo do cubo `slot_drop_clearance_m` = 3 mm acima do tampo). Se (x, y) e yaw estiverem
 alinhados, o cubo cai dentro ao abrir a garra.
+
+A cavidade é **rasa** (operador, 2026-10-21: entre 3 e 6 mm, nunca confirmada; default 5 mm).
+Logo um cubo encaixado e um apoiado na borda diferem em z só pela cavidade. A tolerância de
+assentamento é cortada para **metade da cavidade** (`effectiveSeatTolerance`, ≈ 2,5 mm), para as
+faixas "encaixado" e "na borda" não se sobreporem, e a borda só é decidida com **duas leituras**
+(uma leitura ruidosa não dispara re-pega). Isso está no limite do que a tag resolve: ver a
+calibração em §6.
 
 Fluxo (braço em `pegar_obj` com o cubo):
 
@@ -167,11 +174,11 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 |---|---|---|---|
 | `slot_tag_ids` | [101..107] | — | ids que viram modo SLOT |
 | `stack_reference_tag_ids` | [200] | — | ids que viram modo REFERÊNCIA |
-| `slot_cavity_depth_m` | 0.041 | **sim** | fundo da cavidade (tag) → tampo |
-| `slot_drop_clearance_m` | 0.004 | sim | fundo do cubo acima do tampo ao soltar |
+| `slot_cavity_depth_m` | 0.005 | **sim** | fundo da cavidade (tag) → tampo (3–6 mm na mesa real) |
+| `slot_drop_clearance_m` | 0.003 | sim | fundo do cubo acima do tampo ao soltar |
 | `slot_pre_lift_m` | 0.02 | — | pré-pose acima da soltura (a 0,36 m, 0° só resolve a pré-pose com lift ≤ 0,02) |
 | `slot_tilt_ladder_deg` | [0, 15] | — | 0 preferido na descida final; a pré-pose pode usar 15 |
-| `slot_seat_tolerance_m` | 0.008 | sim | tolerância em z do "encaixado" e do "na borda" |
+| `slot_seat_tolerance_m` | 0.0025 | sim | tolerância em z do "encaixado" e do "na borda"; nunca passa de cavidade/2 |
 | `slot_xy_tolerance_m` | 0.008 | sim | só diagnóstico: aviso de discrepância de FK entre as duas leituras |
 | `slot_reobserve_extra_z_m` | 0.04 | sim | segunda leitura da tag do cubo de mais alto |
 | `slot_search_step_m` / `slot_search_radius_m` | 0.003 / 0.009 | sim | espiral |
@@ -183,7 +190,7 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `stack_align_yaw` | true | — | alinhamento de 90° pelo punho atual |
 | `stack_memory_fallback` | true | — | base pela memória |
 | `stack_max_level` | 4 | — | só aviso |
-| `precision_verify_timeout_ms` | 2500 | sim | espera pela tag nas leituras de verificação/memória |
+| `precision_verify_timeout_ms` | 4000 | sim | espera pela tag nas leituras de verificação/memória (mais amostras na mediana) |
 
 Parâmetros existentes reusados sem mudança: `stack_place_z_offset` (0.05), `stack_pre_lift_m`,
 `stack_tilt_ladder_deg`, `stack_tag_samples/dwell/max_spread`, `stack_settle_ms`,
@@ -196,15 +203,17 @@ Parâmetros existentes reusados sem mudança: `stack_place_z_offset` (0.05), `st
    fundo "visto": a profundidade efetiva é tampo − topo do adesivo.
 2. Com o robô docado na mesa de precisão e um cubo **encaixado à mão** num slot, rode um
    `ros2 topic echo /tf` (ou o `vision_debug`) e anote `z` de `tag_10x` (slot vizinho vazio) e da
-   tag do cubo: a diferença deve ser `cube_height_m` (≈ 42 mm). Se der 42 ± 3 mm, o
-   `slot_seat_tolerance_m` de 8 mm está folgado; a diferença entre "encaixado" e "apoiado" é a
-   cavidade inteira (41 mm), então há margem.
+   tag do cubo: a diferença deve ser `cube_height_m` (≈ 42 mm). Repita a leitura umas 10
+   vezes: se a dispersão passar de ± 2 mm, a leitura em z não separa encaixado de apoiado
+   (a diferença entre os dois é a cavidade, ~5 mm). Nesse caso suba `stack_tag_samples`
+   (mais detecções na mediana) ou baixe a pose de verificação (`place_pre_ik_tcp2_z`).
 3. Repita com o cubo **apoiado por cima** (de propósito, desalinhado): a diferença deve subir
-   para ≈ 42 + 41 mm. Isso confirma `slot_cavity_depth_m`.
+   para ≈ 42 + cavidade (≈ 47 mm). O valor medido vai para `slot_cavity_depth_m`;
+   `slot_seat_tolerance_m` fica em metade disso ou menos.
 4. `slot_xy_tolerance_m` não decide nada: é o limiar do aviso "encaixado em z mas dxy=... entre
    as duas leituras". Anote o dxy típico de cubos encaixados: ele é o erro de FK entre o
    pré-ponto TCP2 e a pose de verificação, útil para calibrar a FK, não o encaixe.
-5. `slot_drop_clearance_m`: comece em 4 mm; se o cubo bater no tampo antes de abrir (erro FK na
+5. `slot_drop_clearance_m`: comece em 3 mm; se o cubo bater no tampo antes de abrir (erro FK na
    soltura subindo, log "FK na soltura"), suba para 6–8 mm; se cair torto por altura, desça. A
    compensação da inclinação já entra sozinha (log "compensacao de inclinacao +x mm").
 6. Primeiro teste com `slot_max_attempts: 2` para ver o ciclo re-pega/solta acontecer uma vez e
@@ -268,15 +277,17 @@ Soltar inclinado desce a quina do cubo `(w/2)·sin t − h·(1−cos t)` a mais 
 (`tiltDropZCompensation`) para manter a folga nominal (5 e 4 mm); na pilha de cubos (offset
 50 mm = 42 + 8) a folga de 8 mm já cobre 30° (sobram ~3 mm) e nada mudou.
 
-Slot (TCP = tag + 0,041 + 0,004 + 0,042, ≈ tampo + 0,046): a y = 0,36 o alvo resolve a 0°, mas a
+Slot (TCP = tag + 0,005 + 0,003 + 0,042, ≈ tampo + 0,045): a y = 0,36 o alvo resolve a 0°, mas a
 pré-pose a 0° só com lift ≤ 0,02 (0,03 e 0,05 não resolvem a 0°; a y ≤ 0,34 resolvem). Por isso
 `slot_pre_lift_m` = 0,02 e a pré-pose pode ficar em 15° com a descida final a 0°
 (`solveDropLadder`). Com a compensação de 15° (+4 mm) o alvo continua resolvendo a 0°.
 
 ## 9. Limitações (sem validação no robô)
 
-- Não testado com a mesa de precisão real: `slot_cavity_depth_m` e as tolerâncias são chute
-  informado (§6).
+- Não testado com a mesa de precisão real: `slot_cavity_depth_m` = 5 mm é o meio da faixa que
+  o operador informou (3–6 mm); as tolerâncias são chute informado (§6). Com cavidade tão rasa
+  a decisão encaixado/apoiado pela altura da tag fica no limite do ruído da câmera: a borda só
+  dispara re-pega com duas leituras concordantes.
 - A tag do cubo precisa estar na face de **cima** (a verificação lê o topo). Cubo que cai de
   lado ou tombado dentro da cavidade dá "meio dentro / tombado" ou "leitura inconsistente" →
   o nó **não** re-pega (não desce abaixo da borda); deixa o cubo e falha com

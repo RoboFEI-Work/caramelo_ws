@@ -146,10 +146,10 @@ public:
             "stack_reference_tag_ids", std::vector<int64_t>{200});
         // Profundidade da cavidade: fundo (plano da tag do slot) ate o tampo.
         // Calibrar no robo (medir com paquimetro).
-        slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.041);
+        slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.005);
         // Folga entre o fundo do cubo e o TAMPO na hora de soltar: o cubo cai
         // dentro se estiver alinhado. Calibrar no robo.
-        slot_drop_clearance_m_ = this->declare_parameter<double>("slot_drop_clearance_m", 0.004);
+        slot_drop_clearance_m_ = this->declare_parameter<double>("slot_drop_clearance_m", 0.003);
         // Pre-pose acima da soltura. 0,02 (igual ao stack_pre_lift_m real):
         // na distancia de docking de hoje (~0,36 m) a pre-pose a 0 graus so'
         // resolve com lift <= 2 cm (custom_ik_check) - com 5 cm a escada caia
@@ -167,7 +167,7 @@ public:
         // divergem 1-2 cm por FK; um cubo assentado nao pode estar fora da
         // cavidade) e so' entra no log como diagnostico quando passa de
         // slot_xy_tolerance_m. Calibrar no robo.
-        slot_seat_tolerance_m_ = this->declare_parameter<double>("slot_seat_tolerance_m", 0.008);
+        slot_seat_tolerance_m_ = this->declare_parameter<double>("slot_seat_tolerance_m", 0.0025);
         slot_xy_tolerance_m_ = this->declare_parameter<double>("slot_xy_tolerance_m", 0.008);
         // Tag do cubo nao vista / leitura intermediaria: segunda leitura de
         // mais alto (camera mais longe dos dedos abertos). Calibrar no robo.
@@ -209,7 +209,7 @@ public:
         // Espera pela tag nas leituras de verificacao/memoria (ms): menor que
         // os 5 s da deteccao inicial. Calibrar no robo.
         precision_verify_timeout_ms_ =
-            this->declare_parameter<int>("precision_verify_timeout_ms", 2500);
+            this->declare_parameter<int>("precision_verify_timeout_ms", 4000);
         // 2026-08-25 — CONTAINER POR COR na MESA (NAO confundir com os potes a
         // bordo container1..3 / container_state_store). PlaceTag.goal.
         // container_color = RED|BLUE. O container_detector publica os frames
@@ -660,11 +660,11 @@ private:
     // verifyAndCorrectStackedCube. Defaults = os do declare_parameter.
     std::vector<int64_t> slot_tag_ids_;
     std::vector<int64_t> stack_reference_tag_ids_;
-    double slot_cavity_depth_m_{0.041};
+    double slot_cavity_depth_m_{0.005};
     double slot_drop_clearance_m_{0.004};
     double slot_pre_lift_m_{0.02};
     std::vector<double> slot_tilt_ladder_deg_{0.0, 15.0};
-    double slot_seat_tolerance_m_{0.008};
+    double slot_seat_tolerance_m_{0.0025};
     double slot_xy_tolerance_m_{0.008};
     double slot_reobserve_extra_z_m_{0.04};
     /// Leituras da tag do cubo por soltura no slot (1 + uma re-observacao).
@@ -4624,7 +4624,11 @@ private:
             slim.z_slot_tag = slot_p.z();
             slim.cube_height_m = cube_height_m_;
             slim.cavity_depth_m = slot_cavity_depth_m_;
-            slim.seat_tol_m = slot_seat_tolerance_m_;
+            // Nunca mais que metade da cavidade (3-6 mm na mesa real): as
+            // faixas encaixado/borda nao podem se sobrepor.
+            const double seat_tol = manip_task_execution::effectiveSeatTolerance(
+                slot_seat_tolerance_m_, slot_cavity_depth_m_);
+            slim.seat_tol_m = seat_tol;
             slim.attempts_done = attempt + 1;
             slim.max_attempts = max_attempts;
             slim.max_observations = kSlotMaxObservations;
@@ -4643,13 +4647,12 @@ private:
                 so.seen = obs.seen;
                 if (obs.seen) {
                     const SeatState seat = manip_task_execution::slotSeatState(
-                        obs.p.z(), slot_p.z(), cube_height_m_, slot_cavity_depth_m_,
-                        slot_seat_tolerance_m_);
+                        obs.p.z(), slot_p.z(), cube_height_m_, slot_cavity_depth_m_, seat_tol);
                     err_xy = std::hypot(obs.p.x() - slot_p.x(), obs.p.y() - slot_p.y());
                     so.z_cube_tag = obs.p.z();
                     so.err_xy_m = err_xy;
                     const bool on_rim = seat == SeatState::kUnseated &&
-                        obs.p.z() >= z_rim - slot_seat_tolerance_m_;
+                        obs.p.z() >= z_rim - seat_tol;
                     RCLCPP_INFO(
                         get_logger(),
                         "[SLOT] cubo %s visto em [%.4f %.4f %.4f] yaw=%.3f (leitura %d/%d): dxy=%.1f mm, "
@@ -4661,7 +4664,7 @@ private:
                         on_rim ? "APOIADO NA BORDA" :
                         seat == SeatState::kUnseated ? "MEIO DENTRO / TOMBADO" :
                         "leitura inconsistente (abaixo do fundo)",
-                        slot_seat_tolerance_m_ * 1000.0);
+                        seat_tol * 1000.0);
                 } else {
                     RCLCPP_WARN(
                         get_logger(),

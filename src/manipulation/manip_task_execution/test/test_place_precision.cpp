@@ -15,6 +15,7 @@
 using manip_task_execution::classifyStackTarget;
 using manip_task_execution::decidePlacement;
 using manip_task_execution::decideSlotAction;
+using manip_task_execution::effectiveSeatTolerance;
 using manip_task_execution::expectedPileTopZ;
 using manip_task_execution::findStackMemory;
 using manip_task_execution::isSeatedInSlot;
@@ -174,9 +175,15 @@ TEST(PlacePrecision, SeatedInSlotWithTolerance)
 {
   const double z_slot = 0.010;   // fundo da cavidade
   const double h = 0.042;
-  const double d = 0.041;
-  const double tol = 0.008;
+  const double d = 0.005;        // cavidade rasa da mesa de precisao (3-6 mm)
+  const double tol = 0.0025;     // = cavidade/2
   const double seated = z_slot + h;  // 0.052
+  // Tolerancia pedida maior que cavidade/2 e' cortada: assentado + 4 mm ja e' borda.
+  EXPECT_NEAR(effectiveSeatTolerance(0.008, d), 0.0025, kTol);
+  EXPECT_NEAR(effectiveSeatTolerance(0.001, d), 0.001, kTol);
+  EXPECT_NEAR(effectiveSeatTolerance(-1.0, d), 0.0, kTol);
+  EXPECT_FALSE(isSeatedInSlot(seated + 0.004, z_slot, h, d, 0.008));
+  EXPECT_TRUE(isSeatedInSlot(seated + 0.002, z_slot, h, d, 0.008));
   EXPECT_TRUE(isSeatedInSlot(seated, z_slot, h, d, tol));
   EXPECT_TRUE(isSeatedInSlot(seated + tol - 1e-6, z_slot, h, d, tol));
   EXPECT_TRUE(isSeatedInSlot(seated + tol, z_slot, h, d, tol));
@@ -189,7 +196,10 @@ TEST(PlacePrecision, SeatedInSlotWithTolerance)
   // Apoiado por cima: ~cavidade mais alto.
   EXPECT_FALSE(isSeatedInSlot(seated + d, z_slot, h, d, tol));
   EXPECT_EQ(slotSeatState(seated + d, z_slot, h, d, tol), SeatState::kUnseated);
-  EXPECT_EQ(slotSeatState(seated + d / 2.0, z_slot, h, d, tol), SeatState::kUnseated);
+  // Metade da cavidade e exatamente a tolerancia (limite inclusivo = assentado);
+  // um fio acima ja e borda.
+  EXPECT_EQ(slotSeatState(seated + d / 2.0, z_slot, h, d, tol), SeatState::kSeated);
+  EXPECT_EQ(slotSeatState(seated + d / 2.0 + 1e-6, z_slot, h, d, tol), SeatState::kUnseated);
   EXPECT_EQ(slotSeatState(seated, z_slot, h, d, tol), SeatState::kSeated);
   EXPECT_EQ(slotSeatState(seated - 0.06, z_slot, h, d, tol), SeatState::kInconsistent);
   // Tolerancia negativa vale 0.
@@ -201,9 +211,9 @@ TEST(PlacePrecision, SlotRimAndRegraspFloor)
 {
   const double z_slot = 0.010;
   const double h = 0.042;
-  const double d = 0.041;
+  const double d = 0.005;
   // Borda = fundo + cavidade + cubo: onde a tag de um cubo apoiado fica.
-  EXPECT_NEAR(slotRimCubeTagZ(z_slot, h, d), 0.093, kTol);
+  EXPECT_NEAR(slotRimCubeTagZ(z_slot, h, d), 0.057, kTol);
   // Cavidade negativa vale 0.
   EXPECT_NEAR(slotRimCubeTagZ(z_slot, h, -1.0), 0.052, kTol);
   // Re-pega: o z visto, mas nunca abaixo da borda (dedos no tampo).
@@ -240,13 +250,13 @@ TEST(PlacePrecision, TiltDropZCompensation)
 namespace
 {
 
-SlotLimits slotLimits(int attempts_done, int observations_done)
+SlotLimits slotLimits(int attempts_done, int observations_done, double cavity = 0.005)
 {
   SlotLimits lim;
   lim.z_slot_tag = 0.010;
   lim.cube_height_m = 0.042;
-  lim.cavity_depth_m = 0.041;
-  lim.seat_tol_m = 0.008;
+  lim.cavity_depth_m = cavity;
+  lim.seat_tol_m = 0.008;   // cortada para cavidade/2 (2,5 mm com 5 mm)
   lim.attempts_done = attempts_done;
   lim.max_attempts = 6;
   lim.observations_done = observations_done;
@@ -271,35 +281,39 @@ TEST(PlacePrecision, DecideSlotActionSeatedIgnoresXy)
   // Assentado: aceita com qualquer xy (duas leituras de poses diferentes).
   EXPECT_EQ(decideSlotAction(seenAt(seated, 0.0), slotLimits(1, 1)), SlotAction::kAccept);
   EXPECT_EQ(decideSlotAction(seenAt(seated, 0.015), slotLimits(1, 1)), SlotAction::kAccept);
-  EXPECT_EQ(decideSlotAction(seenAt(seated + 0.008, 0.03), slotLimits(1, 1)), SlotAction::kAccept);
-  EXPECT_EQ(decideSlotAction(seenAt(seated - 0.02, 0.0), slotLimits(1, 1)), SlotAction::kAccept);
+  EXPECT_EQ(decideSlotAction(seenAt(seated + 0.002, 0.03), slotLimits(1, 1)), SlotAction::kAccept);
+  EXPECT_EQ(decideSlotAction(seenAt(seated - 0.004, 0.0), slotLimits(1, 1)), SlotAction::kAccept);
   // Mesmo sem orcamento nenhum: assentado e' assentado.
   EXPECT_EQ(decideSlotAction(seenAt(seated, 0.02), slotLimits(6, 2)), SlotAction::kAccept);
 }
 
 TEST(PlacePrecision, DecideSlotActionRimRegraspOnlyWithBudget)
 {
-  const double rim = slotRimCubeTagZ(0.010, 0.042, 0.041);  // 0.093
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(1, 1)), SlotAction::kRegrasp);
-  EXPECT_EQ(decideSlotAction(seenAt(rim + 0.005), slotLimits(1, 1)), SlotAction::kRegrasp);
-  // Leitura ate' tol abaixo da borda ainda conta como borda.
-  EXPECT_EQ(decideSlotAction(seenAt(rim - 0.008), slotLimits(1, 1)), SlotAction::kRegrasp);
+  const double rim = slotRimCubeTagZ(0.010, 0.042, 0.005);  // 0.057
+  // Borda na 1a leitura: confirma com a 2a antes de re-pegar (cavidade rasa).
+  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(1, 1)), SlotAction::kReobserve);
+  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(1, 2)), SlotAction::kRegrasp);
+  EXPECT_EQ(decideSlotAction(seenAt(rim + 0.005), slotLimits(1, 2)), SlotAction::kRegrasp);
+  // Leitura ate' tol (2,5 mm) abaixo da borda ainda conta como borda.
+  EXPECT_EQ(decideSlotAction(seenAt(rim - 0.002), slotLimits(1, 2)), SlotAction::kRegrasp);
   // Ultima soltura: nao re-pega, deixa.
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(6, 1)), SlotAction::kLeave);
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(5, 1)), SlotAction::kRegrasp);
+  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(6, 2)), SlotAction::kLeave);
+  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(5, 2)), SlotAction::kRegrasp);
 }
 
 TEST(PlacePrecision, DecideSlotActionIntermediateNeverRegrasps)
 {
+  // Cavidade funda (41 mm) tem faixa intermediaria entre assentado + tol e
+  // borda - tol (com 5 mm as duas faixas se encostam e nao ha meio-termo).
   const double seated = 0.052;
   const double rim = 0.093;
-  // Meio dentro / tombado: entre assentado + tol e borda - tol.
+  const double deep = 0.041;
   for (const double z : {seated + 0.009, seated + 0.020, rim - 0.009, (seated + rim) / 2.0}) {
-    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 1)), SlotAction::kReobserve) << z;
-    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 2)), SlotAction::kLeave) << z;
+    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 1, deep)), SlotAction::kReobserve) << z;
+    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 2, deep)), SlotAction::kLeave) << z;
     // Com orcamento de solturas sobrando continua sem re-pegar.
-    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 1)), SlotAction::kRegrasp) << z;
-    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 2)), SlotAction::kRegrasp) << z;
+    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 1, deep)), SlotAction::kRegrasp) << z;
+    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 2, deep)), SlotAction::kRegrasp) << z;
   }
   // Inconsistente (abaixo do fundo + cubo): idem.
   EXPECT_EQ(decideSlotAction(seenAt(seated - 0.05), slotLimits(1, 1)), SlotAction::kReobserve);

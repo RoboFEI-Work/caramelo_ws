@@ -104,12 +104,18 @@ double seatedCubeTagZ(double z_slot_tag, double cube_height_m)
   return z_slot_tag + cube_height_m;
 }
 
+double effectiveSeatTolerance(double tol_m, double cavity_depth_m)
+{
+  const double half_cavity = 0.5 * std::max(0.0, cavity_depth_m);
+  return std::min(std::max(0.0, tol_m), half_cavity);
+}
+
 SeatState slotSeatState(
   double z_cube_tag, double z_slot_tag, double cube_height_m,
   double cavity_depth_m, double tol_m)
 {
   const double expected = seatedCubeTagZ(z_slot_tag, cube_height_m);
-  const double tol = std::max(0.0, tol_m);
+  const double tol = effectiveSeatTolerance(tol_m, cavity_depth_m);
   if (z_cube_tag > expected + tol) {
     return SeatState::kUnseated;
   }
@@ -164,7 +170,14 @@ SlotAction decideSlotAction(const SlotObservation & obs, const SlotLimits & lim)
   }
   if (seat == SeatState::kUnseated) {
     const double z_rim = slotRimCubeTagZ(lim.z_slot_tag, lim.cube_height_m, lim.cavity_depth_m);
-    if (obs.z_cube_tag >= z_rim - std::max(0.0, lim.seat_tol_m)) {
+    const double tol = effectiveSeatTolerance(lim.seat_tol_m, lim.cavity_depth_m);
+    if (obs.z_cube_tag >= z_rim - tol) {
+      // Cavidade rasa: a borda fica so' ~cavidade acima do assentado e uma
+      // leitura ruidosa pode cair nessa faixa. Re-pegar por engano custa um
+      // ciclo; por isso a borda precisa ser CONFIRMADA numa segunda leitura.
+      if (can_look_again) {
+        return SlotAction::kReobserve;
+      }
       return can_drop_again ? SlotAction::kRegrasp : SlotAction::kLeave;
     }
   }

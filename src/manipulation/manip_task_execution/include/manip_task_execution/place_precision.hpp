@@ -70,7 +70,16 @@ enum class SeatState
 /// z esperado da tag do cubo ENCAIXADO: fundo da cavidade + altura do cubo.
 double seatedCubeTagZ(double z_slot_tag, double cube_height_m);
 
-/// Compara a tag do cubo (depois de soltar) com a tag do slot (fundo):
+/// Tolerancia de assentamento que de fato vale: nunca mais que METADE da
+/// cavidade, senao as faixas "encaixado" (fundo + cubo +- tol) e "apoiado na
+/// borda" (fundo + cavidade + cubo -+ tol) se sobrepoem. Com a cavidade rasa
+/// da mesa de precisao (3-6 mm, informado pelo operador em 2026-10-21) isso
+/// da ~2,5 mm, no limite da leitura da tag: por isso a borda so' e' decidida
+/// com DUAS leituras (decideSlotAction).
+double effectiveSeatTolerance(double tol_m, double cavity_depth_m);
+
+/// Compara a tag do cubo (depois de soltar) com a tag do slot (fundo), com
+/// tol = effectiveSeatTolerance(tol_m, cavity_depth_m):
 ///   seated       se z_cube_tag <= z_slot_tag + cube_h + tol
 ///                   e z_cube_tag >= z_slot_tag + cube_h - cavity_depth;
 ///   inconsistent se ficou abaixo disso (cubo nao pode estar abaixo do fundo);
@@ -128,8 +137,8 @@ struct SlotLimits
 enum class SlotAction
 {
   kAccept,     ///< encaixado (z assentado); xy NAO decide
-  kRegrasp,    ///< apoiado na BORDA (z >= borda - tol): re-pegar e soltar de novo
-  kReobserve,  ///< nao visto / z intermediario / inconsistente: olhar de novo
+  kRegrasp,    ///< apoiado na BORDA (z >= borda - tol) CONFIRMADO em 2 leituras: re-pegar
+  kReobserve,  ///< nao visto / borda na 1a leitura / z intermediario / inconsistente: olhar de novo
   kLeave,      ///< sem como agir com seguranca ou sem orcamento: fica onde esta
 };
 
