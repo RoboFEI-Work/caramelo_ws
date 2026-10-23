@@ -22,7 +22,10 @@ durante o place. Este no junta tudo numa UNICA imagem ao vivo, para conferir
   c) AprilTags (/detections): contorno, centro, 'tag_<id>' e decision_margin;
      amarelo = hamming > 0 (leitura com bit corrigido, menos confiavel);
   d) barra de status: PICK / PLACE / observando mesa, ids vistos, containers,
-     idade do mapa, ultima frase falada (/manip/speech) e o fps real.
+     idade e ORIGEM do mapa ('mapa: depth' = a grade levou profundidade em
+     algum quadro; 'mapa: cor' = so' cor, lido do prefixo 'depth=.. quadros=a/b'
+     do status latched do no de superficie), ultima frase falada
+     (/manip/speech) e o fps real.
 Tudo e' gated por IDADE (stamp): tag some ao sair da vista, container e mapa
 somem quando o detector para de publicar — nunca fica desenho fantasma.
 
@@ -123,6 +126,34 @@ def is_fresh(stamp_s: float, now_s: float, max_age_s: float) -> bool:
     if stamp_s <= 0.0:
         return False
     return (now_s - stamp_s) < float(max_age_s)
+
+
+def parse_surface_status(text: str) -> Dict[str, str]:
+    """Prefixo do status do workstation_surface_node ('depth=ok alem=12%
+    acima=3% retas=1 quadros=2/3 | ...') -> {chave: valor} dos tokens
+    chave=valor antes do primeiro ' | '. {} sem prefixo."""
+    head = str(text or "").split(" | ", 1)[0]
+    out: Dict[str, str] = {}
+    for tok in head.split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            if k:
+                out[k] = v
+    return out
+
+
+def grid_origin_from_status(text: str) -> str:
+    """'depth' se a grade levou profundidade em algum quadro (quadros=a/b com
+    a > 0; sem 'quadros', depth=ok), 'cor' se so' cor, '?' sem status."""
+    st = parse_surface_status(text)
+    if "quadros" in st:
+        try:
+            return "depth" if int(st["quadros"].split("/", 1)[0]) > 0 else "cor"
+        except ValueError:
+            pass
+    if "depth" in st:
+        return "depth" if st["depth"] == "ok" else "cor"
+    return "?"
 
 
 def grid_cell_centers(origin_x: float, origin_y: float, res: float, width: int, height: int):
@@ -681,6 +712,7 @@ def ros_main(argv=None) -> int:
             dp("poly_step_m", 0.01)           # subdivisao das arestas no plano antes de projetar
             dp("edge_lines_topic", "/manip/workstation_surface/edge_lines")
             dp("table_polygon_topic", "/manip/workstation_surface/table_polygon")
+            dp("surface_status_topic", "/manip/workstation_surface/status")   # latched; prefixo depth=.. quadros=a/b
             # Zona de manipulacao (rulebook 4.4): 2 a 20 cm da frente, 2 cm das laterais.
             dp("zone_depth_m", 0.20)
             dp("zone_edge_clearance_m", 0.02)
@@ -710,6 +742,7 @@ def ros_main(argv=None) -> int:
             self.pick_active = False
             self.place_active = False
             self.surface_observe = False
+            self.surface_status = ""          # ultimo status do no de superficie (origem do mapa)
             self.speech = ""
             self.last_pub_mono = 0.0
             self.fps = 0.0
@@ -738,6 +771,7 @@ def ros_main(argv=None) -> int:
             self.create_subscription(Bool, g("pick_active_topic"), self._on_pick_active, latched)
             self.create_subscription(Bool, g("place_active_topic"), self._on_place_active, latched)
             self.create_subscription(Bool, g("surface_observe_topic"), self._on_surface_observe, latched)
+            self.create_subscription(String, g("surface_status_topic"), self._on_surface_status, latched)
             self.create_subscription(String, g("speech_topic"), self._on_speech, 10)
             self.get_logger().info(
                 f"vision_debug pronto: {g('image_topic')} + tags/containers/mapa -> {g('publish_topic')} "
@@ -790,6 +824,9 @@ def ros_main(argv=None) -> int:
 
         def _on_surface_observe(self, msg: Bool):
             self.surface_observe = bool(msg.data)
+
+        def _on_surface_status(self, msg: String):
+            self.surface_status = str(msg.data)
 
         def _on_speech(self, msg: String):
             self.speech = str(msg.data)
@@ -926,7 +963,10 @@ def ros_main(argv=None) -> int:
                             info.origin.position.z, step) for p in lst] for code, lst in polys.items()}
                         paint_grid_polygons(bgr, px, alpha)
                     codes = self.grid_codes
-                    grid_txt = (f"mapa: {age:.1f} s  livre={int(np.count_nonzero(codes == CELL_TABLE_FREE))} "
+                    # Origem da grade: 'depth' se algum quadro fundido levou
+                    # profundidade, 'cor' se so' cor (prefixo do status latched).
+                    grid_txt = (f"mapa: {grid_origin_from_status(self.surface_status)} {age:.1f} s  "
+                                f"livre={int(np.count_nonzero(codes == CELL_TABLE_FREE))} "
                                 f"obj={int(np.count_nonzero(codes == CELL_OBSTACLE))} "
                                 f"fora={int(np.count_nonzero(codes == CELL_OFF_TABLE))} cel")
 
@@ -1002,6 +1042,9 @@ def ros_main(argv=None) -> int:
                 f"containers: {', '.join(seen_ct) if seen_ct else 'nenhum'}",
                 grid_txt,
             ]
+            st = parse_surface_status(self.surface_status)
+            if "depth" in st:
+                lines.append("superficie: " + self.surface_status.split(" | ", 1)[0])
             if self.speech:
                 txt = self.speech.replace("\n", " ")
                 lines.append('fala: "' + (txt[:70] + "..." if len(txt) > 70 else txt) + '"')

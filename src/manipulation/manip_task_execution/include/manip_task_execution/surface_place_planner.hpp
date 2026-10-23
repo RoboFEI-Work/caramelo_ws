@@ -104,17 +104,54 @@ struct SurfaceExtraObstacle
   std::string label;
 };
 
+/// Como o prior da frente (docking/LiDAR) entra na decisao (2026-10-21).
+/// Na run da WS1 o robo docou girado 19,7 graus: a camera viu a frente real
+/// a y = 0,28 e o prior (0,163 +- 0,06) a rejeitou: a zona foi imposta no
+/// lugar errado e nenhum candidato sobrou.
+enum class FrontPriorMode
+{
+  /// A frente ajustada pela camera vale se tem suporte (front_min_support,
+  /// front_min_span_m) e inclinacao <= front_max_slope_deg, MESMO longe do
+  /// prior; o prior so' entra como fallback (frente nao vista).
+  kCameraFirst,
+  /// Comportamento antigo: frente ajustada a mais de front_prior_tolerance_m
+  /// do prior e' rejeitada e o fallback vale.
+  kPriorGate
+};
+
+/// "camera_first" | "prior_gate" (maiusculas/minusculas e '-' aceitos).
+/// false se desconhecido (`*mode` nao muda).
+bool parseFrontPriorMode(const std::string & spec, FrontPriorMode * mode);
+const char * frontPriorModeName(FrontPriorMode mode);
+
 struct SurfacePlannerOptions
 {
   /// Se a frente da mesa NAO for vista na grade, usa esta reta (y constante)
   /// como frente. nullopt = sem fallback: a profundidade da zona nao e'
   /// imposta e `front.found` sai false (quem chama decide se aceita).
   std::optional<double> fallback_front_y;
-  /// Prior da frente (docking/LiDAR): uma frente AJUSTADA pela grade que
-  /// fique a mais de `front_prior_tolerance_m` dele e' rejeitada (faces de
-  /// objetos alinhados fingem borda) e o fallback vale. nullopt = sem checagem.
+  /// Prior da frente (docking/LiDAR). Em kPriorGate, uma frente AJUSTADA pela
+  /// grade que fique a mais de `front_prior_tolerance_m` dele e' rejeitada
+  /// (faces de objetos alinhados fingem borda) e o fallback vale; em
+  /// kCameraFirst so' e' registrado no diagnostico. nullopt = sem checagem.
   std::optional<double> front_prior_y;
   double front_prior_tolerance_m{0.06};
+  FrontPriorMode front_prior_mode{FrontPriorMode::kCameraFirst};
+  /// kCameraFirst: inclinacao maxima (graus) da frente ajustada para ela
+  /// valer sem o prior (a frente de uma mesa e' quase perpendicular a +Y; na
+  /// run de 21/10, docado a 19,7 graus, a frente vista tinha 11,6 graus).
+  double front_max_slope_deg{25.0};
+  /// Ilhas de FORA-DA-MESA cercadas por tampo (componente de kOffTable cujo
+  /// contorno so' tem tampo/obstaculo: nao toca a borda da grade nem celula
+  /// desconhecida) com menos que isto de celulas viram kUnknown ANTES das
+  /// bordas e das distancias (profundidade ruim na run de 21/10: ilhas
+  /// dentro do tampo faziam "borda direita" a esquerda da esquerda e
+  /// rejeitavam tudo por d_off). 150 celulas = 1,5 dm2 a 1 cm. 0 = desligado.
+  int island_max_cells{150};
+  /// Borda lateral: a "direita" so' vale com x > mediana x do tampo + isto
+  /// (e a "esquerda" com x < mediana - isto); caso contrario e' um objeto ou
+  /// ilha do lado errado e a borda fica "nao vista (lado errado)".
+  double side_median_margin_m{0.02};
   /// Ponto preferido (x, y): a pontuacao penaliza a distancia ate ele (a
   /// pose ensinada MesaX, confortavel para o braco). nullopt = so' folga.
   std::optional<double> preferred_x;
@@ -146,7 +183,11 @@ struct SurfaceFrontEdge
 {
   bool found{false};
   bool from_fallback{false};
-  bool rejected_by_prior{false};   ///< ajuste da grade descartado (longe do prior)
+  bool rejected_by_prior{false};   ///< ajuste da grade descartado (longe do prior; so' kPriorGate)
+  bool rejected_by_slope{false};   ///< ajuste da grade descartado (inclinado demais; so' kCameraFirst)
+  /// |y da frente ajustada - prior| (0 sem prior ou sem ajuste): em
+  /// kCameraFirst e' so' informacao (o place loga).
+  double prior_deviation_m{0.0};
   double y0{0.0};        ///< y da reta em x = 0
   double slope{0.0};     ///< dy/dx (frente quase perpendicular a +Y => ~0)
   int support{0};
@@ -158,6 +199,9 @@ struct SurfaceFrontEdge
 struct SurfaceSideEdge
 {
   bool found{false};
+  /// Borda vista do lado errado da mediana do tampo (objeto/ilha): found=false
+  /// e `x` guarda o x visto, para o diagnostico.
+  bool rejected_wrong_side{false};
   double x{0.0};
   int support{0};
 };
@@ -189,10 +233,28 @@ struct SurfacePlan
   double table_x_max{0.0};
   double table_y_min{0.0};
   double table_y_max{0.0};
+  /// Mediana do x das celulas de tampo (livre ou obstaculo): referencia das
+  /// bordas laterais (direita tem que ficar a direita dela e vice-versa).
+  double table_x_median{0.0};
+  /// Ilhas de fora-da-mesa removidas (viraram desconhecido) e suas celulas.
+  int n_islands_removed{0};
+  int n_island_cells_removed{0};
   /// Celulas livres que passaram em TODAS as regras (antes da supressao).
   int n_valid_cells{0};
+  /// Celulas LIVRES rejeitadas por regra: cada celula conta na PRIMEIRA
+  /// regra que a rejeitou, na ordem borda > objeto > desconhecido > zona >
+  /// parede > alcance. n_table_free = n_valid_cells + soma destes.
+  int n_rejected_edge{0};      ///< a menos de 2 cm (+ footprint) de fora-da-mesa
+  int n_rejected_object{0};    ///< a menos de 2 cm (+ footprint) de objeto
+  int n_rejected_unknown{0};   ///< cubo encostando em celula nao vista
+  int n_rejected_zone{0};      ///< fora da profundidade 2..20 cm da frente
+  int n_rejected_wall{0};      ///< a menos de 10 cm da parede declarada/vista
+  int n_rejected_reach{0};     ///< alem de max_reach_radius_m
   std::vector<SurfaceCandidate> candidates;   ///< melhores primeiro
   std::string diagnostics;
+  /// "validas N (rejeitadas: borda a, objeto b, desconhecido c, zona d,
+  /// parede e, alcance f)": a mesma linha do diagnostico, para log/result.
+  std::string rejectionSummary() const;
 };
 
 /// Planeja. Nunca lanca; `plan.diagnostics` explica o que faltou.
@@ -205,6 +267,13 @@ SurfacePlan planSurfacePlacement(
 /// Pinta um circulo de obstaculo na grade (celulas de tampo livre OU
 /// desconhecidas viram kObstacle; fora-da-mesa fica como esta).
 void paintObstacle(SurfaceGrid & grid, double x, double y, double radius_m);
+
+/// Ilhas de fora-da-mesa (ver SurfacePlannerOptions::island_max_cells):
+/// componentes 4-conexos de kOffTable com menos de `max_cells` celulas cujos
+/// vizinhos (8) sao todos tampo/obstaculo (nao tocam a borda da grade nem
+/// kUnknown) viram kUnknown. Devolve quantas ilhas; `cells_removed` (se nao
+/// nulo) recebe o total de celulas. max_cells <= 0 = nao faz nada.
+int removeOffTableIslands(SurfaceGrid & grid, int max_cells, int * cells_removed = nullptr);
 
 /// Converte um nav_msgs/OccupancyGrid "cru" (origem, resolucao, dados) —
 /// mantido como funcao livre para o no nao depender do layout interno.

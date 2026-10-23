@@ -329,3 +329,140 @@ def test_partida_no_patamar_do_retreat_antigo():
 ])
 def test_watchdog_sem_progresso(elapsed, travelled, ok):
     assert no_progress(elapsed, travelled, 1.0, 0.01) is ok
+
+
+# ---------------------------------------------------------------------------
+# Revisao 2026-10-21: docking "pronto" com yaw_face -19,7 graus na WS1.
+# Helpers puros das decisoes de yaw do align_to_dock (fora da classe).
+needs = dan.yaw_needs_correction
+refit = dan.refit_trigger
+fit_ok = dan.face_fit_acceptable
+fit_why = dan.face_fit_reject_reason
+decide = dan.final_yaw_decision
+
+YAW_TOL = 0.09          # default_yaw_tolerance (5,2 graus)
+YAW_COAST = 0.10        # yaw_coast_est: abaixo de coast+0,02 o giro nem parte
+MIN_CORR = YAW_COAST + 0.02
+
+
+@pytest.mark.parametrize("yaw_deg, tol, ok", [
+    (-19.7, YAW_TOL, True),      # o caso da WS1
+    (2.6, YAW_TOL, False),       # WS5 na mesma run
+    (5.0, YAW_TOL, False),       # 0,087 rad < 0,09
+    (5.3, YAW_TOL, True),        # 0,0925 rad > 0,09
+    (-5.3, YAW_TOL, True),       # modulo
+    (0.0, YAW_TOL, False),
+])
+def test_yaw_precisa_correcao(yaw_deg, tol, ok):
+    assert needs(math.radians(yaw_deg), tol) is ok
+
+
+@pytest.mark.parametrize("yaw", [None, float("nan"), float("inf"), float("-inf")])
+def test_yaw_sem_medida_nao_corrige(yaw):
+    """Sem fit confiavel nao ha o que corrigir: o no' reporta
+    'yaw_nao_medido' em vez de girar pelo AMCL."""
+    assert needs(yaw, YAW_TOL) is False
+
+
+# Gatilho do refit no reto: desconta coast (0,10 no launch) e lag, como o
+# corte final, para o robo PARAR em ~refit_front_m (acima de rotate_min 0,46).
+COAST_X, LAG = 0.10, 0.1215 * 0.15
+
+
+@pytest.mark.parametrize("front, done, ok", [
+    (0.70, False, False),         # 0,70 - 0,018 - 0,10 = 0,582 > 0,55: segue
+    (0.678, False, False),        # staging da WS1 (lido 0,678): 0,560 > 0,55
+    (0.67, False, False),         # 0,552 > 0,55
+    (0.66, False, True),          # 0,66 - 0,018 - 0,10 = 0,542 <= 0,55: pausa
+    (0.65, False, True),
+    (0.50, False, True),          # ja' perto: pausa mesmo assim (nao gira < 0,46)
+    (0.65, True, False),          # uma vez so' por aproximacao
+    (None, False, False),         # sem medicao do muro
+])
+def test_gatilho_do_refit(front, done, ok):
+    assert refit(front, 0.55, done, coast=COAST_X, lag=LAG) is ok
+
+
+def test_gatilho_do_refit_para_acima_de_rotate_min():
+    """Com coast 0,10 o robo para ~coast depois do gatilho: pausa lida em
+    0,55 (sem descontar) pararia em 0,45 < rotate_min_front 0,46 e o
+    esquadro nunca aconteceria; descontando, o gatilho dispara em 0,65 e o
+    robo para em ~0,55."""
+    first_trigger = next(f / 1000 for f in range(900, 300, -1)
+                         if refit(f / 1000, 0.55, False, coast=COAST_X, lag=0.0))
+    assert first_trigger == pytest.approx(0.65, abs=1e-3)
+    assert first_trigger - COAST_X >= 0.46
+    # Sem descontar (assinatura de 3 argumentos) e' o front cru.
+    assert refit(0.55, 0.55, False) is True
+    assert refit(0.551, 0.55, False) is False
+
+
+@pytest.mark.parametrize("refit_front", [0.0, -1.0])
+def test_gatilho_do_refit_desligado(refit_front):
+    assert refit(0.50, refit_front, False, coast=COAST_X, lag=LAG) is False
+
+
+# Guardas do fit: largura maxima PRIMEIRO (mesa + vizinho), depois residuo,
+# depois largura minima. Valores da run: WS1 0,98 m / 61 mm; WS5 0,87 / 43;
+# fit bom 0,64 / 13 mm.
+FIT_MIN_W, FIT_MAX_W, FIT_MAX_RES = 0.50, 0.90, 0.02   # refine_min/max_face_width, refine_max_residual
+
+
+@pytest.mark.parametrize("residual, width, ok, why", [
+    (0.013, 0.64, True, ""),                                   # fit bom (WS1 apos giro)
+    (0.061, 0.98, False, "face larga demais (vizinho?)"),      # WS1 staging
+    (0.010, 0.95, False, "face larga demais (vizinho?)"),      # largo mesmo com residuo bom
+    (0.043, 0.87, False, "residuo alto (face nao-plana?)"),    # WS5 staging (< 0,90)
+    (0.010, 0.39, False, "face estreita demais (perna/objeto?)"),  # caso de 2026-08-03
+    (0.020, 0.50, True, ""),                                   # bordas inclusivas
+    (0.020, 0.90, True, ""),
+    (0.0201, 0.90, False, "residuo alto (face nao-plana?)"),
+])
+def test_guardas_do_fit(residual, width, ok, why):
+    assert fit_ok(residual, width, FIT_MIN_W, FIT_MAX_W, FIT_MAX_RES) is ok
+    assert fit_why(residual, width, FIT_MIN_W, FIT_MAX_W, FIT_MAX_RES) == why
+
+
+def test_guarda_largura_default_do_residuo():
+    """max_residual default = refine_max_residual (0,02)."""
+    assert fit_ok(0.02, 0.64, FIT_MIN_W, FIT_MAX_W) is True
+    assert fit_ok(0.021, 0.64, FIT_MIN_W, FIT_MAX_W) is False
+
+
+# Decisao final.
+@pytest.mark.parametrize("yaw_deg, corrected, strict, expected", [
+    (2.6, False, False, "ok"),                       # WS5: dentro
+    (-19.7, False, False, "corrigir"),               # WS1: 1a vez -> recua e esquadra
+    (-19.7, False, True, "corrigir"),                # strict nao muda a 1a decisao
+    (-19.7, True, False, "aceitar_com_aviso"),       # ja' corrigiu: competicao segue
+    (-19.7, True, True, "falhar"),                   # strict: aborta
+    (-6.0, False, False, "corrigir"),                # 0,105 rad > 0,09 (sem min_correctable)
+    (0.0, True, True, "ok"),
+])
+def test_decisao_final(yaw_deg, corrected, strict, expected):
+    # min_correctable=0 (default): qualquer yaw fora da tolerancia e' corrigivel.
+    assert decide(math.radians(yaw_deg), YAW_TOL, corrected, strict) == expected
+
+
+@pytest.mark.parametrize("yaw_deg, strict, expected", [
+    (-6.0, False, "aceitar_com_aviso"),   # 0,105 rad: fora da tol (0,09) mas <= coast+0,02 (0,12)
+    (-6.0, True, "falhar"),
+    (-7.0, False, "corrigir"),            # 0,122 rad > 0,12: o giro parte
+    (-19.7, False, "corrigir"),
+    (5.0, True, "ok"),                    # dentro da tol: strict irrelevante
+])
+def test_decisao_final_abaixo_do_coast_nao_recua(yaw_deg, strict, expected):
+    """Entre a tolerancia e o coast do giro o _cut_drive nem parte: recuar
+    seria tempo perdido — aceita com aviso (ou falha com strict)."""
+    assert decide(math.radians(yaw_deg), YAW_TOL, False, strict,
+                  min_correctable=MIN_CORR) == expected
+
+
+def test_decisao_final_sequencia_da_ws1():
+    """A run: pronto com -19,7 graus. Agora: corrigir; se depois da correcao
+    ainda medir -8 graus, aceita com aviso (strict off) — nunca 'ok'."""
+    first = decide(math.radians(-19.7), YAW_TOL, False, False, min_correctable=MIN_CORR)
+    assert first == "corrigir"
+    second = decide(math.radians(-8.0), YAW_TOL, True, False, min_correctable=MIN_CORR)
+    assert second == "aceitar_com_aviso"
+    assert decide(math.radians(-2.0), YAW_TOL, True, False, min_correctable=MIN_CORR) == "ok"

@@ -7,6 +7,7 @@
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <utility>
 
 namespace manip_task_execution
 {
@@ -249,6 +250,86 @@ void parseWallSides(
   flush();
 }
 
+bool parseFrontPriorMode(const std::string & spec, FrontPriorMode * mode)
+{
+  std::string t;
+  for (char c : spec) {
+    if (std::isspace(static_cast<unsigned char>(c))) {continue;}
+    t += (c == '-') ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (t == "camera_first" || t == "camera") {*mode = FrontPriorMode::kCameraFirst; return true;}
+  if (t == "prior_gate" || t == "prior") {*mode = FrontPriorMode::kPriorGate; return true;}
+  return false;
+}
+
+const char * frontPriorModeName(FrontPriorMode mode)
+{
+  return mode == FrontPriorMode::kPriorGate ? "prior_gate" : "camera_first";
+}
+
+int removeOffTableIslands(SurfaceGrid & grid, int max_cells, int * cells_removed)
+{
+  if (cells_removed) {*cells_removed = 0;}
+  if (!grid.valid() || max_cells <= 0) {return 0;}
+  const int w = grid.width, h = grid.height;
+  const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
+  std::vector<char> visited(n, 0);
+  std::vector<std::size_t> comp, stack;
+  int islands = 0;
+  for (int j0 = 0; j0 < h; ++j0) {
+    for (int i0 = 0; i0 < w; ++i0) {
+      const std::size_t k0 = static_cast<std::size_t>(j0) * w + i0;
+      if (visited[k0] || grid.at(i0, j0) != SurfaceCell::kOffTable) {continue;}
+      // Componente 4-conexo de fora-da-mesa; o contorno (8 vizinhos) decide
+      // se e' ilha: qualquer vizinho desconhecido ou fora da grade = nao e'.
+      comp.clear();
+      stack.clear();
+      stack.push_back(k0);
+      visited[k0] = 1;
+      bool enclosed = true;
+      while (!stack.empty()) {
+        const std::size_t k = stack.back();
+        stack.pop_back();
+        comp.push_back(k);
+        const int i = static_cast<int>(k % static_cast<std::size_t>(w));
+        const int j = static_cast<int>(k / static_cast<std::size_t>(w));
+        for (int dj = -1; dj <= 1; ++dj) {
+          for (int di = -1; di <= 1; ++di) {
+            if (di == 0 && dj == 0) {continue;}
+            const int ii = i + di, jj = j + dj;
+            if (ii < 0 || jj < 0 || ii >= w || jj >= h) {enclosed = false; continue;}
+            const int8_t c = grid.at(ii, jj);
+            if (c == SurfaceCell::kOffTable) {
+              if (di == 0 || dj == 0) {   // 4-conexo para crescer o componente
+                const std::size_t kk = static_cast<std::size_t>(jj) * w + ii;
+                if (!visited[kk]) {visited[kk] = 1; stack.push_back(kk);}
+              }
+            } else if (!isTable(c)) {
+              enclosed = false;           // desconhecido no contorno
+            }
+          }
+        }
+      }
+      if (enclosed && static_cast<int>(comp.size()) < max_cells) {
+        for (const std::size_t k : comp) {grid.cells[k] = SurfaceCell::kUnknown;}
+        ++islands;
+        if (cells_removed) {*cells_removed += static_cast<int>(comp.size());}
+      }
+    }
+  }
+  return islands;
+}
+
+std::string SurfacePlan::rejectionSummary() const
+{
+  std::ostringstream s;
+  s << "validas " << n_valid_cells << " (rejeitadas: borda " << n_rejected_edge
+    << ", objeto " << n_rejected_object << ", desconhecido " << n_rejected_unknown
+    << ", zona " << n_rejected_zone << ", parede " << n_rejected_wall
+    << ", alcance " << n_rejected_reach << ")";
+  return s.str();
+}
+
 SurfacePlan planSurfacePlacement(
   const SurfaceGrid & grid_in,
   const SurfacePlaceRules & rules,
@@ -267,11 +348,20 @@ SurfacePlan planSurfacePlacement(
   for (const auto & ob : extra) {
     paintObstacle(grid, ob.x, ob.y, ob.radius_m);
   }
+  // Ilhas de fora-da-mesa dentro do tampo (profundidade ruim): viram
+  // desconhecido ANTES das bordas e das distancias.
+  plan.n_islands_removed = removeOffTableIslands(
+    grid, options.island_max_cells, &plan.n_island_cells_removed);
+  if (plan.n_islands_removed > 0) {
+    diag << plan.n_islands_removed << " ilha(s) de fora removida(s) ("
+         << plan.n_island_cells_removed << " cel); ";
+  }
 
   const int w = grid.width;
   const int h = grid.height;
   const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(h);
   std::vector<char> off(n, 0), obs(n, 0), unk(n, 0);
+  std::vector<double> table_xs;
   plan.table_x_min = kInf; plan.table_x_max = -kInf;
   plan.table_y_min = kInf; plan.table_y_max = -kInf;
   for (int j = 0; j < h; ++j) {
@@ -284,6 +374,8 @@ SurfacePlan planSurfacePlacement(
         case SurfaceCell::kOffTable: ++plan.n_off_table; off[k] = 1; break;
         default: ++plan.n_unknown; unk[k] = 1; break;
       }
+      // So' tampo LIVRE: "obstaculo" pode ser chao escuro sem reta e puxaria a mediana para fora.
+      if (c == SurfaceCell::kTableFree) {table_xs.push_back(grid.cellX(i));}
       // Extensao so' das celulas LIVRES: um obstaculo pode ser o chao visto
       // sem borda detectada (o no de superficie marca nao-branco sem reta
       // como objeto), e ele nao pode "esticar" a mesa.
@@ -300,6 +392,7 @@ SurfacePlan planSurfacePlacement(
     plan.diagnostics = "nenhuma celula de tampo na grade";
     return plan;
   }
+  plan.table_x_median = median(table_xs);
 
   // ---- Frente da mesa: celulas de tampo cujo vizinho de baixo (y menor) e'
   // fora-da-mesa. Reta y = a + b x (quase horizontal).
@@ -316,11 +409,27 @@ SurfacePlan planSurfacePlacement(
     LineFit fit = fitLine(
       front_pts, options.front_fit_inlier_m, options.front_min_support,
       options.front_min_span_m);
-    if (fit.ok && options.front_prior_y) {
+    if (fit.ok) {
       const double mid_x = 0.5 * (fit.x_min + fit.x_max);
-      const double dev = std::abs((fit.a + fit.b * mid_x) - *options.front_prior_y);
-      if (dev > options.front_prior_tolerance_m) {
-        diag << "frente ajustada (y=" << (fit.a + fit.b * mid_x) << ") a " << dev
+      const double y_mid = fit.a + fit.b * mid_x;
+      const double slope_deg = std::atan(std::abs(fit.b)) * 180.0 / M_PI;
+      if (options.front_prior_y) {
+        plan.front.prior_deviation_m = std::abs(y_mid - *options.front_prior_y);
+      }
+      if (options.front_prior_mode == FrontPriorMode::kCameraFirst) {
+        // A camera manda: suporte/extensao ja conferidos pelo fitLine; so' a
+        // inclinacao pode derrubar (frente de mesa e' quase perpendicular a +Y).
+        if (slope_deg > options.front_max_slope_deg) {
+          diag << "frente ajustada (y=" << y_mid << ") inclinada " << slope_deg
+               << " graus (> " << options.front_max_slope_deg << ") -> REJEITADA; ";
+          plan.front.rejected_by_slope = true;
+          fit.ok = false;
+        } else if (options.front_prior_y && plan.front.prior_deviation_m > options.front_prior_tolerance_m) {
+          diag << "frente ajustada (y=" << y_mid << ") a " << plan.front.prior_deviation_m
+               << " m do prior " << *options.front_prior_y << " (camera_first: aceita); ";
+        }
+      } else if (options.front_prior_y && plan.front.prior_deviation_m > options.front_prior_tolerance_m) {
+        diag << "frente ajustada (y=" << y_mid << ") a " << plan.front.prior_deviation_m
              << " m do prior " << *options.front_prior_y << " -> REJEITADA; ";
         plan.front.rejected_by_prior = true;
         fit.ok = false;
@@ -367,7 +476,7 @@ SurfacePlan planSurfacePlacement(
       }
     }
     auto side = [&](std::vector<double> & xs, std::vector<double> & ys, SurfaceSideEdge & out,
-                    const char * name) {
+                    const char * name, bool is_right) {
         if (static_cast<int>(xs.size()) < options.side_min_support) {
           diag << name << " nao vista; ";
           return;
@@ -388,13 +497,27 @@ SurfacePlan planSurfacePlacement(
           diag << name << " nao vista (extensao " << (ymax - ymin) << " m); ";
           return;
         }
+        const double x_edge = median(inl_x);
+        // A direita fica a DIREITA do centro do tampo (e vice-versa): uma
+        // "borda" do lado errado e' a face de um objeto ou uma ilha.
+        const bool ok_side = is_right ?
+          (x_edge > plan.table_x_median + options.side_median_margin_m) :
+          (x_edge < plan.table_x_median - options.side_median_margin_m);
+        if (!ok_side) {
+          out.rejected_wrong_side = true;
+          out.x = x_edge;
+          out.support = static_cast<int>(inl_x.size());
+          diag << name << " nao vista (lado errado: x=" << x_edge << " vs mediana do tampo "
+               << plan.table_x_median << "); ";
+          return;
+        }
         out.found = true;
-        out.x = median(inl_x);
+        out.x = x_edge;
         out.support = static_cast<int>(inl_x.size());
         diag << name << " x=" << out.x << " (" << out.support << " pts); ";
       };
-    side(right_xs, right_ys, plan.right, "borda direita");
-    side(left_xs, left_ys, plan.left, "borda esquerda");
+    side(right_xs, right_ys, plan.right, "borda direita", true);
+    side(left_xs, left_ys, plan.left, "borda esquerda", false);
   }
 
   // ---- Distancias (em metros) a fora-da-mesa, obstaculos e desconhecido.
@@ -441,17 +564,23 @@ SurfacePlan planSurfacePlacement(
       const double de = d_off[k] * res;
       const double dob = d_obs[k] * res;
       const double du = d_unk[k] * res;
-      if (de < min_edge) {continue;}
-      if (dob < min_obs) {continue;}
-      if (rules.unknown_blocks_footprint && du < min_unk) {continue;}
+      // Cada celula conta na PRIMEIRA regra que a rejeita (ordem fixa).
+      if (de < min_edge) {++plan.n_rejected_edge; continue;}
+      if (dob < min_obs) {++plan.n_rejected_object; continue;}
+      if (rules.unknown_blocks_footprint && du < min_unk) {++plan.n_rejected_unknown; continue;}
       double depth = 0.0;
       if (plan.front.found) {
         depth = (y - plan.front.yAt(x)) * front_cos;
-        if (depth < depth_min || depth > depth_max) {continue;}
+        if (depth < depth_min || depth > depth_max) {++plan.n_rejected_zone; continue;}
       }
-      if (x_max_allowed && x > *x_max_allowed) {continue;}
-      if (x_min_allowed && x < *x_min_allowed) {continue;}
-      if (options.max_reach_radius_m > 0.0 && std::hypot(x, y) > options.max_reach_radius_m) {continue;}
+      if ((x_max_allowed && x > *x_max_allowed) || (x_min_allowed && x < *x_min_allowed)) {
+        ++plan.n_rejected_wall;
+        continue;
+      }
+      if (options.max_reach_radius_m > 0.0 && std::hypot(x, y) > options.max_reach_radius_m) {
+        ++plan.n_rejected_reach;
+        continue;
+      }
       SurfaceCandidate c;
       c.x = x;
       c.y = y;
@@ -488,7 +617,7 @@ SurfacePlan planSurfacePlacement(
   }
   diag << "tampo livre " << plan.n_table_free << " cel, obstaculo " << plan.n_obstacle
        << ", fora " << plan.n_off_table << ", desconhecido " << plan.n_unknown
-       << "; validas " << plan.n_valid_cells << " -> " << plan.candidates.size() << " candidatos";
+       << "; " << plan.rejectionSummary() << " -> " << plan.candidates.size() << " candidatos";
   plan.diagnostics = diag.str();
   return plan;
 }

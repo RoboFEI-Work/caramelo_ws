@@ -271,6 +271,99 @@ problema (`0.315·0.3855/0.05 = 2.42865 < 2.43`); o `_retreat` já usava 0,13 m/
   (inclui o caso que falhava, `0.1215/0.05 < 2.43`, as bordas do watchdog e as margens
   inválidas de `floor_start_margin`).
 
+## Run de 2026-10-21: docking torto na WS1
+
+**Sintoma.** `[WS1] pronto: front=0.386 yaw_face=-19.7 graus`; o `GoToWS` logou
+`alinhado (... yaw=-0.345)` e seguiu para a manipulação com a mesa 20° torta (análise
+completa em `docs/analise_run_2026-10-21.md`, §3).
+
+**Causa (5 linhas).**
+1. O staging das WS fica a 0,35 m atrás da pose do dock → robô a ~0,70 m da face; daí o
+   fit do refino (janela até 1,20 m) pegou **mesa + vizinho**: largura 0,98 m, resíduo
+   61 mm → descartado nas duas leituras.
+2. Sem fit, o nó fez o **esquadro por AMCL: +12,3°** — o mapa/AMCL não batia com a mesa
+   física (o LiDAR, logo depois, mediu a face a **−15,1°**, resíduo 13 mm, largura 0,64).
+3. Esse fit confiável ficou preso no portão `refine_yaw_agree_tol` ("aguardando 2ª leitura
+   concordante"): só havia **uma** leitura por goal depois do esquadro → `yaw MANTIDO`.
+4. O reto e o lateral não corrigem yaw; o sucesso só validava a **janela frontal**
+   (`default_yaw_tolerance` 0,09 rad existia mas não era checada no fim).
+5. O `GoToWS` só olha `success`.
+
+**O que mudou (`dock_align_node.py`).**
+- **2ª leitura imediata no refino**: quando o 1º fit é confiável e o portão pede
+  concordância, o nó espera um `/scan` **novo** (até `refine_second_read_max_s`, 0,6 s),
+  refaz o fit com as mesmas guardas e, se concordar (`refine_yaw_agree_tol`), aplica o yaw
+  **no mesmo goal**. Continua exigindo dois fits confiáveis (resíduo e largura).
+- **Largura máxima do fit** (`refine_max_face_width`, 0,90 m; a mesa tem 0,80): fit mais
+  largo é `face larga demais (vizinho?)` e, nesse caso, **não há esquadro por AMCL** no
+  staging — o esquadro fica para o refit perto da mesa. O esquadro por AMCL continua só
+  quando não há fit nenhum (outros motivos) **e** o AMCL passou na sanidade do staging.
+  Ordem das guardas: largura máxima → resíduo → largura mínima
+  (`face_fit_reject_reason`).
+- **Refit perto da mesa** (`refine_refit_front_m`, 0,55 m): durante o reto, **uma vez**, o
+  nó pausa (zero + assentamento) quando vai parar a ~0,55 m — o gatilho desconta o coast
+  (0,10) e o lag, como o corte final, senão pararia em 0,45 < `rotate_min_front` 0,46 —,
+  refaz o fit numa **banda rasa** ao redor do muro (`[front−0,03, front+0,30]`, face
+  isolada dos vizinhos), em 2 leituras concordantes, e se `|yaw_rel| > yaw_tol`, acima do
+  coast de giro e `front ≥ rotate_min_front`, **esquadra pela face do LiDAR**
+  (`_cut_drive` em z com erro vivo = `face_yaw` do muro, não o AMCL). Com
+  `front < rotate_min_front` não gira e registra.
+- **Validação final de yaw**: depois do `lateral(mesa)`, mede o yaw da face (mediana do
+  fit leve do muro em até 5 scans, dispersão ≤ `final_yaw_spread_max` 0,07 rad). Decisão
+  (`final_yaw_decision`): dentro de `yaw_tolerance` (goal, ou `default_yaw_tolerance`
+  0,09) → `pronto`; fora e ainda sem correção neste goal (`final_yaw_correction` true,
+  sobrando ≥ 20 s do `align_timeout`) → **recua até `rotate_min_front`+0,05, esquadra pela
+  face, refaz reto e lateral, mede de novo** (custo registrado no log). Ainda fora →
+  `result.final_yaw_error` = yaw da face e `message` começa com
+  **`yaw_fora_da_tolerancia (x graus)`**: com `final_yaw_strict` false (default,
+  competição) o goal **sucede com WARN grande**; com true, **falha** (abort, com o recuo
+  de segurança de sempre). Sem fit confiável no fim → `yaw_nao_medido` (sucesso; o yaw
+  do AMCL vai só para o log e para `final_yaw_error` — nada gira pelo AMCL).
+  Entre a tolerância (5,2°) e o coast do giro (`yaw_coast_est`+0,02 = 6,9°) o giro não
+  corrige: aceita com aviso sem recuar.
+- Todas as primitivas novas passam por `_check_guards` (hard_min, cancel, timeout do goal
+  e da tentativa); o `_retreat` ganhou `target_front` opcional.
+
+**Parâmetros novos** (declarados em `docking_server.launch.py`):
+
+| Parâmetro | Default | Uso |
+|---|---|---|
+| `refine_second_read_max_s` | 0,6 s | espera por um `/scan` novo para a 2ª leitura do refino no mesmo goal |
+| `refine_refit_front_m` | 0,55 m | pausa do reto para refit/esquadro pelo LiDAR (≤ 0 desliga) |
+| `refine_max_face_width` | 0,90 m | fit mais largo = mesa + vizinho (sem esquadro por AMCL) |
+| `final_yaw_correction` | true | recua + esquadra + refaz reto/lateral uma vez se o yaw final estiver fora |
+| `final_yaw_strict` | false | true: ainda fora ⇒ goal falha; false: sucesso com WARN |
+| `final_yaw_spread_max` | 0,07 rad | dispersão máxima das leituras de yaw na medida final |
+
+**Como ler o log** (`dock_align_node`, prefixo `[WSn]`):
+- `refino face: ... largura=0.98 m` + `refino: face larga demais (vizinho?); descartando.`
+  + `esquadro por AMCL pulado: face larga demais no staging` — caso da WS1.
+- `refino yaw: 2a leitura concorda (a vs b deg no mapa) — aplico no mesmo goal.` /
+  `2a leitura DISCORDA` / `sem 2a leitura confiavel em 0.6 s (...)`.
+- `reto: pausa para refit a front=0.655 (alvo 0.55 + coast 0.10)` → `refit(reto) face: ...`
+  (duas linhas) → `refit(reto): yaw_rel -2.8 graus dentro da tolerancia` **ou**
+  `esquadro por LiDAR (reto): yaw_rel -15.1 graus a front=0.552` →
+  `esquadro por LiDAR (reto): yaw_face apos o giro -1.9 graus, front=0.548 (2.1 s)` **ou**
+  `refit(reto): ... front=0.44 < rotate_min_front 0.46 — NAO giro`.
+- Fim: `pronto: front=0.386 yaw_face=-1.9 graus (erro X +0.6 cm)`; ou
+  `yaw_face -19.7 graus > tolerancia 5.2: recuo ate front 0.51, esquadro pela face ...` →
+  `recuo concluido (~0.18m comandados, alvo front 0.51)` → `refit(correcao) ...` →
+  `correcao final de yaw custou 11.3 s (restam 70 s do align_timeout)` → `pronto: ...`.
+  Se ainda fora: `========== YAW_FORA_DA_TOLERANCIA (-8.0 GRAUS) ==========` e
+  `pronto: ... — yaw_fora_da_tolerancia (-8.0 graus)` (goal sucede; com strict, `abortando`).
+  Sem fit: `yaw_nao_medido: 2/5 fits confiaveis da face; AMCL diz +3.1 graus (so' para o log)`.
+- Testes puros: `python3 -m pytest src/caramelo_navigation/test -q` (`yaw_needs_correction`,
+  `refit_trigger`, `face_fit_acceptable`/`face_fit_reject_reason`, `final_yaw_decision`).
+
+**Recomendação de mapa (decisão do time, fora do escopo do código):** nas WS do
+`arenalegal_2026/docking.yaml`, `staging_x_offset` de **−0,35 → −0,25** (pré-docking a
+~0,6 m da face em vez de ~0,7). Motivo: a 0,7 m o fit do refino (janela de ±0,45 m e até
+1,20 m) pega os vizinhos da mesa (0,87–0,98 m de "face" nas duas estações da run) e é
+descartado; a ~0,6 m a face aparece isolada (fits de 0,61–0,65 m, resíduo ~13 mm) e o
+refino do staging volta a valer — o refit a 0,55 m vira redundância, não a única chance.
+A reta fica ~10 cm mais curta (o coast de 0,10 m continua coberto: corte em 0,48). Decidir
+por estação e regravar o mapa; `staging_sanity_max_m` (0,6) continua válido.
+
 ## Ferramentas de calibração
 
 - **`scripts/pulse_test.py` — MOVE O ROBÔ.** Publica direto em

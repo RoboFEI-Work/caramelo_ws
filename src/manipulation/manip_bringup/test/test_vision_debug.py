@@ -241,6 +241,27 @@ def test_draw_status_bar():
     assert vd.draw_status(img, []) is img
 
 
+def test_surface_status_prefix_and_grid_origin():
+    """Prefixo latched do workstation_surface_node -> origem do mapa na barra."""
+    ok = "depth=ok alem=12% acima=3% retas=1 quadros=3/3 | frames=3 mesa=sim (62% branco) | bordas: x | garra=vazia"
+    st = vd.parse_surface_status(ok)
+    assert st["depth"] == "ok" and st["alem"] == "12%" and st["acima"] == "3%" and st["retas"] == "1"
+    assert st["quadros"] == "3/3" and "frames" not in st            # so' o prefixo (antes do ' | ')
+    assert vd.grid_origin_from_status(ok) == "depth"
+    # Quadro atual descartado mas a grade ja levou profundidade antes: ainda 'depth'.
+    assert vd.grid_origin_from_status("depth=descartada(38%) alem=20% acima=18% retas=0 quadros=2/5 | x") == "depth"
+    # Nenhum quadro com profundidade: 'cor'.
+    assert vd.grid_origin_from_status("depth=sem alem=0% acima=0% retas=1 quadros=0/4 | x") == "cor"
+    assert vd.grid_origin_from_status("depth=off alem=0% acima=0% retas=0 quadros=0/1") == "cor"
+    assert vd.grid_origin_from_status("depth=descartada(90%) alem=50% acima=40% retas=0 quadros=0/1") == "cor"
+    # Sem o campo quadros, decide depth=ok; sem prefixo (status de erro / vazio): '?'.
+    assert vd.grid_origin_from_status("depth=ok alem=5% acima=0%") == "depth"
+    assert vd.grid_origin_from_status("depth=velha(0.80s) alem=0% acima=0%") == "cor"
+    assert vd.grid_origin_from_status("sem camera_info") == "?"
+    assert vd.grid_origin_from_status("") == "?" and vd.parse_surface_status(None) == {}
+    assert vd.grid_origin_from_status("depth=ok quadros=x/y") == "depth"     # quadros ilegivel: cai no depth=
+
+
 def test_is_fresh_gate():
     assert vd.is_fresh(10.0, 10.3, 0.5)
     assert not vd.is_fresh(10.0, 10.6, 0.5)

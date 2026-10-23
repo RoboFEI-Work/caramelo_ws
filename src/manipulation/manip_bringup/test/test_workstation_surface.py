@@ -447,6 +447,8 @@ def test_depth_image_to_m():
 
 
 def test_segment_frame_depth_overrides_color():
+    # Imagem sintetica toda branca com 39% de chao claro: o chao "alem" toca a
+    # borda da imagem, logo NAO conta como conflito (teto default 0,30).
     cfg = _no_gripper_cfg()
     img = np.full((480, 640, 3), (225, 225, 225), np.uint8)       # chao CLARO: tudo "branco" por cor
     h, w = 240, 320
@@ -472,14 +474,79 @@ def test_segment_frame_depth_overrides_color():
     # Rotulo em outra resolucao e' reamostrado.
     res_r = ws.segment_frame(img, cfg, holding=False, depth_label=cv2.resize(dl, (640, 480), interpolation=cv2.INTER_NEAREST))
     assert np.array_equal(res_r.label, res.label)
-    # "Acima" em quase toda a imagem = plano errado: regra ignorada, flag ligada.
-    res2 = ws.segment_frame(img, cfg, holding=False, depth_label=np.full((h, w), ws.LBL_NONWHITE, np.uint8))
+    # "Acima" em quase toda a imagem = plano errado: regra ignorada, flag ligada
+    # (teto de consistencia desligado para isolar a regra do "acima").
+    res2 = ws.segment_frame(img, _no_gripper_cfg(depth_max_conflict_frac=1.0), holding=False,
+                            depth_label=np.full((h, w), ws.LBL_NONWHITE, np.uint8))
     assert res2.depth_above_rejected and res2.label[120, 160] == ws.LBL_WHITE
+    # Os rotulos so' por cor nao veem a profundidade.
+    assert np.array_equal(res.label_color, res0.label)
 
 
-def _render_depth(cam, table, table_z, floor_z, W=640, H=480):
-    """Profundidade sintetica (m, z optico como o D455): tampo INVALIDO (0, zona
-    cega) e chao valido, cubos sobre o tampo tambem invalidos."""
+def test_classify_depth_below_min_reliable_range_is_unknown():
+    """Run de 21/10: camera a 0,31 m do tampo, D455 devolvendo 0,45 (-> "alem")
+    e 0,25 (-> "acima") no proprio tampo. O alcance ESPERADO ao plano abaixo de
+    depth_min_reliable_m deixa o pixel sem decisao, seja qual for a medida."""
+    cfg = _no_gripper_cfg()   # depth_min_reliable_m 0.45
+    h, w = 20, 60
+    exp = np.full((h, w), 0.31, np.float32)          # pegar_obj: tampo a 0,31 m
+    exp[:, 30:] = 0.50                               # metade da imagem no alcance util
+    depth = np.full((h, w), 0.31, np.float32)
+    depth[:, 0:10] = 0.45                            # lixo "maior" (viraria alem)
+    depth[:, 10:20] = 0.25                           # lixo "menor" (viraria acima)
+    depth[:, 30:40] = 0.70                           # alem real (chao)
+    depth[:, 40:50] = 0.40                           # acima real (objeto)
+    depth[:, 50:60] = 0.50                           # igual a esperada
+    lbl = ws.classify_depth(depth, exp, cfg)
+    assert (lbl[:, :30] == ws.LBL_UNKNOWN).all()      # alcance esperado 0,31 < 0,45: sem decisao
+    assert (lbl[:, 30:40] == ws.LBL_BEYOND).all()
+    assert (lbl[:, 40:50] == ws.LBL_NONWHITE).all()
+    assert (lbl[:, 50:] == ws.LBL_UNKNOWN).all()
+    # Com o alcance minimo baixado o lixo vira decisao: o bug da run.
+    lbl2 = ws.classify_depth(depth, exp, _no_gripper_cfg(depth_min_reliable_m=0.25))
+    assert (lbl2[:, 0:10] == ws.LBL_BEYOND).all() and (lbl2[:, 10:20] == ws.LBL_NONWHITE).all()
+    # depth_min_valid_m continua valendo sobre a MEDIDA.
+    depth3 = np.full((h, w), 0.20, np.float32)
+    assert (ws.classify_depth(depth3, np.full((h, w), 0.50, np.float32), cfg) == ws.LBL_UNKNOWN).all()
+
+
+def test_segment_frame_depth_conflict_discards_frame():
+    """Profundidade contradizendo mais que depth_max_conflict_frac do tampo
+    branco (ilhas de alem/acima espalhadas, como na run) = quadro sem
+    profundidade; abaixo do teto ela continua mandando."""
+    cfg = _no_gripper_cfg()   # depth_max_conflict_frac 0.30
+    img = np.full((480, 640, 3), (40, 90, 40), np.uint8)          # chao verde escuro
+    cv2.rectangle(img, (60, 80), (580, 440), (225, 225, 225), -1)  # tampo branco (meia escala: u 30..290, v 40..220)
+    h, w = 240, 320
+    dl = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    for k, v in enumerate(range(50, 210, 20)):
+        for m, u in enumerate(range(40, 280, 20)):
+            dl[v:v + 14, u:u + 14] = ws.LBL_BEYOND if (k + m) % 2 == 0 else ws.LBL_NONWHITE
+    white = cv2.inRange(cv2.cvtColor(cv2.resize(img, (w, h)), cv2.COLOR_BGR2HSV), (0, 0, 100), (179, 70, 255))
+    frac = ws.depth_color_conflict_frac(white, dl)
+    assert 0.35 < frac < 0.45, frac
+    assert ws.depth_color_conflict_frac(np.zeros((h, w), np.uint8), dl) == 0.0
+    res = ws.segment_frame(img, cfg, holding=False, depth_label=dl)
+    assert res.depth_discarded and not res.depth_used
+    assert abs(res.depth_conflict_frac - frac) < 0.02
+    assert np.count_nonzero(res.label == ws.LBL_BEYOND) == 0
+    assert np.array_equal(res.label, res.label_color)
+    assert np.array_equal(res.label, ws.segment_frame(img, cfg, holding=False).label)   # identico ao sem profundidade
+    # Abaixo do teto: so' uma faixa de chao "alem" (11% do branco) -> vale.
+    dl2 = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    dl2[200:, :] = ws.LBL_BEYOND
+    res2 = ws.segment_frame(img, cfg, holding=False, depth_label=dl2)
+    assert res2.depth_used and not res2.depth_discarded and res2.depth_conflict_frac < 0.15
+    assert res2.label[210, 160] == ws.LBL_BEYOND and res2.label_color[210, 160] == ws.LBL_WHITE
+    # Teto desligado: nunca descarta.
+    res3 = ws.segment_frame(img, _no_gripper_cfg(depth_max_conflict_frac=1.0), holding=False, depth_label=dl)
+    assert res3.depth_used and not res3.depth_discarded
+
+
+def _render_depth(cam, table, table_z, floor_z, W=640, H=480, table_valid=False):
+    """Profundidade sintetica (m, z optico como o D455): chao valido; tampo
+    INVALIDO (0, zona cega) por default ou valido (table_valid, camera no
+    alcance util); cubos sobre o tampo seguem o tampo."""
     us, vs = np.meshgrid(np.arange(W), np.arange(H))
     d = np.stack([(us - cam.K[0, 2]) / cam.K[0, 0], (vs - cam.K[1, 2]) / cam.K[1, 1], np.ones_like(us, dtype=float)], axis=-1)
     dw = d @ cam.R.T
@@ -493,30 +560,41 @@ def _render_depth(cam, table, table_z, floor_z, W=640, H=480):
     depth = np.zeros((H, W), np.float32)
     floor = ok & ~on_table
     depth[floor] = t_fl[floor]
+    if table_valid:
+        depth[on_table] = t_tab[on_table]
     return depth
 
 
+# Camera sintetica no ALCANCE UTIL do D455 (>= depth_min_reliable_m 0,45 ao
+# tampo): a 0,30 m (pegar_obj) a profundidade nao decide mais nada (regra do
+# alcance minimo, test_classify_depth_below_min_reliable_range_is_unknown).
+_DEPTH_CAM_ORIGIN = (0.0, 0.16, 0.55)
+
+
 def test_fusion_depth_marks_floor_off_table_and_finds_front():
+    # Chao claro = 36% do "branco" nesta imagem, mas ligado a borda da imagem:
+    # nao e' conflito (teto default 0,30 continua ligado).
     cfg = _no_gripper_cfg()
     plane_z = 0.0
     table = (-0.40, 0.40, 0.16, 0.66)
-    cam = _SyntheticCamera(origin=(0.0, 0.16, 0.30), pitch_down_deg=80.0)
+    cam = _SyntheticCamera(origin=_DEPTH_CAM_ORIGIN, pitch_down_deg=80.0)
     # Chao CLARO (mesma cor do tampo): so' por cor tudo e' "mesa". Mesa de 15 cm.
     img = _render_table(cam, plane_z, table, [(0.0, 0.30, 0.041)], floor=(225, 225, 225))
-    depth = _render_depth(cam, table, plane_z, plane_z - 0.15)
+    depth = _render_depth(cam, table, plane_z, plane_z - 0.15, table_valid=True)
     scale = cfg.process_scale
     w, h = int(cam.W * scale), int(cam.H * scale)
     exp = ws.expected_plane_range(cam.K, None, cam.origin, cam.R, plane_z, w, h, scale)
+    assert np.nanmin(exp) >= cfg.depth_min_reliable_m          # toda a imagem no alcance util
     small = cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST)
     dl = ws.classify_depth(small, exp, cfg)
     assert np.count_nonzero(dl == ws.LBL_BEYOND) > 0.05 * dl.size
-    assert np.count_nonzero(dl == ws.LBL_NONWHITE) == 0        # tampo invalido: nada "acima"
+    assert np.count_nonzero(dl == ws.LBL_NONWHITE) == 0        # tampo na cota esperada: nada "acima"
 
     def run(depth_label):
         fusion = ws.SurfaceGridFusion(cfg)
         res = ws.segment_frame(img, cfg, holding=False, depth_label=depth_label)
         uv = fusion.project_cells(cam.K, None, cam.origin, cam.R, plane_z, cam.W, cam.H)
-        fusion.fuse(res.label, scale, uv)
+        fusion.fuse(res.label, scale, uv, depth_used=res.depth_used, label_color_small=res.label_color)
         return fusion, fusion.cells()
 
     def cell(cells, x, y):
@@ -538,9 +616,55 @@ def test_fusion_depth_marks_floor_off_table_and_finds_front():
     for x in (-0.15, 0.0, 0.15):
         assert cell(c1, x, 0.13) == ws.CELL_OFF_TABLE
         assert cell(c1, x, 0.20) == ws.CELL_TABLE_FREE
+    # A grade SO' POR COR da mesma fusao nao ve o chao (igual ao sem profundidade).
+    assert np.array_equal(f1.cells(use_depth=False), c0)
+    assert f1.summary()["frames_depth"] == 1 and f0.summary()["frames_depth"] == 0
     # Celula "alem" ganha de um voto branco de outra vista (profundidade nao atravessa mesa).
     f1.votes_white[f1.votes_beyond > 0] += 1
     assert cell(f1.cells(update_lines=False), 0.0, 0.10) == ws.CELL_OFF_TABLE
+
+
+def test_grid_color_ignores_wrong_depth():
+    """Profundidade sintetica ERRADA (ilhas de alem/acima sobre o tampo, como
+    na run de 21/10) entra na grade com profundidade; a grade so' por cor
+    (cells(use_depth=False) / grid_color) sai identica a de uma fusao sem
+    profundidade."""
+    cfg = _no_gripper_cfg(depth_max_conflict_frac=1.0)    # forca o lixo a entrar (teto desligado)
+    plane_z = 0.0
+    table = (-0.40, 0.40, 0.16, 0.66)
+    cam = _SyntheticCamera(origin=_DEPTH_CAM_ORIGIN, pitch_down_deg=80.0)
+    img = _render_table(cam, plane_z, table, [(0.10, 0.35, 0.041)])     # chao escuro, 1 cubo
+    scale = cfg.process_scale
+    w, h = int(cam.W * scale), int(cam.H * scale)
+    dl = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    for k, v in enumerate(range(20, h - 20, 24)):
+        for m, u in enumerate(range(20, w - 20, 24)):
+            dl[v:v + 10, u:u + 10] = ws.LBL_BEYOND if (k + m) % 2 == 0 else ws.LBL_NONWHITE
+    res = ws.segment_frame(img, cfg, holding=False, depth_label=dl)
+    res0 = ws.segment_frame(img, cfg, holding=False)
+    assert res.depth_used and not res0.depth_used
+    assert np.array_equal(res.label_color, res0.label)
+    assert not np.array_equal(res.label, res0.label)
+    uv = ws.SurfaceGridFusion(cfg).project_cells(cam.K, None, cam.origin, cam.R, plane_z, cam.W, cam.H)
+    f = ws.SurfaceGridFusion(cfg)
+    f.fuse(res.label, scale, uv, depth_used=True, label_color_small=res.label_color)
+    f0 = ws.SurfaceGridFusion(cfg)
+    f0.fuse(res0.label, scale, uv)
+    c_depth = f.cells(use_depth=True)
+    c_color = f.cells(use_depth=False)
+    assert np.array_equal(c_color, f0.cells())
+    assert not np.array_equal(c_depth, c_color)
+    assert [ln.describe() for ln in f.lines_color] == [ln.describe() for ln in f0.lines]
+    s = f.summary()
+    assert s["beyond"] > 0 and s["above"] > 0 and s["frames_depth"] == 1 and f0.summary()["frames_depth"] == 0
+    # O cubo (nao-branco por cor) continua obstaculo nas duas grades.
+    i = int((0.10 - cfg.grid_x_min) / cfg.resolution)
+    j = int((0.35 - cfg.grid_y_min) / cfg.resolution)
+    assert c_color[j, i] == ws.CELL_OBSTACLE and c_depth[j, i] == ws.CELL_OBSTACLE
+    # Sem label_color (quadro so' por cor) os votos de cor vem do proprio rotulo.
+    g = ws.SurfaceGridFusion(cfg)
+    g.fuse(res0.label, scale, uv)
+    assert np.array_equal(g.cells(use_depth=False), f0.cells())
 
 
 def test_fusion_white_without_depth_cannot_refute_beyond():
@@ -548,12 +672,12 @@ def test_fusion_white_without_depth_cannot_refute_beyond():
     so' por cor: o chao claro vota branco. Esses votos NAO podem virar o
     'alem' de um quadro com profundidade; so' brancos de quadros com
     profundidade disputam (maioria, empate = alem)."""
-    cfg = _no_gripper_cfg()
+    cfg = _no_gripper_cfg()    # chao claro (36% do branco) toca a borda: nao e' conflito
     plane_z = 0.0
     table = (-0.40, 0.40, 0.16, 0.66)
-    cam = _SyntheticCamera(origin=(0.0, 0.16, 0.30), pitch_down_deg=80.0)
+    cam = _SyntheticCamera(origin=_DEPTH_CAM_ORIGIN, pitch_down_deg=80.0)
     img = _render_table(cam, plane_z, table, [], floor=(225, 225, 225))     # chao claro
-    depth = _render_depth(cam, table, plane_z, plane_z - 0.15)
+    depth = _render_depth(cam, table, plane_z, plane_z - 0.15, table_valid=True)
     scale = cfg.process_scale
     w, h = int(cam.W * scale), int(cam.H * scale)
     exp = ws.expected_plane_range(cam.K, None, cam.origin, cam.R, plane_z, w, h, scale)
@@ -589,11 +713,14 @@ def test_fusion_white_without_depth_cannot_refute_beyond():
 
 
 def test_depth_config_keys():
-    cfg = ws.config_from_dict({"depth_enable": "false", "depth_beyond_plane_m": "0.04", "depth_open_px": 5})
+    cfg = ws.config_from_dict({"depth_enable": "false", "depth_beyond_plane_m": "0.04", "depth_open_px": 5,
+                               "depth_min_reliable_m": "0.5", "depth_max_conflict_frac": 0.2})
     assert cfg.depth_enable is False and cfg.depth_beyond_plane_m == 0.04 and cfg.depth_open_px == 5
+    assert cfg.depth_min_reliable_m == 0.5 and cfg.depth_max_conflict_frac == 0.2
     d = ws.SurfaceConfig()
     assert d.depth_enable is True and d.depth_min_valid_m == 0.25
     assert d.depth_beyond_plane_m == 0.03 and d.depth_above_plane_m == 0.02
+    assert d.depth_min_reliable_m == 0.45 and d.depth_max_conflict_frac == 0.30   # D455: alcance util da ficha tecnica
 
 
 # ---------------------------------------------------------------------------
@@ -616,3 +743,99 @@ def test_table_polygon_from_cells_rectangle():
     assert abs(P[:, 1].min() - 0.16) < 0.015 and abs(P[:, 1].max() - 0.66) < 0.015
     assert ws.table_polygon_from_cells(np.full(X.shape, ws.CELL_OFF_TABLE, np.int8), X, Y) == []
     assert ws.table_polygon_from_cells(np.full(X.shape, ws.CELL_UNKNOWN, np.int8), X, Y) == []
+
+
+# ---------------------------------------------------------------------------
+# Profundidade: mascara decidivel, alcance curto e conflito que nao pune o chao
+# ---------------------------------------------------------------------------
+def test_depth_decidable_mask_and_short_range():
+    cfg = _no_gripper_cfg()                       # depth_min_reliable_m 0.45
+    exp = np.array([[0.30, 0.44, 0.45, 0.60], [np.nan, 0.31, 0.50, 0.70]], np.float32)
+    dec = ws.depth_decidable_mask(exp, cfg)
+    assert dec.tolist() == [[False, False, True, True], [False, False, True, True]]
+    assert not ws.depth_short_range(dec, exp)                     # 4 de 7 com plano decidem
+    # pegar_obj: tudo entre 0,29 e 0,34 m -> quadro inteiro curto
+    exp_short = np.full((4, 4), 0.31, np.float32)
+    assert ws.depth_short_range(ws.depth_decidable_mask(exp_short, cfg), exp_short)
+    # Sem plano em nenhum pixel: tambem "curto" (nada a decidir)
+    assert ws.depth_short_range(np.zeros((2, 2), bool), np.full((2, 2), np.nan, np.float32))
+    # Fracao decidivel 0,5% < 1%: curto; 2%: nao
+    exp_mix = np.full((100, 100), 0.31, np.float32)
+    exp_mix[0, :50] = 0.60
+    assert ws.depth_short_range(ws.depth_decidable_mask(exp_mix, cfg), exp_mix)
+    exp_mix[0:2, :] = 0.60
+    assert not ws.depth_short_range(ws.depth_decidable_mask(exp_mix, cfg), exp_mix)
+
+
+def test_conflict_counts_islands_not_floor_touching_border():
+    h, w = 120, 160
+    white = np.full((h, w), 255, np.uint8)                        # tudo branco por cor
+    dl = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    dl[90:, :] = ws.LBL_BEYOND                                    # chao claro ligado a borda de baixo
+    assert ws.depth_color_conflict_frac(white, dl) == 0.0
+    dl[30:50, 60:80] = ws.LBL_BEYOND                              # ilha de "alem" no meio do tampo
+    frac_island = ws.depth_color_conflict_frac(white, dl)
+    assert abs(frac_island - 400.0 / (h * w)) < 1e-6
+    dl[10:20, 10:30] = ws.LBL_NONWHITE                            # "acima" sobre branco conta sempre
+    assert abs(ws.depth_color_conflict_frac(white, dl) - 600.0 / (h * w)) < 1e-6
+    # "Alem" encostado no nao-branco (borda real da mesa) e' plausivel
+    white2 = white.copy()
+    white2[:, 100:] = 0                                            # a direita e' nao-branco (chao escuro)
+    dl2 = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    dl2[40:60, 90:100] = ws.LBL_BEYOND                            # faixa branca colada ao nao-branco
+    assert ws.depth_color_conflict_frac(white2, dl2) == 0.0
+    # Com a mascara 'known' a borda da garra tambem e' borda
+    known = np.full((h, w), 255, np.uint8)
+    known[:, :50] = 0
+    dl3 = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    dl3[40:60, 50:60] = ws.LBL_BEYOND                             # encostado na regiao da garra
+    assert ws.depth_color_conflict_frac(white, dl3, known) == 0.0
+    assert ws.depth_color_conflict_frac(white, dl3) > 0.0         # sem known: ilha
+
+
+def test_fusion_short_range_frames_do_not_refute_beyond():
+    """Quadros de pegar_obj (tampo a 0,31 m, zona cega) sao brancos por cor
+    mas a profundidade NAO podia decidir neles: esses brancos nao contam como
+    'visto com profundidade' e nao refutam o 'alem' de uma vista alta."""
+    cfg = _no_gripper_cfg()
+    fusion = ws.SurfaceGridFusion(cfg)
+    # Vista "curta": rotulos todos brancos, com depth_used mas nada decidivel.
+    scale = cfg.process_scale
+    h, w = 240, 320
+    white = np.full((h, w), ws.LBL_WHITE, np.uint8)
+    uv = np.zeros((fusion.height, fusion.width, 2), np.float32)
+    uv[:, :, 0] = 160.0 / scale
+    uv[:, :, 1] = 120.0 / scale                                  # todas as celulas caem no mesmo pixel
+    for _ in range(10):
+        fusion.fuse(white, scale, uv, depth_used=True, depth_decidable_small=np.zeros((h, w), bool))
+    assert fusion.frames_depth == 0 and int(fusion.votes_white_depth.max()) == 0
+    # Uma vista alta decide "alem" nessas celulas: vence.
+    beyond = np.full((h, w), ws.LBL_BEYOND, np.uint8)
+    fusion.fuse(beyond, scale, uv, depth_used=True, depth_decidable_small=np.ones((h, w), bool))
+    assert fusion.frames_depth == 1
+    _seen, _w, _nw, b = fusion.masks()
+    assert bool(b.all())
+    # Sem a mascara (quadro inteiro ao alcance) o branco com profundidade conta.
+    f2 = ws.SurfaceGridFusion(cfg)
+    for _ in range(3):
+        f2.fuse(white, scale, uv, depth_used=True)
+    assert f2.frames_depth == 3 and int(f2.votes_white_depth.max()) == 3
+
+
+def test_segment_frame_passes_decidable_mask_through():
+    cfg = _no_gripper_cfg()
+    img = np.full((480, 640, 3), (225, 225, 225), np.uint8)
+    h, w = 240, 320
+    dl = np.full((h, w), ws.LBL_UNKNOWN, np.uint8)
+    dl[200:, :] = ws.LBL_BEYOND
+    dec = np.zeros((h, w), bool)
+    dec[150:, :] = True
+    res = ws.segment_frame(img, cfg, holding=False, depth_label=dl, depth_decidable=dec)
+    assert res.depth_used and res.depth_decidable is not None
+    assert res.depth_decidable.shape == (h, w)
+    assert bool(res.depth_decidable[200, 160]) and not bool(res.depth_decidable[50, 160])
+    # Mascara em outra resolucao e' reamostrada; sem profundidade nao ha mascara.
+    res_r = ws.segment_frame(img, cfg, holding=False, depth_label=dl,
+                             depth_decidable=cv2.resize(dec.astype(np.uint8), (640, 480), interpolation=cv2.INTER_NEAREST))
+    assert np.array_equal(res_r.depth_decidable, res.depth_decidable)
+    assert ws.segment_frame(img, cfg, holding=False).depth_decidable is None

@@ -9,6 +9,16 @@ separar mesa de chão (§2b) e a publicar o tampo e as bordas como **polígonos/
 `vision_debug` pinta por polígonos e desenha a zona de manipulação. Testado só em bancada
 sintética (pytest + par cor/profundidade sintético); validação no robô pendente (§7, itens 7–8).
 
+**Atualização 2026-10-21 (run BMT, WS1 — ver `docs/analise_run_2026-10-21.md`):** a profundidade
+a 0,31 m do tampo (abaixo do alcance útil da D455) marcou ~1.750 células "além" e ~2.100 "acima"
+numa mesa meio vazia, ilhas de "fora" dentro do tampo inverteram as bordas laterais, e a frente
+real vista pela câmera (y = 0,28, robô docado a 19,7°) foi rejeitada pelo prior 0,163 ± 0,06 →
+`validas 0 -> 0 candidatos` em 2 entregas (salvas pelas poses fixas). Correções na §2e: alcance
+mínimo e consistência da profundidade, grade só por cor em paralelo, remoção de ilhas, borda
+lateral do lado certo, frente `camera_first`, contadores de rejeição por regra e replanejamento
+só por cor antes das poses fixas. Testado em bancada (gtest com a reprodução da run + pytest);
+validação no robô pendente (§7, itens 9–11).
+
 ## 0. O que muda (30 segundos)
 
 Antes, o place em mesa comum (`WS_*`) escolhia entre **3 poses fixas** do SRDF
@@ -119,9 +129,10 @@ frame óptico, a mesma grandeza que o sensor mede) e compara com a medida (`clas
 
 | Medida | Rótulo | Efeito |
 |---|---|---|
-| válida e `> esperada + depth_beyond_plane_m` (6 cm) | **além do plano** (`LBL_BEYOND`) | fora da mesa, seja qual for a cor: a célula vira `OFF_TABLE` **direto** e entra como "fora" na fronteira da RANSAC, que assim acha a borda real |
+| válida e `> esperada + depth_beyond_plane_m` (3 cm) | **além do plano** (`LBL_BEYOND`) | fora da mesa, seja qual for a cor: a célula vira `OFF_TABLE` **direto** e entra como "fora" na fronteira da RANSAC, que assim acha a borda real |
 | válida e `< esperada − depth_above_plane_m` (2 cm) | não branco | algo sobre o tampo (objeto), mesmo que branco |
 | inválida (0), `< depth_min_valid_m` (0,25 m) ou sem profundidade no ar | — | decide a cor, como antes |
+| **esperada `< depth_min_reliable_m` (0,45 m)** — alcance mínimo útil da D455 (§2e) | — | decide a cor, seja qual for a medida (abaixo do alcance a medida é lixo nos dois sentidos) |
 
 O tampo visto de `pegar_obj` (0,3–0,4 m) costuma vir **inválido** (zona cega do D455) e cai na
 cor; o chão e tudo o que está além da mesa vêm válidos e mais longe que o plano. Na fusão,
@@ -146,18 +157,19 @@ cor/profundidade desencontrado em mais de `depth_max_age_s`) o comportamento é 
 
 **Parâmetros** (`config/workstation_surface.yaml`, todos ajustáveis com `ros2 param set
 /workstation_surface ...`): `depth_enable` (true), `depth_topic`, `depth_max_age_s` (0,5),
-`depth_grace_s` (1,0), `depth_min_valid_m` (0,25), `depth_beyond_plane_m` (0,06), `depth_above_plane_m` (0,02),
-`depth_open_px` (3, tira *flying pixels* das bordas), `depth_above_max_frac` (0,5).
-Mesa de 5 cm: o chão fica só 5 cm abaixo do tampo — com raios quase verticais a folga de 6 cm
-não dispara e cor + RANSAC continuam decidindo; medir o ruído real e baixar para 0,03–0,04 se
-for o caso. Mesa de 0 cm: não há diferença de profundidade, só a cor separa.
+`depth_grace_s` (1,0), `depth_min_valid_m` (0,25), `depth_beyond_plane_m` (0,03), `depth_above_plane_m` (0,02),
+`depth_open_px` (3, tira *flying pixels* das bordas), `depth_above_max_frac` (0,5),
+`depth_min_reliable_m` (0,45) e `depth_max_conflict_frac` (0,30) — estes dois na §2e.
+Mesa de 5 cm: o chão fica só 5 cm abaixo do tampo — com raios quase verticais a folga de 3 cm
+está no limite; medir o ruído real. Mesa de 0 cm: não há diferença de profundidade, só a cor separa.
 
-**Como ver.** `ros2 topic echo /manip/workstation_surface/status` traz `depth=ok alem=NN%
-acima=NN%` (ou, vencida a graça, `depth=sem (so cor)` / `depth=velha(0.8s) (so cor)` / `depth=off`);
-logo após a ativação é normal 1–2 mensagens `aguardando profundidade (...)`. No `debug_image` o "além do
-plano" sai em **azul**. No `vision_debug` (§2c) o chão aparece como "fora da mesa" (cinza) e a
-frente detectada como reta amarela com a seta apontando para o robô. Offline, com um par
-cor + profundidade do mesmo quadro: `--depth depth.png` (§5).
+**Como ver.** `ros2 topic echo /manip/workstation_surface/status` (latched) começa com o prefixo
+`depth=ok alem=NN% acima=NN% retas=N quadros=<com depth>/<total>` (ou `depth=descartada(NN%)`,
+`depth=sem`, `depth=velha(0.8s)`, `depth=off`); logo após a ativação é normal 1–2 mensagens
+`aguardando profundidade (...)`. No `debug_image` o "além do plano" sai em **azul**. No
+`vision_debug` (§2c) o chão aparece como "fora da mesa" (cinza), a frente detectada como reta
+amarela com a seta apontando para o robô, e a barra diz `mapa: depth` ou `mapa: cor` (§2e). Offline,
+com um par cor + profundidade do mesmo quadro: `--depth depth.png` (§5).
 
 ### 2c. Polígonos e vetores (2026-10-21)
 
@@ -192,6 +204,102 @@ cega; tampo e topo de um cubo de 41 mm ficam a 0,26–0,36 m). O que dá para fa
 mínimo é menor; (c) altura dos objetos pelo tamanho aparente (tags de lado conhecido). Fica
 registrado para a próxima rodada.
 
+### 2e. Run de 2026-10-21: alcance mínimo, ilhas, frente pela câmera e replanejamento por cor
+
+O que a run mostrou (detalhes e números em `docs/analise_run_2026-10-21.md`, §2 e §5) e o que
+mudou em cada ponto:
+
+**1. Profundidade só onde é confiável** (`workstation_surface_node.py`). A D455 não mede de forma
+confiável abaixo de ~0,45 m: a 0,31 m do tampo devolveu valores maiores que o real (→ "além" → fora
+da mesa) e menores (→ "acima" → objeto). `depth_min_valid_m` (0,25) só olhava a **medida** e não
+protegia contra 0,45 m medido a 0,31 m reais. Agora:
+
+- `depth_min_reliable_m` (0,45 m): aplicado ao **alcance esperado do raio até o plano**
+  (`expected_plane_range`), não à medida. O min-Z nominal da D455 é ~0,3 m em 640x480 (0,52 m em
+  1280x720); 0,45 é a margem até a medida bater com o plano — **medir no robô**. Pixel com esperado
+  abaixo disso fica **sem decisão de profundidade** seja qual for a medida (decide a cor) e
+  também **não conta como "branco visto com profundidade"** na fusão (`depth_decidable`): um quadro
+  de `pegar_obj` (0,31 m, zona cega) não refuta o chão visto "além" de uma pose alta. Quadro inteiro
+  abaixo do alcance vira status `depth=curta(0.31m)` e funde só por cor, sem esperar a graça.
+  `depth_min_valid_m` continua valendo sobre a medida.
+- `depth_max_conflict_frac` (0,30): consistência por quadro, contada só no que **contradiz o
+  tampo sem explicação**: pixels "acima" sobre branco e ilhas de "além" **cercadas por branco**
+  (no meio do tampo). "Além" ligado à borda da imagem, à garra ou ao não-branco é chão/além da mesa
+  plausível e **não** conta — um chão claro da cor do tampo continua sendo separado pela
+  profundidade. Acima do teto é a profundidade que está errada (alcance curto, plano errado): a
+  profundidade do quadro é **descartada** (funde só por cor) e o nó avisa (WARN, 1x/5 s):
+  `profundidade inconsistente com a cor (38%): ignorada neste quadro — alcance esperado ao tampo 0.33 m`.
+  Status: `depth=descartada(38%)`. Ordem: o teto de "acima" (`depth_above_max_frac`, plano errado)
+  é aplicado antes, e o conflito é medido sobre os rótulos já corrigidos. `1.0` desliga.
+
+**2. Grade só por cor em paralelo.** A fusão guarda votos separados dos rótulos **só por cor**
+(`votes_white_color` / `votes_nonwhite_color`; os "acima" só pela profundidade ficam em
+`votes_above`) e `SurfaceGridFusion.cells(use_depth=False)` monta a grade sem "além" nem "acima",
+com retas RANSAC próprias (`lines_color`). O nó publica as duas: `/manip/workstation_surface/grid`
+(com profundidade) e `/manip/workstation_surface/grid_color` (`grid_color_topic`; mesma QoS
+latched, mesmo header). Sem profundidade as duas são idênticas (há teste).
+
+**3. Planejador** (`surface_place_planner.cpp`):
+
+| Mudança | Regra | Diagnóstico |
+|---|---|---|
+| Ilhas de "fora" | antes das bordas e das distâncias, componentes 4-conexos de `OFF_TABLE` cercados só por tampo/obstáculo (sem tocar a borda da grade nem célula desconhecida) com menos de `island_max_cells` (150 = 1,5 dm²) viram **desconhecido** (`removeOffTableIslands`) | `14 ilha(s) de fora removida(s) (224 cel)` |
+| Borda lateral do lado certo | "direita" só vale com `x > mediana x do tampo + 2 cm`; "esquerda" só com `x < mediana − 2 cm` (`side_median_margin_m`) | `borda direita nao vista (lado errado: x=-0.29 vs mediana do tampo 0.00)` |
+| Frente `camera_first` (default) | a frente ajustada pela câmera vale se tem suporte (`front_min_support` 8, extensão ≥ 8 cm) e inclinação ≤ `front_max_slope_deg` (25°), **mesmo longe do prior**; o prior (LiDAR/docking) só entra como fallback. `prior_gate` = modo antigo (rejeita a mais de `front_prior_tolerance_m` do prior) | `frente ajustada (y=0.28) a 0.117 m do prior 0.163 (camera_first: aceita)`; `inclinada 28 graus (> 25) -> REJEITADA` |
+| Contagem de rejeições | cada célula livre conta na **primeira** regra que a rejeitou, na ordem borda > objeto > desconhecido > zona > parede > alcance (`SurfacePlan::n_rejected_*`, `rejectionSummary()`); `n_table_free = validas + soma` | `validas 0 (rejeitadas: borda 1851, objeto 76, desconhecido 140, zona 237, parede 0, alcance 0)` |
+
+Reprodução da run no gtest `Run20261021IslandsAndFarFrontRegression` (vista parcial, frente real
+em y = 0,28 com prior 0,163, ~1.700 células de "fora" entre o fora real e ilhas 4x4, 2 cubos):
+
+```
+ANTES : frente ajustada (y=0.36) a 0.197 m do prior 0.163 -> REJEITADA; frente NAO vista (136 pts de borda)
+        -> fallback y=0.163; ... fora 1714 ...; validas 0 (rejeitadas: borda 1851, objeto 76, desconhecido 140,
+        zona 237, parede 0, alcance 0) -> 0 candidatos
+DEPOIS: 14 ilha(s) de fora removida(s) (224 cel); frente ajustada (y=0.28) a 0.117 m do prior 0.163
+        (camera_first: aceita); frente vista: y=0.28 + 0x (80 pts, x -0.395..0.395); borda direita x=0.4 (32 pts);
+        borda esquerda x=-0.4 (32 pts); ...; validas 170 (rejeitadas: borda 600, objeto 285, desconhecido 519,
+        zona 491, parede 0, alcance 239) -> 40 candidatos
+```
+
+**4. Place** (`placeWithSurfacePlanner`): assina também `grid_color`. Quando as vistas dão **0
+candidatos** e a grade usada levou profundidade (difere da grade só por cor), replaneja **uma vez**
+com a grade só por cor (estágio `surface_replanning_color`, fala "Olhando de novo só pela cor",
+mesmos obstáculos extras/paredes da última vista) antes de cair nas poses fixas
+(`surface_fallback_legacy_slots` mantido). O log traz as contagens de rejeição de cada vista
+(`validas N (rejeitadas: ...)`) e o motivo final vai **estruturado** para `result.message`, por
+exemplo `Place completed [slot=Mesa15.1 margem=+3.0cm] [superficie: sem_espaco: validas 0
+(rejeitadas: borda 1851, objeto 76, desconhecido 140, zona 237, parede 0, alcance 0) [cor: validas 0
+(...)]]` ou `[superficie: replanejada_cor: validas 170 (...)]`. Uma frente da câmera aceita longe
+do prior gera o aviso `frente vista pela camera (y=0.280, 17 pts) a 11.7 cm do prior 0.163 — vale a
+camera (camera_first); docking torto?`.
+
+**5. Viewer e status.** O status do nó de superfície é **latched** e começa com um prefixo fixo
+`depth=<ok|descartada(NN%)|sem|off|velha(..)> alem=NN% acima=NN% retas=N quadros=<com depth>/<total>`.
+O `vision_debug` lê esse prefixo e mostra `mapa: depth` (algum quadro da grade levou profundidade)
+ou `mapa: cor` na barra, mais a linha `superficie: depth=...`. Para olhar a grade só por cor no
+viewer: `ros2 param set /vision_debug grid_topic /manip/workstation_surface/grid_color` (reiniciar o
+nó: o tópico é lido no arranque).
+
+**Legenda da imagem de depuração** (`/manip/vision_debug/image`):
+
+| Desenho | Cor | Significado |
+|---|---|---|
+| Tinta sobre o tampo | verde | célula livre |
+| Tinta | vermelho (rosado sobre branco) | célula com objeto (cor não-branca ou profundidade "acima") |
+| Tinta | cinza | fora da mesa (além de uma reta de borda ou profundidade "além") |
+| Sem tinta | — | desconhecido (não visto, raio rasante, garra) |
+| Contorno branco | — | polígono do tampo visto |
+| Reta | amarela | frente da mesa (lado de fora = robô) |
+| Reta | magenta (roxa) | fundo da mesa |
+| Reta | ciano | laterais |
+| Tracejado | laranja | zona de manipulação (2–20 cm da frente, 2 cm das laterais) |
+| Quadrado | verde / amarelo | AprilTag vista (amarelo = leitura com correção de bits) |
+| Caixa | vermelha / azul | container por cor (só durante o place) |
+| Barra no topo | — | PICK/PLACE, ids vistos, idade e **origem** do mapa (`mapa: depth` / `mapa: cor`) e contagem livre/obj/fora, `bordas: ...` ou `sem frente`, `superficie: depth=...`, última fala, fps |
+
+"Bordas: nenhuma / sem frente" na barra significa que o nó de superfície não achou reta de borda
+(caso das observações 2 e 3 da run: `retas=0`).
+
 ## 3. Paredes (10 cm)
 
 Declare por estação no `ws_table_mapping.yaml` do mapa (lado visto pelo **robô docado de frente
@@ -222,6 +330,9 @@ Nó de place (`ros2 param set /place_action_server <nome> <valor>`; relidos a ca
 | `surface_footprint_radius_m` | 0.029 | círculo circunscrito do cubo de 41 mm |
 | `surface_front_fallback_y_m` | 0.163 | frente quando nem LiDAR nem câmera a veem (= dist. docking 0,38 − 0,217 do braço) |
 | `surface_front_lidar_enabled` | true | frente pela face da mesa no `/scan` (half_width 0.25, janela ±0.12 do fallback) |
+| `surface_front_prior_mode` | `camera_first` | frente vista pela câmera vale mesmo longe do prior (§2e); `prior_gate` = modo antigo (`surface_front_prior_tolerance_m` 0.06 rejeita) |
+| `surface_island_max_cells` | 150 | ilhas de "fora" cercadas por tampo menores que isto viram desconhecido; 0 desliga |
+| `surface_grid_color_topic` / `surface_replan_color_enabled` | `/manip/workstation_surface/grid_color` / true | replanejamento só por cor quando as vistas dão 0 candidatos com profundidade |
 | `surface_pre_lift_m` | 0.05 | elevação antes da descida vertical |
 | `surface_arrival_xy_tolerance_m` / `_z_` | 0.02 / 0.06 | chegada por FK (o braço estendido afunda ~2,5 cm em z) |
 | `surface_tilt_ladder_deg` | `[15, 30]` | inclinação da ferramenta se 0° não tiver IK |
@@ -231,8 +342,9 @@ Nó de place (`ros2 param set /place_action_server <nome> <valor>`; relidos a ca
 Nó de superfície (`ros2 param set /workstation_surface ...`, `config/workstation_surface.yaml`):
 `white_s_max` / `white_v_min` (cor do tampo), `edge_min_length_m` (0.20), `edge_outside_max_white_frac`
 (0.10), `min_ray_elevation_deg` (18), `resolution` (0.01), grade `grid_x/y_min/max`; profundidade
-(§2b): `depth_enable`, `depth_beyond_plane_m` (0.06), `depth_above_plane_m` (0.02),
-`depth_min_valid_m` (0.25), `depth_max_age_s` (0.5), `depth_grace_s` (1.0).
+(§2b, §2e): `depth_enable`, `depth_beyond_plane_m` (0.03), `depth_above_plane_m` (0.02),
+`depth_min_valid_m` (0.25), `depth_min_reliable_m` (0.45, alcance mínimo útil — sobre o esperado),
+`depth_max_conflict_frac` (0.30), `depth_max_age_s` (0.5), `depth_grace_s` (1.0); `grid_color_topic`.
 
 ## 5. Calibrar / depurar sem robô
 
@@ -258,7 +370,8 @@ Ao vivo: `ros2 param set /workstation_surface always_on true`, `ros2 topic echo
 display *Map* em `/manip/workstation_surface/grid` (fixed frame `manip_base_link`).
 
 Testes: `colcon test --packages-select manip_task_execution manip_bringup --ctest-args -R
-"surface|workstation"` (15 gtests de regras/retas/paredes, 12 pytests de segmentação/projeção/fusão).
+"surface|workstation|vision"` (23 gtests de regras/retas/paredes/ilhas/contadores + reprodução da
+run, 26 pytests de segmentação/projeção/fusão/profundidade, 25 do viewer).
 
 ## 6. Sintomas → causa → parâmetro
 
@@ -266,8 +379,12 @@ Testes: `colcon test --packages-select manip_task_execution manip_bringup --ctes
 |---|---|---|
 | `workstation_surface_node nao esta no ar` → poses fixas | nó não subiu / `use_surface_detector:=false` | launch; `ros2 node list` |
 | `mesa nao vista pela camera` | `white_v_min` alto demais (tampo na sombra) ou baixo (chão/parede cinza entram) | `--image` offline, `white_v_min` 90–120 |
-| `nenhum ponto livre que respeite as regras` em mesa com espaço | frente de referência errada (docking torto, LiDAR não vê a face) ou vista só de `pegar_obj` com o cubo tapando | ver `frente fallback`/`LiDAR: frente` no log; `surface_observe_lazy:=false` |
-| `frente ... REJEITADA (longe do prior)` | faces de objetos alinhadas fingindo frente (esperado) ou prior errado | conferir `frente fallback y`; `surface_front_prior_tolerance_m` |
+| `nenhum ponto livre que respeite as regras: validas 0 (rejeitadas: borda a, objeto b, desconhecido c, zona d, parede e, alcance f)` | a regra com o maior número diz a causa: **borda** alta = "fora" dentro do tampo (profundidade ruim, ilhas grandes) ou frente/laterais erradas; **objeto** alta = "acima" pela profundidade ou mesa cheia; **zona** alta = frente de referência errada (docking torto); **desconhecido** = vista curta/garra | status `depth=`; `mapa: depth/cor` no viewer; `surface_observe_lazy:=false`; `grid_color` |
+| `frente ... REJEITADA (longe do prior)` | só em `surface_front_prior_mode: prior_gate`: faces de objetos alinhadas fingindo frente ou prior errado | `camera_first` (default) aceita a câmera; conferir `frente fallback y` |
+| `frente vista pela camera ... a N cm do prior — vale a camera; docking torto?` | o robô docou girado/recuado (run de 21/10: 19,7°) | conferir `pronto: ... yaw_face` do `dock_align`; a zona segue a câmera |
+| `profundidade inconsistente com a cor (NN%): ignorada neste quadro — alcance esperado ao tampo X m` | câmera abaixo do alcance útil (X < 0,45) com `depth_min_reliable_m` baixado, ou `plane_z` errado, ou chão claro > 30 % do branco | `depth_min_reliable_m`; `plano=` no status; `depth_max_conflict_frac` |
+| `0 candidatos com a grade com profundidade — replanejando so' pela cor` seguido de entrega | a profundidade pintou falsos "fora"/objetos | normal como rede de segurança; investigar `alem=`/`acima=` no status |
+| `frente ... inclinada 28 graus (> 25) -> REJEITADA` | docking muito torto ou reta de objeto | `surface_front_max_slope_deg` não existe como parâmetro (25° fixo no planejador); corrigir o docking |
 | Candidatos colados num container sem tag | container não ficou "objeto": cor clara demais | `white_s_max` ↓; conferir overlay |
 | `nenhum com IK — fora de alcance` | ponto livre longe de lado (mesa de 80 cm) | esperado: fila de alcance desloca a base (`ReachQueue`) |
 | `chegada fora da tolerancia` | braço afundando / IK no limite | `surface_arrival_z_tolerance_m` ↑; ver `tilt` usado |
@@ -310,3 +427,13 @@ Testes: `colcon test --packages-select manip_task_execution manip_bringup --ctes
 8. **Polígonos:** no RViz, *Polygon* em `/manip/workstation_surface/table_polygon` e *MarkerArray*
    em `/manip/workstation_surface/edge_lines` sobre a *Map* da grade; no `vision_debug`, a zona
    tracejada laranja tem de começar 2 cm atrás da frente e acabar a 20 cm.
+9. **Alcance mínimo (pendente, 2026-10-21):** medir no D455 real a partir de que distância a
+   profundidade bate com o plano (status `acima=`/`alem=` perto de 0 % numa mesa vazia vista de
+   uma pose alta) e ajustar `depth_min_reliable_m` (0,45 é o da ficha técnica). De `pegar_obj`
+   (0,31 m) o status deve dizer `depth=ok alem=0% acima=0%` (nada decidido) ou `quadros=0/N`.
+10. **Grade só por cor:** `ros2 topic echo /manip/workstation_surface/grid_color --no-arr` tem de
+    vir com o mesmo header que `.../grid`; numa mesa vazia a 0,31 m as duas devem ser iguais.
+11. **Replanejamento / mensagem:** forçar o caso (ex. `depth_min_reliable_m 0.2` + mesa vazia) e
+    conferir no log `replanejando so' pela cor` → entrega pela superfície, e no `result.message`
+    do `PlaceTag` o sufixo `[superficie: ...]` (também nas poses fixas: `sem_espaco: validas 0
+    (rejeitadas: ...)`).

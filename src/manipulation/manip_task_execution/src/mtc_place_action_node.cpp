@@ -467,6 +467,21 @@ public:
         this->declare_parameter<double>("surface_front_lidar_half_width_m", 0.25);
         this->declare_parameter<double>("surface_front_lidar_max_dev_m", 0.12);
         this->declare_parameter<double>("surface_front_prior_tolerance_m", 0.06);
+        // Como o prior entra (2026-10-21): "camera_first" (default) = a frente
+        // ajustada pela camera vale com suporte e inclinacao <= 25 graus MESMO
+        // longe do prior (na WS1, docado a 19,7 graus, o prior rejeitou a
+        // frente real vista a 12 cm dele); "prior_gate" = comportamento antigo.
+        this->declare_parameter<std::string>("surface_front_prior_mode", "camera_first");
+        // Grade SO' POR COR do no de superficie (votos sem a profundidade):
+        // quando as vistas dao 0 candidatos com a grade com profundidade, o
+        // place replaneja UMA vez com ela antes de cair nas poses fixas.
+        this->declare_parameter<std::string>(
+            "surface_grid_color_topic", "/manip/workstation_surface/grid_color");
+        this->declare_parameter<bool>("surface_replan_color_enabled", true);
+        // Ilhas de "fora da mesa" cercadas por tampo com menos que isto de
+        // celulas (1 cm cada; 150 = 1,5 dm2) viram desconhecido antes das
+        // bordas/distancias (profundidade ruim). 0 desliga.
+        this->declare_parameter<int>("surface_island_max_cells", 150);
         // Paredes: do goal (wall_sides, via ws_walls do mapa) ou deste default.
         this->declare_parameter<std::string>("surface_wall_sides_default", "");
         // Deteccao de parede pelo /scan (linha de pontos ao lado da mesa).
@@ -499,6 +514,12 @@ public:
                 std::lock_guard<std::mutex> lock(surface_mutex_);
                 latest_surface_grid_ = msg;
                 ++surface_grid_count_;
+            });
+        surface_grid_color_subscription_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            surface_grid_color_topic_, rclcpp::QoS(1).transient_local().reliable(),
+            [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg) {
+                std::lock_guard<std::mutex> lock(surface_mutex_);
+                latest_surface_grid_color_ = msg;
             });
         surface_observe_pub_ = this->create_publisher<std_msgs::msg::Bool>(
             surface_observe_topic_, rclcpp::QoS(1).transient_local().reliable());
@@ -786,14 +807,23 @@ private:
     double surface_weight_preferred_{0.6};
     double surface_clearance_cap_m_{0.06};
     bool surface_fallback_legacy_slots_{true};
+    std::string surface_front_prior_mode_{"camera_first"};
+    std::string surface_grid_color_topic_;
+    bool surface_replan_color_enabled_{true};
+    int surface_island_max_cells_{150};
+    /// Motivo estruturado da ultima passagem pela superficie (vai para
+    /// result.message): "sem_espaco: validas 0 (rejeitadas: ...)", etc.
+    std::string last_surface_summary_;
     /// O braco saiu de pegar_obj para observar (tag_direita/esquerda).
     bool surface_arm_moved_{false};
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr surface_grid_subscription_;
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr surface_grid_color_subscription_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr surface_observe_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr table_plane_z_pub_;
     std::mutex surface_mutex_;
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_surface_grid_;
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_surface_grid_color_;
     sensor_msgs::msg::LaserScan::ConstSharedPtr latest_scan_;
     std::uint64_t surface_grid_count_{0};
     /// Deslocamento lateral acumulado da base (m, + = esquerda), do
@@ -1819,6 +1849,38 @@ private:
         return moveToJointTarget(arm, q, label + " [resto]");
     }
 
+    /// Sequencia de recolhimento para pegar_obj:
+    /// posiciona j2..j5 com a base (j1) parada e gira j1 somente no fim.
+    /// Assim, depois que o bloco ja esta na garra, o braco nao o varre pela
+    /// mesa enquanto ainda esta estendido. Sem joint_states, mantem o
+    /// movimento unico como fallback seguro.
+    bool moveToJointTargetJoint1Last(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::array<double, 5> & q,
+        const std::string & label)
+    {
+        if (!arm->getCurrentState(2.0)) {
+            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+        const std::vector<double> cur = arm->getCurrentJointValues();
+        if (cur.size() < 5) {
+            RCLCPP_WARN(get_logger(), "[%s] estado atual incompleto — movimento unico.", label.c_str());
+            return moveToJointTarget(arm, q, label);
+        }
+
+        std::array<double, 5> first = q;
+        first[0] = cur[0];
+        bool other_joint_moves = false;
+        for (std::size_t i = 1; i < first.size(); ++i) {
+            other_joint_moves = other_joint_moves || std::abs(first[i] - cur[i]) > 1e-3;
+        }
+        if (other_joint_moves && !moveToJointTarget(arm, first, label + " [j1 parada]")) {
+            return false;
+        }
+        return moveToJointTarget(arm, q, label + " [j1 por ultimo]");
+    }
+
     bool moveToJointTargetJoint2Last(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::array<double, 5> & q,
@@ -2780,6 +2842,10 @@ private:
         surface_weight_preferred_ = this->get_parameter("surface_weight_preferred").as_double();
         surface_clearance_cap_m_ = this->get_parameter("surface_clearance_cap_m").as_double();
         surface_fallback_legacy_slots_ = this->get_parameter("surface_fallback_legacy_slots").as_bool();
+        surface_front_prior_mode_ = this->get_parameter("surface_front_prior_mode").as_string();
+        surface_grid_color_topic_ = this->get_parameter("surface_grid_color_topic").as_string();
+        surface_replan_color_enabled_ = this->get_parameter("surface_replan_color_enabled").as_bool();
+        surface_island_max_cells_ = static_cast<int>(this->get_parameter("surface_island_max_cells").as_int());
     }
 
     void publishSurfaceObserve(bool on)
@@ -2807,6 +2873,12 @@ private:
         std::lock_guard<std::mutex> lock(surface_mutex_);
         if (count) {*count = surface_grid_count_;}
         return latest_surface_grid_;
+    }
+
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr latestSurfaceGridColor()
+    {
+        std::lock_guard<std::mutex> lock(surface_mutex_);
+        return latest_surface_grid_color_;
     }
 
     /// Espera `min_frames` grades novas (contador) cuja estampa seja posterior
@@ -3012,6 +3084,13 @@ private:
         opts.max_candidates = std::max(1, surface_max_ik_candidates_ * 3);
         opts.candidate_spacing_m = surface_candidate_spacing_m_;
         opts.max_reach_radius_m = surface_max_reach_radius_m_;
+        opts.island_max_cells = surface_island_max_cells_;
+        if (!manip_task_execution::parseFrontPriorMode(surface_front_prior_mode_, &opts.front_prior_mode)) {
+            RCLCPP_WARN(
+                get_logger(), "[SUPERFICIE] surface_front_prior_mode='%s' desconhecido — usando camera_first.",
+                surface_front_prior_mode_.c_str());
+            opts.front_prior_mode = manip_task_execution::FrontPriorMode::kCameraFirst;
+        }
         if (surface_front_fallback_enabled_) {
             opts.fallback_front_y = surface_front_fallback_y_m_;
             opts.front_prior_y = surface_front_fallback_y_m_;
@@ -3034,11 +3113,11 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "[SUPERFICIE] tampo z=%.3f, alvo z=%.3f, preferido [%.3f %.3f], paredes L=%d R=%d, "
-            "frente fallback %s (prior +-%.2f)",
+            "frente fallback %s (prior +-%.2f, modo %s)",
             tabletop, target_z, p_named.x(), p_named.y(), rules.wall_left ? 1 : 0,
             rules.wall_right ? 1 : 0,
             opts.fallback_front_y ? std::to_string(*opts.fallback_front_y).substr(0, 5).c_str() : "-",
-            opts.front_prior_tolerance_m);
+            opts.front_prior_tolerance_m, manip_task_execution::frontPriorModeName(opts.front_prior_mode));
 
         publishStage(goal_handle, "surface_observing");
         speak("Olhando a mesa para achar um lugar livre");
@@ -3050,6 +3129,9 @@ private:
             poses.push_back("pegar_obj");
         }
         std::optional<SurfacePlan> plan;
+        // Obstaculos extras da ULTIMA vista: reaproveitados no replanejamento
+        // so' por cor.
+        std::vector<SurfaceExtraObstacle> extra;
         for (std::size_t k = 0; k < poses.size(); ++k) {
             const std::string & pose = poses[k];
             if (!(k == 0 && pose == "pegar_obj")) {
@@ -3096,7 +3178,7 @@ private:
                 publishSurfaceObserve(false);
                 return SurfaceOutcome::kMoveFailed;
             }
-            std::vector<SurfaceExtraObstacle> extra;
+            extra.clear();
             for (const auto & kv : obstacles) {
                 SurfaceExtraObstacle ob;
                 ob.x = kv.second.p.x();
@@ -3169,11 +3251,52 @@ private:
 
         if (!plan || !plan->table_seen) {
             RCLCPP_WARN(get_logger(), "[SUPERFICIE] mesa nao vista pela camera.");
+            last_surface_summary_ = "mesa_nao_vista";
             speak("Nao consegui ver a mesa");
             return SurfaceOutcome::kTableNotSeen;
         }
+        // Replanejamento SO' POR COR (2026-10-21): as vistas deram 0 candidatos
+        // e a grade levou profundidade (difere da grade so' por cor): na run
+        // da WS1 a profundidade a 0,31 m pintou 2 mil falsos obstaculos e 1,7
+        // mil falsos "fora". Uma vez, antes das poses fixas.
+        std::string color_note;
+        if (plan->candidates.empty() && surface_replan_color_enabled_) {
+            const auto depth_msg = latestSurfaceGrid();
+            const auto color_msg = latestSurfaceGridColor();
+            if (!color_msg) {
+                RCLCPP_WARN(
+                    get_logger(), "[SUPERFICIE] sem grade so' por cor em %s — sem replanejamento.",
+                    surface_grid_color_topic_.c_str());
+            } else if (depth_msg && color_msg->data == depth_msg->data) {
+                RCLCPP_INFO(get_logger(), "[SUPERFICIE] grade sem profundidade (igual a so' por cor) — sem replanejamento.");
+            } else if (depth_msg &&
+                std::abs((rclcpp::Time(color_msg->header.stamp) - rclcpp::Time(depth_msg->header.stamp)).seconds()) > 2.0)
+            {
+                RCLCPP_WARN(
+                    get_logger(), "[SUPERFICIE] grade so' por cor desencontrada da grade (%.1f s) — sem replanejamento.",
+                    (rclcpp::Time(color_msg->header.stamp) - rclcpp::Time(depth_msg->header.stamp)).seconds());
+            } else {
+                publishStage(goal_handle, "surface_replanning_color");
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SUPERFICIE] 0 candidatos com a grade com profundidade (%s) — replanejando so' pela cor.",
+                    plan->rejectionSummary().c_str());
+                speak("Olhando de novo so pela cor");
+                const manip_task_execution::SurfaceGrid grid_color = toSurfaceGrid(*color_msg);
+                SurfacePlan pc = manip_task_execution::planSurfacePlacement(grid_color, rules, extra, opts);
+                RCLCPP_INFO(get_logger(), "[SUPERFICIE] vista so' por cor: %s", pc.diagnostics.c_str());
+                color_note = " [cor: " + pc.rejectionSummary() + "]";
+                if (pc.table_seen && !pc.candidates.empty()) {
+                    plan = pc;
+                    last_surface_summary_ = "replanejada_cor: " + pc.rejectionSummary();
+                }
+            }
+        }
         if (plan->candidates.empty()) {
-            RCLCPP_WARN(get_logger(), "[SUPERFICIE] nenhum ponto livre que respeite as regras (%s).", plan->diagnostics.c_str());
+            RCLCPP_WARN(
+                get_logger(), "[SUPERFICIE] nenhum ponto livre que respeite as regras: %s%s (%s).",
+                plan->rejectionSummary().c_str(), color_note.c_str(), plan->diagnostics.c_str());
+            last_surface_summary_ = "sem_espaco: " + plan->rejectionSummary() + color_note;
             speak("Nao achei lugar livre na mesa");
             return SurfaceOutcome::kNoSpace;
         }
@@ -3182,8 +3305,16 @@ private:
                 get_logger(),
                 "[SUPERFICIE] frente da mesa %s pela camera — profundidade da zona pela frente "
                 "de referencia (y=%.3f, %s).",
-                plan->front.rejected_by_prior ? "REJEITADA (longe do prior)" : "NAO vista",
+                plan->front.rejected_by_prior ? "REJEITADA (longe do prior)" :
+                (plan->front.rejected_by_slope ? "REJEITADA (inclinada demais)" : "NAO vista"),
                 plan->front.y0, opts.front_prior_y ? "LiDAR/docking" : "docking");
+        } else if (opts.front_prior_y && plan->front.prior_deviation_m > opts.front_prior_tolerance_m) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[SUPERFICIE] frente vista pela camera (y=%.3f, %d pts) a %.1f cm do prior %.3f — "
+                "vale a camera (%s); docking torto?",
+                plan->front.y0, plan->front.support, plan->front.prior_deviation_m * 100.0,
+                *opts.front_prior_y, manip_task_execution::frontPriorModeName(opts.front_prior_mode));
         }
 
         // ---- IK nos melhores candidatos ----
@@ -3235,6 +3366,8 @@ private:
                 get_logger(),
                 "[SUPERFICIE] %d candidato(s) livres, nenhum com IK (melhor [%.3f %.3f %.3f]) — fora de alcance.",
                 tried, plan->candidates.front().x, plan->candidates.front().y, target_z);
+            last_surface_summary_ = "alvo_fora_de_alcance: " + std::to_string(tried) + " candidato(s) sem IK; " +
+                plan->rejectionSummary();
             return SurfaceOutcome::kUnreachable;
         }
 
@@ -3422,7 +3555,13 @@ private:
             publishStage(goal_handle, "stack_joints_pre_pose");
             speak("Colocando o bloco na posicao gravada");
             stack_arm_moved_ = true;
-            if (!moveToJointTarget(arm, q_lift2, "stack joints pre-pose " + base_frame)) {
+            // place_joints e' o caminho exclusivo do AMT1. Como no pick,
+            // aponta-se j1 primeiro e so entao movem-se as demais juntas.
+            // A pre-pose e o alvo diferem so em Z, portanto mantem-se a
+            // mesma j1 tambem na descida final.
+            q_lift2[0] = qj[0];
+            if (!moveToJointTargetJoint1First(
+                    arm, q_lift2, "stack joints pre-pose " + base_frame)) {
                 return StackOutcome::kMoveFailed;
             }
             stack_lift_q_ = q_lift2;  // subida apos soltar
@@ -5952,6 +6091,7 @@ private:
         }
 
         last_place_failure_reason_.clear();
+        last_surface_summary_.clear();
         reloadSlotParameters();
         reloadSurfaceParameters();
         pegar_obj_arrival_time_.reset();
@@ -6083,6 +6223,12 @@ private:
                 last_slot_decision_->slot.c_str(), last_slot_decision_->margin * 100.0);
             slot_suffix = buf;
         }
+        // Superficie livre (2026-10-21): motivo estruturado do planejador
+        // (ex.: "sem_espaco: validas 0 (rejeitadas: borda 1200, ...)") na
+        // mensagem, tenha o place caido nas poses fixas ou falhado.
+        if (!last_surface_summary_.empty()) {
+            slot_suffix += " [superficie: " + last_surface_summary_ + "]";
+        }
         result->success = success;
         fill_reach_fields(success);
         if (success && state_write_success) {
@@ -6097,7 +6243,7 @@ private:
                 state_write_error.c_str());
         } else {
             result->fail_reason = last_place_failure_reason_;
-            result->message = "Place failed (" + last_place_failure_reason_ + ")";
+            result->message = "Place failed (" + last_place_failure_reason_ + ")" + slot_suffix;
         }
 
         if (result->success)
@@ -6483,10 +6629,16 @@ private:
         // validado com pegar_obj.
         if (!isShelfPlaceTarget(table_pose)) {
             publishStage(goal_handle, "going_pegar_obj");
-            arm->setStartStateToCurrentState();
-            arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
-            if (!planAndExecute(arm, "go pegar_obj")) {
+            std::array<double, 5> q_home{};
+            const bool home_ok = namedPoseJoints(arm, "pegar_obj", q_home) ?
+                moveToJointTargetJoint1Last(arm, q_home, "go pegar_obj") :
+                [&]() {
+                    arm->setStartStateToCurrentState();
+                    arm->setEndEffectorLink("tcp");
+                    arm->setNamedTarget("pegar_obj");
+                    return planAndExecute(arm, "go pegar_obj");
+                }();
+            if (!home_ok) {
                 last_place_failure_reason_ = "falha_com_bloco_na_garra";
                 return false;
             }
@@ -6667,10 +6819,16 @@ private:
         }
 
         publishStage(goal_handle, "returning_pegar_obj_final");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pegar_obj");
-        if (!planAndExecute(arm, "return pegar_obj")) {
+        std::array<double, 5> q_home{};
+        const bool home_ok = namedPoseJoints(arm, "pegar_obj", q_home) ?
+            moveToJointTargetJoint1Last(arm, q_home, "return pegar_obj") :
+            [&]() {
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                arm->setNamedTarget("pegar_obj");
+                return planAndExecute(arm, "return pegar_obj");
+            }();
+        if (!home_ok) {
             // Verificacao adversarial 2026-08-10: a entrega JA aconteceu (a
             // garra abriu no destino) — reportar falha aqui corrompia o yaml
             // (container ficava 'occupied' vazio). Conta como sucesso e so

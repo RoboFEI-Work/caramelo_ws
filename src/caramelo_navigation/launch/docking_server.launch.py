@@ -275,6 +275,26 @@ def _launch_setup(context, *args, **kwargs):
             {"esc_coast_dist": 0.10},
             {"yaw_coast_est": 0.10},
             {"center_coast_est": 0.03},
+            # ---- 2026-10-21, run da WS1: "pronto" com yaw_face -19,7 graus ----
+            # (fit do staging a 0,68 m pegou mesa+vizinho, 0,98 m; o AMCL
+            # girou +12,3 graus para o lado errado; o portao de 2 leituras
+            # nunca fechou; o sucesso nao checava o yaw).
+            # 2a leitura do refino no MESMO goal: espera um /scan novo ate:
+            {"refine_second_read_max_s": 0.6},
+            # Pausa do reto para refit da face isolada + esquadro pelo LiDAR
+            # (robo para em ~0,55 m, acima de rotate_min_front 0,46). <=0 desliga.
+            {"refine_refit_front_m": 0.55},
+            # Fit mais largo que isto = mesa + vizinho: descartado SEM
+            # esquadro por AMCL (a mesa tem 0,80 m).
+            {"refine_max_face_width": 0.90},
+            # Validacao final de yaw: fora da tolerancia => recua, esquadra
+            # pela face e refaz reto+lateral UMA vez.
+            {"final_yaw_correction": True},
+            # false (competicao): ainda fora => SUCESSO com WARN e message
+            # 'yaw_fora_da_tolerancia (x graus)'; true => goal falha.
+            {"final_yaw_strict": False},
+            # Dispersao maxima do yaw da face na medida final (4 graus).
+            {"final_yaw_spread_max": 0.07},
         ],
     )
 

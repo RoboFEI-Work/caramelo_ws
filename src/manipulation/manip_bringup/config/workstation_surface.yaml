@@ -22,7 +22,8 @@
 #   ... --camera=-0.011,0.164,0.311,84.4 --plane-z 0.083 --intrinsics fx,fy,cx,cy \
 #       --depth depth.png            # par cor+profundidade (PNG 16 bits em mm): grade + retas + poligono
 # Ao vivo: ros2 param set /workstation_surface white_v_min 90
-#          ros2 topic echo /manip/workstation_surface/status   (campo depth=ok alem=..% acima=..%)
+#          ros2 topic echo /manip/workstation_surface/status   (latched; comeca com
+#              depth=ok|descartada(..%)|sem|off alem=..% acima=..% retas=N quadros=<com depth>/<total>)
 #          rqt_image_view /manip/workstation_surface/debug_image (ou grid_image)
 #          RViz: OccupancyGrid em /manip/workstation_surface/grid (frame manip_base_link),
 #                Polygon em .../table_polygon, MarkerArray em .../edge_lines (so' com assinante)
@@ -103,3 +104,17 @@ workstation_surface:
     depth_above_plane_m: 0.02      # medida < esperada - isto = algo sobre o tampo = objeto, mesmo branco
     depth_open_px: 3               # abertura (px escalados) que tira os "flying pixels" das bordas dos objetos
     depth_above_max_frac: 0.5      # "acima" em mais que isto dos pixels = plano errado: regra ignorada no quadro
+    # Alcance minimo UTIL da D455: min-Z nominal ~0,3 m em 640x480 (0,52 m em 1280x720);
+    # 0,45 e' a margem ate a medida bater com o plano (medir no robo). Abaixo disso a medida e' lixo nos dois
+    # sentidos (run de 21/10: camera a 0,31 m do tampo deu 1.750 celulas "alem" e 2.100 "acima" numa
+    # mesa meio vazia). Vale sobre o alcance ESPERADO do raio ate o tampo, nao sobre a medida: pixel
+    # com esperado < isto fica sem decisao de profundidade (decide a cor). Medir no D455 real a
+    # distancia a partir da qual a profundidade bate com o plano e ajustar.
+    depth_min_reliable_m: 0.45
+    # Consistencia por quadro: se mais que esta fracao dos pixels BRANCOS por cor (tampo) virou
+    # "alem"/"acima", e' a profundidade que esta errada: descartada neste quadro (funde so' por cor,
+    # WARN "profundidade inconsistente com a cor"). 1.0 desliga.
+    depth_max_conflict_frac: 0.30
+    # Grade SO' POR COR, publicada em paralelo (mesma QoS/header que grid_topic): o place replaneja
+    # com ela quando a grade com profundidade nao da candidato.
+    grid_color_topic: /manip/workstation_surface/grid_color

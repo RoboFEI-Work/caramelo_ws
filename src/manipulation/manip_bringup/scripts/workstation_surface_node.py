@@ -60,6 +60,19 @@ depender das retas) e entra como "fora" na fronteira usada pela RANSAC, que
 assim acha a borda REAL da mesa.
 Sem profundidade o comportamento e' identico ao anterior.
 
+ALCANCE MINIMO e CONSISTENCIA (2026-10-21, apos a run da WS1): a 0,31 m do
+tampo a D455 devolveu lixo nos dois sentidos (1.750 celulas "alem" e 2.100
+"acima" numa mesa meio vazia). O D455 so' mede de forma confiavel a partir de
+~0,45 m. Entao a profundidade so' DECIDE um pixel cujo alcance ESPERADO ao
+plano (expected_plane_range) seja >= depth_min_reliable_m; abaixo disso o
+pixel fica sem decisao de profundidade, seja qual for o valor medido
+(depth_min_valid_m continua valendo sobre a MEDIDA). Por quadro, se mais que
+depth_max_conflict_frac dos pixels BRANCOS por cor virou "alem"/"acima", a
+profundidade desse quadro e' descartada (conta como sem profundidade) e um
+WARN avisa. Em paralelo a grade SO' POR COR e' fundida com votos proprios
+(votes_*_color) e publicada em .../grid_color: o place replaneja com ela
+quando a grade com profundidade nao da candidato.
+
 PROJECAO celula -> pixel (project_cells): alem do cone de
 MAX_RAY_HALF_ANGLE_DEG (55 graus) do eixo optico a celula NAO esta na imagem,
 mesmo que cv2.projectPoints devolva um pixel "dentro": com o D real da D455
@@ -207,6 +220,18 @@ class SurfaceConfig:
     # e' que esta errado (nao a mesa inteira coberta): a regra "acima" e'
     # ignorada nesse quadro e o status avisa. "Alem" nao tem esse teto.
     depth_above_max_frac: float = 0.5
+    # Alcance minimo util da D455: min-Z nominal ~0,3 m em 640x480 (0,52 m em
+    # 1280x720); 0,45 = margem ate a medida bater com o plano (medir no robo). Abaixo
+    # disso a medida e' lixo nos dois sentidos (maior que o real -> "alem",
+    # menor -> "acima"; run de 21/10 com a camera a 0,31 m do tampo). Vale
+    # sobre o alcance ESPERADO ao plano, nao sobre a medida: pixel cujo raio
+    # chega ao tampo a menos que isto fica SEM decisao de profundidade.
+    depth_min_reliable_m: float = 0.45
+    # Consistencia por quadro: se, entre os pixels BRANCOS por cor (tampo),
+    # mais que esta fracao virou "alem" ou "acima", a profundidade e' que esta
+    # errada (plano/alcance/sensor), nao a mesa: descartada neste quadro (o
+    # quadro funde so' por cor e conta como sem profundidade).
+    depth_max_conflict_frac: float = 0.30
 
 
 @dataclass
@@ -220,6 +245,17 @@ class FrameResult:
     depth_beyond_frac: float = 0.0   # fracao dos pixels conhecidos marcados "alem do plano"
     depth_above_frac: float = 0.0    # idem "acima do tampo" (antes do teto depth_above_max_frac)
     depth_above_rejected: bool = False
+    # Rotulos SO' POR COR (mesma resolucao de `label`): identico a `label`
+    # quando nao houve profundidade. Alimenta a grade grid_color.
+    label_color: Optional[np.ndarray] = None
+    # Fracao dos pixels brancos por cor que a profundidade contradisse
+    # (alem/acima); acima de depth_max_conflict_frac => depth_discarded.
+    depth_conflict_frac: float = 0.0
+    depth_discarded: bool = False
+    # Onde a profundidade PODIA decidir (alcance esperado ao plano >=
+    # depth_min_reliable_m), na resolucao de `label`. So' os brancos dessas
+    # regioes contam como "branco visto com profundidade" na fusao.
+    depth_decidable: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -289,8 +325,9 @@ def exclusion_mask(cfg: SurfaceConfig, w: int, h: int, holding: bool) -> np.ndar
     return m
 
 
-def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True,
-                  depth_label: Optional[np.ndarray] = None) -> FrameResult:
+def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True,  # noqa: C901
+                  depth_label: Optional[np.ndarray] = None,
+                  depth_decidable: Optional[np.ndarray] = None) -> FrameResult:
     """Imagem -> rotulos por pixel (escalados): branco (tampo) / nao-branco /
     alem do plano / desconhecido.
 
@@ -313,22 +350,97 @@ def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True
         known[:, :b] = 0
         known[:, -b:] = 0
 
-    white = cv2.inRange(hsv, (0, 0, int(cfg.white_v_min)), (179, int(cfg.white_s_max), 255))
-    white[known == 0] = 0
+    white_color = cv2.inRange(hsv, (0, 0, int(cfg.white_v_min)), (179, int(cfg.white_s_max), 255))
+    white_color[known == 0] = 0
     dl = None
-    depth_beyond_frac = depth_above_frac = 0.0
-    depth_above_rejected = False
+    dec = None
+    depth_beyond_frac = depth_above_frac = depth_conflict_frac = 0.0
+    depth_above_rejected = depth_discarded = False
     if depth_label is not None and bool(cfg.depth_enable):
         dl = np.asarray(depth_label, dtype=np.uint8)
         if dl.shape != (h, w):
             dl = cv2.resize(dl, (w, h), interpolation=cv2.INTER_NEAREST)
         dl = np.where(known > 0, dl, np.uint8(LBL_UNKNOWN)).astype(np.uint8)
+        if depth_decidable is not None:
+            dec = np.asarray(depth_decidable, dtype=np.uint8)
+            if dec.shape != (h, w):
+                dec = cv2.resize(dec, (w, h), interpolation=cv2.INTER_NEAREST)
+            dec = (dec > 0) & (known > 0)
         n_known = max(1, int(np.count_nonzero(known)))
         depth_beyond_frac = float(np.count_nonzero(dl == LBL_BEYOND)) / n_known
         depth_above_frac = float(np.count_nonzero(dl == LBL_NONWHITE)) / n_known
+        # Ordem: (1) teto de "acima" (plano errado => so' a regra 'acima' cai);
+        # (2) conflito com a cor sobre os rotulos ja corrigidos: fracao do
+        # tampo branco que a profundidade contradisse SEM explicacao (acima
+        # sobre branco, ou ilhas de 'alem' cercadas por branco). Chao claro
+        # ligado a borda da imagem / ao nao-branco NAO e' conflito. Acima do
+        # teto e' a profundidade que esta errada: quadro sem profundidade.
         if depth_above_frac > float(cfg.depth_above_max_frac):
             dl[dl == LBL_NONWHITE] = LBL_UNKNOWN     # plano errado, nao mesa coberta
             depth_above_rejected = True
+        depth_conflict_frac = depth_color_conflict_frac(white_color, dl, known)
+        if np.count_nonzero(white_color) > 0 and depth_conflict_frac > float(cfg.depth_max_conflict_frac):
+            depth_discarded = True
+            dl = None
+            dec = None
+    # Grade so' por cor sempre; com profundidade, a mesma cadeia com os
+    # rotulos de profundidade mandando sobre a cor.
+    label_color, table_frac_c, n_blobs_c, wstats_c = _classify_color(hsv, known, white_color, cfg, None)
+    if dl is not None:
+        label, table_frac, n_blobs, wstats = _classify_color(hsv, known, white_color, cfg, dl)
+    else:
+        label, table_frac, n_blobs, wstats = label_color, table_frac_c, n_blobs_c, wstats_c
+    return FrameResult(label, table_frac >= cfg.table_min_frac, table_frac, n_blobs, wstats,
+                       depth_used=dl is not None, depth_beyond_frac=depth_beyond_frac,
+                       depth_above_frac=depth_above_frac, depth_above_rejected=depth_above_rejected,
+                       label_color=label_color, depth_conflict_frac=depth_conflict_frac,
+                       depth_discarded=depth_discarded, depth_decidable=dec)
+
+
+def depth_color_conflict_frac(white_color: np.ndarray, depth_label: np.ndarray,
+                              known: Optional[np.ndarray] = None) -> float:
+    """Fracao dos pixels BRANCOS por cor (tampo) que a profundidade contradiz
+    SEM explicacao: 'acima' sobre branco, ou 'alem' em componentes cercados
+    por branco (ilha no meio do tampo). 'Alem' que toca a borda da imagem
+    conhecida ou o nao-branco e' chao/alem da mesa plausivel (mesmo que seja
+    da cor do tampo) e NAO conta. 0 sem pixel branco."""
+    wmask = np.asarray(white_color) > 0
+    n_white = int(np.count_nonzero(wmask))
+    if n_white == 0:
+        return 0.0
+    dl = np.asarray(depth_label)
+    conflict = wmask & (dl == LBL_NONWHITE)
+    beyond = (dl == LBL_BEYOND).astype(np.uint8)
+    if np.count_nonzero(beyond):
+        h, w = beyond.shape[:2]
+        kn = (np.asarray(known) > 0) if known is not None else np.ones((h, w), dtype=bool)
+        # Borda da regiao conhecida (inclui a borda da imagem e a garra). O
+        # padding com zero e' obrigatorio: o erode do OpenCV trata a borda da
+        # imagem como "dentro" e nao a marcaria.
+        kn_pad = np.pad(kn.astype(np.uint8), 1, constant_values=0)
+        eroded = cv2.erode(kn_pad, np.ones((3, 3), np.uint8))[1:-1, 1:-1]
+        border = (eroded == 0) & kn
+        nonwhite = kn & ~wmask
+        nonwhite_d = cv2.dilate(nonwhite.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        n_lbl, lbls = cv2.connectedComponents(beyond, connectivity=8)
+        plausible = np.zeros(n_lbl, dtype=bool)
+        touch = border | nonwhite_d
+        for k in np.unique(lbls[touch & (lbls > 0)]):
+            plausible[k] = True
+        island = (lbls > 0) & ~plausible[lbls]
+        conflict |= wmask & island
+    return float(np.count_nonzero(conflict)) / n_white
+
+
+def _classify_color(hsv: np.ndarray, known: np.ndarray, white_color: np.ndarray, cfg: SurfaceConfig,
+                    dl: Optional[np.ndarray]):
+    """Cadeia de segmentacao a partir da mascara branca por cor (ja sem a
+    garra/borda). dl: rotulos de profundidade (ou None = so' cor); onde ha
+    decisao por profundidade ela manda (alem/acima do plano nunca e' tampo).
+    Devolve (label, table_frac, n_blobs, white_stats)."""
+    h, w = white_color.shape[:2]
+    white = white_color.copy()
+    if dl is not None:
         white[dl != LBL_UNKNOWN] = 0                 # alem ou acima do plano: nao e' tampo
     k_open = int(cfg.white_open_px)
     if k_open > 1:
@@ -375,9 +487,7 @@ def segment_frame(bgr_full: np.ndarray, cfg: SurfaceConfig, holding: bool = True
     label[nonwhite > 0] = LBL_NONWHITE
     if dl is not None:
         label[dl == LBL_BEYOND] = LBL_BEYOND       # por cima da dilatacao dos objetos
-    return FrameResult(label, table_frac >= cfg.table_min_frac, table_frac, n_blobs, wstats,
-                       depth_used=dl is not None, depth_beyond_frac=depth_beyond_frac,
-                       depth_above_frac=depth_above_frac, depth_above_rejected=depth_above_rejected)
+    return label, table_frac, n_blobs, wstats
 
 
 def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
@@ -466,7 +576,9 @@ def classify_depth(depth_m: np.ndarray, expected_m: np.ndarray, cfg: SurfaceConf
     """Rotulo por pixel SO' pela profundidade (h, w) uint8:
         LBL_BEYOND   medida valida e > esperada + depth_beyond_plane_m (chao, alem da borda)
         LBL_NONWHITE medida valida e < esperada - depth_above_plane_m (algo sobre o tampo)
-        LBL_UNKNOWN  sem decisao (0/NaN, perto demais, raio sem plano, ou entre as duas folgas)
+        LBL_UNKNOWN  sem decisao (0/NaN, perto demais, raio sem plano, ou entre as duas folgas,
+                     ou alcance ESPERADO ao plano < depth_min_reliable_m: abaixo do alcance
+                     util do D455 a medida nao vale nos dois sentidos)
     depth_m em metros (0 ou NaN = invalido); expected_m de expected_plane_range.
     Uma abertura de depth_open_px tira os "flying pixels" das bordas dos objetos."""
     depth = np.asarray(depth_m, dtype=np.float32)
@@ -474,7 +586,8 @@ def classify_depth(depth_m: np.ndarray, expected_m: np.ndarray, cfg: SurfaceConf
     if depth.shape != exp.shape:
         raise ValueError(f"classify_depth: profundidade {depth.shape} x esperada {exp.shape}")
     with np.errstate(invalid="ignore"):
-        valid = np.isfinite(depth) & (depth >= float(cfg.depth_min_valid_m)) & np.isfinite(exp)
+        valid = np.isfinite(depth) & (depth >= float(cfg.depth_min_valid_m)) & np.isfinite(exp) \
+            & (exp >= float(cfg.depth_min_reliable_m))
         beyond = valid & (depth > exp + float(cfg.depth_beyond_plane_m))
         above = valid & (depth < exp - float(cfg.depth_above_plane_m))
     k = int(cfg.depth_open_px)
@@ -486,6 +599,26 @@ def classify_depth(depth_m: np.ndarray, expected_m: np.ndarray, cfg: SurfaceConf
     out[above] = LBL_NONWHITE
     out[beyond] = LBL_BEYOND
     return out
+
+
+def depth_decidable_mask(expected_m: np.ndarray, cfg: SurfaceConfig) -> np.ndarray:
+    """Pixels em que a profundidade PODE decidir: raio cruza o plano e o
+    alcance esperado ate ele e' >= depth_min_reliable_m. Fora disso a D455
+    nao mede (zona cega) e o pixel fica para a cor, sem contar como "visto
+    com profundidade"."""
+    exp = np.asarray(expected_m, dtype=np.float32)
+    with np.errstate(invalid="ignore"):
+        return np.isfinite(exp) & (exp >= float(cfg.depth_min_reliable_m))
+
+
+def depth_short_range(decidable: np.ndarray, expected_m: np.ndarray, min_frac: float = 0.01) -> bool:
+    """True quando o quadro inteiro esta abaixo do alcance util (fracao
+    decidivel dos pixels com plano < min_frac): a profundidade nao entra."""
+    exp = np.asarray(expected_m, dtype=np.float32)
+    n_plane = int(np.count_nonzero(np.isfinite(exp)))
+    if n_plane == 0:
+        return True
+    return float(np.count_nonzero(np.asarray(decidable, dtype=bool))) / n_plane < float(min_frac)
 
 
 def depth_image_to_m(arr: np.ndarray, encoding: str = "16UC1", depth_scale: float = 0.001) -> Optional[np.ndarray]:
@@ -618,9 +751,18 @@ class SurfaceGridFusion:
         self.votes_nonwhite = np.zeros(shape, dtype=np.int32)
         self.votes_beyond = np.zeros(shape, dtype=np.int32)   # profundidade alem do plano
         self.votes_white_depth = np.zeros(shape, dtype=np.int32)   # brancos de quadros COM profundidade
+        # Votos SO' POR COR (rotulo label_color): a grade grid_color sai so'
+        # deles, sem "alem" nem "acima" da profundidade.
+        self.votes_white_color = np.zeros(shape, dtype=np.int32)
+        self.votes_nonwhite_color = np.zeros(shape, dtype=np.int32)
+        # "Acima do tampo" SO' pela profundidade (branco por cor): guardado a
+        # parte dos nao-brancos por cor, para o status e para excluir no modo cor.
+        self.votes_above = np.zeros(shape, dtype=np.int32)
         self.frames = 0
+        self.frames_depth = 0        # quadros fundidos COM rotulo de profundidade
         self.last_stamp = None
         self.lines: List[EdgeLine] = []
+        self.lines_color: List[EdgeLine] = []
 
     def project_cells(self, K: np.ndarray, D: Optional[np.ndarray], cam_origin: np.ndarray,
                       cam_rot: np.ndarray, plane_z: float, img_w: int, img_h: int):
@@ -661,11 +803,9 @@ class SurfaceGridFusion:
             uv[ok] = sub.astype(np.float32)
         return uv.reshape(self.height, self.width, 2)
 
-    def fuse(self, label_small: np.ndarray, scale: float, uv_full: np.ndarray, stamp=None,
-             depth_used: bool = False) -> np.ndarray:
-        """Amostra os rotulos (imagem escalada) nas celulas e soma votos.
-        depth_used: o quadro tinha rotulo de profundidade (so' esses brancos
-        podem disputar com "alem"). Devolve o rotulo por celula desta vista (LBL_*)."""
+    def _sample(self, label_small: np.ndarray, scale: float, uv_full: np.ndarray) -> np.ndarray:
+        """Rotulo (imagem escalada) amostrado no pixel de cada celula; LBL_UNKNOWN
+        onde a celula nao projeta."""
         map_x = uv_full[:, :, 0] * float(scale)
         map_y = uv_full[:, :, 1] * float(scale)
         nan = ~np.isfinite(map_x) | ~np.isfinite(map_y)
@@ -675,38 +815,79 @@ class SurfaceGridFusion:
                             borderMode=cv2.BORDER_CONSTANT, borderValue=int(LBL_UNKNOWN))
         sampled = sampled.astype(np.uint8)
         sampled[nan] = LBL_UNKNOWN
+        return sampled
+
+    def fuse(self, label_small: np.ndarray, scale: float, uv_full: np.ndarray, stamp=None,
+             depth_used: bool = False, label_color_small: Optional[np.ndarray] = None,
+             depth_decidable_small: Optional[np.ndarray] = None) -> np.ndarray:
+        """Amostra os rotulos (imagem escalada) nas celulas e soma votos.
+        depth_used: o quadro tinha rotulo de profundidade (so' esses brancos
+        podem disputar com "alem"). label_color_small: rotulos SO' POR COR do
+        mesmo quadro (FrameResult.label_color) para os votos da grade por cor;
+        None = usa label_small (sem profundidade sao iguais; com, as celulas
+        "alem" ficam sem voto de cor). depth_decidable_small: onde a
+        profundidade PODIA decidir (FrameResult.depth_decidable); so' esses
+        brancos disputam com "alem" — um quadro de pegar_obj (tampo a 0,31 m,
+        zona cega) nao pode refutar o chao visto de uma pose alta. None =
+        todos os brancos do quadro (quadro inteiro ao alcance). Devolve o
+        rotulo por celula desta vista."""
+        sampled = self._sample(label_small, scale, uv_full)
         self.votes_white += (sampled == LBL_WHITE)
         self.votes_nonwhite += (sampled == LBL_NONWHITE)
         self.votes_beyond += (sampled == LBL_BEYOND)
         if depth_used:
-            self.votes_white_depth += (sampled == LBL_WHITE)
+            if depth_decidable_small is None:
+                dec = np.ones(sampled.shape, dtype=bool)
+            else:
+                dec = self._sample(np.asarray(depth_decidable_small, dtype=np.uint8) * np.uint8(255),
+                                   scale, uv_full) > 0
+            self.votes_white_depth += (sampled == LBL_WHITE) & dec
+            if bool(dec.any()):
+                self.frames_depth += 1
+        color = sampled if label_color_small is None else self._sample(label_color_small, scale, uv_full)
+        self.votes_white_color += (color == LBL_WHITE)
+        self.votes_nonwhite_color += (color == LBL_NONWHITE)
+        self.votes_above += (sampled == LBL_NONWHITE) & (color == LBL_WHITE)
         self.frames += 1
         self.last_stamp = stamp
         return sampled
 
-    def masks(self):
+    def masks(self, use_depth: bool = True):
         """(seen, white, nonwhite, beyond) booleanos (height, width), disjuntos
         entre si (menos seen). Alem do plano ganha de branco em empate (a
         profundidade nao atravessa mesa) e so' brancos de quadros COM
         profundidade votam contra ele: um quadro fundido so' por cor (depth
         perdida/velha depois da graca) nao refuta "alem". Branco x nao-branco:
-        empate = nao-branco."""
+        empate = nao-branco. use_depth=False: so' os votos por cor (sem "alem"
+        nem "acima")."""
+        if not use_depth:
+            seen = (self.votes_white_color + self.votes_nonwhite_color) > 0
+            beyond = np.zeros_like(seen)
+            nonwhite = seen & (self.votes_nonwhite_color >= self.votes_white_color)
+            white = seen & ~nonwhite & (self.votes_white_color >= self.cfg.free_min_votes)
+            return seen, white, nonwhite, beyond
         seen = (self.votes_white + self.votes_nonwhite + self.votes_beyond) > 0
         beyond = seen & (self.votes_beyond > 0) & (self.votes_beyond >= self.votes_white_depth)
         nonwhite = seen & ~beyond & (self.votes_nonwhite >= self.votes_white)      # empate = nao-branco
         white = seen & ~beyond & ~nonwhite & (self.votes_white >= self.cfg.free_min_votes)
         return seen, white, nonwhite, beyond
 
-    def cells(self, update_lines: bool = True) -> np.ndarray:
-        """int8 (height, width) com os codigos CELL_*."""
-        seen, white, nonwhite, beyond = self.masks()
+    def cells(self, update_lines: bool = True, use_depth: bool = True) -> np.ndarray:
+        """int8 (height, width) com os codigos CELL_*. use_depth=False: grade
+        SO' POR COR (votos de cor, retas proprias em self.lines_color)."""
+        seen, white, nonwhite, beyond = self.masks(use_depth)
         if update_lines:
-            self.lines = detect_edge_lines(white, nonwhite | beyond, self.cell_x, self.cell_y, self.cfg)
+            lines = detect_edge_lines(white, nonwhite | beyond, self.cell_x, self.cell_y, self.cfg)
+            if use_depth:
+                self.lines = lines
+            else:
+                self.lines_color = lines
+        lines = self.lines if use_depth else self.lines_color
         out = np.full((self.height, self.width), CELL_UNKNOWN, dtype=np.int8)
         out[nonwhite] = CELL_OBSTACLE
         out[white] = CELL_TABLE_FREE
         out[beyond] = CELL_OFF_TABLE          # direto: nao depende das retas
-        for ln in self.lines:
+        for ln in lines:
             outside = seen & (ln.signed(self.cell_x, self.cell_y) > 0.0)
             out[outside] = CELL_OFF_TABLE
         return out
@@ -719,8 +900,10 @@ class SurfaceGridFusion:
             "off": int(np.count_nonzero(c == CELL_OFF_TABLE)),
             "unknown": int(np.count_nonzero(c == CELL_UNKNOWN)),
             "frames": int(self.frames),
+            "frames_depth": int(self.frames_depth),
             "lines": len(self.lines),
             "beyond": int(np.count_nonzero(self.votes_beyond > 0)),
+            "above": int(np.count_nonzero(self.votes_above > 0)),
         }
 
 
@@ -840,7 +1023,7 @@ SIMPLE_KEYS = [
     "edge_ransac_iters", "edge_outside_min_frac", "edge_band_m",
     "edge_outside_check_m", "edge_outside_max_white_frac",
     "depth_enable", "depth_min_valid_m", "depth_beyond_plane_m", "depth_above_plane_m",
-    "depth_open_px", "depth_above_max_frac",
+    "depth_open_px", "depth_above_max_frac", "depth_min_reliable_m", "depth_max_conflict_frac",
 ]
 
 
@@ -927,13 +1110,18 @@ def run_offline(args) -> int:
         small = cv2.resize(depth_m, (w_s, h_s), interpolation=cv2.INTER_NEAREST)
         exp = expected_plane_range(K, None, cam_origin, cam_rot, args.plane_z, w_s, h_s, s)
         depth_label = classify_depth(small, exp, cfg)
+        depth_decidable = depth_decidable_mask(exp, cfg)
+        if depth_short_range(depth_decidable, exp):
+            print(f"profundidade: quadro inteiro abaixo do alcance util ({cfg.depth_min_reliable_m} m): so' cor")
+            depth_label = None
         valid = np.isfinite(small) & (small >= cfg.depth_min_valid_m)
         print(f"profundidade {args.depth}: {np.count_nonzero(valid) * 100.0 / small.size:.0f}% valida "
               f"(>= {cfg.depth_min_valid_m} m); mediana valida "
               f"{(np.median(small[valid]) if valid.any() else float('nan')):.3f} m; "
               f"esperada no centro {exp[h_s // 2, w_s // 2]:.3f} m")
     t0 = time.perf_counter()
-    res = segment_frame(bgr, cfg, holding=holding, depth_label=depth_label)
+    res = segment_frame(bgr, cfg, holding=holding, depth_label=depth_label,
+                        depth_decidable=depth_decidable if depth_label is not None else None)
     dt = (time.perf_counter() - t0) * 1000.0
     print(f"imagem {W}x{H}, process_scale {cfg.process_scale}, {dt:.1f} ms")
     print("garra: " + ("SEGURANDO cubo" if holding else "vazia (--gripper-open)"))
@@ -942,7 +1130,11 @@ def run_offline(args) -> int:
           f"(minimo {cfg.table_min_frac*100:.0f}%), {res.n_nonwhite_blobs} mancha(s) nao branca(s)")
     if res.depth_used:
         print(f"profundidade: alem do plano {res.depth_beyond_frac*100:.1f}% | acima do tampo "
-              f"{res.depth_above_frac*100:.1f}%" + (" (IGNORADA: plano errado?)" if res.depth_above_rejected else ""))
+              f"{res.depth_above_frac*100:.1f}% | contradiz o branco {res.depth_conflict_frac*100:.1f}%"
+              + (" (IGNORADA: plano errado?)" if res.depth_above_rejected else ""))
+    elif res.depth_discarded:
+        print(f"profundidade DESCARTADA neste quadro: contradiz {res.depth_conflict_frac*100:.0f}% do branco "
+              f"(teto {cfg.depth_max_conflict_frac*100:.0f}%)")
     lbl = res.label
     tot = lbl.size
     for name, code in (("tampo branco", LBL_WHITE), ("nao branco", LBL_NONWHITE),
@@ -952,11 +1144,16 @@ def run_offline(args) -> int:
         # Projecao com a camera sintetica: grade + retas + poligono do tampo.
         fusion = SurfaceGridFusion(cfg)
         uv = fusion.project_cells(K, None, cam_origin, cam_rot, args.plane_z, W, H)
-        fusion.fuse(res.label, cfg.process_scale, uv, depth_used=res.depth_used)
+        fusion.fuse(res.label, cfg.process_scale, uv, depth_used=res.depth_used, label_color_small=res.label_color)
         cells = fusion.cells()
         print("grade:", fusion.summary())
         for ln in fusion.lines:
             print("  reta:", ln.describe())
+        if res.depth_used:
+            cc = fusion.cells(use_depth=False)
+            print("grade so por cor: livre=%d obst=%d fora=%d" % (
+                int(np.count_nonzero(cc == CELL_TABLE_FREE)), int(np.count_nonzero(cc == CELL_OBSTACLE)),
+                int(np.count_nonzero(cc == CELL_OFF_TABLE))))
         poly = table_polygon_from_cells(cells, fusion.cell_x, fusion.cell_y)
         print("poligono do tampo: " + (", ".join(f"({px:+.2f},{py:.2f})" for px, py in poly) if poly else "nenhum"))
         if args.out:
@@ -1014,6 +1211,9 @@ def ros_main(argv=None) -> int:
             dp("observe_topic", "/manip/surface_observe")
             dp("plane_z_topic", "/manip/table_plane_z")
             dp("grid_topic", "/manip/workstation_surface/grid")
+            # Grade SO' POR COR (mesma QoS/header): o place replaneja com ela
+            # quando a grade com profundidade nao da candidato.
+            dp("grid_color_topic", "/manip/workstation_surface/grid_color")
             dp("base_frame", "manip_base_link")
             dp("camera_frame", "")
             dp("plane_z_default", -0.029)      # tampo de mesa de 15 cm em manip_base_link (sem FK)
@@ -1083,11 +1283,15 @@ def ros_main(argv=None) -> int:
             self.create_subscription(JointState, self.get_parameter("joint_states_topic").value,
                                      self._on_joint_states, 10)
             self.grid_pub = self.create_publisher(OccupancyGrid, self.get_parameter("grid_topic").value, latched)
+            self.grid_color_pub = self.create_publisher(
+                OccupancyGrid, self.get_parameter("grid_color_topic").value, latched)
             # Vetores/poligonos (so' publicados com assinante): contorno do tampo
             # visto e retas de borda, para o vision_debug e o RViz.
             self.poly_pub = self.create_publisher(PolygonStamped, "/manip/workstation_surface/table_polygon", latched)
             self.lines_pub = self.create_publisher(MarkerArray, "/manip/workstation_surface/edge_lines", latched)
-            self.status_pub = self.create_publisher(String, "/manip/workstation_surface/status", 5)
+            # Status latched: comeca com 'depth=ok|descartada(..%)|sem|off|velha(..) alem=..% acima=..%
+            # retas=N quadros=depth/total' (o vision_debug mostra esse prefixo na barra).
+            self.status_pub = self.create_publisher(String, "/manip/workstation_surface/status", latched)
             self.debug_pub = self.create_publisher(Image, "/manip/workstation_surface/debug_image", 1)
             self.grid_img_pub = self.create_publisher(Image, "/manip/workstation_surface/grid_image", 1)
             self.get_logger().info(
@@ -1229,25 +1433,29 @@ def ros_main(argv=None) -> int:
 
         def _depth_labels(self, color_stamp, origin, rot, plane_z, W, H):
             """Rotulos de profundidade (resolucao processada) para o quadro de cor
-            com esse stamp, ou (None, motivo)."""
+            com esse stamp: (rotulos, "ok", alcance esperado mediano ao tampo,
+            mascara decidivel) ou (None, motivo, alcance|nan, None). Motivo
+            "curta(x m)": o quadro inteiro esta abaixo de depth_min_reliable_m
+            (zona cega: pegar_obj a ~0,31 m) — funde so' por cor, sem esperar."""
+            nan4 = (None, "off", float("nan"), None)
             if not bool(self.cfg.depth_enable):
-                return None, "off"
+                return nan4
             if self.depth_raw is None:
-                return None, "sem"
+                return None, "sem", float("nan"), None
             try:
                 dmsg = deserialize_message(self.depth_raw, Image)
             except Exception as exc:  # noqa: BLE001
-                return None, f"erro({exc.__class__.__name__})"
+                return None, f"erro({exc.__class__.__name__})", float("nan"), None
             age = abs(stamp_s(color_stamp) - stamp_s(dmsg.header.stamp))
             if age > float(self.get_parameter("depth_max_age_s").value):
-                return None, f"velha({age:.2f}s)"
+                return None, f"velha({age:.2f}s)", float("nan"), None
             raw = self.bridge.imgmsg_to_cv2(dmsg, desired_encoding="passthrough")
             depth_m = depth_image_to_m(raw, dmsg.encoding)
             if depth_m is None:
                 if not self.warned_depth_enc:
                     self.warned_depth_enc = True
                     self.get_logger().warn(f"profundidade com encoding {dmsg.encoding!r} (esperava 16UC1/32FC1) — ignorada.")
-                return None, f"enc={dmsg.encoding}"
+                return None, f"enc={dmsg.encoding}", float("nan"), None
             if depth_m.ndim == 3:
                 depth_m = depth_m[:, :, 0]
             if depth_m.shape != (H, W):
@@ -1257,7 +1465,11 @@ def ros_main(argv=None) -> int:
             w_s, h_s = int(round(W * scale)), int(round(H * scale))
             small = cv2.resize(depth_m, (w_s, h_s), interpolation=cv2.INTER_NEAREST) if scale != 1.0 else depth_m
             exp = self._expected_depth(origin, rot, plane_z, w_s, h_s, scale)
-            return classify_depth(small, exp, self.cfg), "ok"
+            exp_med = float(np.nanmedian(exp)) if np.isfinite(exp).any() else float("nan")
+            dec = depth_decidable_mask(exp, self.cfg)
+            if depth_short_range(dec, exp):
+                return None, f"curta({exp_med:.2f}m)", exp_med, None
+            return classify_depth(small, exp, self.cfg), "ok", exp_med, dec
 
         # ---------------- vetores / poligonos ----------------
         def _publish_polygon(self, cells, stamp, plane_z):
@@ -1387,7 +1599,8 @@ def ros_main(argv=None) -> int:
                 return
 
             H, W = int(msg.height), int(msg.width)
-            depth_label, depth_why = self._depth_labels(msg.header.stamp, origin, rot, plane_z, W, H)
+            depth_label, depth_why, exp_med, depth_decidable = self._depth_labels(
+                msg.header.stamp, origin, rot, plane_z, W, H)
             if depth_label is None:
                 since = None if self.active_since is None else time.monotonic() - self.active_since
                 grace = float(self.get_parameter("depth_grace_s").value)
@@ -1400,29 +1613,51 @@ def ros_main(argv=None) -> int:
                     return
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             holding = bool(self.gripper_holding)
-            res = segment_frame(bgr, self.cfg, holding=holding, depth_label=depth_label)
+            res = segment_frame(bgr, self.cfg, holding=holding, depth_label=depth_label,
+                                depth_decidable=depth_decidable)
+            if res.depth_discarded:
+                # Profundidade contradiz o tampo branco em mais que o teto:
+                # alcance curto / plano errado: este quadro funde so' por cor.
+                self.get_logger().warn(
+                    f"profundidade inconsistente com a cor ({res.depth_conflict_frac*100:.0f}%): ignorada neste "
+                    f"quadro — alcance esperado ao tampo {exp_med:.2f} m (minimo util {self.cfg.depth_min_reliable_m:.2f})",
+                    throttle_duration_sec=5.0)
             uv = self.fusion.project_cells(self.K, self.D, origin, rot, plane_z, W, H)
             view = self.fusion.fuse(res.label, float(self.cfg.process_scale), uv, stamp=msg.header.stamp,
-                                    depth_used=res.depth_used)
+                                    depth_used=res.depth_used, label_color_small=res.label_color,
+                                    depth_decidable_small=res.depth_decidable)
             n_seen = int(np.count_nonzero(view != LBL_UNKNOWN))
             cells = self.fusion.cells(update_lines=True)
+            if self.fusion.frames_depth == 0:
+                # Sem nenhum quadro com profundidade os votos sao identicos:
+                # a grade por cor e' a mesma (poupa a 2a RANSAC por quadro).
+                self.fusion.lines_color = self.fusion.lines
+                cells_color = cells
+            else:
+                cells_color = self.fusion.cells(update_lines=True, use_depth=False)
             summary = self.fusion.summary()
-            self._publish_grid(cells, msg.header.stamp)
+            self._publish_grid(cells, msg.header.stamp, self.grid_pub)
+            self._publish_grid(cells_color, msg.header.stamp, self.grid_color_pub)
             if self.poly_pub.get_subscription_count() > 0:
                 self._publish_polygon(cells, msg.header.stamp, plane_z)
             if self.lines_pub.get_subscription_count() > 0:
                 self._publish_edge_lines(self.fusion.lines, msg.header.stamp, plane_z)
             dt_ms = (time.perf_counter() - t0) * 1000.0
             lines_txt = "; ".join(ln.describe() for ln in self.fusion.lines) or "nenhuma"
+            # Prefixo fixo do status (lido pelo vision_debug): depth=<estado> alem=..% acima=..% retas=N quadros=depth/total
             if res.depth_used:
-                depth_txt = (f"depth=ok alem={res.depth_beyond_frac*100:.0f}% acima={res.depth_above_frac*100:.0f}%"
-                             + ("(IGNORADA: plano errado?)" if res.depth_above_rejected else ""))
+                depth_state = "ok"
+            elif res.depth_discarded:
+                depth_state = f"descartada({res.depth_conflict_frac*100:.0f}%)"
             else:
-                depth_txt = f"depth={depth_why}" + (" (so cor)" if depth_why in ("sem",) or depth_why.startswith("velha") else "")
-            status = (f"frames={summary['frames']} mesa={'sim' if res.table_found else 'NAO'} "
+                depth_state = depth_why
+            depth_txt = (f"depth={depth_state} alem={res.depth_beyond_frac*100:.0f}% acima={res.depth_above_frac*100:.0f}%"
+                         + ("(IGNORADA:plano-errado?)" if res.depth_above_rejected else "")
+                         + f" retas={len(self.fusion.lines)} quadros={summary['frames_depth']}/{summary['frames']}")
+            status = (f"{depth_txt} | frames={summary['frames']} mesa={'sim' if res.table_found else 'NAO'} "
                       f"({res.table_frac*100:.0f}% branco) manchas={res.n_nonwhite_blobs} "
                       f"vista={n_seen}cel | grade livre={summary['free']} obst={summary['obstacle']} "
-                      f"fora={summary['off']} desc={summary['unknown']} | bordas: {lines_txt} | {depth_txt} | "
+                      f"fora={summary['off']} desc={summary['unknown']} | bordas: {lines_txt} | "
                       f"garra={'segurando' if holding else 'vazia'} "
                       f"cam z={origin[2]:.3f} plano={plane_z:.3f}({src}) tf={'latest' if used_latest else 'stamp'} {dt_ms:.0f}ms")
             self._publish_status(status)
@@ -1442,7 +1677,7 @@ def ros_main(argv=None) -> int:
             if save_dir and now_wall - self._last_save_wall >= float(self.get_parameter("save_debug_every_s").value):
                 self._save_debug(save_dir, bgr, res, holding, status, now_wall)
 
-        def _publish_grid(self, cells, stamp):
+        def _publish_grid(self, cells, stamp, pub):
             from nav_msgs.msg import OccupancyGrid
             msg = OccupancyGrid()
             msg.header.stamp = stamp
@@ -1456,7 +1691,7 @@ def ros_main(argv=None) -> int:
                                                self.get_parameter("plane_z_default").value)
             msg.info.origin.orientation.w = 1.0
             msg.data = cells.ravel().astype(np.int8).tolist()
-            self.grid_pub.publish(msg)
+            pub.publish(msg)
 
         def _save_debug(self, save_dir, bgr, res, holding, status, now_wall):
             try:
