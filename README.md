@@ -80,9 +80,9 @@ Runbook completo, formato do YAML da tarefa e calibrações: [docs/guia_missoes.
 |---|---|
 | `manip_bt` | Cérebro da missão (BehaviorTree.CPP): `task_planner` (YAML da competição → lista de ações) e `bt_yaml_executor` (folhas `GoToWS`, `PickTag`, `PlaceTag`, `ReachQueue` + `NudgeBase`, `Amt1Sort`, `GoToNamedPose`). Bancada sem robô em `test/` (fakes). |
 | `manip_task_execution` | Nós que movem o braço: `mtc_pick_action_node` → nó `pick_action_server` → action `/pick_tag`; `mtc_place_action_node` → `place_action_server` → `/place_tag`; `amt1_sort_action_node` → `amt1_sort_action_server` → `/amt1_sort`. Libs puras (gtest): `custom_ik`, `reach_shift`, `amt1_sort_planner`, `surface_place_planner`, `container_state_store`. Ferramenta `custom_ik_check`. |
-| `manip_bringup` | `manip_stack.launch.py`: move_group, commander, os 3 action nodes, RealSense, AprilTag (`config/tags_36h11.yaml`), `container_detector_node.py`, `workstation_surface_node.py`, `perception_gate_node.py`, speech; braço mock no PC. |
+| `manip_bringup` | `manip_stack.launch.py`: move_group, commander, os 3 action nodes, RealSense, AprilTag (`config/tags_36h11.yaml`), `container_detector_node.py`, `workstation_surface_node.py`, `perception_gate_node.py`, `speech_node`; braço mock no PC. |
 | `manip_moveit_config` | MoveIt do braço: `move_group_caramelo.launch.py` + `config/caramelo.srdf` (poses nomeadas). `move_group.launch.py` é a bancada standalone. |
-| `manip_audio` | `speech_node` (nó `speech_node`): fala o que chega em `/manip/speech` (Piper ou espeak-ng). |
+| `manip_audio` | `speech_node`: fala o que chega em `/manip/speech` com fila por prioridade (`!` alta, `~` baixa), cache e motores Kokoro → Piper → espeak-ng; nunca bloqueia um nó nem corta frase. [docs/voz_do_robo.md](docs/voz_do_robo.md). |
 | `manip_commander` | Executável `commander`: tópicos `open_gripper`, `go_to_*_target` → MoveIt (teleop manual do braço). Ferramenta de bancada; `use_commander:=false` no `robot_manipulation.launch.py` deixa fora da competição. |
 | `manip_description`, `manip_hardware` | Bancada standalone do braço sozinho (URDF e plugin ros2_control copiados da Pi); o robô real usa `caramelo_description`/`caramelo_hardware` do `caramelo_hardware_ws`. |
 
@@ -178,6 +178,7 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | [docs/place_superficie_livre.md](docs/place_superficie_livre.md) | Place em superfície livre: a câmera do punho escolhe onde soltar (rulebook 4.4); ainda sem teste no robô. |
 | [docs/place_precisao_e_pilha.md](docs/place_precisao_e_pilha.md) | Formato 2026: encaixe na cavidade da mesa de precisão (tags 101–107) e pilha de até 4 sobre a tag 200, com verificação após soltar; ainda sem teste no robô. |
 | [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | `dock_align_node`: alinhamento fino com rodas mecanum, `nudge_base`, guardas, calibração. |
+| [docs/voz_do_robo.md](docs/voz_do_robo.md) | Voz: prefixos de prioridade nas frases, política de descarte, cache, motores (Kokoro/Piper/espeak) e como instalar o Kokoro. |
 | [docs/service_areas_docking.md](docs/service_areas_docking.md) | Conceitos de service areas e docking, onde ficam os parâmetros, route graph. |
 | [docs/passo_a_passo_mapa_service_areas_docking_route.md](docs/passo_a_passo_mapa_service_areas_docking_route.md) | Arena nova por terminal: mapa → áreas → docking → rotas → testes. |
 | [docs/keepout_paredes_virtuais.md](docs/keepout_paredes_virtuais.md) | Paredes virtuais (fita no chão que o laser não vê). |
@@ -242,6 +243,10 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 11. **`~/manip_ws`**: cópia antiga e divergente dos pacotes de manipulação fora do repo (com
     alterações locais não commitadas); `.vscode/c_cpp_properties.json` ainda aponta para ela.
     Verificar commits não enviados e apagar.
+12. **Voz**: escolher de ouvido a voz do robô (`kokoro_voice`: `pm_alex` default, `pm_santa`,
+    `pf_dora`; ou `speech_backend:=piper` com `pt_BR-faber`) — amostras em `~/amostras_voz/`;
+    e, depois da primeira missão, conferir no log quantas frases saíram como `[VOZ] descartada`
+    (se forem muitas normais, rebaixar as de progresso para `~`). [docs/voz_do_robo.md](docs/voz_do_robo.md).
 12. **`.vscode/browse.vc.db*`** (>1,3 GB de cache do IntelliSense dentro do workspace): apagar com
     o VS Code fechado e apontar o `includePath` para `${workspaceFolder}/install`.
 13. **uncrustify em `manip_task_execution`**: 9 arquivos fora do padrão (os 3 nós em indent 4);

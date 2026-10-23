@@ -1693,7 +1693,7 @@ private:
                 "em %s (%s).",
                 target.x(), target.y(), target.z(),
                 ik_reference_frame_.c_str(), label.c_str());
-            speak("Não consegui posicionar o braço para a entrega");
+            speak("!Nao posicionei o braco para a entrega");
             return false;
         }
 
@@ -2417,7 +2417,7 @@ private:
                     continue;
                 }
                 RCLCPP_ERROR(get_logger(), "[SLOT] sem joint_states em %s — soltando SEM conferir a chegada.", slot.name.c_str());
-                speak("Atencao: nao consegui conferir a posicao da ponta antes de soltar");
+                speak("Nao conferi a ponta antes de soltar");
                 return true;
             }
             RCLCPP_INFO(
@@ -2454,7 +2454,7 @@ private:
             get_logger(),
             "[SLOT] %s ainda fora da tolerancia apos reenvio (margem real %+.1f cm) — soltando assim mesmo.",
             slot.name.c_str(), real_margin * 100.0);
-        speak("Atencao: a ponta parou um pouco fora do ponto de entrega");
+        speak("A ponta parou um pouco fora do ponto");
         return true;
     }
 
@@ -2549,7 +2549,7 @@ private:
                 get_logger(),
                 "[SLOT] %s — caindo na pose unica legada '%s'.",
                 enum_error.c_str(), table_pose.c_str());
-            speak("Indo para a pose de entrega " + spokenTargetName(table_pose));
+            speak("~Indo para a pose de entrega " + spokenTargetName(table_pose));
             std::array<double, 5> q{};
             if (namedPoseJoints(arm, table_pose, q)) {
                 return moveToJointTargetJoint2Last(arm, q, "go " + table_pose);
@@ -2569,7 +2569,7 @@ private:
 
         // 1) Olhar a mesa (+ o que ja foi visto de garra vazia, + memoria).
         publishStage(goal_handle, "observing_table");
-        speak("Olhando a mesa antes de soltar");
+        speak("~Olhando a mesa antes de soltar");
         std::map<std::string, TableObstacle> obstacles = early_obstacles_;
         if (!observeTableObstacles(
                 carried_tag, candidates.front().p, pegar_obj_arrival_time_, obstacles))
@@ -2670,7 +2670,7 @@ private:
                         const double err = tcpErrorByFk(arm, p);
                         if (err < 0.0) {
                             RCLCPP_WARN(get_logger(), "[SLOT] XY livre: sem joint_states para conferir a chegada — soltando sem verificacao.");
-                            speak("Atencao: nao consegui conferir a posicao da ponta antes de soltar");
+                            speak("Nao conferi a ponta antes de soltar");
                         } else if (err > max_pose_error_m_) {
                             ok = false;
                             RCLCPP_WARN(get_logger(), "[SLOT] XY livre: ponta a %.1f cm do alvo (max %.1f).", err * 100.0, max_pose_error_m_ * 100.0);
@@ -2701,7 +2701,7 @@ private:
                     get_logger(),
                     "[SLOT] RECUSADO: %s com margem %+.1f cm (< %+.1f) = sobreposicao fisica — nao solto.",
                     slot.name.c_str(), slot.margin * 100.0, slot_overlap_refuse_margin_m_ * 100.0);
-                speak("Sem espaco na mesa, nao vou soltar o bloco aqui");
+                speak("!Sem espaco na mesa, nao vou soltar aqui");
                 last_place_failure_reason_ = "sem_espaco_na_mesa";
                 return false;
             }
@@ -2709,7 +2709,7 @@ private:
                 get_logger(),
                 "[SLOT] SEM FOLGA: %s com margem %+.1f cm — entregando no ponto menos ocupado (decisao do operador).",
                 slot.name.c_str(), slot.margin * 100.0);
-            speak("Atencao: sem folga na mesa, entregando no ponto menos ocupado");
+            speak("Sem folga na mesa, entregando no ponto menos ocupado");
         }
 
         if (!goToNamedSlot(arm, slot, obstacles, goal_handle)) {
@@ -3120,7 +3120,7 @@ private:
             opts.front_prior_tolerance_m, manip_task_execution::frontPriorModeName(opts.front_prior_mode));
 
         publishStage(goal_handle, "surface_observing");
-        speak("Olhando a mesa para achar um lugar livre");
+        speak("~Olhando a mesa para achar um lugar livre");
         waitForCameraStream("PLACE superficie");
         publishSurfaceObserve(true);
 
@@ -3281,7 +3281,7 @@ private:
                     get_logger(),
                     "[SUPERFICIE] 0 candidatos com a grade com profundidade (%s) — replanejando so' pela cor.",
                     plan->rejectionSummary().c_str());
-                speak("Olhando de novo so pela cor");
+                speak("~Olhando de novo so pela cor");
                 const manip_task_execution::SurfaceGrid grid_color = toSurfaceGrid(*color_msg);
                 SurfacePlan pc = manip_task_execution::planSurfacePlacement(grid_color, rules, extra, opts);
                 RCLCPP_INFO(get_logger(), "[SUPERFICIE] vista so' por cor: %s", pc.diagnostics.c_str());
@@ -3386,7 +3386,7 @@ private:
             const SurfaceChoice & ch = feasible[a];
             const std::size_t n_obs = static_cast<std::size_t>(plan->n_obstacle > 0 ? 1 : 0);
             (void)n_obs;
-            speak("Achei um lugar livre na mesa, entregando " + sideOf(ch.target));
+            speak("Achei lugar livre, entregando " + sideOf(ch.target));
             publishStage(goal_handle, "surface_approach");
             RCLCPP_INFO(
                 get_logger(),
@@ -3408,7 +3408,7 @@ private:
             const double err_z = err < 0.0 ? 0.0 : std::abs(actual.z() - ch.target.z());
             if (err < 0.0) {
                 RCLCPP_WARN(get_logger(), "[SUPERFICIE] sem joint_states para conferir a chegada — soltando sem conferir.");
-                speak("Atencao: nao consegui conferir a posicao da ponta antes de soltar");
+                speak("Nao conferi a ponta antes de soltar");
             } else if (err_xy > surface_arrival_xy_tolerance_m_ || err_z > surface_arrival_z_tolerance_m_) {
                 RCLCPP_WARN(
                     get_logger(),
@@ -3553,7 +3553,7 @@ private:
                 base_frame.c_str(), fk_pos.x(), fk_pos.y(), fk_pos.z(), tilt * 180.0 / M_PI,
                 qj[0], qj[1], qj[2], qj[3], qj[4]);
             publishStage(goal_handle, "stack_joints_pre_pose");
-            speak("Colocando o bloco na posicao gravada");
+            speak("~Colocando o bloco na posicao gravada");
             stack_arm_moved_ = true;
             // place_joints e' o caminho exclusivo do AMT1. Como no pick,
             // aponta-se j1 primeiro e so entao movem-se as demais juntas.
@@ -3908,7 +3908,7 @@ private:
         }
 
         publishStage(goal_handle, "stack_pre_pose");
-        speak("Levando o bloco para cima da pilha");
+        speak("~Levando o bloco para cima da pilha");
         // Todas as juntas juntas (pedido do operador 2026-08-24) — sem o
         // "j2 por ultimo" dos slots.
         if (!moveToJointTarget(arm, q_lift, "stack pre-pose above " + base_frame)) {
@@ -4256,7 +4256,7 @@ private:
                 get_logger(),
                 "[%s] cubo ficou na mesa e o retorno a pegar_obj falhou - braco pode estar "
                 "estendido sobre a mesa.", tag.c_str());
-            speak("Nao consegui recolher o braco");
+            speak("!Nao consegui recolher o braco");
         }
     }
 
@@ -4381,7 +4381,7 @@ private:
         q_final[4] = manip_task_execution::computeWristForCubeYaw(cube_yaw, q_final[0], tilt);
         q_lift[4] = q_final[4];
         publishStage(goal_handle, stage_prefix + "_regrasp");
-        speak("Vou pegar o cubo de volta");
+        speak("Pegando o cubo de volta");
         if (!moveToJointTarget(arm, q_lift, stage_prefix + " regrasp pre-pose")) {
             return RegraspResult::kMoveFailed;
         }
@@ -4406,7 +4406,7 @@ private:
             } else if (!verifyGraspByEffort(*baseline, stage_prefix + "-REGRASP")) {
                 RCLCPP_WARN(
                     get_logger(), "[%s] a garra fechou sem o cubo - reabrindo.", stage_prefix.c_str());
-                speak("Nao consegui pegar o cubo de volta");
+                speak("!Nao consegui pegar o cubo de volta");
                 gripper->setStartStateToCurrentState();
                 gripper->setNamedTarget("gripper_open");
                 (void)planAndExecute(gripper, stage_prefix + " regrasp reopen");
@@ -4560,7 +4560,7 @@ private:
         using manip_task_execution::StackTargetKind;
 
         publishStage(goal_handle, "slot_detecting");
-        speak("Procurando o encaixe " + spokenTargetName(slot_frame));
+        speak("~Procurando o encaixe " + spokenTargetName(slot_frame));
         waitForCameraStream("PLACE");
 
         geometry_msgs::msg::TransformStamped slot_tf;
@@ -4692,7 +4692,7 @@ private:
                     attempt + 1, max_attempts, off.dx * 1000.0, off.dy * 1000.0,
                     corr.x() * 1000.0, corr.y() * 1000.0, yaw_corr * 180.0 / M_PI);
             } else {
-                speak("Encaixando o cubo");
+                speak("~Encaixando o cubo");
             }
 
             double fk_err_xy = -1.0;
@@ -4833,7 +4833,7 @@ private:
                         "discrepancia de FK entre poses, nao do encaixe.",
                         err_xy * 1000.0, slot_xy_tolerance_m_ * 1000.0);
                 }
-                speak("Encaixei o cubo");
+                speak("!Encaixei o cubo");
                 last_slot_decision_ = SlotDecision{
                     "slot:" + slot_frame, table_pose, target, 0.0, obs.p};
                 cube_left_on_table_ = false;
@@ -4891,7 +4891,7 @@ private:
             // uma descida abaixo da borda. Recolhe o braco antes de sair.
             if (!obs.seen) {
                 last_place_failure_reason_ = "slot_nao_verificado";
-                speak("Nao vi o cubo depois de soltar, nao sei se encaixou");
+                speak("!Nao vi o cubo depois de soltar, nao sei se encaixou");
                 last_slot_decision_ = SlotDecision{
                     "slot_nao_verificado:" + slot_frame, table_pose, target, 0.0,
                     Eigen::Vector3d(fk_actual.x(), fk_actual.y(), expected_top.z())};
@@ -4902,7 +4902,7 @@ private:
                     cube_frame.c_str(), slot_frame.c_str(), kSlotMaxObservations);
             } else {
                 last_place_failure_reason_ = "slot_nao_encaixou";
-                speak("Nao consegui encaixar o cubo no slot");
+                speak("!Nao consegui encaixar o cubo");
                 last_slot_decision_ = SlotDecision{
                     "slot_falhou:" + slot_frame, table_pose, target, 0.0, obs.p};
                 RCLCPP_ERROR(
@@ -4955,7 +4955,7 @@ private:
                 "[SLOT] nao encaixei em %s (%s) e NAO vou soltar na mesa - devolvendo o bloco "
                 "ao container de bordo (unreachable, sugestao 0).",
                 slot_frame.c_str(), last_place_failure_reason_.c_str());
-            speak("Nao achei o encaixe, vou guardar o bloco de volta");
+            speak("!Nao achei o encaixe, vou guardar o bloco");
             return false;
         }
         if (out == StackOutcome::kNoIk) {
@@ -5055,7 +5055,7 @@ private:
                     "[%s] cubo %.1f mm abaixo do piso de re-pega - caiu da pilha; nao desco ate' la, "
                     "fica onde esta.",
                     tag.c_str(), (floor_z - obs.p.z()) * 1000.0);
-                speak("O bloco caiu da pilha, vou deixar onde esta");
+                speak("!O bloco caiu da pilha, vou deixar onde esta");
             } else {
                 publishStage(goal_handle, "stack_recorrect");
                 speak("O bloco ficou fora do lugar, vou ajeitar");
@@ -5276,7 +5276,7 @@ private:
         }
 
         publishStage(goal_handle, "container_detecting");
-        speak("Procurando o container " + cor);
+        speak("~Procurando o container " + cor);
         waitForCameraStream("PLACE");
 
         geometry_msgs::msg::TransformStamped tf;
@@ -5446,7 +5446,7 @@ private:
             q[0], q[1], q[2], q[3], q[4]);
 
         publishStage(goal_handle, "container_approach");
-        speak("Levando o bloco para dentro do container " + cor);
+        speak("~Levando o bloco para o container " + cor);
         container_arm_moved_ = true;
         // Pedido do operador (25/08): so' descer depois que as outras juntas
         // estao certas. 1) base e punho (j1, j4, j5) com o braco na altura
@@ -5683,7 +5683,7 @@ private:
                         goal->stack_on.c_str(),
                         out == StackOutcome::kBaseNotSeen ? "base nao vista" : "sem IK/chegada",
                         table_pose.c_str());
-                    speak("Nao consegui empilhar, vou soltar na mesa");
+                    speak("!Nao consegui empilhar, vou soltar na mesa");
                     // Volta a pegar_obj antes do caminho normal (o braco pode
                     // estar em tag_direita/esquerda ou na pre-pose).
                     arm->setStartStateToCurrentState();
@@ -5769,7 +5769,7 @@ private:
         if (!isTfPlaceTarget(table_pose)) {
             if (isShelfPlaceTarget(table_pose)) {
                 publishStage(goal_handle, "shelf_waypoint");
-                speak("Passando pela pose intermediaria da prateleira");
+                speak("~Passando pela pose da prateleira");
                 if (!goToShelfWaypoint(arm, "place shelf waypoint before " + table_pose)) {
                     RCLCPP_ERROR(
                         get_logger(),
@@ -5842,7 +5842,7 @@ private:
                 }
             }
 
-            speak("Indo para a pose de entrega " + spokenTargetName(table_pose));
+            speak("~Indo para a pose de entrega " + spokenTargetName(table_pose));
             if (!isShelfPlaceTarget(table_pose)) {
                 // Mesa comum (pose unica): j2 por ultimo, como nos slots.
                 std::array<double, 5> q{};
@@ -5857,7 +5857,7 @@ private:
         }
 
         publishStage(goal_handle, "detecting_place_tag");
-        speak("Procurando o alvo de entrega " + spokenTargetName(table_pose));
+        speak("~Procurando o alvo de entrega " + spokenTargetName(table_pose));
         waitForCameraStream("PLACE");
 
         // 2026-08-17: TODO o fluxo TF do place roda no frame da base do
@@ -5872,12 +5872,12 @@ private:
                 std::chrono::milliseconds(5000),
                 std::chrono::milliseconds(200),
                 "place detect " + table_pose)) {
-            speak("Nao encontrei o alvo de entrega " + spokenTargetName(table_pose));
+            speak("!Nao encontrei o alvo de entrega " + spokenTargetName(table_pose));
             return false;
         }
 
         publishStage(goal_handle, "place_pre_approach");
-        speak("Alvo de entrega encontrado. Ajustando a aproximacao");
+        speak("~Alvo visto, ajustando a aproximacao");
 
         constexpr double kTagXNearZero = 0.1;
         const double tag_x = target_tf.transform.translation.x;
@@ -5919,7 +5919,7 @@ private:
                 std::chrono::milliseconds(3000),
                 std::chrono::milliseconds(200),
                 "place final " + table_pose)) {
-            speak("Perdi o alvo de entrega antes da aproximacao final");
+            speak("Perdi o alvo antes da aproximacao final");
             return false;
         }
 
@@ -6080,7 +6080,7 @@ private:
                 result->message = message;
                 fill_reach_fields(true);
                 publishStage(goal_handle, "skipped_missing_container_tag");
-                speak("Nao encontrei esse bloco no container. Vou seguir para a proxima tarefa");
+                speak("!Esse bloco nao esta no container, vou para a proxima");
                 execution_guard.release();
                 goal_handle->succeed(result);
             };
@@ -6123,7 +6123,7 @@ private:
             finish_failure(result->message);
             return;
         }
-        speak("Objeto localizado no " + spokenTargetName(container_pose));
+        speak("~Objeto localizado no " + spokenTargetName(container_pose));
 
         auto arm = makeInterfaceWithTimeout("arm");
         auto gripper = makeInterfaceWithTimeout("gripper");
@@ -6249,7 +6249,7 @@ private:
         if (result->success)
         {
             publishStage(goal_handle, "done");
-            speak("Entrega concluida com sucesso");
+            speak("!Entreguei o bloco");
             execution_guard.release();
             goal_handle->succeed(result);
         }
@@ -6273,7 +6273,7 @@ private:
         }
         else
         {
-            speak("Nao consegui entregar o bloco");
+            speak("!Nao consegui entregar o bloco");
             finish_failure(result->message);
         }
     }
@@ -6426,7 +6426,7 @@ private:
             get_logger(),
             "[PLACE] alvo fora de alcance — devolvendo o bloco ao %s (yaml continua occupied).",
             container_pose.c_str());
-        speak("Vou devolver o bloco ao " + spokenTargetName(container_pose));
+        speak("Devolvendo o bloco ao " + spokenTargetName(container_pose));
         arm->setMaxAccelerationScalingFactor(1.0);
 
         if (container_arm_moved_ || stack_arm_moved_ || surface_arm_moved_) {
@@ -6585,7 +6585,7 @@ private:
                 std::chrono::milliseconds(600));
             if (!effort_before_close) {
                 last_place_failure_reason_ = "sem_telemetria_garra";
-                speak("Falha: sem telemetria de esforço da garra");
+                speak("!Falha: sem leitura de forca da garra");
                 return false;
             }
         }
@@ -6602,16 +6602,16 @@ private:
         // falhar com causa distinta — sem sucesso fantasma e sem setEmpty.
         if (verify_grasp_effort_ && verify_container_grasp_) {
             publishStage(goal_handle, "verifying_grasp");
-            speak("Verificando o bloco pela forca da garra");
+            speak("~Conferindo o bloco pela garra");
             if (!verifyGraspByEffort(*effort_before_close, "PLACE")) {
                 last_place_failure_reason_ = "garra_vazia_no_container";
-                speak("Falha: a garra não encontrou o bloco no container");
+                speak("!Falha: a garra nao achou o bloco no container");
                 gripper->setStartStateToCurrentState();
                 gripper->setNamedTarget("gripper_open");
                 (void)planAndExecute(gripper, "reopen after empty container grasp");
                 return false;
             }
-            speak("A garra detectou o bloco");
+            speak("!Bloco na garra");
         }
 
         publishStage(goal_handle, "returning_pre_container");
@@ -6767,7 +6767,7 @@ private:
                         get_logger(),
                         "Entrega no container concluida mas o retorno a pegar_obj falhou — "
                         "braco pode estar estendido sobre a mesa.");
-                    speak("Entreguei o bloco, mas nao consegui recolher o braco");
+                    speak("!Entreguei, mas nao consegui recolher o braco");
                 }
                 return true;
             }
@@ -6813,7 +6813,7 @@ private:
                     "Entrega concluida mas o retorno ao waypoint %s falhou — "
                     "braco pode estar estendido sobre a prateleira.",
                     kShelfWaypointPose);
-                speak("Entreguei o bloco, mas nao consegui recolher o braco");
+                speak("!Entreguei, mas nao consegui recolher o braco");
             }
             return true;
         }
@@ -6837,7 +6837,7 @@ private:
                 get_logger(),
                 "Entrega concluida mas o retorno a pegar_obj falhou — braco "
                 "pode estar estendido sobre a mesa.");
-            speak("Entreguei o bloco, mas nao consegui recolher o braco");
+            speak("!Entreguei, mas nao consegui recolher o braco");
         }
 
         return true;

@@ -103,7 +103,22 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_audio",
             default_value="true",
-            description="Inicia o speech_node (Piper) no stack de manipulacao",
+            description="Inicia o speech_node (voz) no stack de manipulacao",
+        ),
+        DeclareLaunchArgument(
+            "speech_backend",
+            default_value="kokoro",
+            description="Motor de voz: kokoro, piper ou espeak (cai para o proximo se faltar)",
+        ),
+        DeclareLaunchArgument(
+            "kokoro_voice",
+            default_value="pm_alex",
+            description="Voz pt-BR do Kokoro: pm_alex, pm_santa ou pf_dora",
+        ),
+        DeclareLaunchArgument(
+            "voice_effect",
+            default_value="none",
+            description="Efeito na voz: none, dog, dog_deep ou cartoon_dog",
         ),
         DeclareLaunchArgument(
             "use_container_detector",
@@ -235,6 +250,9 @@ def generate_launch_description():
                 "use_camera": use_camera,
                 "use_apriltag": use_apriltag,
                 "use_audio": use_audio,
+                "speech_backend": LaunchConfiguration("speech_backend"),
+                "kokoro_voice": LaunchConfiguration("kokoro_voice"),
+                "voice_effect": LaunchConfiguration("voice_effect"),
                 "use_container_detector": LaunchConfiguration("use_container_detector"),
                 "container_detector_always_on": LaunchConfiguration("container_detector_always_on"),
                 "use_rviz_manip": use_rviz_manip,

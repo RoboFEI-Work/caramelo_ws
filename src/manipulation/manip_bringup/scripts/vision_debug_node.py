@@ -723,7 +723,7 @@ def ros_main(argv=None) -> int:
             dp("pick_active_topic", "/manip/pick_active")
             dp("place_active_topic", "/manip/place_active")
             dp("surface_observe_topic", "/manip/surface_observe")
-            dp("speech_topic", "/manip/speech")
+            dp("speech_topic", "/manip/speech_status")
 
             self.bridge = CvBridge()
             self.K: Optional[np.ndarray] = None
@@ -829,7 +829,17 @@ def ros_main(argv=None) -> int:
             self.surface_status = str(msg.data)
 
         def _on_speech(self, msg: String):
-            self.speech = str(msg.data)
+            # /manip/speech_status: "falando: X" | "ocioso" | "descartada (...): X".
+            # Guarda so' o que o robo de fato esta' falando (a ultima frase fica
+            # na tela ate' a proxima). Se apontado para /manip/speech cru, tira
+            # o prefixo de prioridade ('!' alta, '~' baixa).
+            data = str(msg.data)
+            if data.startswith("falando: "):
+                self.speech = data[len("falando: "):]
+            elif data == "ocioso" or data.startswith("descartada"):
+                return
+            else:
+                self.speech = data.lstrip("!~").strip()
 
         # ---------------- TF ----------------
         def _lookup(self, target: str, source: str, stamp):

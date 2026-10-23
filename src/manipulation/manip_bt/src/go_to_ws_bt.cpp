@@ -375,7 +375,7 @@ BT::NodeStatus GoToWSBT::fail(const std::string & reason)
   RCLCPP_ERROR(logger(), "[%s] %s", dock_id_.c_str(), reason.c_str());
   if (speech_pub_) {
     std_msgs::msg::String msg;
-    msg.data = "Não consegui chegar na estação " + dock_id_;
+    msg.data = "!Nao cheguei na estacao " + dock_id_;
     speech_pub_->publish(msg);
   }
   cancel(undock_);

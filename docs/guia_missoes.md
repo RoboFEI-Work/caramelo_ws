@@ -880,14 +880,16 @@ Parâmetros do `place_action_server`: `slot_memory_enabled` (true) e `slot_memor
 - **Câmera muda com nó no ar** = provavelmente porta USB 2 ("Device USB type:
   2.1" + "Reduced performance" no log). O D455 exige USB 3 (porta azul) — sem
   isso o nó sobe mas NÃO publica imagens.
-- **Voz**: motor Piper em `~/piper/piper` + `espeak-ng`/`ffmpeg` (ffplay aplica
-  o efeito dog). NUNCA `apt install piper` (é um app de mouse gamer). Tirar o
-  efeito: `voice_effect` no speech_node do manip_stack.launch.py.
+- **Voz**: Kokoro (venv `~/caramelo_tts_venv`, `manip_audio/scripts/instalar_kokoro.sh`)
+  → Piper (`~/piper/piper`) → `espeak-ng`, nessa ordem de fallback; `ffplay` toca.
+  NUNCA `apt install piper` (é um app de mouse gamer). Trocar voz/motor/efeito:
+  `kokoro_voice`, `speech_backend`, `voice_effect` no launch. Frases descartadas
+  aparecem no log como `[VOZ] descartada`. [voz_do_robo.md](voz_do_robo.md).
 - **Script Python novo em install(PROGRAMS) precisa de `chmod +x` no src** —
   com `--symlink-install`, sem o bit de execução o launch falha com
   "executable not found on the libexec directory".
-- Robô **sem voz** neste PC: falta o executável piper/espeak-ng
-  (`sudo apt install espeak-ng` habilita o fallback).
+- Robô **sem voz** neste PC: nem Kokoro, nem Piper, nem espeak-ng
+  (`sudo apt install espeak-ng` habilita a reserva; o Kokoro é o script acima).
 - Warnings "Parameter 'X' is not supported" no launch = a RealSense reclamando
   de args do launch pai. Benigno, pode ignorar.
 - **Robô ruim de localização que PIORA com o tempo/movimento** = relógio da Pi

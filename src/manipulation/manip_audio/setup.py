@@ -20,13 +20,18 @@ setup(
             'share/' + package_name + '/models/pt_BR-jeff',
             glob('models/pt_BR-jeff/*'),
         ),
+        (
+            'share/' + package_name + '/models/pt_BR-faber',
+            glob('models/pt_BR-faber/*'),
+        ),
+        ('share/' + package_name + '/scripts', glob('scripts/*.sh')),
     ],
     install_requires=['setuptools'],
     tests_require=['pytest'],
     zip_safe=True,
     maintainer='Equipe RoboFEI @Work',
     maintainer_email='robofei.atwork@gmail.com',
-    description='Sintese de voz desacoplada para o manipulador.',
+    description='Voz do robo: fila com prioridade, cache e backends Kokoro/Piper/espeak.',
     license='TODO',
     entry_points={
         'console_scripts': [

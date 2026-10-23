@@ -2530,7 +2530,7 @@ private:
                         get_logger(),
                         "[AMT1] busca %zu/%zu: nudge recusado (%s) — busca lateral impossivel; sigo com o que vi.",
                         k + 1, search_offsets_m_.size(), reason.c_str());
-                    speak("Nao consigo me mover para procurar. Vou ordenar as tags que vi");
+                    speak("Nao consigo me mover, vou ordenar as tags que vi");
                     gs.search_note = "busca lateral impossivel (" + reason + ")";
                     return SearchOutcome::kOk;
                 }
@@ -2558,7 +2558,7 @@ private:
                 k + 1, search_offsets_m_.size(), currentBaseShift(gs), gs.samples.size(),
                 joinInts(missing).c_str());
             if (missing.empty()) {
-                speak("Encontrei todas as tags");
+                speak("!Encontrei todas as tags");
                 break;
             }
             if (nt == NudgeToOutcome::kBudget) {
@@ -3341,7 +3341,7 @@ private:
             return;
         }
         publishStage(gs, "recover_onboard");
-        speak("Vou devolver os blocos que estao a bordo para a mesa");
+        speak("Devolvendo os blocos de bordo para a mesa");
         const std::vector<Slot> slots = slotsSnapshot();
         std::vector<int> onboard = gs.onboard;
         for (const int tag : onboard) {
@@ -3665,7 +3665,7 @@ private:
             stopBroadcasting();  // frames de um goal anterior nao valem mais
         }
         publishStage(gs, "starting");
-        speak("Iniciando a ordenacao da mesa");
+        speak("Comecando a ordenar a mesa");
 
         if (cancellationRequested()) {
             gs.fail_reason = "cancelado";
@@ -3696,7 +3696,7 @@ private:
             get_logger(), "[AMT1] buffer = min(max_onboard %d, vazios %d) = %d (%s)",
             requested, empties, gs.buffer, cap_why.c_str());
         if (gs.buffer < 2) {
-            speak("Preciso de dois containers livres");
+            speak("!Preciso de dois containers livres");
             if (!gs.observe_only) {
                 gs.fail_reason = "buffer_insuficiente";
                 gs.message = "buffer " + std::to_string(gs.buffer) + " < 2 (max_onboard " +
@@ -3961,7 +3961,7 @@ private:
             plan.ops.size(), plan.picks, plan.places, gs.buffer, plan_txt.c_str());
         gs.ops_total = static_cast<int>(plan.ops.size());
         if (plan.ops.empty()) {
-            speak("A mesa ja esta ordenada");
+            speak("!A mesa ja esta ordenada");
             gs.message = "mesa ja ordenada";
             finish(gs);
             return;
@@ -4048,7 +4048,7 @@ private:
                     RCLCPP_INFO(
                         get_logger(), "[AMT1] verificacao: %zu tag(s) medida(s), todas dentro de %.0f mm.",
                         errs.size(), verify_tol_m_ * 1000.0);
-                    speak("Conferi a mesa: tudo no lugar");
+                    speak("!Conferi a mesa, tudo no lugar");
                 } else {
                     std::vector<amt1::SortOp> refine;
                     std::string txt;

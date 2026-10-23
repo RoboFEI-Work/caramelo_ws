@@ -2091,7 +2091,7 @@ class DockAlignNode(Node):
                     log(f"perto da mesa (front {front:.3f}, projetado "
                         f"{front_proj:.3f} < {lateral_min:.2f}): recuo "
                         f"{step:.3f} m antes do lateral (alvo front {target_front:.3f})")
-                    self._speak("Vou recuar um pouco antes de me mover de lado")
+                    self._speak("Recuando antes de ir de lado")
                     # prazo proprio do recuo (o deadline do lateral so e
                     # calculado mais abaixo)
                     backoff_deadline = self.get_clock().now().nanoseconds * 1e-9 + float(timeout)
@@ -2143,7 +2143,7 @@ class DockAlignNode(Node):
         # operador afasta objetos), respeitando cancel durante a espera.
         self._nudge_gain = gain
         self._nudge_origin = origin
-        self._speak("Vou me ajustar para a " + ("esquerda" if sign > 0 else "direita"))
+        self._speak("Ajustando para a " + ("esquerda" if sign > 0 else "direita"))
         start_s = self.get_clock().now().nanoseconds * 1e-9
         deadline = start_s + timeout
         while rclpy.ok() and self.get_clock().now().nanoseconds * 1e-9 - start_s < lead:

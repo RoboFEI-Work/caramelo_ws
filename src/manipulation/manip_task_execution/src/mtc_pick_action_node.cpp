@@ -1663,7 +1663,7 @@ private:
             return false;
         }
         const double center = joints[0];
-        speak("Vou procurar a tag " + spokenTagName(tag_frame));
+        speak("~Procurando a tag " + spokenTagName(tag_frame));
         int step = 0;
         for (const double offset : offsets) {
             if (cancellationRequested()) {
@@ -1755,7 +1755,7 @@ private:
                 target_position.x, target_position.y, target_position.z,
                 achieved.pose.position.x, achieved.pose.position.y,
                 achieved.pose.position.z);
-            speak("Falha: o braco nao chegou na pose de pega");
+            speak("!Falha: o braco nao chegou na pose de pega");
             return false;
         }
 
@@ -2394,7 +2394,7 @@ private:
         outcome = solve_ladder(q, tag_yaw, tilt_used, target_seen);
 
         if (outcome == CustomIkOutcome::kNoTransform) {
-            speak("Falha: perdi a tag na aproximação");
+            speak("!Perdi a tag na aproximacao");
             return TableApproachResult::kNoTransform;
         }
         if (outcome == CustomIkOutcome::kNoSolution) {
@@ -2414,7 +2414,7 @@ private:
             "orientacao da tag: yaw=%.4f -> q5=%.4f",
             cycle_name.c_str(), tilt_used * 180.0 / M_PI, tag_yaw, q[4]);
 
-        speak("Encontrei uma solução de I K para a tag " + spokenTagName(tag_frame));
+        speak("~O braco alcanca a tag " + spokenTagName(tag_frame));
 
         // Fase 1: SO a j1 (pedido do operador 2026-08-28): a base do braco
         // gira ate o azimute da tag com o resto parado.
@@ -2601,7 +2601,7 @@ private:
             // trata como a falha de IK de antes.
             retryable_failure = true;
             last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
-            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            speak("!Falha: o braco nao alcanca a tag " + spokenTagName(tag_frame));
             return;
         }
         const Eigen::Vector3d target = *last_unreachable_target_;
@@ -2616,7 +2616,7 @@ private:
             last_failure_unreachable_ = final_attempt;
             retryable_failure = true;
             last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
-            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            speak("!Falha: o braco nao alcanca a tag " + spokenTagName(tag_frame));
             RCLCPP_WARN(
                 this->get_logger(),
                 "[%s] mesa: alvo VISTO em [%.3f %.3f %.3f] (%s) sem IK em "
@@ -2651,7 +2651,7 @@ private:
                 cycle_name.c_str(), target.x(), target.y(), target.z());
             retryable_failure = true;
             last_pick_failure_reason_ = "ik_custom_ou_execucao_falhou";
-            speak("Falha: sem solução de I K para a tag " + spokenTagName(tag_frame));
+            speak("!Falha: o braco nao alcanca a tag " + spokenTagName(tag_frame));
             return;
         }
 
@@ -2850,7 +2850,7 @@ private:
         // pegar_obj_sh; segue direto ao pre_container.
         if (!is_shelf) {
             publishStage(goal_handle, "returning_to_pegar_obj");
-            speak("Bloco seguro. Voltando para a pose de transporte");
+            speak("!Bloco seguro");
             // Pedido do operador 2026-08-28: recolhe o braco (j2..j5) e so
             // depois gira a base (j1) - o bloco nao varre a mesa girando.
             std::array<double, 5> q_home{};
@@ -2878,7 +2878,7 @@ private:
         }
 
         publishStage(goal_handle, "going_container");
-        speak("Levando o bloco para o " + container_pose);
+        speak("~Levando o bloco para o " + container_pose);
         arm->setStartStateToCurrentState();
         arm->setNamedTarget(container_pose);
         if (!planAndExecute(arm, cycle_name + " " + container_pose)) {
@@ -2914,7 +2914,7 @@ private:
         TransferOutcome transfer = transferGraspedObjectToContainer(
             arm, gripper, container_pose, cycle_name, goal_handle, is_shelf);
         if (transfer == TransferOutcome::kFailHolding) {
-            speak("Falha no transporte com o bloco na garra. Tentando o transporte de novo");
+            speak("Transporte falhou com o bloco na garra, tentando de novo");
             transfer = transferGraspedObjectToContainer(
                 arm, gripper, container_pose,
                 cycle_name + " transfer_retry", goal_handle, is_shelf);
@@ -2923,7 +2923,7 @@ private:
             // Item 2.2b: NUNCA vira skip — o gripper_open do proximo goal
             // derrubaria o bloco no chassi. Aborta o goal com causa explicita.
             object_still_grasped = true;
-            speak("Falha: o bloco continua preso na garra");
+            speak("!Falha: o bloco continua preso na garra");
             last_pick_failure_reason_ = "object_still_grasped";
             return false;
         }
@@ -2955,7 +2955,7 @@ private:
                 std::chrono::milliseconds(900),
                 std::chrono::milliseconds(100),
                 cycle_name + " camera_xy_alignment")) {
-            speak("Nao consegui alinhar a camera porque nao encontrei a tag");
+            speak("Nao vi a tag para alinhar a camera");
             return false;
         }
 
@@ -2983,14 +2983,14 @@ private:
             while (delta > M_PI) {delta -= 2.0 * M_PI;}
             while (delta < -M_PI) {delta += 2.0 * M_PI;}
             if (std::abs(delta) < 0.03) {
-                speak("A camera ja esta alinhada com a tag");
+                speak("~Camera ja alinhada");
                 return true;
             }
             delta = std::max(-j1_point_max_abs_rad_, std::min(j1_point_max_abs_rad_, delta));
             joints[0] += delta;
             arm->setStartStateToCurrentState();
             if (!arm->setJointValueTarget(joints) || !planAndExecute(arm, cycle_name + " align j1")) {
-                speak("Falhei ao alinhar a camera com a tag");
+                speak("Nao consegui alinhar a camera");
                 return false;
             }
             RCLCPP_INFO(
@@ -3015,7 +3015,7 @@ private:
         }
 
         if (target.empty()) {
-            speak("A camera ja esta alinhada com a tag");
+            speak("~Camera ja alinhada");
             return true;
         }
 
@@ -3023,7 +3023,7 @@ private:
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(target);
         if (!planAndExecute(arm, cycle_name + " " + target)) {
-            speak("Falhei ao alinhar a camera com a tag");
+            speak("Nao consegui alinhar a camera");
             return false;
         }
 
@@ -3053,7 +3053,7 @@ private:
         // (transfer com bloco na garra) NAO seta o flag.
         retryable_failure = false;
         publishStage(goal_handle, "detecting_tag");
-        speak("Procurando a tag " + spokenTagName(tag_frame));
+        speak("~Procurando a tag " + spokenTagName(tag_frame));
         waitForCameraStream(cycle_name);
 
         geometry_msgs::msg::TransformStamped tag_tf;
@@ -3068,12 +3068,12 @@ private:
             && !sweepForTag(arm, tag_frame, tag_tf, cycle_name, goal_handle))
         {
             retryable_failure = true;
-            speak("Falha: não encontrei a tag " + spokenTagName(tag_frame));
+            speak("!Nao encontrei a tag " + spokenTagName(tag_frame));
             last_pick_failure_reason_ = "tag_nao_encontrada";
             return false;
         }
 
-        speak("Identifiquei a tag " + spokenTagName(tag_frame));
+        speak("~Vi a tag " + spokenTagName(tag_frame));
         // Pedido do operador 2026-08-15: na PRATELEIRA nao ha pre-aproximacao
         // — o alinhamento XY da camera foi pensado para a vista de cima da
         // mesa; em frente a estante ele so move o braco a toa perto da
@@ -3086,7 +3086,7 @@ private:
                     goal_handle,
                     cycle_name + " pre_approach_xy")) {
                 retryable_failure = true;
-                speak("Falha: não consegui alinhar a câmera com a tag");
+                speak("!Falha: nao alinhei a camera com a tag");
                 last_pick_failure_reason_ = "align_camera_falhou";
                 return false;
             }
@@ -3104,7 +3104,7 @@ private:
                 std::chrono::milliseconds(100),
                 cycle_name + " final_approach")) {
             retryable_failure = true;
-            speak("Falha: perdi a tag na aproximação");
+            speak("!Perdi a tag na aproximacao");
             last_pick_failure_reason_ = "tag_perdida_na_aproximacao";
             return false;
         }
@@ -3118,7 +3118,7 @@ private:
         if (is_shelf) {
             if (!approachShelfTarget(arm, tag_frame, cycle_name, goal_handle, shelf_q)) {
                 retryable_failure = true;
-                speak("Falha: nao consegui alcancar a tag na prateleira");
+                speak("!Falha: nao alcancei a tag na prateleira");
                 last_pick_failure_reason_ = "shelf_ik_ou_execucao_falhou";
                 arm->setMaxVelocityScalingFactor(1.0);
                 arm->setMaxAccelerationScalingFactor(1.0);
@@ -3195,7 +3195,7 @@ private:
                     this->get_logger(),
                     "Cannot verify grasp: gripper effort telemetry is unavailable");
                 retryable_failure = true;
-                speak("Falha: sem telemetria de esforço da garra");
+                speak("!Falha: sem leitura de forca da garra");
             last_pick_failure_reason_ = "sem_telemetria_garra";
                 leave_shelf_if_needed();
                 return false;
@@ -3207,7 +3207,7 @@ private:
         gripper->setNamedTarget("gripper_close");
         if (!planAndExecute(gripper, cycle_name + " close gripper")) {
             retryable_failure = true;
-            speak("Falha: não consegui fechar a garra");
+            speak("!Falha: a garra nao fechou");
             last_pick_failure_reason_ = "garra_nao_fechou";
             // Verificacao adversarial 2026-08-10: o close falha por tolerancia
             // JUSTAMENTE quando o bloco esta entre os dedos — reabrir antes do
@@ -3222,10 +3222,10 @@ private:
 
         if (verify_grasp_effort_) {
             publishStage(goal_handle, "verifying_grasp");
-            speak("Verificando o bloco pela forca da garra");
+            speak("~Conferindo o bloco pela garra");
             if (!verifyGraspByEffort(*effort_before_close, cycle_name)) {
                 retryable_failure = true;
-                speak("Falha: a garra não detectou o bloco");
+                speak("!Falha: a garra nao pegou o bloco");
             last_pick_failure_reason_ = "garra_vazia";
                 RCLCPP_WARN(
                     this->get_logger(),
@@ -3239,7 +3239,7 @@ private:
                 leave_shelf_if_needed();
                 return false;
             }
-            speak("A garra detectou o bloco");
+            speak("!Bloco na garra");
         }
 
         // 2026-10-19: pega CONFIRMADA — o bloco saiu da mesa, entao o
@@ -3287,7 +3287,7 @@ private:
             // abriria a garra em cima da prateleira) nem skip.
             object_still_grasped = true;
             retryable_failure = false;
-            speak("Falha: nao consegui sair da prateleira com o bloco");
+            speak("!Falha: nao sai da prateleira com o bloco");
             last_pick_failure_reason_ = "shelf_retorno_falhou";
             return false;
         }
@@ -3486,7 +3486,7 @@ private:
             setActiveInterfaces(arm, gripper);
 
             if (max_pick_attempts > 1) {
-                speak("Tentativa de pegar numero " + std::to_string(attempt));
+                speak("~Tentativa numero " + std::to_string(attempt));
             }
 
             cycle_success = runPickCycle(
@@ -3526,7 +3526,7 @@ private:
                     this->get_logger(),
                     "PICK de %s: tag nao vista — usando a POSE INICIAL gravada (%s) nas proximas tentativas.",
                     goal->tag_frame.c_str(), frame_to_pick.c_str());
-                speak("Nao vejo a tag. Vou usar a posicao inicial guardada");
+                speak("Nao vejo a tag, vou pela posicao guardada");
             }
 
             if (!retryable_failure || attempt >= max_pick_attempts) {
@@ -3543,9 +3543,9 @@ private:
                     tableStrategyForAttempt(attempt + 1) !=
                         TableIkStrategy::kMoveItPose)
                 {
-                    speak("Vou ler a tag de novo e tentar por cima mais uma vez");
+                    speak("Vou ler a tag de novo e tentar por cima");
                 } else {
-                    speak("Vou relaxar as tolerancias para a proxima tentativa");
+                    speak("Vou relaxar as tolerancias e tentar de novo");
                 }
             }
 
@@ -3703,7 +3703,7 @@ private:
 
         if (result->success) {
             publishStage(goal_handle, "done");
-            speak("Coleta concluida com sucesso");
+            speak("!Peguei o bloco");
             execution_guard.release();
             goal_handle->succeed(result);
         } else if (unreachable_bailout) {
@@ -3731,12 +3731,12 @@ private:
             result->fail_reason = last_pick_failure_reason_;
             result->message = "Pick pulado apos esgotar as tentativas (" +
                 last_pick_failure_reason_ + ")";
-            speak("Nao consegui pegar o bloco. Vou seguir para o proximo objetivo");
+            speak("!Nao peguei o bloco, vou para o proximo");
             execution_guard.release();
             goal_handle->succeed(result);
         } else {
             result->fail_reason = last_pick_failure_reason_;
-            speak("Nao consegui pegar o bloco");
+            speak("!Nao peguei o bloco");
             finish_failure(result->message);
         }
     }

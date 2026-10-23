@@ -30,7 +30,8 @@ for p in chrony sshpass ffmpeg espeak-ng alsa-utils v4l-utils libyaml-cpp-dev \
   dpkg -s $p >/dev/null 2>&1 || echo "  FALTA $p"
 done
 
-echo "=== piper (voz) ==="; [ -x ~/piper/piper ] && echo "  ok" || echo "  FALTA ~/piper/piper"
+echo "=== voz ==="; [ -x ~/piper/piper ] && echo "  piper ok" || echo "  FALTA ~/piper/piper"
+[ -d ~/caramelo_tts_venv/lib/python3.12/site-packages/kokoro ] && echo "  kokoro ok" || echo "  FALTA kokoro (instalar_kokoro.sh)"
 
 echo "=== workspaces ==="
 for w in ros2_ws caramelo_hardware_ws caramelo_ws; do
@@ -78,14 +79,26 @@ sudo apt install -y chrony sshpass ffmpeg espeak-ng alsa-utils v4l-utils \
                     libyaml-cpp-dev avahi-daemon
 ```
 
-Para que serve cada um que não é óbvio: o **`ffplay`** (do `ffmpeg`) é o player que aplica
-o efeito na voz do robô; **`espeak-ng`** é o TTS de reserva quando o Piper falha; e
+Para que serve cada um que não é óbvio: o **`ffplay`** (do `ffmpeg`) é o player da voz do
+robô; **`espeak-ng`** é o TTS de reserva quando Kokoro e Piper faltam; e
 **`avahi-daemon`** resolve `raspberrypi.local`, de onde o RViz baixa as malhas 3D do robô
 por HTTP.
 
 ---
 
-## Passo 4 — Piper (voz), instalação manual
+## Passo 4 — Voz: Kokoro (principal) e Piper (reserva)
+
+**Kokoro** (voz natural, default dos launches) — com internet, depois do clone do
+`caramelo_ws` (Passo 6):
+
+```bash
+bash ~/caramelo_ws/src/manipulation/manip_audio/scripts/instalar_kokoro.sh
+```
+
+Cria o venv `~/caramelo_tts_venv` (torch CPU + kokoro, fora do Python do ROS) e baixa o
+modelo (~330 MB). Sem esse venv o `speech_node` cai para o Piper sozinho.
+
+**Piper** (reserva, instalação manual):
 
 ```bash
 cd ~
@@ -96,10 +109,10 @@ tar -xzf piper_amd64.tar.gz      # cria ~/piper/piper
 > **Não instale `piper` pelo apt** — esse pacote é um utilitário de mouse gamer, sem
 > relação com TTS.
 
-O modelo de voz `pt_BR-jeff` **já vem versionado** no clone do `caramelo_ws`
-(`src/manipulation/manip_audio/models/pt_BR-jeff/`), não precisa baixar nada além disso.
-O `speech_node` procura o executável em `~/piper/piper` quando o parâmetro é `auto`, que é
-o padrão dos launches.
+Os modelos `pt_BR-faber` (default) e `pt_BR-jeff` **já vêm versionados** em
+`src/manipulation/manip_audio/models/`. O `speech_node` procura o executável em
+`~/piper/piper` quando o parâmetro é `auto`, que é o padrão dos launches.
+Detalhes e como testar: [voz_do_robo.md](voz_do_robo.md).
 
 ---
 
@@ -344,7 +357,8 @@ ou tire-o da rede do robô antes de continuar.
    `ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arena3_520 use_rviz:=true`
    → o RViz abre, o mapa aparece, e o log do `move_group` diz
    `Loading robot model 'caramelo'`. Se disser `'manip'`, subiu o launch errado do MoveIt.
-5. **Voz** — `ros2 topic pub --once /manip/speech std_msgs/msg/String "{data: teste}"`.
+5. **Voz** — `ros2 topic pub --once /manip/speech std_msgs/msg/String "{data: '!Teste de voz'}"`
+   (o log do `speech_node` diz qual motor subiu: `Voz Kokoro pronta` / `Voz Piper pronta`).
 6. **Câmera** — a D455 precisa de porta **USB 3**: `lsusb -t` tem que mostrar `5000M`. Em
    USB 2 ela só funciona a 640x480x5 e derruba frames.
 7. **Missão** —

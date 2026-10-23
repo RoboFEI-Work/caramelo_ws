@@ -3,7 +3,7 @@
 <package format="3">
   <name>manip_audio</name>
   <version>0.1.0</version>
-  <description>Sintese de voz (speech_node) para os eventos do manipulador via /manip/speech, com Piper ou espeak-ng.</description>
+  <description>Voz do robo (speech_node): fila com prioridade e cache em /manip/speech, backends Kokoro, Piper ou espeak-ng.</description>
   <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>TODO</license>
 

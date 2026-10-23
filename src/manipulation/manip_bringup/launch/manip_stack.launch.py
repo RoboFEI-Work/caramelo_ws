@@ -2,7 +2,7 @@
 #
 # SEMPRE sobe: move_group (com ExecuteTaskSolutionCapability p/ MTC).
 # Opcionais: commander (use_commander, ferramenta de bancada), camera RealSense,
-# AprilTag, audio (Piper), pick/place MTC, RViz.
+# AprilTag, voz (Kokoro/Piper/espeak), pick/place MTC, RViz.
 #
 # use_mock_hardware=true: sobe RSP + ros2_control com mock_components NO PC
 # (braco simulado, SEM base mecanum/navegacao). Em modo real (default) o
@@ -185,7 +185,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_audio",
             default_value="true",
-            description="Inicia o speech_node (Piper, efeito dog)",
+            description="Inicia o speech_node (voz em /manip/speech)",
         ),
         DeclareLaunchArgument(
             "use_pick_place",
@@ -210,15 +210,35 @@ def generate_launch_description():
                 "o braco por topico (ros2 topic pub). false na competicao."
             ),
         ),
-        # --- Audio ---
+        # --- Voz ---
+        DeclareLaunchArgument(
+            "speech_backend",
+            default_value="kokoro",
+            description=(
+                "Motor de voz: kokoro (natural; venv ~/caramelo_tts_venv, ver "
+                "manip_audio/scripts/instalar_kokoro.sh), piper ou espeak. Sem o venv "
+                "o speech_node cai para o piper sozinho."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "kokoro_voice",
+            default_value="pm_alex",
+            description="Voz pt-BR do Kokoro: pm_alex, pm_santa (masc.) ou pf_dora (fem.)",
+        ),
         DeclareLaunchArgument("piper_executable", default_value="auto"),
         DeclareLaunchArgument(
             "piper_model",
             default_value=os.path.join(
-                manip_audio_share, "models", "pt_BR-jeff", "pt_BR-jeff-medium.onnx"
+                manip_audio_share, "models", "pt_BR-faber", "pt_BR-faber-medium.onnx"
             ),
+            description="Modelo .onnx do Piper (pt_BR-faber ou pt_BR-jeff, em manip_audio/models)",
         ),
         DeclareLaunchArgument("speech_player_executable", default_value="auto"),
+        DeclareLaunchArgument(
+            "voice_effect",
+            default_value="none",
+            description="Efeito na voz via ffplay: none, dog, dog_deep ou cartoon_dog",
+        ),
         # --- IK/grasp ---
         DeclareLaunchArgument("verify_grasp_effort", default_value="true"),
         # Erro maximo (m) entre a pose pedida e onde a ponta parou. 0.0 DESLIGA
@@ -655,18 +675,19 @@ def generate_launch_description():
         }],
     )
 
-    # --- Audio (Piper com voz de cachorro) ---
+    # --- Voz (fila com prioridade; nunca bloqueia os nos, nunca corta frase) ---
     speech = Node(
         package="manip_audio",
         executable="speech_node",
         output="screen",
         condition=IfCondition(use_audio),
         parameters=[{
-            "backend": "piper",
+            "backend": LaunchConfiguration("speech_backend"),
+            "kokoro_voice": LaunchConfiguration("kokoro_voice"),
             "piper_executable": LaunchConfiguration("piper_executable"),
             "piper_model": LaunchConfiguration("piper_model"),
             "player_executable": LaunchConfiguration("speech_player_executable"),
-            "voice_effect": "dog",
+            "voice_effect": LaunchConfiguration("voice_effect"),
         }],
     )
 
