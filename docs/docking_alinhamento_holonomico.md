@@ -355,9 +355,10 @@ completa em `docs/analise_run_2026-10-21.md`, §3).
 - Testes puros: `python3 -m pytest src/caramelo_navigation/test -q` (`yaw_needs_correction`,
   `refit_trigger`, `face_fit_acceptable`/`face_fit_reject_reason`, `final_yaw_decision`).
 
-**Recomendação de mapa (decisão do time, fora do escopo do código):** nas WS do
-`arenalegal_2026/docking.yaml`, `staging_x_offset` de **−0,35 → −0,25** (pré-docking a
-~0,6 m da face em vez de ~0,7). Motivo: a 0,7 m o fit do refino (janela de ±0,45 m e até
+**Mapa (aplicado em 2026-10-23, decisão do operador):** nas WS do `arenalegal_2026`,
+`approach_offset` **0,35 → 0,25** em `service_areas.yaml` (é daí que o sync gera o
+`docking.yaml`; `staging_x_offset` −0,25 nos `caramelo_ws*_dock`), pré-docking a ~0,6 m da
+face em vez de ~0,7. SH1 (0,4) e PP1 (0,35) ficaram como estavam. Motivo: a 0,7 m o fit do refino (janela de ±0,45 m e até
 1,20 m) pega os vizinhos da mesa (0,87–0,98 m de "face" nas duas estações da run) e é
 descartado; a ~0,6 m a face aparece isolada (fits de 0,61–0,65 m, resíduo ~13 mm) e o
 refino do staging volta a valer — o refit a 0,55 m vira redundância, não a única chance.

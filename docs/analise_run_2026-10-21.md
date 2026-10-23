@@ -135,8 +135,9 @@ Docking:
   distância de giro, esquadra pela face do LiDAR e aproxima de novo (uma vez). Se ainda assim
   ficar fora, o resultado diz explicitamente `yaw_fora_da_tolerancia` (com `strict` desligado
   segue com aviso; ligado, falha).
-- Recomendação de mapa (decisão do time): `staging_x_offset` de −0,35 para ≈ −0,25 nas WS,
-  para o pré-docking ficar a ~0,6 m da face.
+- Mapa (decisão do operador, aplicada em 2026-10-23): `approach_offset` 0,35 → 0,25 nas WS do
+  `arenalegal_2026/service_areas.yaml` (fonte do sync) e `staging_x_offset` −0,25 no
+  `docking.yaml` derivado; pré-docking a ~0,6 m da face. SH1 e PP1 continuam como estavam.
 
 ## 6. Arquitetura recomendada: híbrida, com a geometria no comando
 
@@ -155,4 +156,4 @@ memória), **desconhecido** (não visto) — e o desconhecido nunca vira livre.
 - Medir no D455 real a partir de que distância a profundidade bate com o plano
   (`depth_min_reliable_m`); o valor 0,45 é o da ficha técnica.
 - Confirmar o yaw final em cada estação depois da correção (linha `pronto: ... yaw_face`).
-- Decidir o `staging_x_offset` por estação e regravar o mapa.
+- Confirmar em campo o pré-docking a 0,25 m (WS): o fit do refino deve sair com largura 0,6–0,8 m.
