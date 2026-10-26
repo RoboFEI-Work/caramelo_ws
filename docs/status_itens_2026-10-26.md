@@ -32,4 +32,12 @@ Braço agora a 100 Hz (`rw_rate=100`, controllers 100 Hz), perfil por tempo 20 m
 
 Sem avisos do move_group nem do JTC em nenhum caso. Teto físico do XM540-W270: ~3,1 rad/s sem carga.
 
-**Achado no joint 4**: em `pegar_obj` (alvo 2,199 rad) o servo para em 1,915 rad com corrente de 0,07 A (não está forçando contra batente). Tudo indica `Max Position Limit` gravado na EEPROM do servo 4 (~3296 ticks). O JTC aceita porque a tolerância de goal é 0,30 rad e o erro é 0,28. Isso já acontecia antes de hoje (erro máximo 279 mrad na linha de base). Decisão do time: subir o limite no servo (se o cabo da câmera permitir) ou corrigir URDF/SRDF para 1,9 rad e regravar `pegar_obj`; até lá a câmera olha 16° diferente do planejado.
+**Achado no joint 4 (confirmado lendo a EEPROM dos servos)**: `Max Position Limit` do servo 4 = 3295 ticks = **1,913 rad**; o `pegar_obj` pede 2,199 rad (3482 ticks), então o servo para em 1,915 com corrente baixa. O JTC aceita porque a tolerância de goal é 0,30 rad e o erro é 0,28. Isso já acontecia antes de hoje. Outras poses do SRDF também passam do limite: `tag_direita`/`tag_esquerda`/`MesaSh` (1,94 rad, cortadas em 25 mrad). Limites lidos nos servos (ticks → rad):
+
+| servo | min | max | poses do SRDF perto do limite |
+|---|---|---|---|
+| 2 | 1032 (−1,56) | 3146 (+1,68) | `home` j2 = −1,54 (folga 18 mrad) |
+| 3 | 547 (−2,30) | 3455 (+2,16) | `pegar_obj_sh` j3 = 2,16 (no limite) |
+| 4 | 859 (−1,82) | **3295 (+1,91)** | `pegar_obj` j4 = 2,20 (**corta 0,29 rad**), `tag_*` e `MesaSh` 1,94 |
+
+Decisão do time: (a) subir o limite do servo 4 no Dynamixel Wizard se o cabo da câmera e a mecânica permitirem, ou (b) corrigir URDF (joint4 upper 2,2 → 1,91) e regravar as poses do SRDF para o que o braço realmente faz hoje. Em (b) nada muda fisicamente, mas o planejador deixa de confiar na tolerância de 0,30 rad do JTC e passa a recusar IK além de 1,91.
