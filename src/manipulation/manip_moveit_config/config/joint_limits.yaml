@@ -9,40 +9,41 @@
 default_velocity_scaling_factor: 1.0
 default_acceleration_scaling_factor: 1.0
 
-# Juntas 1-5: 1.2 rad/s e 1.0 rad/s2 (pedido de velocidade maxima, medido
-# 2026-09-02). O plano pode correr na frente do braco: o monitor 3x+3s
-# (moveit_controllers) e o goal_time 5s + goal 0.30 rad do JTC (Pi) absorvem o
-# atraso; o JTC nao tem tolerancia de trajeto, entao nao aborta no meio.
-# Se aparecer "taking too long" ou GOAL_TOLERANCE_VIOLATED, voltar para
-# 0.9/0.6. O teto FISICO esta nos servos (Profile Velocity/Accel na EEPROM +
-# ganho P); destravar isso e' no Dynamixel Wizard, nao aqui.
+# Juntas 1-5: 2.5 rad/s e 4.0 rad/s2 (2026-10-26). Antes 1.2/1.0 (2026-09-02),
+# quando o barramento Dynamixel rodava a 25 Hz com 16 ms de latencia do FTDI
+# e o plano corria na frente do braco. Com o U2D2 a 1 ms, return_delay 0 e
+# o braco a 100 Hz (caramelo_hardware_ws, 2026-10-26) o servo acompanha:
+# medido home<->pegar_obj em 2,15 s a 1.2/1.0 (vel pico 1,06 rad/s).
+# Teto fisico: XM540-W270 ~3,1 rad/s sem carga. Se aparecer "taking too long"
+# ou GOAL_TOLERANCE_VIOLATED (JTC: goal_time 5 s, goal 0.30 rad), voltar
+# para 1.2/1.0.
 # Garra (6/7): 1.0/1.0, movimentos curtos, nunca estourou o monitor.
 joint_limits:
   manip_joint1:
     has_velocity_limits: true
-    max_velocity: 1.2
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint2:
     has_velocity_limits: true
-    max_velocity: 1.2
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint3:
     has_velocity_limits: true
-    max_velocity: 1.2
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint4:
     has_velocity_limits: true
-    max_velocity: 1.2
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint5:
     has_velocity_limits: true
-    max_velocity: 1.2
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint6:
     has_velocity_limits: true
     max_velocity: 1.0
