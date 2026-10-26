@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Funcoes comuns de docking do Caramelo: resolucao da pasta do mapa,
-leitura/escrita de docking.yaml e service_areas.yaml (com backup .bak) e
-gravacao da pose de um dock. Importado pelos scripts instalados em
+leitura/escrita de docking.yaml e service_areas.yaml (com backup .bak),
+gravacao da pose de um dock e a espera pelos action servers (pre-flight do
+run_mission e do tour_docks). Importado pelos scripts instalados em
 lib/caramelo_navigation (dock_align_node, CLIs de mapa, nos de service area)."""
 
 from __future__ import annotations
@@ -10,8 +11,11 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
@@ -272,6 +276,65 @@ def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     return math.atan2(siny_cosp, cosy_cosp)
+
+
+# ------------------------------------------------------------ pre-flight
+def graph_action_names(timeout_s: float = 10.0) -> set:
+    """Snapshot dos action servers visiveis no grafo via `ros2 action list`
+    (barato, nunca pendura; conjunto vazio em erro ou timeout)."""
+    try:
+        proc = subprocess.run(
+            ["ros2", "action", "list"], capture_output=True, text=True, timeout=timeout_s)
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def wait_for_action_servers(required: Iterable[str], timeout_s: float,
+                            labels: Optional[Dict[str, str]] = None, hint: str = "", *,
+                            list_actions: Optional[Callable[[], set]] = None,
+                            sleep: Callable[[float], None] = time.sleep,
+                            clock: Callable[[], float] = time.monotonic,
+                            out=None, err=None) -> bool:
+    """Espera os action servers `required` aparecerem no grafo, com progresso
+    (cada um ao aparecer; "aguardando ..." a cada 10 s). Devolve False ao
+    estourar `timeout_s`, listando o que falta e a `hint` (o que subir).
+
+    Sem isso o executor da missao ficava pendurado EM SILENCIO esperando o
+    move_group. IMPORTANTE: sonda so' o grafo — nunca `ros2 param get`, que
+    pendura igual quando o no esta ocupado. `list_actions`, `sleep` e
+    `clock` sao injetaveis (teste sem ROS); `out`/`err` sao arquivos
+    (default stdout/stderr).
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    labels = labels or {}
+    list_actions = list_actions or graph_action_names
+    start = clock()
+    pending = list(required)
+    last_print: Dict[str, float] = {}
+    while pending:
+        elapsed = clock() - start
+        if elapsed > timeout_s:
+            missing = ", ".join(labels.get(n, n) for n in pending)
+            print(f"\nPre-flight FALHOU apos {elapsed:.0f}s. Ainda faltam: {missing}", file=err)
+            if hint:
+                print(hint, file=err)
+            return False
+        visible = list_actions()
+        for name in list(pending):
+            if name in visible:
+                pending.remove(name)
+                print(f"  {labels.get(name, name)}... ok ({elapsed:.0f}s)", file=out)
+            elif elapsed - last_print.get(name, -10.0) >= 10.0:
+                print(f"  aguardando {labels.get(name, name)}... ({elapsed:.0f}s)", file=out)
+                last_print[name] = elapsed
+        if pending:
+            sleep(1.0)
+    print("Pre-flight OK — todos os servidores no ar.\n", file=out)
+    return True
 
 
 def service_fields_from_args(args) -> Dict[str, object]:

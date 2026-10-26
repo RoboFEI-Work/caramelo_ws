@@ -33,7 +33,8 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from caramelo_docking_common import (  # noqa: E402
-    docking_file, resolve_map_folder, service_areas_file,
+    docking_file, graph_action_names, resolve_map_folder, service_areas_file,
+    wait_for_action_servers,
 )
 
 MISSIONS_DIR = Path.home() / ".ros" / "caramelo_missions"
@@ -69,14 +70,7 @@ def _parse_args(argv):
 
 def _graph_actions() -> set:
     """Snapshot dos action servers visiveis no grafo (barato, nunca pendura)."""
-    try:
-        proc = subprocess.run(
-            ["ros2", "action", "list"], capture_output=True, text=True, timeout=10.0)
-    except subprocess.TimeoutExpired:
-        return set()
-    if proc.returncode != 0:
-        return set()
-    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return graph_action_names(timeout_s=10.0)
 
 
 def _preflight(args, actions=None) -> bool:
@@ -87,10 +81,10 @@ def _preflight(args, actions=None) -> bool:
     IMPORTANTE: sonda so' o grafo (ros2 action list) — nunca `ros2 param get
     /move_group ...`, que pendura igual quando o MoveIt esta ocupado.
     `actions` = plano gerado (lista de dicts): so exige o /amt1_sort quando a
-    missao tem uma acao amt1_sort (AMT1, 2026-08-28).
+    missao tem uma acao amt1_sort (AMT1, 2026-08-28). A espera em si e' a
+    wait_for_action_servers do caramelo_docking_common (compartilhada com o
+    tour_docks).
     """
-    import time as _time
-
     exigidos = ["/move_action", "/pick_tag", "/place_tag"]
     if not args.simulate_nav:
         # /nudge_base (2026-08-28): ajuste lateral da fila de alcance, servido
@@ -105,32 +99,11 @@ def _preflight(args, actions=None) -> bool:
                "/nudge_base": "nudge_base (dock_align_node)",
                "/amt1_sort": "amt1_sort (rotina AMT1)"}
     print("Verificando os servidores da missao (pre-flight)...")
-    inicio = _time.monotonic()
-    pendentes = list(exigidos)
-    ultimo_print = {}
-    while pendentes:
-        decorrido = _time.monotonic() - inicio
-        if decorrido > args.preflight_timeout:
-            faltam = ", ".join(rotulos.get(n, n) for n in pendentes)
-            print(f"\nPre-flight FALHOU apos {decorrido:.0f}s. Ainda faltam: {faltam}",
-                  file=sys.stderr)
-            print("O stack esta no ar? -> ros2 launch caramelo_bringup "
-                  "robot_manipulation.launch.py map_name:=...", file=sys.stderr)
-            return False
-        visiveis = _graph_actions()
-        for nome in list(pendentes):
-            if nome in visiveis:
-                pendentes.remove(nome)
-                print(f"  {rotulos.get(nome, nome)}... ok ({decorrido:.0f}s)")
-            else:
-                anterior = ultimo_print.get(nome, -10.0)
-                if decorrido - anterior >= 10.0:
-                    print(f"  aguardando {rotulos.get(nome, nome)}... ({decorrido:.0f}s)")
-                    ultimo_print[nome] = decorrido
-        if pendentes:
-            _time.sleep(1.0)
-    print("Pre-flight OK — todos os servidores no ar.\n")
-    return True
+    return wait_for_action_servers(
+        exigidos, args.preflight_timeout, rotulos,
+        hint="O stack esta no ar? -> ros2 launch caramelo_bringup "
+             "robot_manipulation.launch.py map_name:=...",
+        list_actions=_graph_actions)
 
 
 def _resolve_task_yaml(task: str) -> Path:
