@@ -820,7 +820,8 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   tolerância de yaw do Nav2; o place por superfície erra ≤ 3 cm na zona com esse yaw). Fora dos
   limites: **re-docka** (`pose_gate_retries`, 1: undock → staging → align) e, ainda fora,
   `pose_gate_strict` (true: a estação falha e a missão pula para a próxima com a voz "Estação X
-  torta"; false: segue com `POSE FORA DOS LIMITES` no log, como antes). `pose_gate_enabled:=false`
+  torta"; false, **default até validar no robô**: segue com `POSE FORA DOS LIMITES` no log e a voz
+  "Estação X torta, vou tentar assim mesmo"). `pose_gate_enabled:=false`
   desliga tudo. Linhas de log: `[WSn] pose validada` / `pose ACEITA COM RESSALVA` (dentro dos
   limites duros, acima da tolerância do docking) / `POSE FORA DOS LIMITES (...)`.
 - **Base parada antes de manipular** (2026-10-26): com `stop_check_enabled` (true) o `GoToWS` só

@@ -301,7 +301,7 @@ Commit na branch desta worktree (ver hash no relatório). Arquivos:
   - resumo por etapa (`undock | nav_staging | align | parada | total; dockings N`).
 - `src/manipulation/manip_bt/src/bt_yaml_executor.cpp`: parâmetros `pose_gate_enabled`
   (true), `pose_gate_max_x` (0,10), `pose_gate_max_y` (0,20), `pose_gate_max_yaw` (0,20),
-  `pose_gate_retries` (1), `pose_gate_strict` (true), `stop_check_enabled` (true),
+  `pose_gate_retries` (1), `pose_gate_strict` (false até validar no robô; depois true), `stop_check_enabled` (true),
   `stop_check_max_lin` (0,02), `stop_check_max_ang` (0,05), `stop_check_window_s` (0,5),
   `stop_check_timeout_s` (3,0), `stop_check_odom_max_age_s` (0,5),
   `stop_check_require_odom` (true), `odom_topic` (`/odom`).
