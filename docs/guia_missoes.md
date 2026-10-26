@@ -123,6 +123,9 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
 - `--simulate-nav` → navegação simulada (testar manipulação sem Nav2).
 - `--yes` → sem confirmação. `--finish ""` → não vai ao FINISH no fim.
 - Cada missão gera um YAML de ações auditável em `~/.ros/caramelo_missions/`.
+- A **ordem das estações** sai de uma busca que minimiza o tempo estimado quando o mapa
+  tem `dock_distances.yaml` (linha `Tempo estimado guloso: … ; otimizado: …` no log do
+  planner); sem o arquivo, o planejador guloso de sempre. Ver `docs/planejador_por_tempo.md`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
 
 ## 3. Formato do YAML da missão
@@ -738,6 +741,10 @@ Tudo em `src/caramelo_mapping/maps/<mapa>/`:
   "Salvar pose como dock" escolhendo a estação; vale na próxima missão).
 - `service_areas.yaml` — pose final, use_docking e manipulation_enabled por área.
 - `ws_table_mapping.yaml` — §4.1.
+- `dock_distances.yaml` — comprimento de caminho entre os docks (gerado:
+  `ros2 run caramelo_navigation compute_dock_distances --map-name <mapa>`); o `task_planner`
+  usa para ordenar as estações por tempo. **Regerar** depois de regravar poses de dock ou
+  trocar o mapa (`docs/planejador_por_tempo.md`).
 
 Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/config/tags_36h11.yaml`
 (vendorado — NÃO depende mais do pacote apriltag_ros de fora; o binário vem do ~/ros2_ws).
@@ -972,3 +979,6 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
   `at_tag`, `shelf_level`, `target_order` da AMT; §3.2, §3.6) com teste automatizado sobre
   os arquivos oficiais; pilha já existente no `start_state` desfeita antes do `place` na
   tag/base (revisão do mesmo dia).
+- **2026-10-26** — ordem das estações por tempo: `dock_distances.yaml` por mapa
+  (`compute_dock_distances`, §4.2) e branch-and-bound no `task_planner` com o guloso como
+  limite (`docs/planejador_por_tempo.md`); sem a matriz, guloso de sempre.

@@ -68,6 +68,17 @@ public:
   // parede / estacao ausente). Chave aceita com ou sem '_' (WS_3 == WS3).
   std::string wallSidesForWs(const std::string & task_ws) const;
 
+  // dock_distances.yaml (gerado por compute_dock_distances, caramelo_navigation):
+  // comprimento de caminho (m) entre docks, usado pelo task_planner para
+  // ordenar as estacoes por tempo. Ausente = planejador guloso.
+  bool hasDockDistances() const {return !dock_distances_.empty();}
+  const std::string & dockDistancesPath() const {return dock_distances_path_;}
+  const std::string & dockDistancesMethod() const {return dock_distances_method_;}
+  // Distancia entre dois dock_ids (ordem indiferente; a == b -> 0): a da
+  // matriz; sem par na matriz mas com as duas poses reais no docking.yaml,
+  // a euclidiana; senao nullopt.
+  std::optional<double> dockDistance(const std::string & a, const std::string & b) const;
+
   // Espelho C++ do normalize_dock_id de caramelo_docking_common.py, com o
   // extra de remover '_' e espacos (WS_1 -> WS1) e de aceitar ST\d+ (area de
   // empilhamento, 2026). Lanca std::runtime_error se o resultado nao casar
@@ -91,6 +102,10 @@ private:
   std::unordered_map<std::string, std::string> ws_to_dock_id_;
   std::unordered_map<std::string, std::string> ws_walls_;   // chave normalizada (WS3)
   std::string ws_mapping_path_;   // so para as mensagens de erro
+  // dock_distances.yaml: distances_m[A][B] (simetrica; so' um lado basta).
+  std::unordered_map<std::string, std::unordered_map<std::string, double>> dock_distances_;
+  std::string dock_distances_path_;
+  std::string dock_distances_method_;
 };
 
 using MissionMapConfigPtr = std::shared_ptr<MissionMapConfig>;

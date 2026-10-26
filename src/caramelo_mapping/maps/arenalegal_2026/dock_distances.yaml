@@ -1,0 +1,39 @@
+# Matriz de distancias entre docks (metros, comprimento de caminho).
+# GERADO por compute_dock_distances (caramelo_navigation) - nao editar a mao.
+# Regerar depois de mudar poses de dock ou o mapa:
+#   ros2 run caramelo_navigation compute_dock_distances --map-name arenalegal_2026
+# Lido pelo task_planner (manip_bt) para ordenar as estacoes por tempo;
+# sem este arquivo o planejador segue guloso (docs/planejador_por_tempo.md).
+schema: 1
+map: arenalegal_2026
+generated_by: compute_dock_distances
+generated_at: '2026-10-26T19:10:44'
+pose: staging
+inflation_m: 0.25
+docks: [START, FINISH, WS1, WS2, WS3, WS4, WS5, WS6, SH1, PP1]
+skipped_docks: []
+euclidean_pairs: []
+notes: []
+method: astar8
+resolution_m: 0.02
+distances_m:
+  START: {START: 0.0, FINISH: 7.85, WS1: 1.987, WS2: 3.127, WS3: 3.065, WS4: 4.069, WS5: 5.915, WS6: 6.595,
+    SH1: 6.789, PP1: 6.32}
+  FINISH: {FINISH: 0.0, START: 7.85, WS1: 6.156, WS2: 4.723, WS3: 4.868, WS4: 3.925, WS5: 1.985, WS6: 1.801,
+    SH1: 1.061, PP1: 1.825}
+  WS1: {WS1: 0.0, START: 1.987, FINISH: 6.156, WS2: 1.433, WS3: 1.752, WS4: 2.755, WS5: 4.221, WS6: 5.282,
+    SH1: 5.095, PP1: 5.007}
+  WS2: {WS2: 0.0, START: 3.127, FINISH: 4.723, WS1: 1.433, WS3: 0.69, WS4: 1.389, WS5: 2.788, WS6: 3.915,
+    SH1: 3.661, PP1: 3.59}
+  WS3: {WS3: 0.0, START: 3.065, FINISH: 4.868, WS1: 1.752, WS2: 0.69, WS4: 1.037, WS5: 2.933, WS6: 3.53,
+    SH1: 3.807, PP1: 3.255}
+  WS4: {WS4: 0.0, START: 4.069, FINISH: 3.925, WS1: 2.755, WS2: 1.389, WS3: 1.037, WS5: 1.99, WS6: 2.526,
+    SH1: 2.864, PP1: 2.251}
+  WS5: {WS5: 0.0, START: 5.915, FINISH: 1.985, WS1: 4.221, WS2: 2.788, WS3: 2.933, WS4: 1.99, WS6: 1.401,
+    SH1: 1.006, PP1: 1.177}
+  WS6: {WS6: 0.0, START: 6.595, FINISH: 1.801, WS1: 5.282, WS2: 3.915, WS3: 3.53, WS4: 2.526, WS5: 1.401,
+    SH1: 0.868, PP1: 0.341}
+  SH1: {SH1: 0.0, START: 6.789, FINISH: 1.061, WS1: 5.095, WS2: 3.661, WS3: 3.807, WS4: 2.864, WS5: 1.006,
+    WS6: 0.868, PP1: 0.893}
+  PP1: {PP1: 0.0, START: 6.32, FINISH: 1.825, WS1: 5.007, WS2: 3.59, WS3: 3.255, WS4: 2.251, WS5: 1.177,
+    WS6: 0.341, SH1: 0.893}

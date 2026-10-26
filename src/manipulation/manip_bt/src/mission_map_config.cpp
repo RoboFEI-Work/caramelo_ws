@@ -173,6 +173,61 @@ MissionMapConfig::MissionMapConfig(const std::string & map_folder)
       }
     }
   }
+
+  // 2026-10-26: matriz de distancias entre docks (compute_dock_distances).
+  // Opcional: sem ela o task_planner segue guloso.
+  const fs::path distances_path = folder / "dock_distances.yaml";
+  if (fs::exists(distances_path)) {
+    const YAML::Node dist_root = loadYamlOrThrow(distances_path);
+    const YAML::Node matrix = dist_root["distances_m"];
+    if (!matrix || !matrix.IsMap()) {
+      throw std::runtime_error(
+              "dock_distances.yaml sem a chave 'distances_m': " + distances_path.string() +
+              " - regere com: ros2 run caramelo_navigation compute_dock_distances --map-name " +
+              map_name_);
+    }
+    for (const auto & row : matrix) {
+      const std::string a = row.first.as<std::string>();
+      if (!row.second || !row.second.IsMap()) {
+        continue;
+      }
+      for (const auto & col : row.second) {
+        const std::string b = col.first.as<std::string>();
+        if (col.second && !col.second.IsNull()) {
+          dock_distances_[a][b] = col.second.as<double>();
+        }
+      }
+    }
+    dock_distances_path_ = distances_path.string();
+    dock_distances_method_ = dist_root["method"].as<std::string>("");
+  }
+}
+
+std::optional<double> MissionMapConfig::dockDistance(
+  const std::string & a, const std::string & b) const
+{
+  if (a == b) {
+    return 0.0;
+  }
+  for (const auto & [x, y] : {std::pair{a, b}, std::pair{b, a}}) {
+    const auto row = dock_distances_.find(x);
+    if (row != dock_distances_.end()) {
+      const auto it = row->second.find(y);
+      if (it != row->second.end()) {
+        return it->second;
+      }
+    }
+  }
+  // Fora da matriz (dock gravado depois de gerar o arquivo): reta entre as
+  // poses reais, melhor que nada - o planejador avisa.
+  const auto da = docks_.find(a);
+  const auto db = docks_.find(b);
+  if (da == docks_.end() || db == docks_.end() || da->second.pose_is_placeholder ||
+    db->second.pose_is_placeholder)
+  {
+    return std::nullopt;
+  }
+  return std::hypot(da->second.x - db->second.x, da->second.y - db->second.y);
 }
 
 std::string MissionMapConfig::wallSidesForWs(const std::string & task_ws) const

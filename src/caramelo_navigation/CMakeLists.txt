@@ -121,11 +121,23 @@ install(PROGRAMS
   RENAME sync_route_graph
 )
 
+# Matriz de distancias entre docks (dock_distances.yaml do mapa), lida pelo
+# task_planner do manip_bt para ordenar as estacoes por tempo (2026-10-26).
+install(PROGRAMS
+  scripts/compute_dock_distances.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME compute_dock_distances
+)
+
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   # Matematica pura do nudge_base (projecao da odometria, regra de aceite),
   # sem ROS ativo (2026-08-28).
   ament_add_pytest_test(test_nudge_math test/test_nudge_math.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # compute_dock_distances num mapa sintetico (PGM, inflacao, Dijkstra,
+  # fallback euclidiano, YAML), sem ROS ativo (2026-10-26).
+  ament_add_pytest_test(test_compute_dock_distances test/test_compute_dock_distances.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

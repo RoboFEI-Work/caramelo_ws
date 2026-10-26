@@ -10,6 +10,11 @@ pilha ja existente em ``start_state.<ST>.stack`` (cubo ocupando a tag de
 referencia ou a base) e' desfeita antes do place (simulacao fisica da pilha,
 varias rodadas porque o planner sorteia empates).
 
+Tambem cobre a ordem das estacoes por tempo (2026-10-26): com o
+``dock_distances.yaml`` do arenalegal_2026 o planner roda a busca
+(invariantes, nunca mais lento que o guloso, deterministico, pilha inicial);
+sem o arquivo, o guloso de sempre; e as variaveis CARAMELO_PLANNER_*.
+
 Como rodar (da raiz do workspace, com o install sourceado):
     python3 -m pytest src/manipulation/manip_bt/test/test_task_planner_formato2026.py -q
 ou pelo colcon: ``colcon test --packages-select manip_bt --ctest-args -R formato2026``.
@@ -22,6 +27,7 @@ arquivos (default: os do src).
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -71,18 +77,28 @@ def planner():
     return _find_planner()
 
 
-def _run(planner, task_yaml, tmp_path, ws_map=WS_MAP, tags=TAGS_YAML):
-    """Roda o planner; devolve (returncode, stdout+stderr, actions ou None)."""
+def _run(planner, task_yaml, tmp_path, ws_map=WS_MAP, tags=TAGS_YAML, env=None):
+    """Roda o planner; devolve (returncode, stdout+stderr, actions ou None).
+
+    `env`: variaveis extras (CARAMELO_PLANNER_*). O ultimo YAML gerado fica
+    em `_run.last_output` (para ler o bloco plan_estimate).
+    """
     out = tmp_path / (pathlib.Path(task_yaml).stem + "_actions.yaml")
+    full_env = dict(os.environ)
+    full_env.update(env or {})
     proc = subprocess.run(
         [planner, str(task_yaml), str(out), str(tags), str(ws_map)],
-        capture_output=True, text=True, check=False, timeout=60)
+        capture_output=True, text=True, check=False, timeout=60, env=full_env)
     log = proc.stdout + proc.stderr
     actions = None
     if proc.returncode == 0:
         with open(out, encoding="utf-8") as fh:
-            actions = yaml.safe_load(fh)["actions"]
+            _run.last_output = yaml.safe_load(fh)
+        actions = _run.last_output["actions"]
     return proc.returncode, log, actions
+
+
+_run.last_output = None
 
 
 def _plan(planner, name, tmp_path):
@@ -431,6 +447,119 @@ def test_old_fixtures_still_translate(planner, tmp_path):
         "tag_2", "tag_4"]
     assert sorted(p["tag_frame"] for p in _places(actions, container_color="RED")) == [
         "tag_1", "tag_7"]
+
+
+# ---- ordem das estacoes por tempo (dock_distances.yaml, 2026-10-26) ----------
+# O mapa arenalegal_2026 tem dock_distances.yaml: com o WS_MAP dele o planner
+# roda a busca por tempo. Sem o arquivo (mapping copiado para uma pasta
+# vazia) o guloso de sempre.
+
+TRANSPORT_FIXTURES = sorted(
+    p.name for p in FIXTURES.glob("*.yaml") if not p.name.startswith("AMT"))
+RE_TIMES = re.compile(r"Tempo estimado guloso: (\d+) s .*?; otimizado: (\d+) s")
+
+
+def _mapping_without_matrix(tmp_path):
+    folder = tmp_path / "mapa_sem_matriz"
+    folder.mkdir()
+    shutil.copy(WS_MAP, folder / "ws_table_mapping.yaml")
+    return folder / "ws_table_mapping.yaml"
+
+
+def test_distance_matrix_exists_for_arena():
+    assert (WS_MAP.parent / "dock_distances.yaml").is_file(), \
+        "rode: ros2 run caramelo_navigation compute_dock_distances --map-name arenalegal_2026"
+
+
+@pytest.mark.parametrize("name", TRANSPORT_FIXTURES)
+def test_optimized_plan_keeps_invariants_and_is_not_slower(planner, tmp_path, name):
+    actions, log = _plan(planner, name, tmp_path)
+    assert "distancias:" in log and "otimizado:" in log, log
+    assert "busca completa" in log, log          # as 7 tasks fecham dentro do prazo
+    _check_invariants(actions)
+    m = RE_TIMES.search(log)
+    assert m, log
+    greedy_s, optimized_s = int(m.group(1)), int(m.group(2))
+    assert optimized_s <= greedy_s, log
+    estimate = _run.last_output["plan_estimate"]
+    assert estimate["mode"] == "optimized" and estimate["optimal"] is True, estimate
+    assert abs(estimate["time_s"] - optimized_s) < 1.0, estimate
+    assert estimate["station_switches"] == sum(1 for a in actions if a["kind"] == "goto")
+
+
+def test_optimized_plan_is_deterministic(planner, tmp_path):
+    first = _plan(planner, "FINAL_seed198117_equipe.yaml", tmp_path)[0]
+    second = _plan(planner, "FINAL_seed198117_equipe.yaml", tmp_path)[0]
+    assert first == second
+
+
+def test_optimized_beats_greedy_on_att2(planner, tmp_path):
+    """ATT2: o guloso faz 10 trocas de estacao; a busca fecha em 7."""
+    actions, log = _plan(planner, "ATT2_seed343421_equipe.yaml", tmp_path)
+    m = RE_TIMES.search(log)
+    assert m and int(m.group(2)) < int(m.group(1)), log
+    assert sum(1 for a in actions if a["kind"] == "goto") <= 8, actions
+
+
+def test_without_matrix_is_greedy_and_says_so(planner, tmp_path):
+    ws_map = _mapping_without_matrix(tmp_path)
+    rc, log, actions = _run(planner, FIXTURES / "BTT2_seed597609_equipe.yaml", tmp_path, ws_map=ws_map)
+    assert rc == 0, log
+    assert "sem dock_distances.yaml" in log and "otimizado" not in log, log
+    assert "plan_estimate" not in _run.last_output
+    _check_invariants(actions)
+
+
+def test_env_mode_greedy_skips_search(planner, tmp_path):
+    rc, log, actions = _run(
+        planner, FIXTURES / "BTT2_seed597609_equipe.yaml", tmp_path,
+        env={"CARAMELO_PLANNER_MODE": "greedy", "CARAMELO_PLANNER_SEED": "3"})
+    assert rc == 0, log
+    assert "sem busca" in log and "Tempo estimado guloso" in log, log
+    assert _run.last_output["plan_estimate"]["mode"] == "greedy"
+    _check_invariants(actions)
+    # Mesma semente -> mesmo plano guloso.
+    rc2, _, actions2 = _run(
+        planner, FIXTURES / "BTT2_seed597609_equipe.yaml", tmp_path,
+        env={"CARAMELO_PLANNER_MODE": "greedy", "CARAMELO_PLANNER_SEED": "3"})
+    assert rc2 == 0 and actions2 == actions
+
+
+def test_tiny_time_limit_falls_back_to_best_found(planner, tmp_path):
+    """Prazo minusculo: a busca para e devolve o melhor que tinha (ou o guloso)."""
+    rc, log, actions = _run(
+        planner, FIXTURES / "FINAL_seed198117_equipe.yaml", tmp_path,
+        env={"CARAMELO_PLANNER_TIME_LIMIT_S": "0.001"})
+    assert rc == 0, log
+    assert "prazo estourado, melhor encontrado" in log, log
+    assert _run.last_output["plan_estimate"]["optimal"] is False
+    _check_invariants(actions)
+    m = RE_TIMES.search(log)
+    assert m and int(m.group(2)) <= int(m.group(1)), log
+
+
+def test_env_cost_parameters_change_estimate(planner, tmp_path):
+    base = _plan(planner, "BMT_seed974164_equipe.yaml", tmp_path)[1]
+    fast = _run(planner, FIXTURES / "BMT_seed974164_equipe.yaml", tmp_path,
+                env={"CARAMELO_PLANNER_PICK_S": "1", "CARAMELO_PLANNER_PLACE_S": "1"})[1]
+    assert "pick 1 s, place 1 s" in fast, fast
+    assert int(RE_TIMES.search(fast).group(2)) < int(RE_TIMES.search(base).group(2))
+
+
+@pytest.mark.parametrize("case", sorted(START_STACK_CASES))
+def test_optimized_keeps_initial_stack_order(planner, tmp_path, case):
+    """Pilha inicial com a busca por tempo: a ordem fisica continua certa.
+
+    A ST nao tem dock gravado no arenalegal_2026: cai na media das distancias
+    conhecidas (com aviso) e a busca segue.
+    """
+    text, start_stacks, expected = START_STACK_CASES[case]
+    rc, log, actions = _plan_text(planner, text, tmp_path, f"{case}_opt.yaml")
+    assert rc == 0, log
+    assert "otimizado:" in log, log
+    assert "sem distancia" in log and "ST (ST1)" in log, log
+    _check_invariants(actions)
+    assert _simulate_stacks(actions, start_stacks) == expected, actions
 
 
 def test_old_amt1_mission_has_no_target_order(planner, tmp_path):

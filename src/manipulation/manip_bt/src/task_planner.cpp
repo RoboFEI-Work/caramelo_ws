@@ -9,21 +9,31 @@
 // caminhos absolutos), manip_bt/test/run_amt1_scenario.sh e o pytest
 // manip_bt/test/test_task_planner_formato2026.py.
 // Saida: 0 ok, 1 falha de traducao, 2 argumentos errados.
+// Ordem das estacoes: se a pasta do ws_table_mapping.yaml tiver
+// dock_distances.yaml, a ordem sai da busca por tempo (task_plan_search);
+// senao, do guloso de sempre. Ver docs/planejador_por_tempo.md.
 
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <optional>
 #include <random>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "manip_bt/mission_map_config.hpp"
+#include "manip_bt/task_plan_search.hpp"
 
 namespace
 {
@@ -52,53 +62,12 @@ struct ContainerAssignment
   std::string container_ws;
 };
 
-struct TransferItem
-{
-  int obj_id = -1;
-  std::string tag_frame;
-  std::string from_ws;
-  std::string to_ws;
-  // Cor do container da mesa onde soltar (RED|BLUE); vazia = mesa. Vem da
-  // constraint "inside" (formato antigo) ou da cor do proprio
-  // objeto (formato novo: se houver container dessa cor visivel, o place usa).
-  std::string container_color;
-  bool needs_pick = false;
-  bool needs_place = false;
-  // Empilhar: este objeto e' solto EM CIMA do objeto `stack_on_obj`
-  // (frame `stack_on_frame`), que precisa estar na mesa de `to_ws` antes.
-  // Formato 2026: a BASE da pilha e' solta sobre a tag de referencia da area
-  // de empilhamento (stack_on_frame = tag_200, stack_on_obj = -1: a tag esta
-  // sempre na mesa, nada a esperar).
-  int stack_on_obj = -1;
-  std::string stack_on_frame;
-  // Formato 2026 — prateleira: nivel (BOTTOM|TOP) de origem/destino, so
-  // informativo nas acoes (shelf_level); vazio fora da prateleira.
-  std::string from_level;
-  std::string to_level;
-  // Formato 2026 — mesa de precisao como DESTINO: tag do slot onde soltar
-  // (place com at_tag: tag_<slot>). -1 = nao e' slot.
-  int to_slot_tag = -1;
-  int from_slot_tag = -1;
-  std::string at_tag_frame;
-  // Formato 2026 — pilha INICIAL (start_state.<ST>.stack): ids que estao em
-  // cima deste objeto e precisam ser pegos antes dele.
-  std::vector<int> pick_after;
-  // Formato 2026 — pilha INICIAL ocupando o lugar onde este objeto sera
-  // solto (a tag de referencia, se e' base; o que esta em cima da base, se
-  // e' topo): esses ids precisam ser pegos ANTES do place deste objeto.
-  std::vector<int> place_after_picked;
-};
+// TransferItem, PlannerState, kMaxOnboard e as regras de pick/place moram em
+// task_plan_search (compartilhadas com a busca por tempo e com o gtest).
+using manip_bt::task_plan::TransferItem;
+using manip_bt::task_plan::kMaxOnboard;
+using manip_bt::task_plan::tablePoseForWs;
 
-constexpr int kMaxOnboard = 3;
-
-struct PlannerState
-{
-  std::set<int> picked;
-  std::set<int> placed;
-  std::vector<int> inventory;
-  std::string current_ws;
-  std::mt19937 rng{std::random_device{}()};
-};
 
 std::string trim(const std::string & value)
 {
@@ -1250,520 +1219,246 @@ std::vector<TransferItem> buildTransfers(
   return transfers;
 }
 
-/// Pilha inicial (2026): o objeto so pode ser pego depois dos que estao em
-/// cima dele.
-bool pickAfterSatisfied(const PlannerState & state, const TransferItem & t)
+// ---- ordem das estacoes: guloso ou busca por tempo ---------------------------
+// Com dock_distances.yaml na pasta do mapa (ao lado do ws_table_mapping.yaml,
+// gerado por `ros2 run caramelo_navigation compute_dock_distances`), a ordem
+// das visitas sai de um branch-and-bound que minimiza o tempo estimado
+// (task_plan::planOptimized); sem o arquivo, o guloso de sempre
+// (task_plan::planGreedy), byte a byte. Ver docs/planejador_por_tempo.md.
+//
+// Ajustes por variavel de ambiente (defaults da run de 2026-10-21):
+//   CARAMELO_PLANNER_MODE          auto (default) | greedy (forca o guloso)
+//   CARAMELO_PLANNER_V_NAV_MPS     velocidade media de navegacao (0.25)
+//   CARAMELO_PLANNER_DOCKING_S     custo fixo por troca de estacao (25)
+//   CARAMELO_PLANNER_PICK_S        custo por pick (35)
+//   CARAMELO_PLANNER_PLACE_S       custo por place (35)
+//   CARAMELO_PLANNER_TIME_LIMIT_S  prazo da busca (2.0); estourou = melhor achado
+//   CARAMELO_PLANNER_SEED          semente do sorteio de empates do guloso
+
+struct PlannerOptions
 {
-  for (const int above : t.pick_after) {
-    if (state.picked.count(above) == 0) {
+  std::string mode{"auto"};
+  double time_limit_s{2.0};
+  std::optional<unsigned int> seed;
+  manip_bt::task_plan::CostModel model;
+};
+
+double envDouble(const char * name, const double fallback)
+{
+  const char * raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return fallback;
+  }
+  try {
+    const double value = std::stod(raw);
+    if (!(value > 0.0)) {
+      throw std::invalid_argument("<= 0");
+    }
+    return value;
+  } catch (const std::exception &) {
+    std::cerr << "[task_planner] AVISO: " << name << "='" << raw
+              << "' invalido - usando " << fallback << "." << std::endl;
+    return fallback;
+  }
+}
+
+PlannerOptions plannerOptionsFromEnvironment()
+{
+  PlannerOptions opts;
+  if (const char * mode = std::getenv("CARAMELO_PLANNER_MODE")) {
+    const std::string m = toLower(trim(mode));
+    if (m == "greedy" || m == "guloso") {
+      opts.mode = "greedy";
+    } else if (!m.empty() && m != "auto") {
+      std::cerr << "[task_planner] AVISO: CARAMELO_PLANNER_MODE='" << mode
+                << "' desconhecido (auto|greedy) - usando auto." << std::endl;
+    }
+  }
+  opts.model.v_nav_mps = envDouble("CARAMELO_PLANNER_V_NAV_MPS", opts.model.v_nav_mps);
+  opts.model.docking_s = envDouble("CARAMELO_PLANNER_DOCKING_S", opts.model.docking_s);
+  opts.model.pick_s = envDouble("CARAMELO_PLANNER_PICK_S", opts.model.pick_s);
+  opts.model.place_s = envDouble("CARAMELO_PLANNER_PLACE_S", opts.model.place_s);
+  opts.time_limit_s = envDouble("CARAMELO_PLANNER_TIME_LIMIT_S", opts.time_limit_s);
+  if (const char * seed = std::getenv("CARAMELO_PLANNER_SEED")) {
+    try {
+      opts.seed = static_cast<unsigned int>(std::stoul(seed));
+    } catch (const std::exception &) {
+      std::cerr << "[task_planner] AVISO: CARAMELO_PLANNER_SEED='" << seed
+                << "' invalido - sorteio aleatorio." << std::endl;
+    }
+  }
+  return opts;
+}
+
+/// Preenche model.dist_m (chaves = estacoes da task + START/FINISH) a partir
+/// do dock_distances.yaml da pasta do ws_table_mapping.yaml. false = sem
+/// matriz (ou mapa inconsistente): planejador guloso, como sempre.
+bool loadDistancesFromMap(
+  const std::string & ws_map_yaml_path,
+  const std::vector<TransferItem> & transfers,
+  manip_bt::task_plan::CostModel & model)
+{
+  const std::filesystem::path map_folder = std::filesystem::path(ws_map_yaml_path).parent_path();
+  if (!std::filesystem::exists(map_folder / "dock_distances.yaml")) {
+    std::cout << "[task_planner] sem dock_distances.yaml em " << map_folder.string()
+              << ": ordem gulosa (gere com: ros2 run caramelo_navigation "
+              << "compute_dock_distances --map-name " << map_folder.filename().string() << ")."
+              << std::endl;
+    return false;
+  }
+  std::unique_ptr<manip_bt::MissionMapConfig> cfg;
+  try {
+    cfg = std::make_unique<manip_bt::MissionMapConfig>(map_folder.string());
+  } catch (const std::exception & ex) {
+    std::cerr << "[task_planner] AVISO: nao li a pasta do mapa (" << ex.what()
+              << ") - ordem gulosa." << std::endl;
+    return false;
+  }
+  if (!cfg->hasDockDistances()) {
+    std::cerr << "[task_planner] AVISO: dock_distances.yaml sem distancias - ordem gulosa."
+              << std::endl;
+    return false;
+  }
+
+  std::set<std::string> names = manip_bt::task_plan::candidateStations(transfers);
+  names.insert(model.start_ws);
+  names.insert(model.finish_ws);
+  std::map<std::string, std::string> dock_of;
+  for (const auto & ws : names) {
+    try {
+      dock_of[ws] = (ws == model.start_ws || ws == model.finish_ws) ?
+        manip_bt::MissionMapConfig::normalizeDockId(ws) : cfg->dockIdForWs(ws);
+    } catch (const std::exception & ex) {
+      std::cerr << "[task_planner] AVISO: " << ex.what() << " - ordem gulosa." << std::endl;
       return false;
     }
   }
-  return true;
-}
 
-const TransferItem & findTransferById(const std::vector<TransferItem> & transfers, const int obj_id)
-{
-  const auto it = std::find_if(
-    transfers.begin(),
-    transfers.end(),
-    [obj_id](const TransferItem & t) { return t.obj_id == obj_id; });
-  if (it == transfers.end()) {
-    throw std::runtime_error("Internal planner error: missing transfer id " + std::to_string(obj_id));
-  }
-  return *it;
-}
-
-std::vector<int> shuffledBestCandidates(
-  const std::vector<std::pair<std::string, std::pair<int, int>>> & scores,
-  PlannerState & state)
-{
-  std::vector<int> best_indices;
-  std::pair<int, int> best_score{-1, -1};
-
-  for (std::size_t i = 0; i < scores.size(); ++i) {
-    if (scores[i].second > best_score) {
-      best_score = scores[i].second;
-      best_indices.clear();
-      best_indices.push_back(static_cast<int>(i));
-    } else if (scores[i].second == best_score) {
-      best_indices.push_back(static_cast<int>(i));
-    }
-  }
-
-  std::shuffle(best_indices.begin(), best_indices.end(), state.rng);
-  return best_indices;
-}
-
-// ---- pilhas ----------------------------------------------------------------
-// A base de uma pilha esta "na mesa" se ja foi solta ou se nunca precisou de
-// acao (comeca e termina na mesma estacao, sem ser topo de outra pilha).
-bool baseOnTable(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const int base_id)
-{
-  if (state.placed.count(base_id) > 0) {
-    return true;
-  }
-  const auto it = std::find_if(
-    transfers.begin(), transfers.end(),
-    [base_id](const TransferItem & x) { return x.obj_id == base_id; });
-  return it == transfers.end() || !it->needs_place;
-}
-
-bool baseCarried(const PlannerState & state, const int base_id)
-{
-  return std::find(state.inventory.begin(), state.inventory.end(), base_id) !=
-         state.inventory.end();
-}
-
-/// Um topo so pode ser PEGO quando a base ja esta na mesa ou tambem esta no
-/// inventario (senao o topo ficaria preso a bordo esperando a base — ver a
-/// revisao adversarial de 24/08: isso travava o planejador num laco infinito).
-bool topPickable(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t)
-{
-  return t.stack_on_obj < 0 || baseOnTable(transfers, state, t.stack_on_obj) ||
-         baseCarried(state, t.stack_on_obj);
-}
-
-/// Pilha inicial (2026): o place sobre a tag de referencia/base so pode
-/// acontecer depois que os ocupantes desse lugar forem pegos.
-bool placeAfterPickedSatisfied(const PlannerState & state, const TransferItem & t)
-{
-  for (const int occupant : t.place_after_picked) {
-    if (state.picked.count(occupant) == 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/// Pode ser solto AGORA: ocupantes ja pegos e (se topo) base ja na mesa.
-bool placeReady(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t)
-{
-  return placeAfterPickedSatisfied(state, t) &&
-         (t.stack_on_obj < 0 || baseOnTable(transfers, state, t.stack_on_obj));
-}
-
-/// Vai poder ser solto ao CHEGAR na estacao: direto, ou topo cuja base
-/// tambem a bordo sera solta antes (recursivo na cadeia de bases a bordo).
-bool placeableOnArrival(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t)
-{
-  if (!placeAfterPickedSatisfied(state, t)) {
-    return false;
-  }
-  if (t.stack_on_obj < 0 || baseOnTable(transfers, state, t.stack_on_obj)) {
-    return true;
-  }
-  if (baseCarried(state, t.stack_on_obj)) {
-    return placeableOnArrival(transfers, state, findTransferById(transfers, t.stack_on_obj));
-  }
-  return false;
-}
-
-/// Ocupantes da pilha inicial ainda nao pegos que bloqueiam o place de `t`
-/// (ou da base que `t` espera, se ela tambem esta a bordo). `self_id` conta
-/// como ja pego — e' o proprio objeto cuja pegada esta sendo decidida.
-std::set<int> unpickedBlockers(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t,
-  const int self_id)
-{
-  std::set<int> blockers;
-  const TransferItem * cur = &t;
-  // Cadeia de bases a bordo tem no maximo kMaxOnboard elos.
-  for (int depth = 0; cur != nullptr && depth <= kMaxOnboard; ++depth) {
-    for (const int occupant : cur->place_after_picked) {
-      if (occupant != self_id && state.picked.count(occupant) == 0) {
-        blockers.insert(occupant);
+  std::set<std::string> unknown_docks;
+  std::vector<std::pair<std::string, std::string>> unknown_pairs;
+  double known_sum = 0.0;
+  int known_count = 0;
+  for (const auto & a : names) {
+    for (const auto & b : names) {
+      if (a >= b) {
+        continue;
       }
-    }
-    if (cur->stack_on_obj >= 0 && !baseOnTable(transfers, state, cur->stack_on_obj) &&
-      baseCarried(state, cur->stack_on_obj))
-    {
-      cur = &findTransferById(transfers, cur->stack_on_obj);
-    } else {
-      cur = nullptr;
-    }
-  }
-  return blockers;
-}
-
-/// `t` ocupa o lugar onde algo que esta A BORDO precisa ser solto.
-bool blocksCarriedPlace(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t)
-{
-  for (const int carried : state.inventory) {
-    const auto & c = findTransferById(transfers, carried);
-    if (std::find(c.place_after_picked.begin(), c.place_after_picked.end(), t.obj_id) !=
-      c.place_after_picked.end())
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// Pode PEGAR `t` em `ws` com `onboard` objetos ja a bordo. Alem das regras
-/// de pilha (base disponivel, quem esta em cima sai antes), reserva lugar
-/// a bordo para os ocupantes da pilha inicial que ainda precisam sair antes
-/// do place de `t`: senao o robo lotaria com 3 objetos presos esperando um
-/// pick que nao cabe.
-bool pickAllowedNow(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const TransferItem & t,
-  const std::string & ws,
-  const int onboard)
-{
-  if (!t.needs_pick || state.picked.count(t.obj_id) > 0 || t.from_ws != ws) {
-    return false;
-  }
-  if (!pickAfterSatisfied(state, t)) {
-    return false;
-  }
-  // Ocupante da pilha inicial que trava um place a bordo sai mesmo que a
-  // base dele ainda nao esteja disponivel (a base dele tambem vai sair).
-  if (!topPickable(transfers, state, t) && !blocksCarriedPlace(transfers, state, t)) {
-    return false;
-  }
-  const int reserve = static_cast<int>(unpickedBlockers(transfers, state, t, t.obj_id).size());
-  return onboard + 1 + reserve <= kMaxOnboard;
-}
-
-/// Picks possiveis em `ws` partindo de `onboard_after_places` objetos a bordo
-/// (os que serao soltos ao chegar ja descontados). Aproximacao: nao simula
-/// pick_after entre os contados — serve para escolher a estacao.
-int countPendingPicksAtWs(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const std::string & ws,
-  const int onboard_after_places)
-{
-  int count = 0;
-  for (const auto & t : transfers) {
-    if (pickAllowedNow(transfers, state, t, ws, onboard_after_places + count)) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-int countCarriedPlacesAtWs(
-  const std::vector<TransferItem> & transfers,
-  const PlannerState & state,
-  const std::string & ws)
-{
-  int count = 0;
-  for (const int obj_id : state.inventory) {
-    const auto & t = findTransferById(transfers, obj_id);
-    // Topo sem base disponivel ou place bloqueado por ocupante da pilha
-    // inicial nao conta (senao a estacao seria escolhida sem ter o que fazer).
-    if (t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws &&
-      placeableOnArrival(transfers, state, t))
-    {
-      ++count;
-    }
-  }
-  return count;
-}
-
-bool hasUnfinishedWork(const std::vector<TransferItem> & transfers, const PlannerState & state)
-{
-  for (const auto & t : transfers) {
-    if (t.needs_pick && state.picked.count(t.obj_id) == 0) {
-      return true;
-    }
-    if (t.needs_place && state.placed.count(t.obj_id) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-std::string chooseNextWs(
-  const std::vector<TransferItem> & transfers,
-  const std::set<std::string> & candidate_ws,
-  PlannerState & state)
-{
-  std::vector<std::pair<std::string, std::pair<int, int>>> scores;
-  scores.reserve(candidate_ws.size());
-
-  const int onboard = static_cast<int>(state.inventory.size());
-  const bool empty_robot = state.inventory.empty();
-
-  for (const auto & ws : candidate_ws) {
-    const int places = countCarriedPlacesAtWs(transfers, state, ws);
-    const int picks = countPendingPicksAtWs(transfers, state, ws, onboard - places);
-
-    if (empty_robot) {
-      if (picks > 0) {
-        scores.push_back({ws, {picks, 0}});
-      }
-    } else {
-      if (places > 0 || picks > 0) {
-        scores.push_back({ws, {places, picks}});
-      }
-    }
-  }
-
-  if (scores.empty()) {
-    return "";
-  }
-
-  const auto best_indices = shuffledBestCandidates(scores, state);
-  return scores[best_indices.front()].first;
-}
-
-/// Chave do ws_table_mapping para a estacao da task: a exata quando existe;
-/// senao o UNICO candidato "<ws>_<n>" / "<ws><n>" (formato 2026 nomeia PP e
-/// ST sem sufixo; os mapas tem PP_1 / ST_1). 0 ou >1 candidatos = erro
-/// dizendo o que acrescentar no ws_table_mapping.yaml.
-std::string resolveWsKey(
-  const std::map<std::string, std::string> & table,
-  const std::string & ws)
-{
-  if (table.count(ws) > 0) {
-    return ws;
-  }
-  std::vector<std::string> candidates;
-  for (const auto & [key, _] : table) {
-    if (key.size() > ws.size() && key.compare(0, ws.size(), ws) == 0) {
-      const char next = key[ws.size()];
-      if (next == '_' || std::isdigit(static_cast<unsigned char>(next))) {
-        candidates.push_back(key);
-      }
-    }
-  }
-  if (candidates.size() == 1) {
-    return candidates.front();
-  }
-  if (candidates.empty()) {
-    throw std::runtime_error(
-            "Missing WS->Mesa mapping for workspace: " + ws + " — estacao sem entrada em "
-            "ws_to_table_pose do ws_table_mapping.yaml do mapa (nem candidato " + ws +
-            "_<n>): acrescente '" + ws + "_1: Mesa15' em ws_to_table_pose e '" + ws + "_1: " +
-            ws + "1' em ws_to_dock_id (e grave a pose do dock " + ws + "1)");
-  }
-  std::string joined;
-  for (const auto & c : candidates) {
-    joined += (joined.empty() ? "" : ", ") + c;
-  }
-  throw std::runtime_error(
-          "Estacao '" + ws + "' ambigua no ws_to_table_pose (candidatos: " + joined +
-          ") — use o nome completo na task ou acrescente a chave '" + ws +
-          "' no ws_table_mapping.yaml");
-}
-
-std::string tablePoseForWs(
-  const std::map<std::string, std::string> & table,
-  const std::string & ws)
-{
-  return table.at(resolveWsKey(table, ws));
-}
-
-void appendGotoIfNeeded(
-  YAML::Node & action_seq,
-  PlannerState & state,
-  const std::string & ws,
-  const std::map<std::string, std::string> & ws_to_table_pose)
-{
-  const std::string table_pose = tablePoseForWs(ws_to_table_pose, ws);
-  // Comparar/registrar SEMPRE pela estacao (ws), nunca pela mesa: WS_1 e
-  // WS_2 podem ser a mesma Mesa e o goto seria pulado indevidamente.
-  if (state.current_ws == ws) {
-    return;
-  }
-
-  if (!state.current_ws.empty()) {
-    YAML::Node home;
-    home["kind"] = "home";
-    home["pose_name"] = "home";
-    action_seq.push_back(home);
-  }
-
-  YAML::Node nav;
-  nav["kind"] = "goto";
-  nav["ws"] = ws;
-  nav["mesa"] = table_pose;
-  action_seq.push_back(nav);
-  state.current_ws = ws;
-}
-
-void appendPlacesAtWs(
-  YAML::Node & action_seq,
-  const std::vector<TransferItem> & transfers,
-  PlannerState & state,
-  const std::string & ws,
-  const std::map<std::string, std::string> & ws_to_table_pose)
-{
-  const auto emit_place = [&](const TransferItem & t) {
-      YAML::Node place;
-      place["kind"] = "place";
-      place["tag_frame"] = t.tag_frame;
-      place["ws"] = t.to_ws;
-      place["table_pose"] = tablePoseForWs(ws_to_table_pose, t.to_ws);
-      if (!t.stack_on_frame.empty()) {
-        place["stack_on"] = t.stack_on_frame;
-      }
-      if (!t.container_color.empty()) {
-        place["container_color"] = t.container_color;
-      }
-      if (!t.at_tag_frame.empty()) {
-        place["at_tag"] = t.at_tag_frame;     // slot da mesa de precisao (2026)
-      }
-      if (!t.to_level.empty()) {
-        place["shelf_level"] = t.to_level;    // informativo (2026)
-      }
-
-      action_seq.push_back(place);
-      state.placed.insert(t.obj_id);
-    };
-
-  // Duas passadas: primeiro o que NAO e' topo de pilha (inclui as bases),
-  // depois os topos cuja base ja esta na mesa. Um topo cuja base ainda nao
-  // foi solta, ou qualquer place cujo lugar ainda esta ocupado por cubo da
-  // pilha inicial (place_after_picked), fica no inventario: o laco de
-  // buildOutput pega os ocupantes nesta mesma estacao e volta aqui.
-  std::vector<int> remaining_inventory;
-  std::vector<int> deferred;
-  for (const int obj_id : state.inventory) {
-    const auto & t = findTransferById(transfers, obj_id);
-    const bool here = t.needs_place && state.placed.count(t.obj_id) == 0 && t.to_ws == ws;
-    if (!here) {
-      remaining_inventory.push_back(obj_id);
-    } else if (t.stack_on_obj >= 0 || !placeAfterPickedSatisfied(state, t)) {
-      deferred.push_back(obj_id);
-    } else {
-      emit_place(t);
-    }
-  }
-  // Topos: repete ate nao haver progresso (pilha de 3+: o topo do topo so
-  // sai depois do meio).
-  bool progress = true;
-  while (progress && !deferred.empty()) {
-    progress = false;
-    std::vector<int> still_deferred;
-    for (const int obj_id : deferred) {
-      const auto & t = findTransferById(transfers, obj_id);
-      if (placeReady(transfers, state, t)) {
-        emit_place(t);
-        progress = true;
+      const auto d = cfg->dockDistance(dock_of[a], dock_of[b]);
+      if (d.has_value()) {
+        model.dist_m[a][b] = *d;
+        known_sum += *d;
+        ++known_count;
       } else {
-        still_deferred.push_back(obj_id);
+        unknown_pairs.emplace_back(a, b);
       }
     }
-    deferred = still_deferred;
   }
-  for (const int obj_id : deferred) {
-    remaining_inventory.push_back(obj_id);
+  if (!unknown_pairs.empty()) {
+    if (known_count == 0) {
+      std::cerr << "[task_planner] AVISO: nenhuma distancia conhecida entre as estacoes da task "
+                << "- ordem gulosa." << std::endl;
+      return false;
+    }
+    // Dock sem pose gravada (ex.: ST1 antes de calibrar): media das distancias
+    // conhecidas, para a busca ainda minimizar o resto. Avisa para gravar.
+    const double fallback = known_sum / known_count;
+    for (const auto & [a, b] : unknown_pairs) {
+      model.dist_m[a][b] = fallback;
+      for (const auto & ws : {a, b}) {
+        if (!cfg->hasDock(dock_of[ws]) || cfg->dock(dock_of[ws])->pose_is_placeholder) {
+          unknown_docks.insert(ws + " (" + dock_of[ws] + ")");
+        }
+      }
+    }
+    std::string joined;
+    for (const auto & d : unknown_docks) {
+      joined += (joined.empty() ? "" : ", ") + d;
+    }
+    std::cerr << "[task_planner] AVISO: " << unknown_pairs.size() << " par(es) sem distancia"
+              << (joined.empty() ? "" : " - dock sem pose gravada: " + joined)
+              << " - usando a media das conhecidas (" << fallback
+              << " m); grave a pose e regere o dock_distances.yaml." << std::endl;
   }
-  state.inventory = remaining_inventory;
+  std::cout << "[task_planner] distancias: " << cfg->dockDistancesPath() << " ("
+            << cfg->dockDistancesMethod() << ")." << std::endl;
+  return true;
 }
 
-void appendPicksAtWs(
-  YAML::Node & action_seq,
-  const std::vector<TransferItem> & transfers,
-  PlannerState & state,
-  const std::string & ws,
-  const std::map<std::string, std::string> & ws_to_table_pose)
+std::string fmtSeconds(const double s)
 {
-  // Topo de pilha so e' pego com a base ja na mesa ou a bordo (topPickable);
-  // como a base pode ter sido pega nesta mesma passada, repete ate nao haver
-  // progresso. pickAllowedNow tambem reserva lugar a bordo para ocupantes da
-  // pilha inicial que ainda precisam sair.
-  bool progress = true;
-  while (progress) {
-  progress = false;
-  for (const auto & t : transfers) {
-    if (static_cast<int>(state.inventory.size()) >= kMaxOnboard) {
-      return;
-    }
-    if (!pickAllowedNow(transfers, state, t, ws, static_cast<int>(state.inventory.size()))) {
-      continue;
-    }
-    progress = true;
+  std::ostringstream out;
+  out.setf(std::ios::fixed);
+  out.precision(0);
+  out << s << " s";
+  return out.str();
+}
 
-    YAML::Node pick;
-    pick["kind"] = "pick";
-    pick["tag_frame"] = t.tag_frame;
-    pick["ws"] = t.from_ws;
-    // O pick tambem precisa saber o tipo de mesa: a prateleira (MesaSh)
-    // exige uma sequencia de movimentos propria.
-    pick["table_pose"] = tablePoseForWs(ws_to_table_pose, t.from_ws);
-    if (!t.from_level.empty()) {
-      pick["shelf_level"] = t.from_level;   // informativo (2026)
-    }
-    action_seq.push_back(pick);
-
-    state.picked.insert(t.obj_id);
-    if (t.needs_place) {
-      state.inventory.push_back(t.obj_id);
-    }
-  }
-  }
+std::string fmtStats(const manip_bt::task_plan::PlanStats & st)
+{
+  std::ostringstream out;
+  out.setf(std::ios::fixed);
+  out.precision(1);
+  out << st.visits << " visita(s), " << st.station_switches << " troca(s), "
+      << st.distance_m << " m";
+  return out.str();
 }
 
 YAML::Node buildOutput(
-  const YAML::Node & competition_root,
   const std::vector<TransferItem> & transfers,
-  const std::string & apriltag_yaml_path,
-  const std::map<std::string, std::string> & ws_to_table_pose)
+  const std::map<std::string, std::string> & ws_to_table_pose,
+  const std::string & ws_map_yaml_path)
 {
-  (void)competition_root;
-  (void)apriltag_yaml_path;
+  namespace tp = manip_bt::task_plan;
+  PlannerOptions opts = plannerOptionsFromEnvironment();
+  std::mt19937 rng(opts.seed ? *opts.seed : std::random_device{}());
+
+  // Guloso de sempre (e' o plano final sem matriz, e o limite inicial com ela).
+  std::vector<tp::Visit> visits = tp::planGreedy(transfers, rng);
+  YAML::Node estimate;
+  estimate["mode"] = "greedy";
+
+  const bool has_model = !transfers.empty() &&
+    loadDistancesFromMap(ws_map_yaml_path, transfers, opts.model);
+  if (has_model) {
+    tp::PlanStats greedy_stats;
+    const double greedy_time = tp::estimatePlanTime(visits, opts.model, &greedy_stats);
+    std::ostringstream line;
+    line << "[task_planner] modelo: v_nav " << opts.model.v_nav_mps << " m/s, docking "
+         << opts.model.docking_s << " s, pick " << opts.model.pick_s << " s, place "
+         << opts.model.place_s << " s. Tempo estimado guloso: " << fmtSeconds(greedy_time)
+         << " (" << fmtStats(greedy_stats) << ")";
+    estimate["greedy_time_s"] = greedy_time;
+    if (opts.mode == "greedy") {
+      line << " - CARAMELO_PLANNER_MODE=greedy: sem busca.";
+    } else {
+      const tp::SearchResult result =
+        tp::planOptimized(transfers, opts.model, visits, opts.time_limit_s);
+      tp::PlanStats best_stats;
+      tp::estimatePlanTime(result.visits, opts.model, &best_stats);
+      line.setf(std::ios::fixed);
+      line.precision(0);
+      line << "; otimizado: " << fmtSeconds(result.time_s) << " (" << fmtStats(best_stats)
+           << ")" << (result.improved ? "" : " = guloso") << " ["
+           << (result.optimal ? "busca completa" : "prazo estourado, melhor encontrado")
+           << ", " << result.nodes << " nos, " << result.elapsed_ms << " ms]";
+      visits = result.visits;
+      estimate["mode"] = "optimized";
+      estimate["optimal"] = result.optimal;
+      estimate["search_nodes"] = static_cast<unsigned long long>(result.nodes);
+    }
+    std::cout << line.str() << std::endl;
+    tp::PlanStats final_stats;
+    estimate["time_s"] = tp::estimatePlanTime(visits, opts.model, &final_stats);
+    estimate["visits"] = final_stats.visits;
+    estimate["station_switches"] = final_stats.station_switches;
+    estimate["distance_m"] = final_stats.distance_m;
+  }
 
   YAML::Node output;
-  YAML::Node action_seq(YAML::NodeType::Sequence);
-  PlannerState state;
-  std::set<std::string> candidate_ws;
-
-  for (const auto & t : transfers) {
-    if (t.needs_pick && !t.from_ws.empty()) {
-      candidate_ws.insert(t.from_ws);
-    }
-    if (t.needs_place && !t.to_ws.empty()) {
-      candidate_ws.insert(t.to_ws);
-    }
+  output["actions"] = tp::emitActions(visits, transfers, ws_to_table_pose);
+  if (has_model) {
+    output["plan_estimate"] = estimate;   // so informativo (executor le apenas actions)
   }
-
-  while (hasUnfinishedWork(transfers, state)) {
-    const std::string next_ws = chooseNextWs(transfers, candidate_ws, state);
-    if (next_ws.empty()) {
-      throw std::runtime_error("Task planner got stuck: no reachable pick/place candidate");
-    }
-
-    const std::size_t picked_before = state.picked.size();
-    const std::size_t placed_before = state.placed.size();
-    appendGotoIfNeeded(action_seq, state, next_ws, ws_to_table_pose);
-    appendPlacesAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
-    appendPicksAtWs(action_seq, transfers, state, next_ws, ws_to_table_pose);
-    // Guarda de progresso (revisao 24/08): sem pick nem place novo nesta
-    // iteracao o laco giraria para sempre — falha explicita em vez disso.
-    if (state.picked.size() == picked_before && state.placed.size() == placed_before) {
-      throw std::runtime_error(
-              "Task planner got stuck: sem progresso em " + next_ws +
-              " (pilha cuja base nao pode ser alcancada, ou ocupante da pilha inicial "
-              "que nao cabe a bordo? inventario: " +
-              std::to_string(state.inventory.size()) + " objeto(s) a bordo)");
-    }
-  }
-
-
-  output["actions"] = action_seq;
   return output;
 }
 
@@ -1997,8 +1692,8 @@ YAML::Node buildAmt1Output(
 {
   YAML::Node output;
   YAML::Node action_seq(YAML::NodeType::Sequence);
-  PlannerState state;
-  appendGotoIfNeeded(action_seq, state, station.ws, ws_to_table_pose);
+  std::string current_ws;
+  manip_bt::task_plan::appendGoto(action_seq, current_ws, station.ws, ws_to_table_pose);
 
   YAML::Node sort;
   sort["kind"] = "amt1_sort";
@@ -2159,7 +1854,7 @@ int main(int argc, char ** argv)
         stack_assignments,
         !containers.empty(),
         f26);
-    const auto output = buildOutput(competition_root, transfers, apriltag_yaml_path, ws_to_table_pose);
+    const auto output = buildOutput(transfers, ws_to_table_pose, ws_map_yaml_path);
 
     // AMT1 disfarcada: 0 transferencias e todos os objetos
     // comecando e terminando na mesma PP_*. So avisa (o fluxo nao muda):
