@@ -248,7 +248,7 @@ BT::NodeStatus GoToWSBT::onStart()
   gate_limits_.max_abs_x = paramOr("pose_gate_max_x", 0.10);
   gate_limits_.max_abs_y = paramOr("pose_gate_max_y", 0.20);
   gate_limits_.max_abs_yaw = paramOr("pose_gate_max_yaw", 0.20);
-  gate_strict_ = boolParamOr("pose_gate_strict", true);
+  gate_strict_ = boolParamOr("pose_gate_strict", false);
   gate_retries_left_ = std::max(0, intParamOr("pose_gate_retries", 1));
   stop_check_enabled_ = boolParamOr("stop_check_enabled", true);
   stop_check_require_odom_ = boolParamOr("stop_check_require_odom", true);

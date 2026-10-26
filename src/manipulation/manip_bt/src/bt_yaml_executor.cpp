@@ -1115,7 +1115,10 @@ int main(int argc, char ** argv)
     blackboard->set(
       "pose_gate_retries",
       static_cast<int>(node->declare_parameter<int64_t>("pose_gate_retries", 1)));
-    blackboard->set("pose_gate_strict", node->declare_parameter<bool>("pose_gate_strict", true));
+    // false ate' validar o gate no robo (2026-10-26): estacao torta vira aviso +
+    // re-dock, nao falha. Depois de conferir os logs "pose validada/FORA DOS
+    // LIMITES" em campo, mudar para true (ver docs/investigacao_incidente_2026-10.md).
+    blackboard->set("pose_gate_strict", node->declare_parameter<bool>("pose_gate_strict", false));
     // Parada antes da manipulacao: odometria (/odom do EKF) abaixo de
     // stop_check_max_lin / max_ang por stop_check_window_s continuos (nao e'
     // atraso fixo: sem odometria fresca o estado e' 'sem_odometria'). Limites
