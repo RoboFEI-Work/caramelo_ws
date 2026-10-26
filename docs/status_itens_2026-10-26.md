@@ -5,7 +5,7 @@ Atualizado pelo Claude a cada item que termina. Legenda: ✅ feito · 🔄 em an
 | # | Item | Status | Quem | Onde ver |
 |---|---|---|---|---|
 | 3 | Manipulador lento e com jitter (Dynamixel) | ✅ Pi commitada (453fec1: latency 1 ms, return delay 0, perfil por tempo, 100 Hz); MoveIt 3,0 rad/s e 8,0 rad/s² (home↔pegar_obj 2,15 s → 0,80 s). Pendente: você julgar de olho; achado: joint4 para em 1,915 rad (alvo 2,199 do `pegar_obj`) com corrente baixa → limite de posição do próprio servo, ver abaixo | Claude (main) | `caramelo_hardware_ws` na Pi, `manip_moveit_config/config/joint_limits.yaml` |
-| 1 | Tour por todos os docks do mapa + FINISH | 🔄 agente escrevendo o script; depois rodo no robô | agente item-1 | `caramelo_navigation/scripts/tour_docks.py` |
+| 1 | Tour por todos os docks do mapa + FINISH | ✅ script pronto e mesclado (b86cad1): `ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026`; 179 testes passam. ⏳ Falta rodar no robô (precisa do stack completo no ar e robô localizado no START) | Claude (main) | `caramelo_navigation/scripts/tour_docks.py`, guia_missoes §2.1 |
 | 7 | Investigação do incidente na arena | 🔄 agente investigando com logs e código; **vídeo com áudio não está neste PC** (pendência: caminho do vídeo) | agente item-7 | `docs/investigacao_incidente_2026-10.md` |
 | 4 | Planejador por tempo (grafo de distâncias, busca) | 🔄 agente | agente item-4 | `manip_bt/src/task_planner.cpp`, `docs/planejador_por_tempo.md` |
 | 5 | Merge da branch robot_ui + atualizar interface | 🔄 agente | agente item-5 | `caramelo_gui`, `caramelo_web`, `docs/interface_grafica.md` |
