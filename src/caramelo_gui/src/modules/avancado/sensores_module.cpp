@@ -38,6 +38,10 @@ inline double anguloNoRobo(double angulo_no_laser)
 const char * kTopicoLidar = "/scan";
 const char * kTopicoImuSim = "/imu";
 const char * kTopicoImuReal = "/imu/data_raw";
+// Camera do punho ANOTADA (manip_bringup/vision_debug_node, sobe com o
+// manip_stack): tags, containers por cor, mapa da mesa e a fala por cima da
+// imagem; custo zero sem espectador. Preferida sobre a imagem crua.
+const char * kTopicoCameraAnotada = "/manip/vision_debug/image";
 }  // namespace
 
 // ============================================================ VisorLidar
@@ -298,6 +302,8 @@ void SensoresModule::showEvent(QShowEvent * e)
   topico_camera_->addItems(imagens);
   if (!atual.isEmpty() && imagens.contains(atual)) {
     topico_camera_->setCurrentText(atual);
+  } else if (imagens.contains(kTopicoCameraAnotada)) {
+    topico_camera_->setCurrentText(kTopicoCameraAnotada);
   }
   topico_camera_->blockSignals(false);
 
@@ -306,7 +312,8 @@ void SensoresModule::showEvent(QShowEvent * e)
     resumo_camera_->setText(
       "Na simulacao isso e' esperado: o modelo tem a RealSense so' como "
       "geometria, sem sensor de camera do Gazebo. No robo real, a camera "
-      "aparece quando o stack de manipulacao sobe.");
+      "aparece quando o stack de manipulacao sobe (/manip/vision_debug/image "
+      "e' a camera do punho anotada; /camera/camera/color/image_raw, a crua).");
   } else {
     reassinarCamera();
   }

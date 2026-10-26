@@ -1,7 +1,8 @@
 #pragma once
 
-// Fachada da missao para a UI: cliente da action /caramelo/run_mission e
-// assinante de /caramelo/mission/status.
+// Fachada da missao para a UI: cliente da action /caramelo/run_mission
+// (caramelo_navigation/mission_server), assinante de /caramelo/mission/status
+// e da voz do robo (/manip/speech_status, manip_audio/speech_node).
 //
 // Vive separado do ros_bridge.cpp de proposito. O ros_bridge ja' tem 500 linhas
 // e concentra navegacao, docking, mapas e service areas; missao e' um dominio
@@ -19,6 +20,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "caramelo_msgs/action/run_mission.hpp"
 #include "caramelo_msgs/msg/mission_status.hpp"
+#include "std_msgs/msg/string.hpp"
 
 #include "bridge/mission_types.hpp"
 
@@ -42,7 +44,7 @@ public:
 
   MissionBridge(rclcpp::Node::SharedPtr node, QObject * parent = nullptr);
 
-  // Gera o plano sem mover o robo (dry-run). Responde por planReady().
+  // Gera o plano sem mover o robo (dry-run = so' o task_planner). Responde por planReady().
   void requestPlan(const Options & opts);
 
   // Executa. actionsYaml vazio => o servidor planeja sozinho; preenchido =>
@@ -58,9 +60,10 @@ public:
   // O servidor de missao esta' no ar?
   bool serverReady() const;
 
-  // Pre-flight visual: quais action servers a missao exige e quais ja' estao no
-  // grafo. Consulta os servicos <action>/_action/send_goal, o que evita
-  // depender dos tipos de action da manipulacao so' para conferir presenca.
+  // Pre-flight visual: quais action servers a missao exige (mesma lista do
+  // run_mission._preflight) e quais ja' estao no grafo. Consulta os servicos
+  // <action>/_action/send_goal, o que evita depender dos tipos de action da
+  // manipulacao so' para conferir presenca.
   struct ServerCheck
   {
     QString action;
@@ -75,6 +78,8 @@ signals:
     const QString & message);
   void finished(bool success, const QString & message);
   void busyChanged(bool busy);
+  // "falando: <texto>" | "ocioso" | "descartada (<motivo>): <texto>" (latched).
+  void speechStatus(const QString & status);
 
 private:
   using RunMission = caramelo_msgs::action::RunMission;
@@ -89,6 +94,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   rclcpp_action::Client<RunMission>::SharedPtr client_;
   rclcpp::Subscription<caramelo_msgs::msg::MissionStatus>::SharedPtr status_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr speech_sub_;
 
   std::mutex goal_mtx_;
   GoalHandle::SharedPtr goal_handle_;

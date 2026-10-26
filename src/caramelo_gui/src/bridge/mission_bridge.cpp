@@ -5,8 +5,10 @@
 namespace
 {
 
-// Action servers exigidos por uma missao, na ordem em que o operador espera
-// ve-los subir. Os quatro ultimos so' fazem sentido com navegacao real.
+// Action servers exigidos por uma missao (mesma lista de
+// caramelo_navigation/scripts/run_mission.py::_preflight), na ordem em que o
+// operador espera ve-los subir. Os de navegacao caem fora com a navegacao
+// simulada. O /amt1_sort so' entra na AMT1 e fica fora desta conferencia.
 struct ServerSpec
 {
   const char * action;
@@ -16,12 +18,13 @@ struct ServerSpec
 
 const ServerSpec kServers[] = {
   {"/move_action", "MoveIt (move_group)", false},
-  {"/pick_tag", "Pegar objeto", false},
-  {"/place_tag", "Depositar objeto", false},
+  {"/pick_tag", "Pegar objeto (pick_action_server)", false},
+  {"/place_tag", "Depositar objeto (place_action_server)", false},
   {"/navigate_to_pose", "Navegacao (Nav2)", true},
-  {"/dock_robot", "Docking", true},
-  {"/undock_robot", "Undocking", true},
-  {"/align_to_dock", "Alinhamento fino", true},
+  {"/dock_robot", "Docking (opennav_docking)", true},
+  {"/undock_robot", "Undocking (opennav_docking)", true},
+  {"/align_to_dock", "Alinhamento fino (dock_align_node)", true},
+  {"/nudge_base", "Ajuste lateral da base (dock_align_node)", true},
 };
 
 MissionProgress::State toState(uint8_t s)
@@ -41,15 +44,24 @@ MissionBridge::MissionBridge(rclcpp::Node::SharedPtr node, QObject * parent)
 
   client_ = rclcpp_action::create_client<RunMission>(node_, "/caramelo/run_mission");
 
-  // MESMA QoS do bt_yaml_executor: transient_local com historico fundo. O
-  // publicador nasce junto com a missao, entao a GUI e' sempre late joiner --
-  // com depth 1 (ou durabilidade volatile) ela perderia o inicio de toda missao
-  // e so' veria o ultimo passo.
+  // MESMA QoS do mission_server: transient_local com historico fundo. O
+  // publicador nasce com o servidor, entao a GUI e' sempre late joiner -- com
+  // depth 1 (ou durabilidade volatile) ela perderia o inicio de toda missao.
   rclcpp::QoS qos(64);
   qos.transient_local().reliable();
   status_sub_ = node_->create_subscription<caramelo_msgs::msg::MissionStatus>(
     "/caramelo/mission/status", qos,
     std::bind(&MissionBridge::onStatus, this, std::placeholders::_1));
+
+  // Voz do robo: o speech_node publica latched (transient_local, depth 1), e
+  // a assinatura precisa casar a durabilidade para receber o ultimo estado.
+  rclcpp::QoS latched(1);
+  latched.transient_local().reliable();
+  speech_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    "/manip/speech_status", latched,
+    [this](const std_msgs::msg::String::SharedPtr msg) {
+      emit speechStatus(QString::fromStdString(msg->data));
+    });
 }
 
 bool MissionBridge::serverReady() const
@@ -115,7 +127,8 @@ void MissionBridge::send(const RunMission::Goal & goal, bool dryRun)
   }
   if (!serverReady()) {
     const QString msg =
-      "Servidor de missao indisponivel (/caramelo/run_mission). O stack esta no ar?";
+      "Servidor de missao indisponivel (/caramelo/run_mission). Suba o mission_server "
+      "(launch da GUI com use_mission_server:=true).";
     if (dryRun) {
       emit planReady(false, {}, QString(), msg);
     } else {
@@ -132,7 +145,7 @@ void MissionBridge::send(const RunMission::Goal & goal, bool dryRun)
     [this, dryRun](GoalHandle::SharedPtr handle) {
       if (!handle) {
         setBusy(false);
-        const QString msg = "Goal recusado pelo servidor de missao.";
+        const QString msg = "Goal recusado pelo servidor de missao (ja ha missao em andamento?).";
         if (dryRun) {
           emit planReady(false, {}, QString(), msg);
         } else {

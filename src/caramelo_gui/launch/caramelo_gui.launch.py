@@ -1,3 +1,11 @@
+# Sobe a GUI Qt do Caramelo e, junto, o que ela consome mas nao faz parte do
+# stack do robo: o health_monitor (/diagnostics, cartoes de saude) e o
+# mission_server (/caramelo/run_mission, tela Competicao). O stack de
+# navegacao + manipulacao e' SEPARADO (caramelo_bringup/robot_manipulation.launch.py).
+#
+# Como roda: ros2 launch caramelo_gui caramelo_gui.launch.py
+#   use_mission_server:=false  quando o painel web (ou outro launch) ja subiu
+#                              o mission_server -- um por robo.
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -9,11 +17,12 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    # Sobe o agregador de saude (/diagnostics) e a GUI. O diagnostico e' um node
-    # separado (usavel headless tambem — R4); a GUI so' o consome.
     use_diagnostics = LaunchConfiguration("use_diagnostics")
+    use_mission_server = LaunchConfiguration("use_mission_server")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
+    # Agregador de saude (/diagnostics). E' um node separado (usavel headless
+    # tambem); a GUI so' o consome.
     diagnostics = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -22,6 +31,20 @@ def generate_launch_description():
             )
         ),
         condition=IfCondition(use_diagnostics),
+        launch_arguments={"use_sim_time": use_sim_time}.items(),
+    )
+
+    # Servidor da missao: a tela Competicao e' cliente da action
+    # /caramelo/run_mission. O no sai sozinho se ja houver outro servidor no
+    # grafo (single_instance), entao GUI e painel web juntos nao duplicam.
+    mission_server = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("caramelo_navigation"),
+                "launch", "mission_server.launch.py",
+            )
+        ),
+        condition=IfCondition(use_mission_server),
         launch_arguments={"use_sim_time": use_sim_time}.items(),
     )
 
@@ -59,7 +82,13 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_diagnostics",
             default_value="true",
-            description="Sobe o caramelo_diagnostics junto com a GUI",
+            description="Sobe o caramelo_diagnostics (health_monitor) junto com a GUI",
+        ),
+        DeclareLaunchArgument(
+            "use_mission_server",
+            default_value="true",
+            description="Sobe o mission_server (/caramelo/run_mission) junto com a GUI; "
+                        "false se o painel web ja o subiu",
         ),
         DeclareLaunchArgument(
             "use_sim_time",
@@ -67,5 +96,6 @@ def generate_launch_description():
             description="true em simulacao: a GUI precisa do MESMO relogio do resto",
         ),
         diagnostics,
+        mission_server,
         gui,
     ])

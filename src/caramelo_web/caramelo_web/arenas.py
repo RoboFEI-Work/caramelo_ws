@@ -173,10 +173,13 @@ def pasta_da_arena(nome: str):
 
 
 def caminho_do_estado_do_robo() -> Path:
-    """~/.config/caramelo/robot_state.yaml -- o mesmo arquivo da GUI e do launch.
+    """~/.config/caramelo/robot_state.yaml -- o mesmo arquivo da GUI.
 
-    Ele diz em que arena o robo esta. Quem le e o caramelo_bringup na hora de
-    subir; qualquer mudanca de formato tem que acontecer nos dois lados.
+    Ele diz em que arena o robo esta (memoria da INTERFACE: a tela Mapas da
+    GUI e a aba Mapas daqui gravam, todas as telas leem). O stack do robo NAO
+    le este arquivo: o mapa continua sendo argumento do launch
+    (robot_manipulation.launch.py map_name:=...). Mudanca de formato tem que
+    acontecer na GUI (robot_state.cpp) e aqui ao mesmo tempo.
     """
     return Path.home() / ".config/caramelo/robot_state.yaml"
 

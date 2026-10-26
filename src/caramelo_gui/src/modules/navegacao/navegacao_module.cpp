@@ -39,7 +39,8 @@ NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
   ligar_ = new QPushButton("Ligar navegacao (Nav2)");
   ligar_->setObjectName("acaoPrimaria");
 
-  // A navegacao normalmente ja' sobe com o robo (caramelo.launch.py). Este
+  // A navegacao normalmente ja' sobe com o robo (caramelo_bringup/
+  // robot_manipulation.launch.py map_name:=<mapa>). Este
   // modulo so' acompanhava o processo que ELE mesmo tivesse criado, entao dizia
   // "Navegacao desligada" com o Nav2 no ar -- e o operador concluia, com razao,
   // que a navegacao nao tinha subido. Pior: apertar o botao criaria um SEGUNDO

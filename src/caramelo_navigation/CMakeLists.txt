@@ -134,6 +134,10 @@ if(BUILD_TESTING)
   # sem ROS ativo (2026-08-28).
   ament_add_pytest_test(test_nudge_math test/test_nudge_math.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Helpers puros do mission_server (action /caramelo/run_mission usada pela
+  # GUI e pelo painel web), sem grafo ROS.
+  ament_add_pytest_test(test_mission_server_helpers test/test_mission_server_helpers.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
 ament_package()

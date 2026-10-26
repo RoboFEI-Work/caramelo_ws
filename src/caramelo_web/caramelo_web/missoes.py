@@ -1,11 +1,16 @@
 """Tasks de competição que o painel pode disparar.
 
-Mesma descoberta que a GUI Qt faz (competicao_module.cpp): varre o share do
-manip_bt e a pasta ~/caramelo_ws/missions, e só aceita YAML que tenha `task_id`.
-O filtro por `task_id` não é firula: as duas pastas guardam também YAMLs
-vizinhos que NÃO são task (ws_table_mapping.yaml, por exemplo), e oferecer um
-deles ao operador produziria uma missão que falha no planejador sem dizer
-por quê.
+Mesma descoberta que a GUI Qt faz (competicao_module.cpp): varre a pasta
+`missions/` na raiz do workspace (fonte única das tarefas) e a subpasta
+`missions/tasks geradas/` (arquivos OFICIAIS do @Work Commander, formato 2026),
+e só aceita YAML que tenha `task_id`. O filtro por `task_id` não é firula: a
+pasta guarda também arquivos que NÃO são task (README, `exemplos/` com YAML de
+ações), e oferecer um deles ao operador produziria uma missão que falha no
+planejador sem dizer por quê.
+
+Não há fallback para share de pacote (regra do repositório): as tasks vivem em
+missions/. A raiz do workspace é deduzida da árvore fonte dos mapas
+(<ws>/src/caramelo_mapping/maps -> <ws>), como a GUI faz; sem ela, ~/caramelo_ws.
 
 O painel expõe LISTA, nunca campo de texto: caminho de arquivo digitado à mão é
 exatamente o tipo de erro que só aparece quando o cronômetro da prova já está
@@ -15,23 +20,28 @@ from pathlib import Path
 
 import yaml
 
+from caramelo_web import arenas
+
+# Subpastas de missions/ varridas, nesta ordem. "" é a própria raiz.
+SUBPASTAS = ("tasks geradas", "")
+
+
+def raiz_do_workspace() -> Path:
+    mapas = arenas.pasta_dos_mapas()
+    ws = mapas.parent.parent.parent      # <ws>/src/caramelo_mapping/maps -> <ws>
+    if (ws / "missions").is_dir():
+        return ws
+    return Path.home() / "caramelo_ws"
+
 
 def _pastas() -> list:
-    pastas = []
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        pastas.append(Path(get_package_share_directory("manip_bt")) / "behavior_tree_manip")
-    except Exception:
-        # manip_bt pode não estar sourceado (perfil só de navegação); a pasta
-        # missions/ ainda vale.
-        pass
-    pastas.append(Path.home() / "caramelo_ws/missions")
-    return pastas
+    raiz = raiz_do_workspace() / "missions"
+    return [raiz / sub if sub else raiz for sub in SUBPASTAS]
 
 
 def listar() -> list:
+    raiz = raiz_do_workspace() / "missions"
     achadas = []
-    vistos = set()
     for pasta in _pastas():
         if not pasta.is_dir():
             continue
@@ -44,15 +54,19 @@ def listar() -> list:
             if not isinstance(dados, dict):
                 continue
             task_id = str(dados.get("task_id") or "").strip()
-            if not task_id or task_id in vistos:
+            if not task_id:
                 continue
-            vistos.add(task_id)
             nome = str(dados.get("name") or "").strip()
+            # O arquivo entra no rótulo: a task oficial (tasks geradas/BMT_...)
+            # e a de teste à mão (task_BMT.yaml) podem ter o mesmo task_id.
+            relativo = str(arquivo.relative_to(raiz))
             achadas.append({
                 "caminho": str(arquivo),
+                "arquivo": relativo,
                 "task_id": task_id,
                 "nome": nome,
-                "rotulo": f"{task_id} — {nome}" if nome else task_id,
+                "rotulo": f"{task_id} — {nome}  ({relativo})" if nome
+                          else f"{task_id}  ({relativo})",
                 "duracao_min": dados.get("duration_min"),
                 # active_service_areas aparece nas duas formas nos YAMLs que
                 # existem hoje: lista de nomes (BMT) e lista de dicionarios com

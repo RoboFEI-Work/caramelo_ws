@@ -39,6 +39,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import (BatteryState, CompressedImage, Image, Imu,
                              LaserScan)
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 from caramelo_web import arenas
@@ -234,6 +235,13 @@ IDADE_DIAGNOSTICO = 5.0
 # topico aparecer (ele aparece depois, quando o bringup da Raspberry sobe).
 TOPICOS_IMU = ("/imu/data_raw", "/imu")
 TOPICO_BATERIA = "/battery_state"
+# Camera do punho ANOTADA (manip_bringup/vision_debug_node): tags, containers,
+# mapa da mesa e a fala por cima da imagem. Custo zero sem espectador. E a
+# primeira da lista de cameras: e o que se quer ver num pick/place.
+TOPICO_CAMERA_ANOTADA = "/manip/vision_debug/image"
+# Voz do robo (manip_audio/speech_node), latched: "falando: ...", "ocioso",
+# "descartada (<motivo>): ...".
+TOPICO_VOZ = "/manip/speech_status"
 
 # Camera: NUNCA pelo WebSocket. Vira MJPEG sob demanda, como o espelho de tela.
 # Uma camera de 30 quadros por segundo dentro do JSON de estado tiraria da
@@ -295,6 +303,8 @@ def _numeros_do_componente(bruto) -> list:
 def _rotulo_de_camera(topico: str) -> str:
     """Nome de camera que o operador entende, a partir do nome tecnico."""
     t = (topico or "").lower()
+    if topico == TOPICO_CAMERA_ANOTADA:
+        return "Camera do punho (anotada: tags, containers, mesa)"
     if "depth" in t:
         return "Camera de profundidade"
     if "infra" in t or "/ir" in t:
@@ -357,6 +367,7 @@ class NoDoPainel(Node):
         self.scan = None            # {angle_min, angle_increment, ranges, range_max, t}
         self.diagnostico = {}       # nome -> {level, message}
         self.missao = None          # último MissionStatus, já traduzido
+        self.voz = None             # último /manip/speech_status (voz do robô)
         self.plano = None           # último dry-run da missão, para a tela mostrar
         self.imu = None             # {roll, pitch, yaw, giro_z, acel_*, hz, t}
         self.bateria = None         # {percentual, tensao, corrente, t}
@@ -419,6 +430,13 @@ class NoDoPainel(Node):
             )
             self.create_subscription(
                 MissionStatus, "/caramelo/mission/status", self._ao_status_missao, qos)
+
+        # Voz do robô: o speech_node publica latched (transient_local, depth 1);
+        # a assinatura casa a durabilidade para receber o último estado.
+        self.create_subscription(
+            String, TOPICO_VOZ, self._ao_voz,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # Só a action, nunca /goal_pose: o bt_navigator também assina esse
         # tópico, e publicar nele dispararia DOIS goals para um clique.
@@ -581,7 +599,9 @@ class NoDoPainel(Node):
                         "comprimida": tipo.endswith("CompressedImage"),
                     })
                     break
-        return sorted(achadas, key=lambda c: c["id"])
+        # A camera anotada vem primeiro: e a que responde "o que o robo
+        # entendeu", e nao so "o que a lente viu".
+        return sorted(achadas, key=lambda c: (c["id"] != TOPICO_CAMERA_ANOTADA, c["id"]))
 
     def assinar_camera(self, topico: str) -> tuple:
         """Liga UMA camera. O nome vem do navegador, entao so vale o que existe.
@@ -704,6 +724,15 @@ class NoDoPainel(Node):
             self._camera_visto = time.time()
             return self._camera_jpeg, dict(self._camera_info)
 
+    def _ao_voz(self, msg: String):
+        texto = str(msg.data or "")
+        with self._lock:
+            self.voz = {
+                "texto": texto,
+                "falando": texto.startswith("falando"),
+                "t": time.time(),
+            }
+
     def _ao_status_missao(self, msg):
         with self._lock:
             self.missao = {
@@ -790,6 +819,7 @@ class NoDoPainel(Node):
             pose = dict(self.pose) if self.pose else None
             scan = dict(self.scan) if (com_scan and self.scan) else None
             missao = dict(self.missao) if self.missao else None
+            voz = dict(self.voz) if self.voz else None
             serie = self._serie_evento
             novos = [dict(e) for e in self._eventos if e["n"] > desde_evento]
             teleop_ligado = agora <= self._teleop_ate
@@ -800,7 +830,7 @@ class NoDoPainel(Node):
         if scan and agora - scan["t"] > 2.0:
             scan["velho"] = True
         foto = {
-            "pose": pose, "scan": scan, "missao": missao,
+            "pose": pose, "scan": scan, "missao": missao, "voz": voz,
             "eventos": novos, "serie_evento": serie,
             "teleop_ligado": teleop_ligado,
         }
@@ -885,7 +915,7 @@ class NoDoPainel(Node):
         # --- Competicao ---
         if not capacidades["missao"]:
             aplicar("competicao", "bloqueado",
-                    "Sistema de missoes fora do ar. Reinicie o robo.")
+                    "Servidor de missao fora do ar. Suba o painel (ou a GUI) com use_mission_server:=true.")
         elif not arena["existe"]:
             aplicar("competicao", "bloqueado", "Escolha a arena antes.")
         elif nivel("caramelo/tf") >= 2:

@@ -20,6 +20,9 @@
   <exec_depend>caramelo_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>caramelo_mapping</exec_depend>
+  <!-- mission_server.launch.py (aba Competicao) e os modulos de gravacao de
+       service areas/docking importados por mapeamento.py. -->
+  <exec_depend>caramelo_navigation</exec_depend>
 
   <!-- Transporte generico de topicos/services/actions para o navegador. -->
   <exec_depend>rosbridge_server</exec_depend>

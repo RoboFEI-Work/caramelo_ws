@@ -274,6 +274,7 @@ const MOLDE = `
         </div>
         <div class="comp-barra"><div data-el="barra"></div></div>
         <p class="msgCartao" data-el="mensagemMissao">O robo esta parado.</p>
+        <p class="dica" data-el="voz">Voz do robo: —</p>
         <div class="comp-botoes">
           <button class="acaoPrimaria" data-el="comecar">Comecar a prova</button>
           <button class="acaoDestrutiva" data-el="abortar" disabled>Abortar a prova</button>
@@ -334,6 +335,7 @@ function montar(raiz, ctx) {
   let relogioDoPlano = null;
   let ultimoEstado = {};         // ultimo quadro do WebSocket, para recalcular fora dele
   let vivo = true;
+  let ultimaVoz = null;          // ultimo /manip/speech_status mostrado
 
   const marcado = (id) => {
     const cx = raiz.querySelector(`[data-opcao="${id}"]`);
@@ -738,6 +740,14 @@ function montar(raiz, ctx) {
     // dez vezes por segundo num tablet trava o toque bem na hora da prova.
     aoEstado(estado) {
       ultimoEstado = estado || {};
+      // O que o robo esta FALANDO (manip_audio/speech_node). Quem opera longe
+      // do alto-falante le aqui o mesmo que o robo narra.
+      const voz = (estado && estado.voz) || null;
+      const textoVoz = voz ? String(voz.texto || '') : '';
+      if (textoVoz !== ultimaVoz) {
+        ultimaVoz = textoVoz;
+        el('voz').textContent = 'Voz do robo: ' + (textoVoz || '—');
+      }
       const robo = ((estado && estado.cartoes) || {}).robo || {};
       const nome = robo.arena_nome || '';
       if (nome !== arena) {

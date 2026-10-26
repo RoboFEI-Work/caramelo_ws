@@ -316,7 +316,7 @@ void HomeScreen::reavaliar()
   // --- Competicao ---
   if (!servidor_missao_) {
     aplicar("competicao", Estado::Bloqueado,
-      "Sistema de missoes fora do ar. Reinicie o robo.");
+      "Servidor de missao fora do ar. Suba a GUI com use_mission_server:=true.");
   } else if (mapa_ativo_.isEmpty()) {
     aplicar("competicao", Estado::Bloqueado, "Escolha a arena antes.");
   } else if (nivel("caramelo/tf") >= 2) {

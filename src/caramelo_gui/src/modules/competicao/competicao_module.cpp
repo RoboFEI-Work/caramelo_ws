@@ -14,22 +14,27 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "bridge/mission_bridge.hpp"
 #include "bridge/ros_bridge.hpp"
+#include "modules/mapas/mapas_module.hpp"
 #include "widgets/seletor_arena.hpp"
 
 namespace
 {
 
+// Subpastas de <ws>/missions varridas, nesta ordem. "tasks geradas" guarda os
+// arquivos OFICIAIS do @Work Commander (formato 2026, o principal); a raiz
+// guarda as tasks escritas a mao (formatos anteriores). missions/exemplos/ sao
+// YAMLs de ACOES (nivel baixo), nao de tarefa, e ficam de fora.
+const char * kSubpastasDeTasks[] = {"tasks geradas", ""};
+
 // Le o task_id de um YAML de competicao. Serve tambem de filtro: os arquivos
-// vizinhos (ws_table_mapping.yaml, por exemplo) nao tem task_id e nao sao
-// tarefas.
+// vizinhos (README, YAML de acoes) nao tem task_id e nao sao tarefas.
 QString lerTaskId(const QString & caminho)
 {
   try {
     const YAML::Node raiz = YAML::LoadFile(caminho.toStdString());
-    if (raiz["task_id"]) {
+    if (raiz.IsMap() && raiz["task_id"]) {
       return QString::fromStdString(raiz["task_id"].as<std::string>(""));
     }
   } catch (const std::exception &) {
@@ -38,11 +43,14 @@ QString lerTaskId(const QString & caminho)
   return QString();
 }
 
-QString rotuloDaTarefa(const QString & caminho)
+// "BMT  (tasks geradas/BMT_seed974164_equipe.yaml)": o task_id na frente, o
+// arquivo atras -- duas tasks com o mesmo id (teste a mao e oficial) precisam
+// ser distinguiveis na lista.
+QString rotuloDaTarefa(const QString & caminho, const QString & raizMissions)
 {
   const QString id = lerTaskId(caminho);
-  const QString arquivo = QFileInfo(caminho).fileName();
-  return id.isEmpty() ? arquivo : (id + "  (" + arquivo + ")");
+  const QString relativo = QDir(raizMissions).relativeFilePath(caminho);
+  return id.isEmpty() ? relativo : (id + "  (" + relativo + ")");
 }
 
 }  // namespace
@@ -69,6 +77,11 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   form->addRow("Task:", tarefa_);
   form->addRow("Mapa:", mapa_);
 
+  origem_tarefas_ = new QLabel();
+  origem_tarefas_->setObjectName("msgCartao");
+  origem_tarefas_->setWordWrap(true);
+  form->addRow("", origem_tarefas_);
+
   motivo_ = new QLabel();
   motivo_->setObjectName("motivoCartao");
   motivo_->setWordWrap(true);
@@ -81,7 +94,8 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   refino_lidar_ = new QCheckBox("Refinar docking com LiDAR");
   ir_ao_finish_ = new QCheckBox("Ir ao FINISH ao terminar");
   home_no_inicio_ = new QCheckBox("Levar o braco para home antes de comecar");
-  // Defaults iguais aos do run_mission, para a GUI e o terminal nao divergirem.
+  // Defaults iguais aos do run_mission/bt_yaml_executor, para a GUI e o
+  // terminal nao divergirem (use_lidar_refine e startup_home sao true la').
   refino_lidar_->setChecked(true);
   ir_ao_finish_->setChecked(true);
   home_no_inicio_->setChecked(true);
@@ -142,6 +156,13 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   detalhe_ = new QLabel("—");
   detalhe_->setWordWrap(true);
   execLayout->addWidget(detalhe_);
+
+  // O que o robo esta' FALANDO (manip_audio/speech_node -> /manip/speech_status).
+  // Quem opera de longe do alto-falante le' aqui o mesmo que o robo narra.
+  voz_ = new QLabel("Voz: —");
+  voz_->setObjectName("msgCartao");
+  voz_->setWordWrap(true);
+  execLayout->addWidget(voz_);
   layout->addWidget(grupoExec);
 
   layout->addStretch();
@@ -154,8 +175,8 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
   connect(
     ver_plano_, &QPushButton::clicked, this, [this]() {
       if (tarefa_->count() == 0) {
-        titulo_lista_->setText("Nenhuma task encontrada em manip_bt/behavior_tree_manip "
-          "nem em missions/.");
+        titulo_lista_->setText(
+          "Nenhuma task encontrada em " + raizDoWorkspace() + "/missions.");
         return;
       }
       if (mapa_->vazio() || mapa_->arena().isEmpty()) {
@@ -166,7 +187,7 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
       }
       lista_->clear();
       actions_yaml_.clear();
-      titulo_lista_->setText("Gerando plano...");
+      titulo_lista_->setText("Gerando plano (task_planner)...");
       MissionBridge::Options o;
       o.taskYaml = tarefa_->currentData().toString();
       o.mapName = mapa_->arena();
@@ -217,8 +238,8 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
         lista_->addItem(r.trimmed());
       }
       titulo_lista_->setText(
-        QString("Plano com %1 acoes. O executor ainda acrescenta o home inicial e "
-        "a ida ao FINISH.").arg(rows.size()));
+        QString("Plano com %1 acoes (%2). O executor ainda acrescenta o home inicial "
+        "e a ida ao FINISH.").arg(rows.size()).arg(QFileInfo(yaml).fileName()));
     });
 
   connect(mission_, &MissionBridge::progress, this, &CompeticaoModule::aoProgresso);
@@ -227,23 +248,34 @@ CompeticaoModule::CompeticaoModule(RosBridge * bridge, QWidget * parent)
     mission_, &MissionBridge::finished, this, [this](bool ok, const QString & msg) {
       estado_->setText(QString("Estado: %1").arg(ok ? "concluida" : "encerrada"));
       detalhe_->setText(msg.trimmed());
+      barra_->setRange(0, 1);
+      barra_->setValue(ok ? 1 : 0);
     });
+  connect(
+    mission_, &MissionBridge::speechStatus, this,
+    [this](const QString & s) {voz_->setText("Voz: " + s);});
+}
+
+QString CompeticaoModule::raizDoWorkspace()
+{
+  // <ws>/src/caramelo_mapping/maps -> <ws>
+  QDir dir(MapasModule::mapsDir());
+  bool ok = true;
+  for (int i = 0; i < 3 && ok; ++i) {
+    ok = dir.cdUp();
+  }
+  if (ok && QDir(dir.filePath("missions")).exists()) {
+    return dir.absolutePath();
+  }
+  return QDir::homePath() + "/caramelo_ws";
 }
 
 QStringList CompeticaoModule::descobrirTarefas()
 {
-  QStringList dirs;
-  try {
-    dirs << QString::fromStdString(
-      ament_index_cpp::get_package_share_directory("manip_bt")) + "/behavior_tree_manip";
-  } catch (const std::exception &) {
-    // manip_bt pode nao estar sourceado; a pasta missions/ ainda vale.
-  }
-  dirs << QDir::homePath() + "/caramelo_ws/missions";
-
+  const QString raiz = raizDoWorkspace() + "/missions";
   QStringList achados;
-  for (const QString & d : dirs) {
-    QDir dir(d);
+  for (const char * sub : kSubpastasDeTasks) {
+    QDir dir(QString(sub).isEmpty() ? raiz : raiz + "/" + sub);
     if (!dir.exists()) {
       continue;
     }
@@ -259,13 +291,17 @@ QStringList CompeticaoModule::descobrirTarefas()
 void CompeticaoModule::recarregarTarefas()
 {
   tarefa_->clear();
+  const QString raiz = raizDoWorkspace() + "/missions";
   for (const QString & caminho : descobrirTarefas()) {
-    tarefa_->addItem(rotuloDaTarefa(caminho), caminho);
+    tarefa_->addItem(rotuloDaTarefa(caminho, raiz), caminho);
   }
+  origem_tarefas_->setText(
+    QString("Tasks lidas de %1 (e tasks geradas/ — formato 2026 do @Work Commander). "
+    "Na prova, copie o YAML recebido para essa pasta.").arg(raiz));
   if (tarefa_->count() == 0) {
     titulo_lista_->setText(
-      "Nenhuma task encontrada. Esperado: YAML com task_id em "
-      "manip_bt/behavior_tree_manip/ ou em ~/caramelo_ws/missions/.");
+      "Nenhuma task encontrada. Esperado: YAML com task_id em " + raiz +
+      " ou em " + raiz + "/tasks geradas.");
   }
 }
 
@@ -305,7 +341,9 @@ void CompeticaoModule::verificarServidores()
   if (!servidorMissao) {
     // Nunca so' "indisponivel": o operador precisa saber o que fazer.
     itemMissao->setToolTip(
-      "Suba o stack: ros2 launch caramelo_bringup robot_manipulation.launch.py");
+      "Suba o mission_server: ros2 launch caramelo_gui caramelo_gui.launch.py "
+      "(use_mission_server:=true, default) ou ros2 launch caramelo_navigation "
+      "mission_server.launch.py");
   }
   servidores_->addItem(itemMissao);
 
@@ -321,10 +359,12 @@ void CompeticaoModule::verificarServidores()
   if (!servidorMissao || faltando > 0) {
     detalhe_->setText(
       QString("Pre-flight: %1 item(ns) faltando. Suba o stack com "
-      "'ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=<mapa>'.")
-      .arg(faltando + (servidorMissao ? 0 : 1)));
+      "'ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=<mapa>'"
+      "%2.")
+      .arg(faltando + (servidorMissao ? 0 : 1))
+      .arg(servidorMissao ? "" : " e o mission_server (launch da GUI)"));
   } else {
-    detalhe_->setText("Pre-flight: tudo no ar.");
+    detalhe_->setText("Pre-flight: tudo no ar (AMT1 exige ainda o /amt1_sort).");
   }
 }
 
@@ -358,25 +398,36 @@ void CompeticaoModule::aoProgresso(const MissionProgress & p)
     detalhe_->setText(p.message);
   }
 
-  if (p.state == MissionProgress::State::Running && p.index >= 0) {
-    prepararChecklist(p.total);
-    if (p.index < lista_->count()) {
-      const QString marca = p.stage == "concluido" ? "OK" :
-        (p.stage == "falhou" ? "FALHOU" : ">>");
-      lista_->item(p.index)->setText(
-        QString("%1. [%2] %3 %4").arg(p.index + 1).arg(marca, p.kind, p.target));
-      lista_->setCurrentRow(p.index);
-      lista_->scrollToItem(lista_->item(p.index));
+  if (p.state == MissionProgress::State::Running) {
+    if (p.index >= 0 && p.total > 0) {
+      prepararChecklist(p.total);
+      if (p.index < lista_->count()) {
+        const QString marca = p.stage == "concluido" ? "OK" :
+          (p.stage == "falhou" ? "FALHOU" : ">>");
+        lista_->item(p.index)->setText(
+          QString("%1. [%2] %3 %4").arg(p.index + 1).arg(marca, p.kind, p.target));
+        lista_->setCurrentRow(p.index);
+        lista_->scrollToItem(lista_->item(p.index));
+      }
+      barra_->setValue(p.stage == "concluido" ? p.index + 1 : p.index);
+    } else if (ultimo_estado_ != MissionProgress::State::Running) {
+      // Sem indice de passo (executor atual): barra em "ocupado", e o plano
+      // continua listado como referencia do que vai acontecer.
+      barra_->setRange(0, 0);
+      titulo_lista_->setText(
+        "Executando. O executor nao reporta o passo atual; acompanhe pelo "
+        "detalhe abaixo e pela voz do robo.");
     }
-    barra_->setValue(p.stage == "concluido" ? p.index + 1 : p.index);
   }
 
   if (p.terminal()) {
-    if (p.state == MissionProgress::State::Done) {
-      barra_->setValue(barra_->maximum());
+    if (barra_->maximum() == 0) {
+      barra_->setRange(0, 1);
     }
+    barra_->setValue(p.state == MissionProgress::State::Done ? barra_->maximum() : 0);
     total_passos_ = 0;
   }
+  ultimo_estado_ = p.state;
 }
 
 void CompeticaoModule::aoMudarOcupado(bool ocupado)

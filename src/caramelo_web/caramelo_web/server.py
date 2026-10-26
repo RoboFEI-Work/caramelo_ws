@@ -83,7 +83,7 @@ def pasta_do_frontend() -> Path:
 
 
 def arena_ativa() -> str:
-    """Mesma fonte que a GUI e o launch: ~/.config/caramelo/robot_state.yaml."""
+    """Mesma fonte que a GUI: ~/.config/caramelo/robot_state.yaml (ver arenas.py)."""
     caminho = Path.home() / ".config/caramelo/robot_state.yaml"
     try:
         import yaml
@@ -444,9 +444,9 @@ def criar_app(chave) -> FastAPI:
     async def trocar_arena(payload: dict):
         """Troca a arena em que o robô acha que está.
 
-        Mesmo arquivo que a GUI e o launch leem
-        (~/.config/caramelo/robot_state.yaml), e por isso a troca feita aqui
-        vale para o robô inteiro -- não só para esta aba.
+        Mesmo arquivo que a GUI lê (~/.config/caramelo/robot_state.yaml), e
+        por isso a troca feita aqui vale para a GUI e para todas as abas. O
+        stack do robô recebe o mapa pelo launch (map_name:=...), não daqui.
         """
         # A tela manda "arena" e "nome" porque foi escrita em paralelo com esta
         # rota; qualquer um dos dois serve.

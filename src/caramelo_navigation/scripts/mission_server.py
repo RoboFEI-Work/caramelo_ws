@@ -46,7 +46,7 @@ import rclpy
 import yaml
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -436,7 +436,9 @@ def main(argv=None):
                 return 0
         node.iniciar_servidor()
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C no terminal (KeyboardInterrupt) ou SIGINT vindo do ros2 launch
+        # (rclpy derruba o contexto e o spin levanta ExternalShutdownException).
         pass
     finally:
         node.encerrar_executor()

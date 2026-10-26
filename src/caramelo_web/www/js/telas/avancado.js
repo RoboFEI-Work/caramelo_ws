@@ -716,6 +716,11 @@ function criarSensores(ponte) {
       });
       if (fontes.some((f) => f.id === escolhida)) seletorCamera.value = escolhida;
       else if (camera.ativa) seletorCamera.value = camera.ativa;
+      // Sem escolha anterior, a camera do punho ANOTADA (vision_debug) vem
+      // selecionada: e a que mostra o que o robo entendeu num pick/place.
+      else if (fontes.some((f) => f.id === "/manip/vision_debug/image")) {
+        seletorCamera.value = "/manip/vision_debug/image";
+      }
     }
     seletorCamera.disabled = !fontes.length || cameraLigada;
     btCamera.disabled = !fontes.length || !ponte.autorizado();

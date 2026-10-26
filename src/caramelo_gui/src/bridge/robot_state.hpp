@@ -2,19 +2,17 @@
 
 // Estado persistente do robo — o que ele precisa lembrar entre desligamentos.
 //
-// Por que existe: o mapa da arena era escolhido a cada launch, por argumento de
-// linha de comando. Em prova isso significa alguem digitar o nome certo do mapa
-// num terminal, sob pressao, toda vez que o robo liga. Aqui o mapa fica gravado
-// no robo: ele sobe sozinho no ambiente em que estava, e trocar de mapa e' uma
-// escolha na tela, nao um argumento de terminal.
+// Por que existe: as telas (Competicao, Docking, Mapas...) precisam concordar
+// sobre QUAL arena esta' em uso, e essa escolha tem que sobreviver a um
+// reinicio da interface. Aqui ela fica gravada; a tela Mapas e' quem troca.
 //
 // Arquivo: ~/.config/caramelo/robot_state.yaml
 //   map_name: warehouse
 //
-// O MESMO arquivo e' lido pelo launch de inicializacao
-// (caramelo_bringup/launch/caramelo.launch.py) para subir o map_server e o AMCL
-// ja' no mapa certo. Qualquer mudanca de formato tem que acontecer nos dois
-// lados ao mesmo tempo.
+// O MESMO arquivo e' lido pelo painel web (caramelo_web/arenas.py). O stack do
+// robo NAO o le: o mapa continua sendo argumento do launch
+// (robot_manipulation.launch.py map_name:=...); aqui ele e' a memoria da
+// interface. Mudanca de formato tem que acontecer nos dois lados ao mesmo tempo.
 
 #include <QObject>
 #include <QString>

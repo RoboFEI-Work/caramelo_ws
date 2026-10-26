@@ -31,6 +31,9 @@ setup(
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ] + arquivos_do_frontend(),
     install_requires=["setuptools"],
+    # Sem isto o colcon test cai no runner unittest (0 testes); com pytest
+    # declarado ele roda test/ com pytest, como nos demais pacotes ament_python.
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="RoboFEI@Work",
     maintainer_email="victoroliveiraayres@gmail.com",

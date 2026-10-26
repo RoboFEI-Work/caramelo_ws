@@ -1,14 +1,22 @@
 #pragma once
 
 // Modulo Competicao: rodar uma task de prova de ponta a ponta SEM abrir
-// terminal. Ate' aqui a missao so' existia via run_mission.py, e o que mais
-// consome tempo em prova era justamente subir e rodar uma task.
+// terminal. E' o mesmo caminho do `ros2 run caramelo_navigation run_mission
+// --map-name <mapa> --task missions/<task>.yaml`, servido pela action
+// /caramelo/run_mission (caramelo_navigation/mission_server, que importa o
+// run_mission.py: nada e' reimplementado aqui).
 //
 // A tela segue a ordem em que o operador pensa em prova:
-//   1. Tarefa e mapa
-//   2. Plano (dry-run: mostra o que vai acontecer antes de qualquer movimento)
+//   1. Tarefa e mapa (tasks lidas de missions/ e missions/tasks geradas/,
+//      formato 2026 do @Work Commander e os anteriores — so' YAML com task_id)
+//   2. Plano (dry-run: so' o task_planner; nada se move)
 //   3. Pre-flight (quais servidores faltam, e nao apenas "pronto/nao pronto")
-//   4. Executar, com progresso passo a passo e ABORTAR sempre visivel
+//   4. Executar, com o que o executor esta' dizendo e ABORTAR sempre visivel
+//
+// O executor atual (bt_yaml_executor) nao publica progresso por passo: durante
+// a execucao a barra fica em "ocupado" e o detalhe mostra a ultima linha do
+// log do executor (repassada pelo mission_server). A voz do robo
+// (/manip/speech_status) aparece embaixo, para quem esta' longe do alto-falante.
 
 #include <QString>
 #include <QWidget>
@@ -32,6 +40,13 @@ class CompeticaoModule : public QWidget
 public:
   explicit CompeticaoModule(RosBridge * bridge, QWidget * parent = nullptr);
 
+  // Raiz do workspace (<ws>/missions e' a fonte unica das tasks). Deduzida da
+  // arvore fonte dos mapas (<ws>/src/caramelo_mapping/maps); sem ela, ~/caramelo_ws.
+  static QString raizDoWorkspace();
+
+  // YAMLs de tarefa (os que tem task_id) de <ws>/missions e <ws>/missions/tasks geradas.
+  static QStringList descobrirTarefas();
+
 private:
   void recarregarTarefas();
   void verificarServidores();
@@ -43,16 +58,14 @@ private:
   void aoProgresso(const MissionProgress & p);
   void aoMudarOcupado(bool ocupado);
   void prepararChecklist(int total);
-
-  // Coleta os YAMLs de tarefa (os que tem task_id) do share do manip_bt e da
-  // pasta missions/ do workspace.
-  static QStringList descobrirTarefas();
+  MissionProgress::State ultimo_estado_ = MissionProgress::State::Idle;
 
   RosBridge * bridge_ = nullptr;
   MissionBridge * mission_ = nullptr;
 
   QComboBox * tarefa_ = nullptr;
   SeletorArena * mapa_ = nullptr;
+  QLabel * origem_tarefas_ = nullptr;
   QLabel * motivo_ = nullptr;
   QCheckBox * simular_nav_ = nullptr;
   QCheckBox * refino_lidar_ = nullptr;
@@ -70,6 +83,7 @@ private:
   QProgressBar * barra_ = nullptr;
   QLabel * estado_ = nullptr;
   QLabel * detalhe_ = nullptr;
+  QLabel * voz_ = nullptr;
 
   QString actions_yaml_;   // plano ja gerado, reusado na execucao
   int total_passos_ = 0;

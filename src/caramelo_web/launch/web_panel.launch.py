@@ -1,8 +1,10 @@
-"""Painel web de engenharia: tres processos, um comando.
+"""Painel web de engenharia: um comando.
 
     ros2 launch caramelo_web web_panel.launch.py
 
   8080  caramelo_web_server   pagina, API REST e WebSocket de estado
+        mission_server        action /caramelo/run_mission (aba Competicao);
+                              sai sozinho se a GUI ja subiu um (single_instance)
   9090  rosbridge_websocket   transporte generico -- DESLIGADO por padrao
   8081  web_video_server      MJPEG da camera, SOB DEMANDA
 
@@ -19,6 +21,8 @@ STLs da Raspberry.
 
 A camera vem DESLIGADA por padrao. Num Wi-Fi de competicao, video continuo tira
 banda da navegacao; e o painel e' ferramenta de desenvolvimento, nao de prova.
+(A camera anotada do punho, /manip/vision_debug/image, ja' e' servida pelo
+proprio painel sob demanda na aba Sistema -- nao precisa do web_video_server.)
 
 O rosbridge tambem vem DESLIGADO, e a razao aqui nao e' banda -- e' o robo.
 Ele publica o grafo ROS inteiro na 9090 sem chave nenhuma: qualquer topico
@@ -30,9 +34,13 @@ nao tem botao de emergencia de hardware, deixar isso ligado por padrao e' risco
 fisico, nao de dados. O painel nao precisa dele: fala com a propria API, que
 passa pelos caminhos com trava.
 """
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -43,7 +51,19 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_rosbridge = LaunchConfiguration("use_rosbridge")
     use_camera = LaunchConfiguration("use_camera")
+    use_mission_server = LaunchConfiguration("use_mission_server")
     token = LaunchConfiguration("token")
+
+    mission_server = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("caramelo_navigation"),
+                "launch", "mission_server.launch.py",
+            )
+        ),
+        condition=IfCondition(use_mission_server),
+        launch_arguments={"use_sim_time": use_sim_time}.items(),
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument("porta", default_value="8080"),
@@ -51,6 +71,10 @@ def generate_launch_description():
             "host", default_value="0.0.0.0",
             description="0.0.0.0 aceita conexao de outro computador da rede"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument(
+            "use_mission_server", default_value="true",
+            description="Sobe o mission_server (/caramelo/run_mission) junto "
+                        "com o painel; false se a GUI ja o subiu."),
         DeclareLaunchArgument(
             "use_rosbridge", default_value="false",
             description="Transporte generico do grafo ROS na 9090. Deixe "
@@ -62,8 +86,8 @@ def generate_launch_description():
                         "nova a cada arranque (recomendado)."),
         DeclareLaunchArgument(
             "use_camera", default_value="false",
-            description="MJPEG na 8081. Desligado por padrao: video continuo "
-                        "tira banda da navegacao."),
+            description="MJPEG na 8081 (web_video_server). Desligado por padrao: "
+                        "video continuo tira banda da navegacao."),
 
         Node(
             package="caramelo_web",
@@ -73,6 +97,7 @@ def generate_launch_description():
             arguments=["--host", host, "--port", porta, "--token", token],
             parameters=[{"use_sim_time": use_sim_time}],
         ),
+        mission_server,
         Node(
             package="rosbridge_server",
             executable="rosbridge_websocket",
