@@ -67,7 +67,7 @@ Runbook completo, formato do YAML da tarefa e calibrações: [docs/guia_missoes.
 
 | Pacote | O que é |
 |---|---|
-| `caramelo_navigation` | Nav2 do Caramelo: `bringup.launch.py` (= `navigation.launch.py` + RViz; é o que a GUI chama), `navigation.launch.py` (AMCL via `global_localization`, planner SmacLattice, controller DWB holonômico, smoother, collision monitor, relay `twist_relay`, service areas, inclui `docking_server.launch.py`), `docking_server.launch.py` (opennav_docking + `dock_align_node` com as actions `align_to_dock` e `nudge_base` + `dock_pose_recorder_node`). CLIs (`ros2 run caramelo_navigation <nome>`): `run_mission`, `init_service_areas`, `save_service_area_pose`, `list_service_areas`, `validate_service_areas`, `init_keepout_mask`, `sync_route_graph`, `generate_caramelo_omni_lattice`, `dock_to`, `undock`, `list_docks`, `save_dock_pose`, `init_map_docking` (legado). Teste: `test/test_nudge_math.py`. |
+| `caramelo_navigation` | Nav2 do Caramelo: `bringup.launch.py` (= `navigation.launch.py` + RViz; é o que a GUI chama), `navigation.launch.py` (AMCL via `global_localization`, planner SmacLattice, controller DWB holonômico, smoother, collision monitor, relay `twist_relay`, service areas, inclui `docking_server.launch.py`), `docking_server.launch.py` (opennav_docking + `dock_align_node` com as actions `align_to_dock` e `nudge_base` + `dock_pose_recorder_node`), `mission_server.launch.py` (`mission_server`: action `/caramelo/run_mission` + `/caramelo/mission/status` para a GUI e o painel web, importando o `run_mission.py` — sobe com os launches das interfaces). CLIs (`ros2 run caramelo_navigation <nome>`): `run_mission`, `init_service_areas`, `save_service_area_pose` e `save_dock_pose` (ambos aceitam `--pose X Y YAW` para gravar um ponto clicado no mapa sem o robô no lugar), `list_service_areas`, `validate_service_areas`, `init_keepout_mask`, `sync_route_graph`, `generate_caramelo_omni_lattice`, `dock_to`, `undock`, `list_docks`, `init_map_docking` (legado). Testes: `test/test_nudge_math.py`, `test/test_mission_server_helpers.py`. |
 | `caramelo_localization` | AMCL + map_server (`global_localization.launch.py map_name:=<mapa>`); com `use_keepout:=true` sobe os servidores do Keepout Filter. |
 | `caramelo_mapping` | slam_toolbox (`slam.launch.py map_name:=<mapa>`) + map saver + markers das service areas. Guarda os **mapas** em `maps/<mapa>/` (§3). |
 | `caramelo_cartographer` | Alternativa de mapeamento com cartographer_ros, herdada do turtlebot3; não usada pela GUI nem pelo fluxo de missão. |
@@ -90,14 +90,15 @@ Runbook completo, formato do YAML da tarefa e calibrações: [docs/guia_missoes.
 
 | Pacote | O que é |
 |---|---|
-| `caramelo_msgs` | Actions `AlignToDock`, `NudgeBase` (servidas pelo `dock_align_node`; clientes `GoToWS`, `amt1_sort`, GUI) e `SaveServiceAreaPose`; services `InitServiceAreas`, `ListServiceAreas`, `ValidateServiceAreas`. Compilar antes dos demais. |
+| `caramelo_msgs` | Actions `AlignToDock`, `NudgeBase` (servidas pelo `dock_align_node`; clientes `GoToWS`, `amt1_sort`, GUI), `SaveServiceAreaPose` e `RunMission` (servida pelo `mission_server`; clientes GUI e painel web); msg `MissionStatus` (`/caramelo/mission/status`); services `InitServiceAreas`, `ListServiceAreas`, `ValidateServiceAreas`. Compilar antes dos demais. |
 | `my_robot_msgs` | **Interfaces de manipulação**: actions `PickTag`, `PlaceTag`, `Amt1Sort` (nome genérico herdado do template; também usado pela Pi — não renomear sem coordenar). |
 
 **Operação e ferramentas**
 
 | Pacote | O que é |
 |---|---|
-| `caramelo_gui` | App Qt5/C++ com RViz embutido (`ros2 launch caramelo_gui caramelo_gui.launch.py`): módulos Início (saúde via `/diagnostics`), Mapa & Camadas, Navegação, Docking, Localização (fantasma → `/initialpose`), Mapas, Mapeamento, Teleop, Service Areas, Waypoints, Editor de Mapa. Sobe como filhos `slam.launch.py`, `bringup.launch.py` e `teleop.launch.py`. Ver [src/caramelo_gui/README.md](src/caramelo_gui/README.md). |
+| `caramelo_gui` | App Qt5/C++ com RViz embutido (`ros2 launch caramelo_gui caramelo_gui.launch.py`; sobe junto `health_monitor` e `mission_server`): menu inicial → Operação (meta, Nav2 se ainda não estiver no ar, waypoints, docking/`align_to_dock`, localização pelo fantasma → `/initialpose`, teleop), Competição (missão via `/caramelo/run_mission`, tasks de `missions/`, voz do robô), Mapas (arena ativa, pontos por clique com `--pose`, ruído, paredes virtuais), Mapeamento (SLAM → pontos → keepout → conferir) e Modo Avançado (saúde, sensores com `/manip/vision_debug/image`, service areas). Ver [docs/interface_grafica.md](docs/interface_grafica.md) e [src/caramelo_gui/README.md](src/caramelo_gui/README.md). |
+| `caramelo_web` | Painel no navegador (`ros2 launch caramelo_web web_panel.launch.py`, FastAPI na 8080, link com chave de acesso impresso ao subir): mesmas abas da GUI (Operação, Competição, Mapas, Mapeamento, Modo Avançado) mais terminal, espelho de tela e câmera sob demanda; teleop com watchdog por `/cmd_vel_key`. Ver [docs/interface_grafica.md](docs/interface_grafica.md) e [src/caramelo_web/README.md](src/caramelo_web/README.md). |
 | `caramelo_diagnostics` | `health_monitor` → `DiagnosticArray` em `/diagnostics` (rede com a Pi, controllers, lidar, imu, odometria, TF, bateria, Nav2); `diagnostics.launch.py`, incluído pela GUI. |
 | `scripts/` (raiz) | `limpar_stack.sh` e `pulse_test.py` (§6). |
 | `missions/` (raiz) | Tarefas da competição — **fonte única** ([missions/README.md](missions/README.md)). |
@@ -124,7 +125,7 @@ Runbook completo, formato do YAML da tarefa e calibrações: [docs/guia_missoes.
 - **Service areas e docking** — parar o robô na pose final de cada área, `save_service_area_pose` (ou GUI → Service Areas), `validate_service_areas --sync-docking`, testar com `dock_to`; o alinhamento fino holonômico é o `dock_align_node`. [docs/service_areas_docking.md](docs/service_areas_docking.md), [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md).
 - **Keepout (paredes virtuais)** — `init_keepout_mask --map-name <mapa>`, pintar de preto no GIMP, subir com `use_keepout:=true`. [docs/keepout_paredes_virtuais.md](docs/keepout_paredes_virtuais.md).
 - **Route graph (opcional)** — `sync_route_graph --map-folder src/caramelo_mapping/maps/<mapa>`; o launch só sobe o Route Server se o grafo for válido. [docs/service_areas_docking.md](docs/service_areas_docking.md).
-- **GUI** — `ros2 launch caramelo_gui caramelo_gui.launch.py`: monitor de saúde, localizar pelo fantasma, mapear, editar mapa, cadastrar áreas, goal e waypoints; com o launch de missão no ar, use só como monitor. [src/caramelo_gui/README.md](src/caramelo_gui/README.md).
+- **GUI e painel web** — `ros2 launch caramelo_gui caramelo_gui.launch.py` / `ros2 launch caramelo_web web_panel.launch.py`: saúde, localizar pelo fantasma, rodar a missão (Competição, pelo `mission_server`), mapear, marcar pontos, paredes virtuais, docking avulso; com o launch de missão no ar **não** ligue o Nav2 por elas. Ainda sem validação com o robô: [docs/interface_grafica.md](docs/interface_grafica.md).
 - **Relógio PC ↔ Pi** — obrigatório em arena sem internet (chrony no PC). [docs/sincronizacao_relogio_ntp.md](docs/sincronizacao_relogio_ntp.md).
 
 ## 5. Build e testes
@@ -152,6 +153,7 @@ colcon test --packages-select manip_task_execution --ctest-args -R 'test_'   # 4
 colcon test --packages-select manip_bt --ctest-args -R test_reach_queue
 python3 -m pytest src/caramelo_navigation/test/test_nudge_math.py -q
 python3 -m pytest src/manipulation/manip_bringup/test src/manipulation/manip_audio/test -q
+colcon test --packages-select caramelo_gui caramelo_web caramelo_navigation && colcon test-result --verbose   # mission_server, tasks do painel
 ```
 
 Antes de subir qualquer stack: `./scripts/limpar_stack.sh` (e `ros2 node list | sort |
@@ -184,7 +186,8 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | [docs/keepout_paredes_virtuais.md](docs/keepout_paredes_virtuais.md) | Paredes virtuais (fita no chão que o laser não vê). |
 | [docs/sincronizacao_relogio_ntp.md](docs/sincronizacao_relogio_ntp.md) | Relógio PC ↔ Raspberry com chrony. |
 | [docs/setup_notebook_novo.md](docs/setup_notebook_novo.md) | Preparar outro PC: pacotes, clones, ordem de build/source, rede, chrony, SSH da Pi, armadilhas. |
-| [docs/tutorial_gui_simulacao.md](docs/tutorial_gui_simulacao.md) | GUI passo a passo (exige o `caramelo_simulation_ws`, repositório separado ausente neste PC). |
+| [docs/interface_grafica.md](docs/interface_grafica.md) | **GUI Qt e painel web**: como subir, o que cada tela faz hoje, como a missão roda pela interface (`mission_server` sobre o `run_mission`), interfaces ROS usadas, o que falta validar com o robô, o que veio da branch `robot_ui`. |
+| [docs/tutorial_gui_simulacao.md](docs/tutorial_gui_simulacao.md) | GUI passo a passo (exige o `caramelo_simulation_ws`, repositório separado ausente neste PC). Escrito para a GUI antiga (barra lateral); as telas atuais estão em [docs/interface_grafica.md](docs/interface_grafica.md). |
 | [docs/historico/](docs/historico/README.md) | Auditorias e relatórios de 2026-07/08 — **não refletem o estado atual**. |
 | `docs/imagens/containers/` | Fotos da RealSense, overlays e montagem usadas na calibração dos containers. |
 | READMEs de pacote | [src/manipulation/README.md](src/manipulation/README.md), [src/caramelo_gui/README.md](src/caramelo_gui/README.md), [src/caramelo_msgs/README.md](src/caramelo_msgs/README.md), [src/caramelo_mapping/README.md](src/caramelo_mapping/README.md), [src/caramelo_localization/README.md](src/caramelo_localization/README.md), [src/manipulation/manip_description/README.md](src/manipulation/manip_description/README.md), [src/manipulation/manip_hardware/README.md](src/manipulation/manip_hardware/README.md), [missions/README.md](missions/README.md). |

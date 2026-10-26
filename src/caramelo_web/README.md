@@ -50,10 +50,21 @@ o link tem o robô.
 | aba | o que faz |
 |-----|-----------|
 | **Operação** | mapa da arena com o robô, o sensor de distância, mesas e pontos salvos. Clique manda o robô até ali; arrastando, a seta define para que lado ele deve ficar virado. O mesmo clique, no outro modo, avisa ao robô onde ele está quando a localização se perde. Parar, esquecer obstáculos, encostar/sair de uma mesa. |
-| **Missão** | escolhe a prova, monta o passo a passo sem mover o robô e executa. Interrompe pelo caminho limpo (o executor faz o halt da árvore; nada é morto à força). |
+| **Competição** | escolhe a prova (tasks de `missions/` e `missions/tasks geradas/` na raiz do workspace, formato 2026 do @Work Commander), monta o plano sem mover o robô (só o `task_planner`) e executa pela action `/caramelo/run_mission` (`mission_server`, que importa o `run_mission.py`). Mostra estado, tempo, a última linha do executor e a voz do robô (`/manip/speech_status`). Interrompe pelo caminho limpo (SIGINT no executor → halt da árvore; nada é morto à força). |
 | **Direção manual** | volante na tela e teclado (W A S D, Q/E, espaço). Três velocidades. |
 | **Terminal** | um bash de verdade no computador do robô, já com o ambiente ROS carregado. |
-| **Sistema** | saúde dos componentes, últimos avisos, programas no ar e o espelho da tela. |
+| **Sistema / Modo Avançado** | saúde dos componentes, sensores ao vivo, câmera sob demanda (`/manip/vision_debug/image`, a câmera do punho anotada, vem primeiro), uso do computador, terminal e o espelho da tela. |
+
+## O servidor de missão
+
+A aba Competição é cliente da action `/caramelo/run_mission`, servida pelo
+`caramelo_navigation/mission_server` — que o `web_panel.launch.py` sobe junto
+(`use_mission_server:=true`). É **um por robô**: se a GUI Qt já subiu o dela, o
+segundo sai sozinho ao detectar o primeiro no grafo. O servidor importa o
+`run_mission.py` e roda exatamente o que o operador rodaria no terminal; o
+`bt_yaml_executor` atual não publica progresso por passo, então a tela mostra
+estado, tempo e a última linha do log do executor. Detalhes e o que falta
+validar: `docs/interface_grafica.md`.
 
 ## Direção manual: por que existe watchdog
 

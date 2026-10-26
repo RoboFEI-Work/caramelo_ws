@@ -1,9 +1,11 @@
 # caramelo_gui
 
 Interface gráfica de operação do Caramelo no PC: aplicação Qt5/C++ com RViz
-embutido. O mapa fica sempre visível no centro, com o robô em cima, e uma barra
-lateral dá acesso aos módulos. A GUI é só um **cliente** do grafo ROS 2 — tudo
-que ela faz também pode ser feito por terminal (ver `docs/`).
+embutido. Abre num **menu inicial** (Operação, Competição, Mapas, Mapeamento,
+Modo Avançado); o mapa aparece nos contextos que precisam dele. A GUI é só um
+**cliente** do grafo ROS 2 — tudo que ela faz também pode ser feito por
+terminal. Guia completo (telas, interfaces, o que falta validar):
+[docs/interface_grafica.md](../../docs/interface_grafica.md).
 
 ## Como rodar
 
@@ -12,125 +14,106 @@ source ~/caramelo_ws/install/setup.bash
 ros2 launch caramelo_gui caramelo_gui.launch.py
 ```
 
-Argumento do launch:
-
 | Arg | Default | Efeito |
 |---|---|---|
-| `use_diagnostics` | `true` | Sobe junto o `caramelo_diagnostics/diagnostics.launch.py` (agregador de saúde que publica `/diagnostics`, consumido pelos cartões do módulo Início). Use `false` se o agregador já estiver no ar por outro launch. |
+| `use_diagnostics` | `true` | Sobe o `caramelo_diagnostics/diagnostics.launch.py` (`health_monitor` → `/diagnostics`, cartões de saúde). `false` se já estiver no ar por outro launch. |
+| `use_mission_server` | `true` | Sobe o `caramelo_navigation/mission_server.launch.py` (action `/caramelo/run_mission`, tela Competição). Um por robô: o nó sai sozinho se já houver outro no grafo. |
+| `use_sim_time` | `false` | `true` em simulação — a GUI precisa do mesmo relógio do resto (senão o RViz descarta TF em rajada e satura a CPU). |
 
 O executável é `caramelo_gui` (sem `name:=` no launch: o processo contém mais de
 um nó interno e o remap de nome único os colidia).
 
 ## AVISO: GUI com `robot_manipulation.launch.py` no ar
 
-Quando o sistema de competição já foi subido por
+O stack de competição sobe por
 
 ```bash
 ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=<mapa>
 ```
 
-o Nav2 **já está rodando**. Nesse cenário use a GUI **só como monitor e para
-localizar** o robô (fantasma arrastável -> `/initialpose`) e **NÃO clique em
-"Ligar navegação (Nav2)"** no módulo Navegação: isso sobe um segundo
-`bringup.launch.py` e duplica o Nav2 (dois AMCL, dois bt_navigator, status
-mentindo). O mesmo vale para **"Iniciar SLAM" com a localização ativa**: o
-`slam.launch.py` apenas **AVISA** (RK-02, não aborta) e sobe mesmo assim — SLAM
-e AMCL passam a publicar `map->odom` ao mesmo tempo e o TF fica piscando.
-Derrube o Nav2 antes de mapear.
+e o Nav2 **já está rodando**. A seção Operação → Navegar detecta o `bt_navigator`
+e desliga o botão "Ligar navegação"; ainda assim, use a GUI como monitor,
+para localizar (fantasma → `/initialpose`), para rodar a missão (Competição) e
+para comissionar arenas. "Iniciar SLAM" com a localização ativa só **avisa**
+(RK-02) e sobe mesmo assim — derrube o Nav2 antes de mapear.
 
-Fluxo completo de missão: `docs/guia_missoes.md`.
+## Telas
 
-## Módulos (barra lateral)
-
-| # | Módulo | O que faz |
+| Contexto | Seções | Resumo |
 |---|---|---|
-| 0 | **Início** | "Bringup visual": um cartão por subsistema (rede/Raspberry, controllers, LiDAR, IMU, odometria, TF, Nav2) com cor por estado, alimentado por `/diagnostics`. Modo Operador mostra só a mensagem; modo Engenharia expande causa/ação/frequência. |
-| 1 | **Mapa & Camadas** | Painel do RViz embutido: liga/desliga camadas (Map, ParticleCloud, Service Areas, ...), ferramentas Interagir / Mover câmera / Definir Goal e a localização rápida (Posicionar robô -> arrastar -> Confirmar pose). |
-| 2 | **Navegação** | Sobe/derruba o stack Nav2 + AMCL (`caramelo_navigation/bringup.launch.py`) com mapa, docking server e relógio de simulação; envia meta pela ferramenta "Definir Goal", cancela e limpa os costmaps; mostra o status da action. |
-| 3 | **Docking** | Dock / undock (`/dock_robot`, `/undock_robot`), alinhamento fino holonômico (`align_to_dock`) e "salvar pose atual como dock" (`/save_dock_pose`). |
-| 4 | **Localização** | Relocalização manual assistida: arrasta o robô-fantasma no mapa enquanto o scan reprojetado acompanha; ao confirmar, publica em `/initialpose`. |
-| 5 | **Mapas** | Lista os mapas de `caramelo_mapping/maps` com miniatura, carrega um mapa em runtime (`/map_server/load_map`), renomeia, duplica, exclui (vai para a lixeira) e salva o mapa atual do SLAM. |
-| 6 | **Mapeamento** | Inicia/para o SLAM (`caramelo_mapping/slam.launch.py`, sem RViz próprio — o mapa cresce no RViz embutido). Se `maps/<nome>/map.yaml` já existe passa `map_name:=<nome>` (markers das service areas desse mapa); se é mapa novo passa `use_service_area_markers:=false`, porque o `service_area_markers_node` morre na partida quando a pasta não existe. "Salvar mapa" grava em `maps/<nome>/`. |
-| 7 | **Teleop** | Liga/desliga o `caramelo_utils/teleop.launch.py` (joystick + teclado + twist_mux) como processo gerido pela GUI. |
-| 8 | **Service Areas** | Fluxo guiado: posicionar o robô, "Salvar pose atual", escolher nome/tipo; lista e valida as service areas pelo `service_area_manager_node`. |
-| 9 | **Waypoints** | Opcional (o padrão do robô é o planejamento livre do Nav2): criar na pose do robô, mover/girar por Interactive Marker, salvar por mapa (`maps/<mapa>/waypoints.yaml`), navegar até um e "seguir todos" (`follow_waypoints`). |
-| 10 | **Editor de Mapa** | Limpeza raster do `map.pgm` (pincel Parede/Livre/Desconhecido, zoom, desfazer), salvar com backup automático, ajuste da origem no `map.yaml` e recarregar no `map_server`. Edita só o mapa base; keepout continua em máscara separada. |
+| **Menu inicial** | — | cartões com estado/motivo, arena ativa, *Parar o robô* (cancela navegação + aborta missão; não é E-stop), *Levar para a base*, *Diagnóstico* |
+| **Operação** (com mapa) | Mapa, Navegar, Waypoints, Docking, Localização, Teleop | meta pelo mapa, Nav2 (se ainda não estiver no ar), waypoints, `/dock_robot` / `align_to_dock` / `/undock_robot` / `/save_dock_pose`, fantasma → `/initialpose`, `teleop.launch.py` |
+| **Competição** | Missão | task (`missions/` e `missions/tasks geradas/`, formato 2026) + mapa → *Ver plano* → *Verificar servidores* → *EXECUTAR* / *ABORTAR*; estado, última linha do executor e voz do robô (`/manip/speech_status`) |
+| **Mapas** | Arenas | escolher a arena ativa, preview com docks/áreas/paredes/waypoints e avisos, criar/arrastar/remover pontos (scripts com `--pose`), limpar ruído, paredes virtuais, renomear/duplicar/excluir |
+| **Mapeamento** (com mapa) | Mapeamento | 1 criar o mapa (SLAM + teleop + salvar) → 2 marcar pontos (pose do robô ou clique) → 3 paredes virtuais → 4 conferir |
+| **Modo Avançado** (com mapa) | Estado do robô, Sensores, Service areas | cartões do `/diagnostics`; LiDAR/IMU/câmera (prefere `/manip/vision_debug/image`, a câmera do punho anotada); salvar/listar/validar service areas |
 
-Além dos módulos há o botão **Logs** (painel oculto com o `/rosout` dos outros
-nós, WARN+ e INFO) e a barra de estado da máquina de estados da GUI.
+Faixa superior: `< Menu`, contexto, **Arena**, **estado** e o botão **Logs** (`/rosout`).
 
-## Launches que a GUI sobe como processos filhos
+## Launches e scripts que a GUI roda como processos filhos
 
-Cada um roda como `ros2 launch <pacote> <arquivo> <args>` dentro de um
-`QProcess` (`src/core/launch_runner.cpp`) e é derrubado com SIGINT, como um
-Ctrl+C.
+`ros2 launch`/`ros2 run` dentro de `QProcess` (`src/core/launch_runner.cpp`,
+`src/modules/mapeamento/scripts_do_mapa.cpp`), derrubados com SIGINT.
 
-| Módulo | Launch | Args passados |
+| Onde | Comando | Args |
 |---|---|---|
-| Mapeamento | `caramelo_mapping/launch/slam.launch.py` | `map_name:=<nome>` (só se `maps/<nome>/map.yaml` existe; senão `use_service_area_markers:=false`) `use_rviz:=false` `use_sim_time:=<bool>` |
-| Navegação | `caramelo_navigation/launch/bringup.launch.py` | `map_name:=<mapa>` `use_rviz:=false` `use_docking:=<bool>` `use_sim_time:=<bool>` |
-| Teleop | `caramelo_utils/launch/teleop.launch.py` | — |
+| Mapeamento passo 1 | `caramelo_mapping/slam.launch.py` | `use_rviz:=false` (+ `use_service_area_markers:=false` em mapa novo) |
+| Mapeamento passo 1 | `caramelo_utils/teleop.launch.py` | — |
+| Operação → Navegar | `caramelo_navigation/bringup.launch.py` | `map_name:=<arena> use_rviz:=false use_docking:=<bool> use_sim_time:=<bool>` |
+| Mapas / Mapeamento | `init_service_areas --map <arena> --map-dir <maps> --areas START FINISH --sync-docking` | arena recém-salva |
+| Mapas / Mapeamento | `init_keepout_mask --map-name <arena> --map-dir <maps>` | máscara em branco |
+| Mapas / Mapeamento | `save_service_area_pose --map <arena> --name WS1 --type workstation --height h --overwrite [--pose x y yaw]` | sem `--pose` usa a pose atual do robô (TF) |
+| Mapas / Mapeamento | `save_dock_pose --map-name <arena> --dock-id START [--dock-type t] [--pose x y yaw]` | idem |
 
 ## Interfaces ROS usadas
 
-Nós do processo: `caramelo_gui_bridge` (rclcpp, toda a comunicação ROS dos
-módulos passa por ele — `src/bridge/`) e `caramelo_gui_rviz` (RViz embutido,
-`src/core/rviz_frame.cpp`). Os módulos em `src/modules/` não criam
-publishers/subscribers próprios; usam o `RosBridge`.
+Nós do processo: `caramelo_gui_bridge` (rclcpp; `src/bridge/`) e `caramelo_gui_rviz`
+(RViz embutido, `src/core/rviz_frame.cpp`). Os módulos em `src/modules/` não criam
+publishers/subscribers próprios; usam o `RosBridge` e suas fachadas
+(`MissionBridge`, `SensorBridge`, `ManualLocalization`, `WaypointManager`, `RobotState`).
 
-Tópicos:
+| Tópico / serviço / action | Tipo | Uso |
+|---|---|---|
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | cartões (nomes `caramelo/*` do `health_monitor`) |
+| `/rosout` | `rcl_interfaces/Log` | painel Logs |
+| `/scan`, `/imu/data_raw` (ou `/imu`), `sensor_msgs/Image` | sensores | Sensores (só enquanto a tela está aberta); preview do scan na localização |
+| `/caramelo_gui/goal_pose` | `geometry_msgs/PoseStamped` | ferramenta "Definir destino" (privado: `bt_navigator` também assina `/goal_pose`) |
+| `/initialpose` | `PoseWithCovarianceStamped` | pose inicial para o AMCL |
+| `/save_dock_pose` | `std_msgs/String` | regravar a pose de um dock (`dock_pose_recorder_node`) |
+| `/caramelo/mission/status` | `caramelo_msgs/MissionStatus` (transient_local, 64) | progresso da missão |
+| `/manip/speech_status` | `std_msgs/String` (latched) | voz do robô na tela Competição |
+| `/caramelo/run_mission` | action `caramelo_msgs/RunMission` | missão (`mission_server`) |
+| `navigate_to_pose`, `follow_waypoints`, `/dock_robot`, `/undock_robot` | nav2 actions | navegação, waypoints, docking |
+| `align_to_dock` | action `caramelo_msgs/AlignToDock` | alinhamento fino (`dock_align_node`) |
+| `/caramelo/service_areas/save_pose` | action `caramelo_msgs/SaveServiceAreaPose` | salvar pose atual como área |
+| `/caramelo/service_areas/list`, `/validate` | srv `caramelo_msgs/{List,Validate}ServiceAreas` | listar / validar (+sync docking) |
+| `/map_server/load_map`, `/map_saver_server/save_map` | nav2 srv | usar arena / salvar mapa do SLAM |
+| `/global_costmap/clear_entirely_global_costmap`, `/local_costmap/...` | nav2 srv | limpar costmaps |
 
-| Tópico | Tipo | Direção | Uso |
-|---|---|---|---|
-| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | assina | cartões do Início |
-| `/rosout` | `rcl_interfaces/Log` | assina | painel Logs |
-| `/scan` | `sensor_msgs/LaserScan` | assina | preview do scan na localização manual |
-| `/caramelo_gui/goal_pose` | `geometry_msgs/PoseStamped` | assina | ferramenta "Definir Goal" do RViz embutido (tópico privado: o `bt_navigator` também assina `/goal_pose`, e o compartilhado disparava dois `NavigateToPose`) |
-| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | publica | pose inicial para o AMCL |
-| `/save_dock_pose` | `std_msgs/String` | publica | salvar pose atual como dock |
-| `/localizacao_manual/scan_preview` | `visualization_msgs/Marker` | publica | scan reprojetado do fantasma |
+Interactive markers: `localizacao_manual` (robô-fantasma) e `waypoints`. TF: `map -> base`.
 
-Interactive markers (servers): `localizacao_manual` (robô-fantasma) e
-`waypoints`. TF: listener `map -> base` para a pose atual do robô.
+## Onde ficam os mapas e as tasks
 
-Actions (clientes):
+`MapasModule::mapsDir()` resolve, nesta ordem: `CARAMELO_MAPS_DIR`; a árvore **fonte** do
+workspace (`<ws>/src/caramelo_mapping/maps`, deduzida do share instalado);
+`share/caramelo_mapping/maps`; `~/caramelo_ws/src/caramelo_mapping/maps`. Tudo que a GUI
+salva vai para a pasta fonte (depois, `colcon build --packages-select caramelo_mapping`
+para o `map_name:=` do launch enxergar a arena nova).
 
-| Action | Tipo |
-|---|---|
-| `navigate_to_pose` | `nav2_msgs/NavigateToPose` |
-| `follow_waypoints` | `nav2_msgs/FollowWaypoints` |
-| `/dock_robot` | `nav2_msgs/DockRobot` |
-| `/undock_robot` | `nav2_msgs/UndockRobot` |
-| `align_to_dock` | `caramelo_msgs/AlignToDock` |
-| `/caramelo/service_areas/save_pose` | `caramelo_msgs/SaveServiceAreaPose` |
-
-Serviços (clientes):
-
-| Serviço | Tipo |
-|---|---|
-| `/map_server/load_map` | `nav2_msgs/LoadMap` |
-| `/map_saver_server/save_map` | `nav2_msgs/SaveMap` (o nó do `slam.launch.py` chama-se `map_saver_server`) |
-| `/caramelo/service_areas/list` | `caramelo_msgs/ListServiceAreas` |
-| `/caramelo/service_areas/validate` | `caramelo_msgs/ValidateServiceAreas` |
-| `/global_costmap/clear_entirely_global_costmap` | `nav2_msgs/ClearEntireCostmap` |
-| `/local_costmap/clear_entirely_local_costmap` | `nav2_msgs/ClearEntireCostmap` |
-
-## Onde ficam os mapas
-
-`MapasModule::mapsDir()` resolve, nesta ordem: variável de ambiente
-`CARAMELO_MAPS_DIR`; a árvore **fonte** do workspace
-(`<ws>/src/caramelo_mapping/maps`, deduzida a partir do share instalado);
-`share/caramelo_mapping/maps`; e por fim `~/caramelo_ws/src/caramelo_mapping/maps`.
-Mapas salvos, renomeados ou editados pela GUI vão para a pasta fonte, não para o
-`install/`.
+Tasks: `<ws>/missions` e `<ws>/missions/tasks geradas` (YAML com `task_id`), `<ws>`
+deduzido da pasta dos mapas. Arena ativa e pose inicial: `~/.config/caramelo/robot_state.yaml`
+(memória da interface; o stack do robô não lê).
 
 ## Estrutura do código
 
 ```text
 src/main.cpp                 entrada (QApplication + rclcpp)
-src/bridge/                  RosBridge, ManualLocalization, WaypointManager, HealthTypes
-src/core/                    MainWindow, RVizFrame, LaunchRunner, StateMachine
-src/modules/<modulo>/        um par .hpp/.cpp por módulo da barra lateral
+src/bridge/                  RosBridge, MissionBridge, SensorBridge, ManualLocalization,
+                             WaypointManager, RobotState, tipos Qt (health/mission)
+src/core/                    MainWindow (faixa + contextos), HomeScreen, ContextScreen,
+                             RVizFrame, LaunchRunner, StateMachine, icones
+src/widgets/                 MapPreview, seletores (arena, dock, área, tipos)
+src/modules/<contexto>/      um par .hpp/.cpp por seção
 resources/rviz/gui_main.rviz config do RViz embutido
 resources/tema.qss           tema Qt
 launch/caramelo_gui.launch.py
@@ -139,9 +122,8 @@ launch/caramelo_gui.launch.py
 ## Convenções
 
 - C++: classes `CamelCase`, métodos `camelCase`, membros com `_` no fim,
-  constantes `kCamelCase`.
-- Variáveis locais e parâmetros **novos** em `snake_case`. Há locais antigas em
-  `camelCase` estilo Qt (`sideLayout`, `logsBtn`, `panelIndex`...); não renomear
-  em massa — ajustar quando o arquivo for tocado.
+  constantes `kCamelCase`; variáveis novas em `snake_case`.
 - Comentários de código em português ASCII (sem acentos), objetivos.
 - Cada módulo é um `QWidget` que recebe o `RosBridge*`; ROS só pelo bridge.
+- Nenhum texto de tela cita tópico/nó quando o leitor é o operador; o detalhe
+  técnico fica no Modo Avançado e nos tooltips.
