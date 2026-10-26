@@ -30,9 +30,19 @@ add_executable(bt_yaml_executor
   src/reach_queue_bt.cpp
 )
 
+# task_planner: binario puro (sem rclcpp). task_plan_search = regras +
+# guloso + busca por tempo; mission_map_config le dock_distances.yaml do mapa.
 add_executable(task_planner
   src/task_planner.cpp
+  src/task_plan_search.cpp
+  src/mission_map_config.cpp
 )
+target_include_directories(task_planner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+)
+target_compile_features(task_planner PUBLIC cxx_std_17)
+ament_target_dependencies(task_planner ament_index_cpp)
 
 target_include_directories(bt_yaml_executor PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -92,6 +102,19 @@ if(BUILD_TESTING)
   )
   target_compile_features(test_reach_queue PUBLIC cxx_std_17)
   ament_target_dependencies(test_reach_queue rclcpp behaviortree_cpp_v3)
+
+  # Nucleo do task_planner (modelo de custo, guloso e branch-and-bound por
+  # tempo) com transfers montados a mao: capacidade cheia, pick depois do
+  # place liberar espaco, empate, pilha inicial. Sem ROS no ar.
+  ament_add_gtest(test_task_plan_search
+    test/test_task_plan_search.cpp
+    src/task_plan_search.cpp
+  )
+  target_include_directories(test_task_plan_search PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_compile_features(test_task_plan_search PUBLIC cxx_std_17)
+  target_link_libraries(test_task_plan_search yaml-cpp)
 
   # task_planner sobre os YAML oficiais do @Work Commander 2026
   # (test/fixtures/formato2026/) + fixtures antigos: roda o BINARIO recem
