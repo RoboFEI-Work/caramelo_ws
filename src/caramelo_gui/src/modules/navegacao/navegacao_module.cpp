@@ -5,9 +5,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "bridge/ros_bridge.hpp"
+#include "widgets/seletor_arena.hpp"
 #include "core/launch_runner.hpp"
 
 NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
@@ -23,7 +25,7 @@ NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
 
   // --- Ligar o stack de navegacao (Nav2 + AMCL) direto da GUI ---
   auto * form = new QFormLayout();
-  map_name_ = new QLineEdit("arena2_520");
+  map_name_ = new SeletorArena(bridge);
   com_docking_ = new QCheckBox("Com docking server");
   // Docking validado no robo real (2026-07-21) e default true no bringup:
   // a GUI nasce coerente com a operacao validada.
@@ -36,13 +38,39 @@ NavegacaoModule::NavegacaoModule(RosBridge * bridge, QWidget * parent)
 
   ligar_ = new QPushButton("Ligar navegacao (Nav2)");
   ligar_->setObjectName("acaoPrimaria");
+
+  // A navegacao normalmente ja' sobe com o robo (caramelo.launch.py). Este
+  // modulo so' acompanhava o processo que ELE mesmo tivesse criado, entao dizia
+  // "Navegacao desligada" com o Nav2 no ar -- e o operador concluia, com razao,
+  // que a navegacao nao tinha subido. Pior: apertar o botao criaria um SEGUNDO
+  // Nav2, e os dois disputariam o controle da base.
+  auto * vigia = new QTimer(this);
+  connect(
+    vigia, &QTimer::timeout, this, [this]() {
+      const bool nossa = runner_->isRunning();
+      const bool no_ar = bridge_->noAtivo("bt_navigator");
+      if (nossa) {
+        return;   // quem ligou fomos nos; o LaunchRunner ja' cuida do rotulo
+      }
+      if (no_ar) {
+        ligar_->setEnabled(false);
+        ligar_->setText("Navegacao ja esta no ar");
+        status_->setText(
+          "A navegacao subiu junto com o robo. Nao ha nada a ligar aqui — "
+          "ligar de novo criaria um segundo Nav2 disputando a base.");
+      } else {
+        ligar_->setEnabled(true);
+        ligar_->setText("Ligar navegacao (Nav2)");
+      }
+    });
+  vigia->start(2000);
   connect(
     ligar_, &QPushButton::clicked, this, [this, sim_time]() {
       if (runner_->isRunning()) {
         runner_->stop();
       } else {
         QStringList args;
-        args << QString("map_name:=%1").arg(map_name_->text().trimmed())
+        args << QString("map_name:=%1").arg(map_name_->arena().trimmed())
              << "use_rviz:=false"
              << QString("use_docking:=%1")
           .arg(com_docking_->isChecked() ? "true" : "false")

@@ -5,6 +5,9 @@
 #include <functional>
 
 #include "bridge/manual_localization.hpp"
+#include "bridge/mission_bridge.hpp"
+#include "bridge/robot_state.hpp"
+#include "bridge/sensor_bridge.hpp"
 #include "bridge/waypoint_manager.hpp"
 
 RosBridge::RosBridge(QObject * parent)
@@ -53,6 +56,9 @@ RosBridge::RosBridge(QObject * parent)
 
   manual_loc_ = new ManualLocalization(node_, this);
   waypoints_ = new WaypointManager(node_, this);
+  mission_ = new MissionBridge(node_, this);
+  robot_state_ = new RobotState(this);
+  sensores_ = new SensorBridge(node_, this);
   follow_client_ = rclcpp_action::create_client<FollowWaypoints>(node_, "follow_waypoints");
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
@@ -77,6 +83,19 @@ RosBridge::RosBridge(QObject * parent)
         .arg(niveis.value(msg->level, "?"), nome,
           QString::fromStdString(msg->msg)));
     });
+}
+
+bool RosBridge::noAtivo(const QString & nome) const
+{
+  const std::string alvo = nome.startsWith('/') ?
+    nome.mid(1).toStdString() : nome.toStdString();
+  for (const auto & n : node_->get_node_names()) {
+    // get_node_names devolve com barra e, as vezes, com namespace.
+    if (n == alvo || n == "/" + alvo || n.rfind("/" + alvo, 0) == 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 QString RosBridge::bestFixedFrame() const
