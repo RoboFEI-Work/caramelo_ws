@@ -23,6 +23,19 @@ Parametros:
                result (success=false, reason curso_incompleto, travelled =
                dy*0.8) e o total publicado ja com o parcial — o no AMT1 le
                o result mesmo em ABORTED e trata o passo como PARCIAL.
+  align_bad_count (int, default 0; 2026-10-26, gate de pose): os primeiros
+               N align_to_dock com sucesso devolvem a pose RUIM
+               (align_bad_x/y/yaw, message align_bad_message); os seguintes
+               devolvem a pose boa (0.01/0.01/0.01). -1 = sempre ruim.
+  align_bad_x / align_bad_y / align_bad_yaw (default -0.006 / 0.304 / 0.319:
+               WS3 em 23/10 18:51) e align_bad_message (default
+               'yaw_nao_medido; alinhado (tentativa 1/1)').
+  odom_publish (bool, default true): publica /odom (nav_msgs/Odometry,
+               SensorDataQoS) a odom_rate_hz (50) com twist ZERO — a base
+               parada, como o EKF real apos o align. odom_moving_s (default
+               0.0): depois de CADA align com sucesso publica twist em
+               movimento (vy = 0.12 m/s, o coast do ESC) por este tempo antes
+               de zerar — exercita o detector de parada do GoToWS.
 
 Topicos (como o dock_align_node real):
   /manip/base_shift_total (std_msgs/Float64, transient_local, + = esquerda):
@@ -46,6 +59,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from nav_msgs.msg import Odometry
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float64, String
 
 from caramelo_msgs.action import AlignToDock
@@ -76,10 +91,29 @@ class FakeNavActions(Node):
         self.declare_parameter("nudge_max_travel", 0.25)
         # 2026-08-28: quantos nudges ainda vao terminar com curso_incompleto.
         self.declare_parameter("nudge_short_course", 0)
+        # 2026-10-26 (gate de pose do GoToWS): poses ruins nos primeiros aligns
+        # e odometria falsa para o detector de parada.
+        self.declare_parameter("align_bad_count", 0)
+        self.declare_parameter("align_bad_x", -0.006)
+        self.declare_parameter("align_bad_y", 0.304)
+        self.declare_parameter("align_bad_yaw", 0.319)
+        self.declare_parameter("align_bad_message", "yaw_nao_medido; alinhado (tentativa 1/1)")
+        self.declare_parameter("odom_publish", True)
+        self.declare_parameter("odom_rate_hz", 50.0)
+        self.declare_parameter("odom_moving_s", 0.0)
 
         self._lock = threading.Lock()
         self._base_shift_total = 0.0
         self._short_course_left = max(0, int(self._param("nudge_short_course")))
+        self._align_bad_left = int(self._param("align_bad_count"))
+        self._align_count = 0
+        # Odometria falsa: twist zero, exceto por odom_moving_s apos cada align.
+        self._odom_moving_until = 0.0
+        self._odom_pub = None
+        if bool(self._param("odom_publish")):
+            self._odom_pub = self.create_publisher(Odometry, "/odom", qos_profile_sensor_data)
+            hz = max(1.0, float(self._param("odom_rate_hz")))
+            self._odom_timer = self.create_timer(1.0 / hz, self._publish_odom)
         latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -128,6 +162,20 @@ class FakeNavActions(Node):
             self.get_logger().warn(
                 "caramelo_msgs/NudgeBase nao encontrada: subindo SEM o nudge_base.")
         self.get_logger().info(f"Servers falsos no ar: {names}.")
+        if self._odom_pub is not None:
+            rate_hz = float(self._param("odom_rate_hz"))
+            moving_s = float(self._param("odom_moving_s"))
+            self.get_logger().info(
+                f"/odom falso a {rate_hz:.0f} Hz (twist zero; em movimento por "
+                f"{moving_s:.1f} s apos cada align).")
+        if self._align_bad_left != 0:
+            bad_x = float(self._param("align_bad_x"))
+            bad_y = float(self._param("align_bad_y"))
+            bad_yaw = float(self._param("align_bad_yaw"))
+            self.get_logger().warn(
+                f"align_bad_count={self._align_bad_left}: align(s) com pose RUIM "
+                f"x={bad_x:+.3f} y={bad_y:+.3f} yaw={bad_yaw:+.3f} "
+                f"('{self._param('align_bad_message')}').")
         if self._short_course_left > 0:
             self.get_logger().warn(
                 f"nudge_short_course={self._short_course_left}: os primeiros "
@@ -180,10 +228,43 @@ class FakeNavActions(Node):
         self.get_logger().info(f"'{stage}' concluido com sucesso (fake).")
         return make_result(success=True)
 
+    def _publish_odom(self):
+        msg = Odometry()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "odom"
+        msg.child_frame_id = "base_footprint"
+        if time.monotonic() < self._odom_moving_until:
+            msg.twist.twist.linear.y = 0.12  # coast lateral do ESC
+        self._odom_pub.publish(msg)
+
     def _execute_align(self, goal_handle):
-        """align_to_dock: como o real, zera o acumulado lateral e anuncia a estacao."""
+        """align_to_dock: zera o acumulado lateral e anuncia a estacao (como o real).
+
+        2026-10-26: os primeiros align_bad_count aligns devolvem a pose ruim.
+        """
         result = self._execute(goal_handle, "align", self._align_result)
         if result.success:
+            self._align_count += 1
+            with self._lock:
+                bad = self._align_bad_left != 0
+                if self._align_bad_left > 0:
+                    self._align_bad_left -= 1
+            if bad:
+                result.message = str(self._param("align_bad_message"))
+                result.final_x_error = float(self._param("align_bad_x"))
+                result.final_y_error = float(self._param("align_bad_y"))
+                result.final_yaw_error = float(self._param("align_bad_yaw"))
+                self.get_logger().warn(
+                    f"align #{self._align_count}: pose RUIM x={result.final_x_error:+.3f} "
+                    f"y={result.final_y_error:+.3f} yaw={result.final_yaw_error:+.3f} "
+                    f"('{result.message}').")
+            else:
+                self.get_logger().info(
+                    f"align #{self._align_count}: pose boa x={result.final_x_error:+.3f} "
+                    f"y={result.final_y_error:+.3f} yaw={result.final_yaw_error:+.3f}.")
+            moving = max(0.0, float(self._param("odom_moving_s")))
+            if moving > 0.0:
+                self._odom_moving_until = time.monotonic() + moving
             with self._lock:
                 self._base_shift_total = 0.0
             self._publish_shift_total()
@@ -280,7 +361,7 @@ class FakeNavActions(Node):
     def _align_result(success):
         result = AlignToDock.Result()
         result.success = success
-        result.message = "fake"
+        result.message = "alinhado (tentativa 1/1)"
         result.final_x_error = 0.01
         result.final_y_error = 0.01
         result.final_yaw_error = 0.01

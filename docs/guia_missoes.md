@@ -760,6 +760,29 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   `reach_queue_ws_prefixes` (`["WS","PP"]`, sem `_` desde o formato 2026: cobre `WS_1` e `PP`), `reach_queue_max_nudges` (2),
   `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
   `nudge_timeout` (20 s, goal do `nudge_base`).
+- **Gate de pose do `GoToWS`** (2026-10-26, runs de 22–23/10 — `docs/investigacao_incidente_2026-10.md`):
+  depois do `align_to_dock` o executor confere o result (`final_x/y/yaw_error` e o prefixo da
+  `message`: `yaw_fora_da_tolerancia` = yaw da face pelo LiDAR, `yaw_nao_medido` = yaw pelo AMCL)
+  contra limites **duros**: `pose_gate_max_x` (0.10 m), `pose_gate_max_y` (0.20 m — meia-largura do
+  chassi 0,195 + 0,20 ≤ meia-largura da mesa 0,40), `pose_gate_max_yaw` (0.20 rad = 11,5°, a
+  tolerância de yaw do Nav2; o place por superfície erra ≤ 3 cm na zona com esse yaw). Fora dos
+  limites: **re-docka** (`pose_gate_retries`, 1: undock → staging → align) e, ainda fora,
+  `pose_gate_strict` (true: a estação falha e a missão pula para a próxima com a voz "Estação X
+  torta"; false: segue com `POSE FORA DOS LIMITES` no log, como antes). `pose_gate_enabled:=false`
+  desliga tudo. Linhas de log: `[WSn] pose validada` / `pose ACEITA COM RESSALVA` (dentro dos
+  limites duros, acima da tolerância do docking) / `POSE FORA DOS LIMITES (...)`.
+- **Base parada antes de manipular** (2026-10-26): com `stop_check_enabled` (true) o `GoToWS` só
+  devolve SUCCESS quando `/odom` (`odom_topic`) fica abaixo de `stop_check_max_lin` (0.02 m/s) e
+  `stop_check_max_ang` (0.05 rad/s) por `stop_check_window_s` (0.5 s) contínuos, com amostra
+  mais nova que `stop_check_odom_max_age_s` (0.5 s). Não é atraso fixo: sem odometria fresca
+  até `stop_check_timeout_s` (3 s) a estação **falha** (`stop_check_require_odom`, true; false =
+  aviso e segue); em movimento após o timeout, falha com o diagnóstico "quem mais publica em
+  `/mecanum_controller/reference`?". Log: `[WSn] base parada: 0.6 s abaixo de ...`. Limites bem
+  abaixo do piso do ESC (0,1215 m/s / 0,315 rad/s); a janela cobre a retenção da referência
+  (~0,5 s). Resumo por estação no fim: `[WSn] resumo da estacao (WS_n): nav_staging 22.9 s |
+  align 11.5 s | parada 0.6 s | total ...; dockings 1; pose x=.. y=.. yaw=.. (lidar|amcl)`.
+  Bancada: `src/manipulation/manip_bt/test/run_pose_gate_scenario.sh all` (fakes em
+  `ROS_DOMAIN_ID=99`, 8 casos).
 
 - Ordem das juntas na pega (28/08, pedido do operador): na aproximação por cima o pick
   gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto
@@ -972,3 +995,7 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
   `at_tag`, `shelf_level`, `target_order` da AMT; §3.2, §3.6) com teste automatizado sobre
   os arquivos oficiais; pilha já existente no `start_state` desfeita antes do `place` na
   tag/base (revisão do mesmo dia).
+- **2026-10-26** — investigação das runs de 22–23/10 (`docs/investigacao_incidente_2026-10.md`):
+  gate de pose e checagem de parada no `GoToWS` (`pose_gate_*`, `stop_check_*`; §5.1), re-dock
+  automático uma vez, resumo de tempos por estação; cenário de bancada
+  `run_pose_gate_scenario.sh`.

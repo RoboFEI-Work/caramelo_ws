@@ -1,0 +1,15 @@
+# Cenario de bancada do GATE DE POSE do GoToWS (2026-10-26) — usado pelo
+# run_pose_gate_scenario.sh com os fakes em ROS_DOMAIN_ID=99.
+# Sem `home` (nao ha MoveIt na bancada) e sem epilogo (finish_dock_id vazio).
+#
+# WS_1: o fake_nav_actions devolve a pose RUIM da WS3 de 23/10 (y +0,304 m,
+#        yaw +0,319 rad, 'yaw_nao_medido') nos primeiros align_bad_count
+#        aligns; o GoToWS deve re-dockar (undock + staging + align) e, com a
+#        pose boa no 2o align, liberar o place; com pose sempre ruim, pular a
+#        estacao (strict) ou seguir com aviso (strict=false).
+# WS_2: pose boa direto.
+actions:
+  - {kind: goto, ws: WS_1, mesa: Mesa0}
+  - {kind: place, tag_frame: tag_2, table_pose: Mesa0, ws: WS_1}
+  - {kind: goto, ws: WS_2, mesa: Mesa5}
+  - {kind: pick, tag_frame: tag_3}

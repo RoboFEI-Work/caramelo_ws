@@ -15,6 +15,11 @@
 //   align_timeout, nav_timeout, max_staging_time, max_undocking_time,
 //   use_lidar_refine, skip_align, use_opennav_approach, nudge_timeout
 //   skip_unreachable_station   goto falhou => pula o bloco da estacao
+//   pose_gate_enabled, pose_gate_max_x/y/yaw, pose_gate_retries,
+//   pose_gate_strict           gate de pose apos o align (2026-10-26)
+//   stop_check_enabled, stop_check_max_lin/max_ang/window_s/timeout_s,
+//   stop_check_odom_max_age_s, stop_check_require_odom, odom_topic
+//                              base parada antes da manipulacao
 //   reach_queue_enabled, reach_queue_ws_prefixes, reach_queue_max_nudges,
 //   reach_queue_max_shift_m, reach_queue_min_shift_m
 //   amt1_timeout, amt1_stage_timeout
@@ -1094,6 +1099,44 @@ int main(int argc, char ** argv)
     // Fila de alcance: timeout do goal nudge_base (a base anda
     // <= 0,25 m; o servidor tem o proprio nudge_default_timeout quando 0).
     blackboard->set("nudge_timeout", node->declare_parameter<double>("nudge_timeout", 20.0));
+    // Gate de pose do GoToWS (2026-10-26, runs de 22-23/10: o docking devolvia
+    // sucesso com y +0,30 m / yaw +18 graus e a manipulacao comecava). Limites
+    // DUROS justificados em include/manip_bt/pose_gate.hpp: |y| <= 0,20 m
+    // (corpo dentro da largura da mesa), |yaw| <= 0,20 rad (= tolerancia de
+    // yaw do Nav2; place por superficie erra <= 3 cm na zona). Fora deles:
+    // re-docka (undock + staging + align) pose_gate_retries vezes e, ainda
+    // fora, falha a estacao (strict) ou segue com aviso (strict=false, o
+    // comportamento antigo).
+    blackboard->set("pose_gate_enabled", node->declare_parameter<bool>("pose_gate_enabled", true));
+    blackboard->set("pose_gate_max_x", node->declare_parameter<double>("pose_gate_max_x", 0.10));
+    blackboard->set("pose_gate_max_y", node->declare_parameter<double>("pose_gate_max_y", 0.20));
+    blackboard->set("pose_gate_max_yaw",
+      node->declare_parameter<double>("pose_gate_max_yaw", 0.20));
+    blackboard->set(
+      "pose_gate_retries",
+      static_cast<int>(node->declare_parameter<int64_t>("pose_gate_retries", 1)));
+    blackboard->set("pose_gate_strict", node->declare_parameter<bool>("pose_gate_strict", true));
+    // Parada antes da manipulacao: odometria (/odom do EKF) abaixo de
+    // stop_check_max_lin / max_ang por stop_check_window_s continuos (nao e'
+    // atraso fixo: sem odometria fresca o estado e' 'sem_odometria'). Limites
+    // bem abaixo do piso do ESC (0,1215 m/s / 0,315 rad/s); janela >= retencao
+    // da referencia pelo ESC (~0,5 s).
+    blackboard->set("stop_check_enabled",
+      node->declare_parameter<bool>("stop_check_enabled", true));
+    blackboard->set("stop_check_max_lin",
+      node->declare_parameter<double>("stop_check_max_lin", 0.02));
+    blackboard->set("stop_check_max_ang",
+      node->declare_parameter<double>("stop_check_max_ang", 0.05));
+    blackboard->set("stop_check_window_s",
+      node->declare_parameter<double>("stop_check_window_s", 0.5));
+    blackboard->set(
+      "stop_check_timeout_s", node->declare_parameter<double>("stop_check_timeout_s", 3.0));
+    blackboard->set(
+      "stop_check_odom_max_age_s",
+      node->declare_parameter<double>("stop_check_odom_max_age_s", 0.5));
+    blackboard->set(
+      "stop_check_require_odom", node->declare_parameter<bool>("stop_check_require_odom", true));
+    blackboard->set("odom_topic", node->declare_parameter<std::string>("odom_topic", "/odom"));
     // AMT1: prazo total do goal /amt1_sort e silencio maximo de feedback
     // (o server manda heartbeat <= 5 s; um pick/place filho leva ate ~5 min
     // com retries). amt1_timeout = 1800 s porque 6 picks + 6 places levam
