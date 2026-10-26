@@ -125,6 +125,51 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
 - Cada missão gera um YAML de ações auditável em `~/.ros/caramelo_missions/`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
 
+### 2.1 Conferir os docks antes da missão (`tour_docks`)
+
+Antes de rodar a missão numa arena nova (ou depois de mexer no mapa/poses), leve o robô por
+**todos** os docks e veja onde ele chega bem e onde apanha. **Move o robô**; stack no ar (§1) e
+robô localizado no START.
+
+```bash
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --only WS1,WS3 --skip SH1 --yes
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --no-align       # só /dock_robot (opennav), sem align
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --undock-first WS3   # robô ainda encostado na WS3
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --finish ""      # não vai ao FINISH no fim
+```
+
+- Ordem: WS1..WSn, SH*, PP*, RT* (numérica dentro de cada tipo: WS10 depois de WS9) e
+  `--finish` por último (default FINISH). START nunca é visitado.
+- Em cada dock, a **mesma sequência do GoToWS** da missão: `/undock_robot` (se o anterior encostou)
+  → Nav2 até a staging (pose do dock + `staging_x_offset` do `docking.yaml`) → `align_to_dock`
+  (faz o approach; refino LiDAR ligado como no executor, `--no-lidar-refine` desliga).
+  `--opennav-approach` usa o `/dock_robot` como no rollback `use_opennav_approach`; `--no-align`
+  = `/dock_robot` faz o approach e nada de align. START/FINISH (`use_docking: false` no
+  `service_areas.yaml`) são navegação pura. Timeouts = defaults do `bt_yaml_executor`
+  (`--max-staging-time 120`, `--align-timeout 90`, `--max-undocking-time 30`).
+- Mostra o plano e pede confirmação (`--yes` pula). Ctrl-C cancela a action em voo (o robô para)
+  e grava o relatório parcial. Falha num dock não interrompe o tour (`--stop-on-fail` interrompe).
+- Voz (`/manip/speech`): `!Dock WS3 pronto, erro 3 centimetros e 2 graus` /
+  `!Dock WS3 falhou: alinhamento`. Não grava bag.
+
+**O que olhar no relatório** (`maps/<mapa>/tour_<data>.md`, ou `--report arquivo.md`; a mesma
+tabela sai no terminal):
+
+| Coluna | Significado |
+|---|---|
+| `Status` | `ok`; `ok_aviso` = alinhou, mas o align avisou `yaw_fora_da_tolerancia`/`yaw_nao_medido`; `falhou` (a Mensagem diz a etapa: undock, navegacao ate a staging, docking, alinhamento); `pulado` = pose placeholder `[0,0,0]`. |
+| `Undock/Nav/Align (s)` | Tempo de cada etapa. Nav alto = Nav2 sofrendo para chegar na staging (caminho, keepout, AMCL); Align alto = muitas correções (face mal vista, yaw torto, retry). |
+| `Long/Lat (cm)`, `Yaw (graus)` | Onde o robô parou **em relação ao ponto do dock, no frame do dock** (TF `map → base_footprint`, AMCL): Long + = passou do ponto (mais perto da mesa), Lat + = à esquerda, Yaw + = girado à esquerda. |
+| Detalhes → Staging | O mesmo erro na pré-docking, logo após o Nav2 — separa "o Nav2 não chega" de "o align desloca". |
+| Detalhes → Align reportou | O que o `dock_align_node` mediu: `final_x_error` = front − stop pelo LiDAR (+ = longe da mesa), `final_y_error` (lateral, AMCL), `final_yaw_error` = yaw da face. |
+
+Regra prática: erro **sistemático** (mesmo sinal toda vez que visita aquele dock) = pose gravada
+deslocada → regrave (`save_service_area_pose` + `validate_service_areas --sync-docking`); erro que
+**varia** entre visitas ou tempo alto = ponto difícil (AMCL degrada ali, staging perto de parede ou
+vizinho) → ajustar `approach_offset`, keepout ou a pose. Com `--no-align` o erro mostra o que o
+opennav sozinho entrega (sem o align corrigindo por cima).
+
 ## 3. Formato do YAML da missão
 
 Crie/edite arquivos em `~/caramelo_ws/missions/` (fonte única; `missions/README.md`
@@ -972,3 +1017,6 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
   `at_tag`, `shelf_level`, `target_order` da AMT; §3.2, §3.6) com teste automatizado sobre
   os arquivos oficiais; pilha já existente no `start_state` desfeita antes do `place` na
   tag/base (revisão do mesmo dia).
+- **2026-10-26** — `tour_docks`: tour de conferência de todos os docks com a sequência do
+  GoToWS, voz e relatório `tour_<data>.md` por mapa (§2.1); pré-flight do `run_mission`
+  compartilhado (`wait_for_action_servers` em `caramelo_docking_common`).

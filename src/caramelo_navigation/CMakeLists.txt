@@ -16,6 +16,7 @@ install(
 install(FILES
   scripts/caramelo_docking_common.py
   scripts/caramelo_service_area_common.py
+  scripts/caramelo_tour_common.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -74,6 +75,12 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
+  scripts/tour_docks.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME tour_docks
+)
+
+install(PROGRAMS
   scripts/init_service_areas.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME init_service_areas
@@ -126,6 +133,10 @@ if(BUILD_TESTING)
   # Matematica pura do nudge_base (projecao da odometria, regra de aceite),
   # sem ROS ativo (2026-08-28).
   ament_add_pytest_test(test_nudge_math test/test_nudge_math.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Logica pura do tour_docks (ordem dos docks, erro no frame do dock,
+  # relatorio) e a espera de action servers do pre-flight, sem ROS ativo.
+  ament_add_pytest_test(test_tour_docks test/test_tour_docks.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
