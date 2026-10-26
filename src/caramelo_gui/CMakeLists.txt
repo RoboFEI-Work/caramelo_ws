@@ -35,21 +35,39 @@ set(SOURCES
   src/main.cpp
   src/bridge/ros_bridge.cpp
   src/bridge/manual_localization.cpp
+  src/bridge/mission_bridge.cpp
+  src/bridge/robot_state.cpp
+  src/bridge/sensor_bridge.cpp
   src/bridge/waypoint_manager.cpp
   src/core/rviz_frame.cpp
   src/core/state_machine.cpp
   src/core/launch_runner.cpp
+  src/core/context_screen.cpp
+  src/core/icones.cpp
+  src/core/home_screen.cpp
   src/core/main_window.cpp
+  src/widgets/map_preview.cpp
+  src/widgets/seletor_arena.cpp
+  src/widgets/seletor_dock.cpp
+  src/widgets/seletor_service_area.cpp
+  src/widgets/seletor_tipo_area.cpp
+  src/widgets/seletor_tipo_dock.cpp
   src/modules/inicio/inicio_module.cpp
+  src/modules/avancado/sensores_module.cpp
+  src/modules/competicao/competicao_module.cpp
   src/modules/navegacao/navegacao_module.cpp
   src/modules/docking/docking_module.cpp
   src/modules/localizacao/localizacao_module.cpp
   src/modules/mapas/mapas_module.cpp
   src/modules/mapeamento/mapeamento_module.cpp
+  src/modules/mapeamento/ferramenta_mapeamento.cpp
+  src/modules/mapeamento/scripts_do_mapa.cpp
+  src/modules/mapeamento/trilho_de_etapas.cpp
   src/modules/teleop/teleop_module.cpp
   src/modules/service_areas/service_areas_module.cpp
   src/modules/waypoints/waypoints_module.cpp
   src/modules/editor_mapa/editor_mapa_module.cpp
+  src/modules/editor_mapa/editor_keepout.cpp
 )
 
 add_executable(caramelo_gui ${SOURCES})

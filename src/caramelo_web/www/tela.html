@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tela do robô</title>
+<!--
+  Pagina separada de proposito, em vez de apontar a aba direto para o
+  .mjpeg: navegador baseado em Chromium NAO desenha mais um
+  multipart/x-mixed-replace quando ele e' a propria pagina (so' funciona dentro
+  de um <img>). Apontar o link para o stream cru dava uma aba em branco e
+  ninguem descobria por que.
+
+  Aqui a imagem tambem ganha uma mensagem de erro legivel: se o stream cair,
+  o operador le' uma frase em vez de ver um icone de imagem quebrada.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#05070c;color:#e6f1ff;
+            font-family:"Noto Sans",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:8px 14px;
+         background:#081120;border-bottom:1px solid #14294a;font-size:13px}
+  header b{font-size:14px}
+  header span{color:#7d9cc4}
+  select{background:#0e1c31;color:#e6f1ff;border:1px solid #1f3a5f;
+         border-radius:8px;padding:5px 8px;font-family:inherit;font-size:13px}
+  .palco{height:calc(100% - 41px);display:flex;align-items:center;
+         justify-content:center;padding:8px}
+  img{max-width:100%;max-height:100%;border-radius:8px;
+      box-shadow:0 6px 30px rgba(0,0,0,.6)}
+  .recado{max-width:520px;text-align:center;line-height:1.5;color:#ffd28f}
+</style>
+</head>
+<body>
+<header>
+  <b>Tela do computador do robô</b>
+  <span>só para olhar — não é possível mexer por aqui</span>
+  <span style="flex:1"></span>
+  <label><span>tamanho</span>
+    <select id="tamanho">
+      <option value="960">menor (poupa a rede)</option>
+      <option value="1280" selected>médio</option>
+      <option value="1600">maior</option>
+    </select>
+  </label>
+</header>
+<div class="palco"><img id="tela" alt="tela do robô"></div>
+
+<script>
+"use strict";
+const chave = new URLSearchParams(location.search).get("t") || "";
+const img = document.getElementById("tela");
+const palco = document.querySelector(".palco");
+
+function ligar() {
+  const largura = document.getElementById("tamanho").value;
+  // O carimbo de tempo impede o navegador de reaproveitar um stream ja morto ao
+  // trocar o tamanho -- com a URL identica ele reexibe o cache e nada muda.
+  img.src = `/api/tela.mjpeg?t=${encodeURIComponent(chave)}&largura=${largura}&_=${Date.now()}`;
+}
+
+const PADRAO = "Não consegui mostrar a tela do robô.";
+function explicar(texto) {
+  palco.innerHTML = '<div class="recado">' + (texto || PADRAO) + "</div>";
+}
+
+img.onerror = () => {
+  // O <img> nao entrega o corpo do erro, e a frase do servidor ("este
+  // computador esta sem tela ligada") e' exatamente o que quem esta olhando
+  // precisa ler. Entao a mesma rota e' buscada por fetch so' para ler o recado.
+  fetch(img.src).then(async (r) => {
+    if (r.ok) {
+      // Deu 200: o stream existe, mas parou de chegar (rede caiu, ou o
+      // servidor encerrou o espelho). Cancelar o corpo e' obrigatorio -- sem
+      // isso este fetch fica pendurado no multipart para sempre, segurando uma
+      // conexao e uma thread de captura no robo.
+      if (r.body) r.body.cancel();
+      explicar("A imagem parou de chegar. Recarregue esta página para tentar de novo.");
+      return;
+    }
+    const d = await r.json().catch(() => ({}));
+    explicar(d.mensagem);
+  }).catch(() => explicar());
+};
+
+document.getElementById("tamanho").onchange = ligar;
+ligar();
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 <package format="3">
   <name>caramelo_gui</name>
   <version>0.1.0</version>
-  <description>Interface grafica Qt5/C++ com RViz embutido para operar o Caramelo pelo PC: saude, mapeamento, navegacao, docking, localizacao, service areas, waypoints e edicao de mapa.</description>
+  <description>Interface grafica Qt5/C++ com RViz embutido para operar o Caramelo pelo PC: menu inicial, operacao (navegacao, docking, localizacao, teleop, waypoints), competicao (missao via /caramelo/run_mission), mapas, ferramenta de mapeamento e modo avancado (saude, sensores, service areas).</description>
   <maintainer email="robofei.atwork@gmail.com">Equipe RoboFEI @Work</maintainer>
   <license>Apache-2.0</license>
 
@@ -28,6 +28,11 @@
   <depend>qtbase5-dev</depend>
 
   <exec_depend>caramelo_diagnostics</exec_depend>
+  <!-- mission_server.launch.py (tela Competicao), bringup/slam por QProcess e os
+       scripts de service areas/docking chamados pela Ferramenta de Mapeamento. -->
+  <exec_depend>caramelo_navigation</exec_depend>
+  <exec_depend>caramelo_mapping</exec_depend>
+  <exec_depend>caramelo_utils</exec_depend>
   <exec_depend>nav2_rviz_plugins</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

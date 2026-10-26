@@ -15,9 +15,16 @@ install(
 
 install(FILES
   scripts/caramelo_docking_common.py
+  scripts/run_mission.py
   scripts/caramelo_service_area_common.py
   scripts/caramelo_tour_common.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/mission_server.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mission_server
 )
 
 install(PROGRAMS
@@ -149,6 +156,10 @@ if(BUILD_TESTING)
   # compute_dock_distances num mapa sintetico (PGM, inflacao, Dijkstra,
   # fallback euclidiano, YAML), sem ROS ativo (2026-10-26).
   ament_add_pytest_test(test_compute_dock_distances test/test_compute_dock_distances.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Helpers puros do mission_server (action /caramelo/run_mission usada pela
+  # GUI e pelo painel web), sem grafo ROS.
+  ament_add_pytest_test(test_mission_server_helpers test/test_mission_server_helpers.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

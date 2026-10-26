@@ -1,5 +1,10 @@
 # Tutorial — Operar o Caramelo simulado pela GUI (mapa novo → dock → navegar)
 
+> **Aviso (2026-10):** este tutorial foi escrito para a GUI antiga (barra lateral com
+> módulos). A GUI atual abre num menu (Operação, Competição, Mapas, Mapeamento, Modo
+> Avançado) — o mapeamento virou a ferramenta em 4 passos do contexto Mapeamento e a
+> localização fica em Operação → Localização. Telas atuais: `docs/interface_grafica.md`.
+
 Fluxo completo usando a **GUI** com o robô **simulado** (`caramelo_simulation_ws`).
 Use terminais normais (fora do VSCode, que contamina o ambiente com libs do snap).
 

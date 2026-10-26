@@ -44,6 +44,9 @@ signals:
   // true enquanto o modo fantasma esta ativo (a MainWindow esconde o robo
   // real e o scan real para nao confundir com o fantasma + scan verde).
   void activeChanged(bool active);
+  // Pose que o operador confirmou. A MainWindow a grava no robo, para ele
+  // religar sabendo onde esta em vez de exigir localizacao manual toda vez.
+  void poseConfirmada(double x, double y, double yaw);
 
 private:
   void onScan(const sensor_msgs::msg::LaserScan::SharedPtr msg);

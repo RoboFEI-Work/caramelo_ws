@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Caramelo</title>
+<!--
+  A CASCA do painel, e so' ela: faixa superior, area de tela e area de torradas.
+  Quem monta conteudo aqui dentro e' js/app.js, que troca UMA tela por vez.
+
+  NAO HA' BARRA DE ABAS. A navegacao e a mesma da GUI Qt: menu principal ->
+  contexto -> voltar. Abas mostram cinco coisas ao mesmo tempo e nao contam qual
+  e' a de agora; o menu principal mostra o estado de cada contexto ANTES de
+  entrar nele, que e' o que o operador precisa saber com o robo na arena.
+
+  SEM INTERNET EM COMPETICAO. Nenhum CDN, nenhuma fonte remota, nenhum
+  'npm install'. Tudo o que esta' referenciado aqui e' servido de www/. A unica
+  biblioteca de terceiros e' o xterm.js, versionado em vendor/ (vendor/LEIAME.md).
+
+  REGRA DE TEXTO: quem le' esta tela NAO sabe ROS e nao vai abrir terminal por
+  vontade propria. Nenhuma frase visivel cita topico, action, no' ou pacote.
+  "O LiDAR nao esta respondendo" e' texto de tela; "/scan STALE" nao e'.
+-->
+<link rel="stylesheet" href="tema.css">
+<link rel="stylesheet" href="vendor/xterm.css">
+</head>
+<body>
+
+<div id="casca">
+
+  <header id="faixa">
+    <!-- So' aparece dentro de um contexto. No menu principal nao ha' para onde
+         voltar, e um botao que nao faz nada ensina o operador a desconfiar. -->
+    <button id="voltar" type="button" hidden aria-label="Voltar ao menu principal">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor"
+              stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Voltar</span>
+    </button>
+
+    <h1 id="titulo">Caramelo</h1>
+    <span class="espaco"></span>
+
+    <!-- Os quatro chips de estado da GUI, mais o da chave: sem ele, quem abriu
+         o painel por um favorito antigo aperta botao a tarde inteira sem
+         entender por que o robo nao obedece. -->
+    <div id="chips">
+      <span class="chip mudo" id="chipRobo" title="Estado do robô">ligando…</span>
+      <span class="chip mudo" id="chipArena" title="Arena escolhida no robô">arena: —</span>
+      <span class="chip mudo" id="chipNavegacao" title="A navegação aceita destinos?">navegação: —</span>
+      <span class="chip mudo" id="chipMissao" title="Prova em andamento">sem prova</span>
+      <span class="chip mudo" id="chipChave" title="Este painel pode comandar o robô?">—</span>
+    </div>
+  </header>
+
+  <main id="palco" aria-live="polite">
+    <div class="telaErro">
+      <h2>Carregando o painel…</h2>
+      <p>Se esta mensagem não sair da tela em alguns segundos, recarregue a página.</p>
+    </div>
+  </main>
+
+</div>
+
+<!-- Recados curtos do robô. Fora do #casca de propósito: uma torrada nunca
+     empurra o conteúdo nem entra na conta da rolagem. -->
+<div id="torradas" role="status" aria-live="polite" aria-atomic="false"></div>
+
+<noscript>
+  <div class="telaErro">
+    <h2>Este painel precisa de JavaScript.</h2>
+    <p>Ligue o JavaScript neste navegador e recarregue a página.</p>
+  </div>
+</noscript>
+
+<!--
+  xterm.js NAO e' modulo: ele publica Terminal e FitAddon como variaveis
+  globais, e por isso vem em <script> comum. Carrega antes do app so' para que
+  o Modo Avancado ja' encontre a biblioteca quando alguem abrir o terminal.
+-->
+<script src="vendor/xterm.js"></script>
+<script src="vendor/addon-fit.js"></script>
+<script type="module" src="js/app.js"></script>
+
+</body>
+</html>

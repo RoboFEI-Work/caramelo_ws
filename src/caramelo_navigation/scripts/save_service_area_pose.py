@@ -24,6 +24,12 @@ def _parse_args(argv):
     parser.add_argument("--height", type=float, default=0.10, help="Altura da mesa: 0.00, 0.05, 0.10 ou 0.15 m.")
     parser.add_argument("--map-dir", default=None, help="Diretorio raiz dos mapas ou pasta do mapa.")
     parser.add_argument("--frame", default="map", help="Frame global da pose salva.")
+    parser.add_argument(
+        "--pose", nargs=3, default=None, metavar=("X", "Y", "YAW"),
+        help="Grava ESTA pose em vez de perguntar ao robo onde ele esta. "
+             "X e Y em metros, YAW em RADIANOS, no frame do mapa (\"map\"). "
+             "E o caminho usado para posicionar um ponto clicando no mapa, sem "
+             "levar o robo ate la. Sem a flag nada muda: a pose vem do robo.")
     parser.add_argument("--base-frame", default="base_footprint", help="Frame base preferencial do robo.")
     parser.add_argument("--timeout", type=float, default=3.0, help="Tempo maximo esperando TF.")
     parser.add_argument("--overwrite", "--yes", dest="overwrite", action="store_true", help="Sobrescreve uma area existente e cria backup.")
@@ -35,6 +41,25 @@ def _parse_args(argv):
     parser.add_argument("--notes", default=None, help="Observacao humana para service_areas.yaml.")
     parser.add_argument("--no-sync-docking", action="store_true", help="Nao atualiza docking.yaml depois de salvar.")
     return parser.parse_args(remove_ros_args(args=argv)[1:])
+
+
+def _pose_informada(valores):
+    """--pose X Y YAW -> [x, y, yaw]; None quando a flag nao foi passada.
+
+    Valida aqui (e nao com type=float do argparse) para o erro sair em
+    portugues e dizer QUAL dos tres valores nao e numero -- quem chama e a
+    interface grafica por QProcess, e o texto do stderr vira a mensagem de tela.
+    """
+    if not valores:
+        return None
+    numeros = []
+    for rotulo, bruto in zip(("X", "Y", "YAW"), valores):
+        try:
+            numeros.append(float(bruto))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"--pose espera 3 numeros (X Y YAW); '{bruto}' nao e um numero valido ({rotulo}).")
+    return numeros
 
 
 def _lookup_pose(node: Node, buffer: Buffer, frame: str, base_frame: str, timeout: float):
@@ -62,19 +87,27 @@ def main(argv=None) -> int:
     try:
         area_id = normalize_dock_id(args.area_id)
         map_folder = resolve_map_folder(args.map_name, args.map_dir)
+        pose_manual = _pose_informada(args.pose)
     except Exception as exc:
         print(f"Erro nos argumentos: {exc}", file=sys.stderr)
         return 1
 
-    rclpy.init(args=argv)
-    node = Node("save_service_area_pose")
-    buffer = Buffer()
-    TransformListener(buffer, node)
+    node = None
     try:
-        end_time = node.get_clock().now() + Duration(seconds=args.timeout)
-        while rclpy.ok() and node.get_clock().now() < end_time:
-            rclpy.spin_once(node, timeout_sec=0.1)
-        source_frame, pose = _lookup_pose(node, buffer, args.frame, args.base_frame, args.timeout)
+        if pose_manual is not None:
+            # Com --pose NAO subimos no nem esperamos TF de proposito: marcar uma
+            # area no mapa nao pode depender do robo estar ligado e localizado.
+            source_frame = "--pose (sem TF)"
+            pose = {"x": pose_manual[0], "y": pose_manual[1], "yaw": pose_manual[2]}
+        else:
+            rclpy.init(args=argv)
+            node = Node("save_service_area_pose")
+            buffer = Buffer()
+            TransformListener(buffer, node)
+            end_time = node.get_clock().now() + Duration(seconds=args.timeout)
+            while rclpy.ok() and node.get_clock().now() < end_time:
+                rclpy.spin_once(node, timeout_sec=0.1)
+            source_frame, pose = _lookup_pose(node, buffer, args.frame, args.base_frame, args.timeout)
         service_path, service_backup = update_service_area_pose(
             map_folder=map_folder,
             map_name=args.map_name,
@@ -95,13 +128,16 @@ def main(argv=None) -> int:
         if not args.no_sync_docking:
             docking_result = sync_docking_from_service_areas(map_folder, make_backup=True)
     except Exception as exc:
-        node.get_logger().error(str(exc))
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            node.get_logger().error(str(exc))
+        else:
+            print(f"Erro ao salvar a service area: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if node is not None:
+            node.destroy_node()
+            rclpy.shutdown()
 
-    node.destroy_node()
-    rclpy.shutdown()
     print("Service Area salva com sucesso:")
     print(f"  map_name: {args.map_name}")
     print(f"  service_areas: {service_path}")
