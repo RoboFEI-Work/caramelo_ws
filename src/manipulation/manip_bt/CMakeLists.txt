@@ -15,6 +15,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(my_robot_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(caramelo_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
@@ -61,6 +62,7 @@ ament_target_dependencies(
   moveit_ros_planning_interface
   my_robot_msgs
   nav2_msgs
+  nav_msgs
   caramelo_msgs
   std_msgs
 )
@@ -115,6 +117,14 @@ if(BUILD_TESTING)
   )
   target_compile_features(test_task_plan_search PUBLIC cxx_std_17)
   target_link_libraries(test_task_plan_search yaml-cpp)
+
+  # Gate de pose + detector de parada do GoToWS (2026-10-26): header-only,
+  # sem ROS (casos tirados dos logs das runs de 22-23/10).
+  ament_add_gtest(test_pose_gate test/test_pose_gate.cpp)
+  target_include_directories(test_pose_gate PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_compile_features(test_pose_gate PUBLIC cxx_std_17)
 
   # task_planner sobre os YAML oficiais do @Work Commander 2026
   # (test/fixtures/formato2026/) + fixtures antigos: roda o BINARIO recem

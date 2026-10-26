@@ -179,6 +179,8 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | [docs/place_superficie_livre.md](docs/place_superficie_livre.md) | Place em superfície livre: a câmera do punho escolhe onde soltar (rulebook 4.4); ainda sem teste no robô. |
 | [docs/place_precisao_e_pilha.md](docs/place_precisao_e_pilha.md) | Formato 2026: encaixe na cavidade da mesa de precisão (tags 101–107) e pilha de até 4 sobre a tag 200, com verificação após soltar; ainda sem teste no robô. |
 | [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | `dock_align_node`: alinhamento fino com rodas mecanum, `nudge_base`, guardas, calibração. |
+| [docs/investigacao_incidente_2026-10.md](docs/investigacao_incidente_2026-10.md) | Runs de 22–23/10 na arena: reconstrução por logs, diagnóstico, gate de pose + parada no `GoToWS` (`pose_gate_*`, `stop_check_*`), validação e pendências (vídeo/rosbag). |
+| [docs/analise_run_2026-10-21.md](docs/analise_run_2026-10-21.md) | Run de 21/10: profundidade da D455 abaixo de 0,45 m e docking torto na WS1 (correções em `8214d30`). |
 | [docs/voz_do_robo.md](docs/voz_do_robo.md) | Voz: prefixos de prioridade nas frases, política de descarte, cache, motores (Kokoro/Piper/espeak) e como instalar o Kokoro. |
 | [docs/service_areas_docking.md](docs/service_areas_docking.md) | Conceitos de service areas e docking, onde ficam os parâmetros, route graph. |
 | [docs/passo_a_passo_mapa_service_areas_docking_route.md](docs/passo_a_passo_mapa_service_areas_docking_route.md) | Arena nova por terminal: mapa → áreas → docking → rotas → testes. |

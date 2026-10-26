@@ -365,6 +365,31 @@ refino do staging volta a valer — o refit a 0,55 m vira redundância, não a �
 A reta fica ~10 cm mais curta (o coast de 0,10 m continua coberto: corte em 0,48). Decidir
 por estação e regravar o mapa; `staging_sanity_max_m` (0,6) continua válido.
 
+## Runs de 2026-10-22/23: o cliente passa a validar a pose (gate no `GoToWS`)
+
+Análise completa em `docs/investigacao_incidente_2026-10.md`. Resumo do que o
+`dock_align_node` devolveu e do que o executor fez com isso:
+
+| Estação / hora | `dock_align` | result (`x`, `y`, `yaw`) | GoToWS (antes) |
+|---|---|---|---|
+| PP1 22/10 15:42 | refino descartado (resíduo 54 mm, largura 0,82), esquadro por AMCL +7,7°, 2 giros pelo LiDAR (−12,8°, −15,3°), centro largura 0,29, **`yaw_nao_medido`** (AMCL +15,5°) | −0,011 / +0,084 / **+0,271** (AMCL) | pronto → AMT1 perdeu as 2 tags da direita |
+| WS3 23/10 18:51 | refino OK (−7,3°), lateral(staging) −7,8 cm, esquadro pelo LiDAR −8,5°, centro "nenhum segmento contém o eixo do robô", **`yaw_nao_medido`** (AMCL +18,3°) | −0,006 / **+0,304** / **+0,319** (AMCL) | pronto → place/pick com a tag a −0,454 m |
+| WS6 23/10 18:49 / 19:01 / 19:10 | refino descartado (resíduo 55 mm; depois "face larga" 1,1–1,2 m: a PP1 está a 0,58 m), esquadro por AMCL −11…−15°, refit "face estreita" 0,46–0,50, correção final **piorou** (+7,6 → −12,7) | yaw **+0,152 / −0,222 / +0,127** (LiDAR), `yaw_fora_da_tolerancia` | pronto (strict desligado) |
+
+O nó continua com `final_yaw_strict=false` (decisão de competição): o result carrega a
+ressalva na `message` e o erro em `final_yaw_error` (LiDAR, ou AMCL quando
+`yaw_nao_medido`). **Quem decide agora é o `GoToWS`** (`manip_bt`): limites duros
+|y| ≤ 0,20 m, |yaw| ≤ 0,20 rad, re-dock uma vez e `pose_gate_strict` — ver
+`docs/guia_missoes.md` §5.1. Mudança aqui: as linhas `pronto:` e `yaw_nao_medido`
+passam a mostrar o **Y pelo AMCL** (`erro X +0.5 cm, Y(AMCL) +30.4 cm`), que o log
+não trazia e o result já levava.
+
+O que ainda depende de dados do robô (`/scan` gravado no staging e na mesa):
+o Y lateral continua "do banco" (ADR-05) e o centro da face falhou em metade das
+medidas de 23/10; na WS6 o fit mistura a face com a PP1 vizinha e o esquadro por
+AMCL gira para o lado errado; na PP1 às 15:42 havia algo não-plano a 0,75 m
+(nas outras 6 docagens do dia o fit foi limpo).
+
 ## Ferramentas de calibração
 
 - **`scripts/pulse_test.py` — MOVE O ROBÔ.** Publica direto em

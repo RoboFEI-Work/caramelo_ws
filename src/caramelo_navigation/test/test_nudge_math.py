@@ -466,3 +466,32 @@ def test_decisao_final_sequencia_da_ws1():
     second = decide(math.radians(-8.0), YAW_TOL, True, False, min_correctable=MIN_CORR)
     assert second == "aceitar_com_aviso"
     assert decide(math.radians(-2.0), YAW_TOL, True, False, min_correctable=MIN_CORR) == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Runs de 22-23/10 (docs/investigacao_incidente_2026-10.md): o que o
+# dock_align decidiu no fim de cada docking, reproduzido nas funcoes puras.
+# ---------------------------------------------------------------------------
+
+def test_decisao_final_sequencia_da_ws6_2026_10_23():
+    """WS6 23/10 19:08: +7,6 graus -> corrigir (recuo + esquadro); depois da
+    correcao mediu -12,7 graus -> aceitar_com_aviso (strict desligado): o
+    goal SUCEDE com 'yaw_fora_da_tolerancia' e so' o gate do GoToWS (limite
+    duro 0,20 rad = 11,5 graus) segura a manipulacao."""
+    first = decide(math.radians(7.6), YAW_TOL, False, False, min_correctable=MIN_CORR)
+    assert first == "corrigir"
+    second = decide(math.radians(-12.7), YAW_TOL, True, False, min_correctable=MIN_CORR)
+    assert second == "aceitar_com_aviso"
+    assert abs(math.radians(-12.7)) > 0.20          # estoura o limite duro do GoToWS
+    assert abs(math.radians(8.7)) <= 0.20           # WS6 18:49: dentro do limite duro
+    assert decide(math.radians(8.7), YAW_TOL, True, True, min_correctable=MIN_CORR) == "falhar"
+
+
+def test_yaw_nao_medido_nao_gira_pelo_amcl():
+    """WS3 23/10 18:51 e PP1 22/10 15:42: 0/5 e 1/5 fits da face no fim ->
+    face_yaw None -> nada a corrigir aqui (o AMCL, +18,3 / +15,5 graus, vai
+    so' para o result); quem decide e' o gate do GoToWS."""
+    assert needs(None, YAW_TOL) is False
+    assert needs(float("nan"), YAW_TOL) is False
+    for amcl_deg in (18.3, 15.5):
+        assert abs(math.radians(amcl_deg)) > 0.20

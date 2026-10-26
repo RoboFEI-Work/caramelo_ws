@@ -1670,12 +1670,16 @@ class DockAlignNode(Node):
                     return "soft_timeout", (
                         f"parou longe demais (front {front:.3f} > {window_hi + 0.03:.3f})")
                 ex, ey, eyaw = amcl_errors()
-                x_txt = f"erro X {((front - stop) * 100):+.1f} cm"
+                # 2026-10-26: o Y pelo AMCL vai para o log (na WS3 de 23/10 o
+                # result levou +30,4 cm e nenhuma linha daqui mostrava isso).
+                x_txt = (f"erro X {((front - stop) * 100):+.1f} cm, "
+                         f"Y(AMCL) {ey * 100:+.1f} cm")
                 yaw_m, why = self._measure_face_yaw(goal_handle, rate, deadline, attempt_end)
                 if yaw_m is None:
                     self.get_logger().warn(
                         f"{tag} yaw_nao_medido: {why}; AMCL diz {math.degrees(eyaw):+.1f} graus "
-                        "(so' para o log — nao giro pelo AMCL)")
+                        f"e Y {ey * 100:+.1f} cm (so' para o log — nao giro pelo AMCL; "
+                        "o GoToWS valida contra os limites duros)")
                     log(f"pronto: front={front:.3f} yaw_face=? graus ({x_txt}) — yaw_nao_medido")
                     return "success", (front - stop, ey, eyaw, "yaw_nao_medido")
                 now_s = now()
