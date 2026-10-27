@@ -390,6 +390,82 @@ medidas de 23/10; na WS6 o fit mistura a face com a PP1 vizinha e o esquadro por
 AMCL gira para o lado errado; na PP1 às 15:42 havia algo não-plano a 0,75 m
 (nas outras 6 docagens do dia o fit foi limpo).
 
+## Tour de 2026-10-26: convenções de sinal, fontes e correções
+
+Diagnóstico completo em `docs/diagnostico_docking_tour_2026-10-26.md` (F = fato, C = causa,
+I = correção imediata). Registro do que vale para ler qualquer log ou relatório daqui em diante.
+
+**Duas convenções de erro, opostas, as duas certas (F7).**
+
+| Onde | Função | Conta | Frame | Sinal |
+|---|---|---|---|---|
+| `dock_align_node` (feedback, result, log `esquadro por AMCL`) | `amcl_errors()` | **alvo − robô** | do **robô** | x + = alvo à frente; y + = alvo à esquerda do robô; yaw + = robô precisa girar CCW |
+| `tour_docks` (relatório `Long/Lat/Yaw`) | `pose_error_in_dock_frame` (`caramelo_tour_common.py`) | **robô − dock** | do **dock** | Long + = passou do ponto; Lat + = robô à esquerda; Yaw + = robô girado CCW |
+
+Nos 16 dockings de 26/10 `Lat_tour + final_y_error` fica entre −1,7 e +1,4 cm: é a mesma
+medida com o sinal trocado. "Salto do AMCL +23,9 vs −26,4" na WS1 era leitura errada do log
+(mesma medida, convenções opostas). Não há erro de transformação; o que diverge entre as
+linhas é a **fonte** (LiDAR × AMCL).
+
+**`final_yaw_error` tem fonte dupla.** É o yaw da face pelo LiDAR (fit leve do corredor,
+`_measure_face_yaw`) quando houve ≥ max(3, n−1) fits válidos; quando a mensagem traz
+`yaw_nao_medido`, o campo cai para o **AMCL** (`amcl_errors()[2]`). O fit leve, por
+construção (banda 0,10 m / extensão 0,25 m), não mede yaw acima de ~23,6°: o docking
+mais torto vira `yaw_nao_medido` e passa (WS1-T1, AMCL +23,9°). `final_y_error` é
+**sempre AMCL** (ADR-05, "Y do banco"); o LiDAR só move Y quando o centro da face é
+confiável. Perto das mesas AMCL e LiDAR discordam 14–25 cm em Y e até ~20° em yaw
+(WS2/WS6), então um número só não arbitra — só trena (seção 8 do diagnóstico).
+
+**Yaw gravado × normal da face (F19).** Fit da face no `map.pgm` mostra o yaw gravado em
+`docking.yaml` a ≤ 5° da normal desenhada (WS1 ~5°, WS6 3–4°, PP1 3–4°, FINISH 6°, demais
+≤ 3°) e o eixo a −7..+6 cm do centro do trecho. O align esquadra pela face (LiDAR), não
+pelo yaml, então isso infla a coluna `Yaw` do relatório e o esquadro por AMCL, mas não é a
+causa do torto (na WS6 o robô está **mesmo** ~11° torto, confirmado por mapa + AMCL + LiDAR).
+A distância gravada até a face varia 0,29 (WS6) a 0,43 m (WS4) enquanto o align sempre
+para a 0,38 m pelo LiDAR — por isso `Long` dá +12..+16 cm na WS4 sem nada errado no align.
+
+**Correção de premissa sobre os logs (F1).** Os nós C++ do Nav2 lançados pelo
+`robot_manipulation.launch.py` **deixam** log por PID em `~/.ros/log`
+(`controller_server_<pid>`, `bt_navigator_<pid>`, `behavior_server_<pid>`,
+`planner_server_<pid>`, `collision_monitor_<pid>`, `opennav_docking_<pid>`, `amcl_<pid>`);
+o `launch.log` curto não é o único registro. O que continua faltando é o que ninguém loga:
+`/amcl_pose`, `/tf`, `/odom`, `/scan` — daí o `gravar_bag_tour` (`docs/guia_missoes.md` §2.2).
+
+**O que mudou em 2026-10-26 (bloco I do diagnóstico).**
+- **I1 — esquadro por AMCL desligado por default** (`amcl_square_enabled`, default
+  `false` no `declare_parameter` do `dock_align_node.py` e na chave já presente no bloco
+  `parameters=[...]` do `docking_server.launch.py`; para ligar, mudar o valor lá). Era ele
+  que, lendo UMA amostra do AMCL enquanto a TF ainda mudava +7..+8° (F14), girava −9,4..−11,9° CW na WS6 e na WS1-T2 contra o que o LiDAR
+  pedia (C1); nenhum refit posterior desfazia. Com ele ligado valem as guardas novas
+  (toda rejeição do refino, veto pelo sinal do LiDAR, leitura só com `/odom` parado,
+  limite `amcl_square_max_err` = 0,20 rad, ~11,5°, que precisa ser > `yaw_coast_est` + 0,02 — o nó
+  avisa no init se a janela de giro ficar vazia). Pendente: desfazer o giro pela odometria quando o
+  refino pós-giro reprova (I1(e)), só depois de medir o coast de giro (T5).
+- **I4 — esquadro antes do lateral.** Com yaw θ e frente d o lateral do staging carregava
+  `d·tan(θ)` (8–14 cm nos casos medidos) porque centrava o ponto onde o eixo do robô torto
+  fura a face, e o giro posterior não desfazia a translação (C3; WS3 ×2, SH1-T2). Agora o
+  bloco (A0) de `_run_attempt` chama `refit_square("staging")` ANTES de
+  `lateral_adjust("staging")` quando o refino foi confiante e front ≥ `rotate_min_front`
+  (o refit já exige dois fits concordantes e |yaw_rel| > `yaw_min_corr`). O lateral continua
+  centrando pelo eixo (`c_axis`): depois do giro ele coincide com o pé da perpendicular, e
+  sem giro é o ponto que a reta vai acertar. O pé da perpendicular (`c_foot`) só vai para o
+  log `[inst]`, para o próximo tour mostrar a diferença.
+- **Faixa 5,2–6,9°.** O tour reprova acima de `default_yaw_tolerance` (0,09 rad = 5,2°), mas
+  o align só corrige acima de `yaw_coast_est` + 0,02 = 0,12 rad (6,9°): um docking que termina
+  nessa faixa sai `yaw_fora_da_tolerancia` e o tour marca reprovada sem que um re-dock resolva
+  (WS2-T2, −5,2°). Fecha com o R4 do diagnóstico (coast de giro medido no T5).
+- **I3 — espera de parada antes do align** (tour, `GoToWS` e `dock_align_node`). A base
+  ainda girava a 0,22–0,50 rad/s 0,6–0,75 s depois do "Reached the goal" do Nav2
+  (C2-premissa): a linha "na staging" do relatório e o esquadro por AMCL liam em plena
+  rotação. Não é a causa do torto (os erros finais são 2–5× a deriva), mas contamina
+  toda medida feita nesse instante.
+- **I5 — `PoseProgressChecker` no `controller_server.yaml`.** O `SimpleProgressChecker`
+  só conta translação: o giro no lugar do RotationShim (> 6 s a 0,35 rad/s) disparava
+  "Failed to make progress" em 12–15 das pernas, 22 limpezas do costmap local e BackUps
+  cegos (C8). Nada a ver com o torto, mas é o que explica a staging da WS5-T2 a −10 cm.
+- **I9 — `service_areas.yaml` WS5** igualada ao `docking.yaml` (estava 8,8 cm ao lado desde
+  a1d8e07; um `--sync-docking` reverteria a WS5 sem ninguém perceber).
+
 ## Ferramentas de calibração
 
 - **`scripts/pulse_test.py` — MOVE O ROBÔ.** Publica direto em

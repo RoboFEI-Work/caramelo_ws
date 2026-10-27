@@ -23,7 +23,9 @@ namespace manip_bt
 
 // Folha GoToWS: navegacao REAL ate uma estacao (o mock para
 // simulate_navigation vive no bt_yaml_executor). Sequencia:
-//   [se dockado] undock -> [use_docking] dock (staging+approach) -> align fino
+//   [se dockado] undock -> [use_docking] nav ate a staging -> PARADA (base
+//                   quieta pela odometria; no timeout avisa e segue)
+//                -> align fino (approach)
 //                -> GATE DE POSE (x/y/yaw do result do align dentro dos
 //                   limites duros; fora: re-docka uma vez, depois falha ou
 //                   segue com aviso conforme pose_gate_strict)
@@ -50,9 +52,17 @@ public:
 private:
   // kStagingNav: NavigateToPose ate a STAGING e o align faz TODO o approach
   // com muro por LiDAR (o /dock_robot uniciclo vira rollback via
-  // use_opennav_approach). kStopCheck: depois do align + gate, espera a base
-  // ficar parada pela odometria antes de liberar a manipulacao.
-  enum class Stage { kIdle, kUndocking, kDocking, kStagingNav, kAligning, kStopCheck, kNavigating };
+  // use_opennav_approach). kStagingStop (2026-10-26, F14/C2): entre o
+  // "Reached the goal" do Nav2 (ou o /dock_robot do rollback) e o align, espera
+  // a base parar pela odometria — a base ainda gira 0,2-0,5 rad/s por ~1 s
+  // apos o Nav2 suceder e o align partia com o yaw mudando; no timeout so'
+  // avisa e segue (o align comanda a base de qualquer jeito). kStopCheck:
+  // depois do align + gate, espera a base ficar parada pela odometria antes
+  // de liberar a manipulacao (este e' o gate duro).
+  enum class Stage
+  {
+    kIdle, kUndocking, kDocking, kStagingNav, kStagingStop, kAligning, kStopCheck, kNavigating
+  };
   enum class Poll { kPending, kRejected, kFinished };
 
   template<typename ActionT>
@@ -87,6 +97,10 @@ private:
   bool startUndock();
   bool startDispatch();
   bool startStagingNav();
+  // Parada antes do align (kStagingStop): reusa stop_detector_ e os
+  // parametros stop_check_*; o tick chama startAlign() ao parar ou no timeout.
+  BT::NodeStatus startStagingStop();
+  BT::NodeStatus onStagingStopTick();
   bool startAlign();
   // Gate de pose + parada (2026-10-26). onAlignResult decide: sucesso ->
   // gate -> (re-dock | falha | aviso) -> kStopCheck ou SUCCESS.

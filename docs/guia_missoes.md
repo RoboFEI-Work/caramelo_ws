@@ -48,9 +48,16 @@ ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arena2_520 u
 #   depois faca VAI-E-VEM de ~0,5 m ate a nuvem verde de particulas FECHAR —
 #   o AMCL so corrige quando o robo anda (medido: 10cm sem ritual -> 2cm com).
 # Opcao B — robo na zona START, sem RViz:
+#   Pose do START do arenalegal_2026 (docking.yaml docks.START.pose:
+#   x -0.807, y 0.0419, yaw -0.00846 rad; quaternion z = sin(yaw/2),
+#   w = cos(yaw/2)). Para outro mapa, leia a pose no docking.yaml dele —
+#   o exemplo antigo (0.0979, 0.0384, yaw -0.22) era de outro mapa.
+#   O amcl.yaml tem set_initial_pose: true com (0, 0, 0): se o robo NAO estiver
+#   fisicamente no START, ou o START do mapa nao for a origem, este /initialpose
+#   (ou o 2D Pose Estimate) e' obrigatorio antes de qualquer missao/tour.
 ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
-  '{header: {frame_id: map}, pose: {pose: {position: {x: 0.0979, y: 0.0384},
-   orientation: {z: -0.1095, w: 0.9940}}, covariance: [0.25,0,0,0,0,0,
+  '{header: {frame_id: map}, pose: {pose: {position: {x: -0.807, y: 0.0419},
+   orientation: {z: -0.00423, w: 0.99999}}, covariance: [0.25,0,0,0,0,0,
    0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0,0,0.0685]}}'
 # Conferir:
 ros2 run tf2_ros tf2_echo map base_footprint     # pose deve bater com a real
@@ -172,6 +179,55 @@ deslocada → regrave (`save_service_area_pose` + `validate_service_areas --sync
 **varia** entre visitas ou tempo alto = ponto difícil (AMCL degrada ali, staging perto de parede ou
 vizinho) → ajustar `approach_offset`, keepout ou a pose. Com `--no-align` o erro mostra o que o
 opennav sozinho entrega (sem o align corrigindo por cima).
+
+### 2.2 Próximo tour: o que gravar
+
+Os dois tours de 2026-10-26 não tinham bag e os logs do Nav2 não trazem pose
+(`docs/diagnostico_docking_tour_2026-10-26.md`, seção 8). Sem `/scan`, `/tf`, `/odom` e
+`/amcl_pose` não se decide "base ainda girando" × "AMCL atualizando tarde", nem o que o
+LiDAR vê na WS6/WS2, nem a folga real nas passagens. Antes do próximo tour (ou de repetir
+WS1/WS2/WS3/WS6 individualmente):
+
+```bash
+# 1. Subir o stack com a saída de TODOS os processos também em arquivo (além da tela):
+#    fica em ~/.ros/log/<data>-<host>-<pid>/launch.log + um <nome>-<n>-stdout.log por nó,
+#    com a hora do launch — serve para correlacionar dock_align_node (python) com
+#    controller_server/amcl (C++), que já deixam log por PID em ~/.ros/log de qualquer jeito.
+OVERRIDE_LAUNCH_PROCESS_OUTPUT=both ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arenalegal_2026
+
+# 2. Terminal 2: gravar o bag (mcap se o plugin existir, senão sqlite3; sai em ~/bags/tour_<data>).
+#    Lista de tópicos da seção 8.1 do diagnóstico (scan, scan_raw, tf, odom, odom/wheel, imu,
+#    amcl_pose, particle_cloud, cmd_vel*, mecanum_controller/reference, costmaps, plan,
+#    collision_monitor_state, joint_states, feedback/status de align_to_dock e navigate_to_pose).
+#    O comando completo é impresso no início; Ctrl-C fecha o bag. ~1–2 GB por tour.
+ros2 run caramelo_navigation gravar_bag_tour            # ou: gravar_bag_tour ws6_3x
+#    (BAG_DIR=/outro/lugar muda a pasta; fonte: src/caramelo_navigation/scripts/gravar_bag_tour.sh)
+
+# 3. Terminal 3: o tour (ou --only WS6 repetido 3x) como no §2.1.
+ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --yes
+
+# 4. No fim, junto com o bag e o tour_<data>.md: trena nos cantos dianteiros → face
+#    (yaw físico) e centro do robô → centro do tampo (Y físico) nas WS1/2/3/6 e numa boa
+#    (WS4/WS5). É a única forma de arbitrar AMCL × LiDAR, que discordam 14–25 cm / ~20°.
+```
+
+Nível de log: o `ros2 launch` não tem flag global de `--log-level`, e os nós do Nav2 não
+sobem com o serviço `set_logger_levels`. Para ver DWB/RotationShim (só falam em DEBUG) ou o
+AMCL passo a passo, adicione `arguments=["--ros-args", "--log-level", "<nó>:=debug"]` no
+`Node(...)` correspondente (`dock_align_node` em `docking_server.launch.py`; `amcl` em
+`caramelo_localization/launch/global_localization.launch.py`; `controller_server` em
+`caramelo_navigation/launch/navigation.launch.py`) **só para a sessão de teste** — em DEBUG o `controller_server` a 20 Hz
+enche o log em minutos. Em INFO já aparecem "Failed to make progress", "Reached the goal",
+"clear entirely the local_costmap" e as linhas do `dock_align_node`.
+
+O que conferir depois (T8 do diagnóstico, com o `PoseProgressChecker` de 2026-10-26):
+
+```bash
+grep -c "Failed to make progress" ~/.ros/log/controller_server_*.log      # esperado 0 nas pernas
+grep -c "clear entirely the local_costmap" ~/.ros/log/*.log               # esperado 0 durante as pernas
+grep -c "Running backup" ~/.ros/log/behavior_server_*.log                 # esperado 0 durante as pernas
+ros2 bag info ~/bags/tour_<data>                                          # todos os tópicos com mensagens
+```
 
 ## 3. Formato do YAML da missão
 
@@ -836,6 +892,18 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   align 11.5 s | parada 0.6 s | total ...; dockings 1; pose x=.. y=.. yaw=.. (lidar|amcl)`.
   Bancada: `src/manipulation/manip_bt/test/run_pose_gate_scenario.sh all` (fakes em
   `ROS_DOMAIN_ID=99`, 8 casos).
+- **Base parada antes do align** (2026-10-26, tours de 26/10 — `docs/diagnostico_docking_tour_2026-10-26.md`,
+  F14/C2): o `general_goal_checker` do Nav2 aceita a staging sem olhar velocidade e a base ainda
+  gira 0,2–0,5 rad/s por ~1 s depois do "Reached the goal"; o align partia nesse transitório e o
+  esquadro por AMCL lia o erro mudando ~15°/s. Agora o `GoToWS` tem a etapa `parada_staging`
+  entre o Nav2 (ou o `/dock_robot` do rollback `use_opennav_approach`) e o `align_to_dock`, com o
+  mesmo detector e os mesmos `stop_check_*` da parada pós-align. Diferença de política: no
+  timeout (`stop_check_timeout_s`) só **avisa e segue** para o align (o align comanda a base de
+  qualquer forma; o gate duro continua sendo a parada pós-align). `stop_check_enabled:=false`
+  desliga as duas. Log: `[WSn] base parada em 1.1 s apos a staging (yaw mudou +6.3 graus; ...)`
+  ou `base AINDA EM MOVIMENTO 3.0 s apos a staging ... sigo para o align`; a parada pós-align
+  também passou a informar `yaw mudou ... desde o align`. No resumo da estação aparece
+  `parada_staging 1.1 s`.
 
 - Ordem das juntas na pega (28/08, pedido do operador): na aproximação por cima o pick
   gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto

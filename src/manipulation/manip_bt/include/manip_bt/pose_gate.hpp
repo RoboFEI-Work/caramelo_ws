@@ -145,6 +145,12 @@ inline PoseGateVerdict evaluatePoseGate(const AlignOutcome & r, const PoseGateLi
 // roda nao gira abaixo de 2,43 rad/s) — qualquer movimento real aparece
 // bem acima de 0,02 m/s / 0,05 rad/s; a janela de 0,5 s cobre a retencao da
 // referencia pelo ESC (~0,5 s medido em campo, docs/docking_alinhamento_holonomico.md).
+//
+// Yaw (opcional, 2026-10-26, F14/C2): o detector tambem roda ANTES do align,
+// logo apos o Nav2 dizer "Reached the goal", quando a base ainda gira
+// 0,2-0,5 rad/s por ~1 s. Para o log dizer quanto o rumo mudou enquanto se
+// esperava, `feed` aceita o yaw da odometria e `yawDrift()` devolve a
+// diferenca (embrulhada) entre a primeira e a ultima amostra desde o reset.
 class StopDetector
 {
 public:
@@ -173,9 +179,11 @@ public:
     last_lin_ = last_ang_ = 0.0;
     quiet_since_ = std::nan("");
     samples_ = 0;
+    yaw_first_ = yaw_last_ = std::nan("");
   }
 
-  void feed(double t, double vx, double vy, double wz)
+  // `yaw` (rad, frame da odometria) e' opcional: NaN = nao acompanhar.
+  void feed(double t, double vx, double vy, double wz, double yaw = std::nan(""))
   {
     const double lin = std::hypot(vx, vy);
     const double ang = std::fabs(wz);
@@ -184,6 +192,12 @@ public:
     last_lin_ = lin;
     last_ang_ = ang;
     ++samples_;
+    if (std::isfinite(yaw)) {
+      if (!std::isfinite(yaw_first_)) {
+        yaw_first_ = yaw;
+      }
+      yaw_last_ = yaw;
+    }
     const bool quiet = std::isfinite(lin) && std::isfinite(ang) &&
       lin <= lim_.max_lin && ang <= lim_.max_ang;
     if (!quiet) {
@@ -210,6 +224,18 @@ public:
   double lastAng() const {return last_ang_;}
   double lastSampleTime() const {return t_last_;}
   int samples() const {return samples_;}
+  // Quanto o yaw da odometria mudou desde o reset (ultima - primeira amostra
+  // com yaw), em rad embrulhado em (-pi, pi]; 0 sem yaw alimentado.
+  double yawDrift() const
+  {
+    if (!std::isfinite(yaw_first_) || !std::isfinite(yaw_last_)) {
+      return 0.0;
+    }
+    double d = yaw_last_ - yaw_first_;
+    while (d > M_PI) {d -= 2.0 * M_PI;}
+    while (d <= -M_PI) {d += 2.0 * M_PI;}
+    return d;
+  }
   // Tempo continuo parado ate a ultima amostra (0 se em movimento/sem amostra).
   double quietFor() const
   {
@@ -229,6 +255,8 @@ private:
   double last_ang_{0.0};
   double quiet_since_{std::nan("")};
   int samples_{0};
+  double yaw_first_{std::nan("")};
+  double yaw_last_{std::nan("")};
 };
 
 inline const char * stopStateName(StopDetector::State state)

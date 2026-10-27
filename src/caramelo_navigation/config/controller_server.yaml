@@ -7,15 +7,26 @@ controller_server:
     min_y_velocity_threshold: 0.001 # Permite comando lateral do mecanum.
     min_theta_velocity_threshold: 0.001 # Ignora ruido muito pequeno em wz.
     failure_tolerance: 0.3 # Tempo maximo de falha antes de abortar.
-    progress_checker_plugin: "progress_checker"
+    progress_checker_plugins: ["progress_checker"] # Jazzy: lista (a chave singular antiga era ignorada; o id default coincidia).
     goal_checker_plugins: ["position_goal_checker", "general_goal_checker"]
     controller_plugins: ["DWBHolonomic", "FollowPath", "MPPIHolonomic"] # DWB e o principal; RPP/MPPI ficam experimentais.
     odom_topic: /odom
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker" # Verifica se o robo continua avancando.
+      # Simple -> Pose (2026-10-26, F26/C8): o SimpleProgressChecker so conta
+      # TRANSLACAO; o giro no lugar do RotationShim (0.35 rad/s, engaja acima
+      # de angular_dist_threshold) passa dos 6 s sem transladar 0.10 m nas
+      # pernas com giro grande (>= 100-120 graus); isso disparava "Failed to
+      # make progress" em 12-15 das pernas dos tours (22 vezes nos 2 tours), cada um limpando o
+      # costmap local inteiro e puxando BackUp cego de 0.10 m (staging da
+      # WS5-T2 com long -10 cm). O PoseProgressChecker (herda radius/time do
+      # Simple) tambem aceita rotacao >= required_movement_angle como progresso.
+      # Plugin registrado em /opt/ros/jazzy/share/nav2_controller/plugins.xml.
+      plugin: "nav2_controller::PoseProgressChecker" # Verifica se o robo continua avancando OU girando.
       required_movement_radius: 0.10 # 0.5->0.10: 10cm ja conta como progresso (nav normal reseta facil); detecta travamento real mais cedo.
+      required_movement_angle: 0.5 # rad (~29 graus): giro no lugar conta como progresso; 0.5 rad a 0.35 rad/s = 1.4 s, folgado dentro dos 6 s.
       movement_time_allowance: 6.0 # 10->6: dispara a recovery (backup) em 6s em vez de 10s, mas ainda cabe uma rotacao final saudavel (~3s com slowing_factor 8).
+      # Rollback (ate 2026-10-26): plugin: "nav2_controller::SimpleProgressChecker", required_movement_radius: 0.10, movement_time_allowance: 6.0 (sem required_movement_angle).
 
     position_goal_checker:
       plugin: "nav2_controller::PositionGoalChecker" # Para goals de RViz em que importa chegar no ponto, nao no yaw.
@@ -173,7 +184,9 @@ controller_server:
       trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
       short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
       stateful: true # Mantem estado ao aproximar do goal.
-      # ObstacleFootprint (nao BaseObstacle): avalia o FOOTPRINT real 0.79x0.39 m
+      # ObstacleFootprint (nao BaseObstacle): avalia o FOOTPRINT real 0.68x0.39 m
+      # (x -0.285..+0.395, y +-0.195, circunscrito 0.40 m; o "0.79x0.39" antigo
+      # estava errado; conferido no footprint do costmap local, 2026-10-26, F24)
       # contra o costmap, em vez do custo no CENTRO do robo. Com BaseObstacle o
       # centro entrava na zona inflada perto de caixas e TODAS as trajetorias
       # viravam invalidas — robo congelava a ~0.3 m do obstaculo.

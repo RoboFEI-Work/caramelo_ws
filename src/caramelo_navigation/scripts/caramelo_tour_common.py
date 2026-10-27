@@ -183,10 +183,27 @@ def load_dock_entries(docking_data: dict,
 # ------------------------------------------------------------ resultados
 # Status de um dock no relatorio.
 STATUS_OK = "ok"
-STATUS_WARN = "ok_aviso"      # chegou, mas o align ressalvou o yaw
+STATUS_WARN = "ok_aviso"      # chegou dentro das tolerancias, mas o align ressalvou (yaw_nao_medido etc.)
+STATUS_FAIL_POSE = "reprovada"  # encostou, mas a pose final estourou yaw_tol/y_max (AMCL ou LiDAR)
 STATUS_FAIL = "falhou"
 STATUS_CANCELED = "cancelado"
 STATUS_SKIPPED = "pulado"
+
+# Tolerancias da pose final (2026-10-26, F6/C7: o status ok/ok_aviso vinha so
+# do prefixo da message do align e "ok_aviso" contava como dock ok: "9 de 9
+# docks ok" com a WS1 a -31,3 graus). Classificamos PELOS NUMEROS:
+#   YAW_TOL_RAD = default_yaw_tolerance do dock_align_node (0,09 rad = 5,2 graus;
+#                 secao 6 do diagnostico: x*tan(yaw) = 2,2 cm a 0,25 m).
+#   FINAL_Y_MAX_M = 0,10 m PROVISORIO, derivado na secao 6 (alcance do braco e
+#                 fila de nudge); vale ate o teste T7 confirmar com trena.
+YAW_TOL_RAD = 0.09
+FINAL_Y_MAX_M = 0.10
+
+# Fonte do final_yaw_error do align (contrato do AlignToDock.action, mesmo
+# criterio do classifyAlignMessage em manip_bt/pose_gate.hpp): yaw da FACE
+# pelo LiDAR, ou AMCL quando a message comeca com 'yaw_nao_medido'.
+YAW_SRC_LIDAR = "lidar"
+YAW_SRC_AMCL = "amcl"
 
 # Fluxos de chegada (o mesmo nome aparece no relatorio).
 FLOW_STAGING_ALIGN = "staging+align"    # GoToWS padrao: Nav2 ate a staging, align faz o approach
@@ -215,10 +232,26 @@ class DockReport:
     align_x: Optional[float] = None     # final_x_error reportado pelo align (front - stop)
     align_y: Optional[float] = None
     align_yaw: Optional[float] = None   # yaw da face pelo LiDAR (ou AMCL se yaw_nao_medido)
+    # Espera de parada na staging (2026-10-26, F14/C2: a linha "na staging"
+    # era lida com a base ainda girando 0,2-0,5 rad/s). staging_err_moving =
+    # erro em Reached+0,5 s (como antes); staging_err = apos a base parar.
+    staging_err_moving: Optional[Pose2D] = None
+    t_stop: Optional[float] = None      # s esperados pela parada (/odom)
+    stop_ok: Optional[bool] = None      # False = estourou o teto (ou sem /odom) e seguiu
+    pose_verdict: str = ""              # motivo da reprovacao (classify_dock)
 
     @property
     def reached(self) -> bool:
-        return self.status in (STATUS_OK, STATUS_WARN)
+        """Chegou e ENCOSTOU (o proximo dock precisa de undock). Inclui a
+        reprovada: a pose esta ruim, mas o robo esta fisicamente no dock."""
+        return self.status in (STATUS_OK, STATUS_WARN, STATUS_FAIL_POSE)
+
+    @property
+    def staging_yaw_drift(self) -> Optional[float]:
+        """Quanto o yaw na staging mudou entre Reached+0,5 s e a parada (rad)."""
+        if self.staging_err is None or self.staging_err_moving is None:
+            return None
+        return normalize_angle(self.staging_err[2] - self.staging_err_moving[2])
 
     @property
     def t_total(self) -> float:
@@ -232,13 +265,135 @@ class DockReport:
 
 
 def align_status(message: str) -> str:
-    """Sucesso do align: 'ok', ou 'ok_aviso' quando a message vem com a
-    ressalva do dock_align_node ('yaw_fora_da_tolerancia (x graus)' ou
-    'yaw_nao_medido' na frente)."""
+    """Ressalva do align pela MESSAGE: 'ok', ou 'ok_aviso' quando vem com
+    'yaw_fora_da_tolerancia (x graus)' ou 'yaw_nao_medido' na frente. Desde
+    2026-10-26 e so a segunda palavra: o status final sai de classify_dock,
+    que olha os numeros (F6/C7)."""
     text = (message or "").strip()
     if text.startswith("yaw_fora_da_tolerancia") or text.startswith("yaw_nao_medido"):
         return STATUS_WARN
     return STATUS_OK
+
+
+def align_yaw_source(message: str) -> str:
+    """De onde veio o final_yaw_error do align: LiDAR (face) ou AMCL quando
+    a message comeca com 'yaw_nao_medido' (F7: o relatorio misturava as duas)."""
+    text = (message or "").strip()
+    return YAW_SRC_AMCL if text.startswith("yaw_nao_medido") else YAW_SRC_LIDAR
+
+
+def classify_dock(rep: DockReport, yaw_tol: float = YAW_TOL_RAD,
+                  y_max: float = FINAL_Y_MAX_M) -> Tuple[str, str]:
+    """Status final de um dock que ENCOSTOU, pelos numeros (2026-10-26, F6/C7):
+    (status, motivo). Reprova (STATUS_FAIL_POSE) se |yaw| > yaw_tol ou
+    |lat| > y_max por QUALQUER fonte: tour (err_lat/err_yaw, AMCL no frame do
+    dock) ou align (align_y AMCL, align_yaw LiDAR, ou AMCL se yaw_nao_medido,
+    que entao tambem reprova). Sem reprovacao: 'ok_aviso' se a message do
+    align tem ressalva, senao 'ok'. Navegacao pura (FINISH/START) nao e
+    docking: fica 'ok' (a tolerancia ali e a do Nav2, nao a da manipulacao)."""
+    if rep.flow == FLOW_NAV_ONLY:
+        return STATUS_OK, ""
+    yaw_src = align_yaw_source(rep.align_message)
+    checks = (
+        ("lat AMCL", rep.err_lat, y_max, "cm"),
+        ("yaw AMCL", rep.err_yaw, yaw_tol, "graus"),
+        ("lat align", rep.align_y, y_max, "cm"),
+        (f"yaw align/{yaw_src}", rep.align_yaw, yaw_tol, "graus"),
+    )
+    bad = []
+    for label, value, limit, unit in checks:
+        if value is None or not math.isfinite(value):
+            continue
+        if abs(value) > limit:
+            if unit == "cm":
+                bad.append(f"{label} {value * 100.0:+.1f} > {limit * 100.0:.1f} cm")
+            else:
+                bad.append(f"{label} {math.degrees(value):+.1f} > {math.degrees(limit):.1f} graus")
+    if bad:
+        return STATUS_FAIL_POSE, "; ".join(bad)
+    if all(v is None for _l, v, _m, _u in checks):
+        # Sem nenhum numero (ex. sem TF map->base_footprint) nao da para
+        # dizer "ok pelos numeros": aviso, para nao inflar o "docks ok".
+        return STATUS_WARN, "sem medida de pose"
+    return align_status(rep.align_message), ""
+
+
+# ------------------------------------------------------- parada (/odom)
+# Espera a base PARAR antes de medir a staging e chamar o align (2026-10-26,
+# F14/C2: o Nav2 declara "Reached the goal" com a base ainda girando 0,2-0,5
+# rad/s; a TF mudava +6,7..+7,8 graus em 0,4 s). Mesmos limiares do
+# StopDetector do GoToWS (manip_bt/pose_gate.hpp: stop_check_max_lin 0,02 m/s,
+# stop_check_max_ang 0,05 rad/s, janela 0,5 s, teto 3 s). Logica pura: quem
+# assina o /odom alimenta `feed(t, vx, vy, wz)`; `wait_for_stop` faz o laco.
+STOP_NO_ODOM = "sem_odom"
+STOP_MOVING = "movendo"
+STOP_STOPPED = "parado"
+
+
+@dataclass
+class StopLimits:
+    max_lin: float = 0.02      # m/s, modulo de (vx, vy)
+    max_ang: float = 0.05      # rad/s, |wz|
+    window_s: float = 0.5      # tempo continuo abaixo dos limites
+    timeout_s: float = 3.0     # teto da espera (estourou: WARN e segue)
+    max_age_s: float = 0.5     # idade maxima da ultima amostra
+
+
+class StopDetector:
+    """Parado = TODAS as amostras desde `quiet_since` (>= t_reset) abaixo dos
+    limites por >= window_s E a ultima amostra fresca (<= max_age_s). Amostra
+    acima do limite reinicia a janela; sem amostra fresca = sem_odom."""
+
+    def __init__(self, limits: Optional[StopLimits] = None, t_reset: float = 0.0):
+        self.lim = limits or StopLimits()
+        self.reset(t_reset)
+
+    def reset(self, t_now: float):
+        self.t_reset = t_now
+        self.t_last: Optional[float] = None
+        self.quiet_since: Optional[float] = None
+        self.samples = 0
+        self.last_lin = 0.0
+        self.last_ang = 0.0
+
+    def feed(self, t: float, vx: float, vy: float, wz: float):
+        lin, ang = math.hypot(vx, vy), abs(wz)
+        self.t_last, self.last_lin, self.last_ang = t, lin, ang
+        self.samples += 1
+        quiet = (math.isfinite(lin) and math.isfinite(ang)
+                 and lin <= self.lim.max_lin and ang <= self.lim.max_ang)
+        if not quiet:
+            self.quiet_since = None
+        elif self.quiet_since is None:
+            self.quiet_since = max(t, self.t_reset)
+
+    def state(self, t_now: float) -> str:
+        if self.t_last is None or t_now - self.t_last > self.lim.max_age_s:
+            return STOP_NO_ODOM
+        # A janela e medida ate a ULTIMA AMOSTRA (t_last), nao ate o relogio,
+        # igual ao StopDetector::evaluate do pose_gate.hpp: uma unica amostra
+        # quieta seguida de silencio do /odom (ate max_age_s) NAO vira "parado".
+        # So amostras confirmam a parada; o relogio so decide a idade.
+        if self.quiet_since is None or self.t_last - self.quiet_since < self.lim.window_s:
+            return STOP_MOVING
+        return STOP_STOPPED
+
+
+def wait_for_stop(detector: StopDetector, clock, spin_once,
+                  timeout_s: Optional[float] = None) -> Tuple[bool, float, str]:
+    """Laco da espera: (parou, segundos esperados, estado final). `spin_once`
+    deixa as amostras chegarem (rclpy.spin_once no robo; no teste, injeta a
+    proxima amostra sintetica e avanca o relogio). Teto = detector.lim.timeout_s."""
+    timeout_s = detector.lim.timeout_s if timeout_s is None else timeout_s
+    t0 = clock()
+    while True:
+        now = clock()
+        state = detector.state(now)
+        if state == STOP_STOPPED:
+            return True, now - t0, state
+        if now - t0 >= timeout_s:
+            return False, now - t0, state
+        spin_once()
 
 
 # ------------------------------------------------------------------- voz
@@ -259,8 +414,15 @@ def speech_failed(dock_id: str, reason: str) -> str:
     return f"!Dock {dock_id} falhou: {reason}"
 
 
-def speech_summary(n_reached: int, n_total: int) -> str:
-    return f"!Tour terminado: {n_reached} de {n_total} docks ok"
+def speech_summary(n_ok: int, n_total: int, n_warn: int = 0, n_fail_pose: int = 0) -> str:
+    """'!Tour terminado: 2 de 9 docks ok, 1 com aviso, 6 reprovadas'. Desde
+    2026-10-26 'ok' nao inclui ok_aviso nem reprovada (F6)."""
+    text = f"!Tour terminado: {n_ok} de {n_total} docks ok"
+    if n_warn:
+        text += f", {n_warn} com aviso"
+    if n_fail_pose:
+        text += f", {n_fail_pose} reprovada" + ("s" if n_fail_pose > 1 else "")
+    return text
 
 
 # ------------------------------------------------------------- relatorio
@@ -287,6 +449,15 @@ def _fmt_pose(pose: Optional[Pose2D]) -> str:
     return f"({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):+.1f} graus)"
 
 
+def _fmt_stop(rep: DockReport) -> str:
+    """'0.9 s, +6.7 graus' (espera pela parada e deriva do yaw na staging);
+    '!' na frente quando a espera estourou o teto ou nao havia /odom."""
+    if rep.t_stop is None:
+        return "-"
+    text = f"{rep.t_stop:.1f} s, {_fmt_deg(rep.staging_yaw_drift)} graus"
+    return text if rep.stop_ok else "! " + text
+
+
 def _fmt_err3(err: Optional[Pose2D]) -> str:
     if err is None:
         return "-"
@@ -294,8 +465,11 @@ def _fmt_err3(err: Optional[Pose2D]) -> str:
 
 
 def summarize(reports: Sequence[DockReport]) -> dict:
-    """Totais do tour: contagens por status, tempo total e piores erros."""
-    counts = {s: 0 for s in (STATUS_OK, STATUS_WARN, STATUS_FAIL, STATUS_CANCELED, STATUS_SKIPPED)}
+    """Totais do tour: contagens por status, tempo total e piores erros.
+    n_ok conta SO 'ok' (2026-10-26, F6: ok_aviso e reprovada ficam fora);
+    n_reached = quantos encostaram (inclui aviso e reprovada)."""
+    counts = {s: 0 for s in (STATUS_OK, STATUS_WARN, STATUS_FAIL_POSE, STATUS_FAIL,
+                             STATUS_CANCELED, STATUS_SKIPPED)}
     for rep in reports:
         counts[rep.status] = counts.get(rep.status, 0) + 1
     reached = [r for r in reports if r.reached]
@@ -306,6 +480,10 @@ def summarize(reports: Sequence[DockReport]) -> dict:
     return {
         "n_total": len(reports),
         "n_reached": len(reached),
+        "n_ok": counts[STATUS_OK],
+        "n_warn": counts[STATUS_WARN],
+        "n_fail_pose": counts[STATUS_FAIL_POSE],
+        "fail_pose_ids": [r.dock_id for r in reports if r.status == STATUS_FAIL_POSE],
         "counts": counts,
         "total_s": sum(r.t_total for r in reports),
         "worst_xy": (worst_xy.dock_id, worst_xy.err_xy) if worst_xy else None,
@@ -343,10 +521,14 @@ def format_table(reports: Sequence[DockReport]) -> str:
 
 
 def summary_line(summary: dict) -> str:
+    """'Totais: 2 ok / 1 com aviso / 6 reprovadas (WS1, WS3) de 9 docks, ...'."""
     counts = summary["counts"]
-    parts = [f"{summary['n_reached']} de {summary['n_total']} docks ok"]
-    if counts.get(STATUS_WARN):
-        parts.append(f"{counts[STATUS_WARN]} com aviso")
+    n_fail = summary['n_fail_pose']
+    head = (f"{summary['n_ok']} ok / {summary['n_warn']} com aviso / "
+            f"{n_fail} reprovada" + ("" if n_fail == 1 else "s"))
+    if summary["fail_pose_ids"]:
+        head += f" ({', '.join(summary['fail_pose_ids'])})"
+    parts = [head + f" de {summary['n_total']} docks"]
     if counts.get(STATUS_FAIL):
         parts.append(f"{counts[STATUS_FAIL]} falhou")
     if counts.get(STATUS_CANCELED):
@@ -363,9 +545,18 @@ def summary_line(summary: dict) -> str:
     return text + "."
 
 
+def tour_exit_code(summary: dict) -> int:
+    """0 so se TODOS os docks sairam 'ok' ou 'ok_aviso'; 1 se houve reprovada
+    (2026-10-26, F6/C7: antes 'ok_aviso' passava e a reprovada nem existia),
+    falha, cancelamento ou dock pulado."""
+    n_passed = summary["n_ok"] + summary["n_warn"]
+    return 0 if n_passed == summary["n_total"] else 1
+
+
 def format_report_md(reports: Sequence[DockReport], *, map_name: str, map_folder: str,
                      started: datetime.datetime, finished: datetime.datetime,
-                     command: str, flow_text: str) -> str:
+                     command: str, flow_text: str, yaw_tol: float = YAW_TOL_RAD,
+                     y_max: float = FINAL_Y_MAX_M) -> str:
     """Relatorio markdown: cabecalho, tabela por dock, totais, detalhes e
     legenda (como ler os erros)."""
     summary = summarize(reports)
@@ -389,19 +580,23 @@ def format_report_md(reports: Sequence[DockReport], *, map_name: str, map_folder
         "",
         "## Detalhes",
         "",
-        "| Dock | Fluxo | Pose final (x, y, yaw) | Staging: long / lat, yaw | Align reportou: x / y cm, yaw_face | Etapa que falhou |",
-        "|---|---|---|---|---|---|",
+        "| Dock | Fluxo | Pose final (x, y, yaw) | Staging: long / lat, yaw | "
+        "Parada: espera s, deriva yaw | Align: front x / lat y cm, yaw_face (fonte) | "
+        "Reprovada por | Etapa que falhou |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for rep in reports:
         align = "-"
         if rep.align_x is not None or rep.align_y is not None or rep.align_yaw is not None:
+            # yaw_face marcado pela FONTE (F7: LiDAR ou AMCL em yaw_nao_medido).
             align = (f"{_fmt_cm(rep.align_x)} / {_fmt_cm(rep.align_y)} cm, "
-                     f"{_fmt_deg(rep.align_yaw)} graus")
+                     f"{_fmt_deg(rep.align_yaw)} graus ({align_yaw_source(rep.align_message)})")
             if rep.align_message:
                 align += f" ({rep.align_message.replace('|', '/')})"
         out.append(
             f"| {rep.dock_id} | {rep.flow or '-'} | {_fmt_pose(rep.robot_pose)} | "
-            f"{_fmt_err3(rep.staging_err)} | {align} | {rep.failed_stage or '-'} |")
+            f"{_fmt_err3(rep.staging_err)} | {_fmt_stop(rep)} | {align} | "
+            f"{rep.pose_verdict or '-'} | {rep.failed_stage or '-'} |")
     out += [
         "",
         "## Como ler",
@@ -412,11 +607,21 @@ def format_report_md(reports: Sequence[DockReport], *, map_name: str, map_folder
         "Erro sistematico no mesmo sentido em todas as visitas = pose do dock mal gravada; "
         "erro que varia = Nav2/AMCL/align instavel naquele ponto.",
         "- Staging: o mesmo erro, medido na pre-docking (pose do dock + staging_x_offset) "
-        "logo apos o Nav2, antes do align.",
-        "- Align reportou: `final_x_error` = front - stop pelo LiDAR (+ = longe da mesa), "
-        "`final_y_error` = lateral pelo AMCL, `final_yaw_error` = yaw da face pelo LiDAR "
-        "(ou pelo AMCL quando `yaw_nao_medido`). Status `ok_aviso` = alinhou, mas com "
-        "`yaw_fora_da_tolerancia` ou `yaw_nao_medido` na mensagem.",
+        "apos o Nav2 e DEPOIS de a base parar (/odom |v| <= 0,02 m/s e |w| <= 0,05 rad/s "
+        "por 0,5 s, teto 3 s), antes do align. Parada: quanto esperou e quanto o yaw "
+        "mudou entre Reached+0,5 s e a parada (deriva; `!` = estourou o teto ou sem /odom).",
+        "- Align: `final_x_error` = front final - stop pelo LiDAR (+ = longe da mesa; o "
+        "front ABSOLUTO nao vem no result, fica na linha `pronto:` do log do dock_align_node), "
+        "`final_y_error` = lateral pelo AMCL, `final_yaw_error` = yaw_face pela FONTE "
+        "marcada: lidar (face da mesa) ou amcl (quando `yaw_nao_medido`).",
+        "- SINAIS: Long/Lat/Yaw do tour = robo - dock no frame do DOCK (Lat + = esquerda). "
+        "x/y/yaw do align tem a convencao OPOSTA = alvo - robo no frame do ROBO (y + = alvo "
+        "a esquerda do robo, ou seja, robo a direita); por isso Lat + align_y ~ 0. "
+        "yaw_face + = o robo precisa girar CCW (anti-horario) para ficar de frente.",
+        f"- Status pelos NUMEROS: `reprovada` = |yaw| > {math.degrees(yaw_tol):.1f} graus ou "
+        f"|lat| > {y_max * 100.0:.0f} cm por qualquer fonte (tour/AMCL ou align/LiDAR-AMCL); "
+        "`ok_aviso` = dentro das tolerancias, mas com `yaw_fora_da_tolerancia`/`yaw_nao_medido` "
+        "na mensagem do align; so `ok` conta como dock ok.",
         "- Tempos: Undock = /undock_robot; Nav = Nav2 ate a staging (ou /dock_robot, ou "
         "navegacao pura no FINISH); Align = align_to_dock (approach + alinhamento).",
     ]

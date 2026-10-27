@@ -164,6 +164,12 @@ docks:
     - -5.7086
     - -1.617509
     id: WS6
+    # 2026-10-26 (diagnostico do tour, F20): bloco/parede a 0,42 m a esquerda
+    # do eixo, comecando 5 cm a frente do dock, cai dentro da janela global do
+    # refino (refine_half_width_y 0,45; 57 celulas do mapa vs 11 em 0,35) e o
+    # fit do staging reprovava por residuo 46-53 mm nos dois tours. Janela
+    # lateral so' desta mesa; o dock_align_node le' (opennav ignora a chave).
+    refine_half_width_y: 0.35
   SH1:
     type: caramelo_sh1_dock
     frame: map

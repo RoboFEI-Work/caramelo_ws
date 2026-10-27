@@ -42,14 +42,18 @@ GoToWSBT::GoToWSBT(const std::string & name, const BT::NodeConfiguration & confi
   // Odometria do EKF (mesma fonte do nudge_base): alimenta o detector de
   // parada. Idade pela hora de CHEGADA (relogio da Pi nao e' confiavel —
   // mesma regra do dock_align_node). SensorDataQoS casa com reliable ou
-  // best-effort do publicador.
+  // best-effort do publicador. O yaw vai junto so' para o log dizer quanto o
+  // rumo mudou enquanto se esperava a parada (F14, 2026-10-26).
   odom_topic_ = stringParamOr("odom_topic", "/odom");
   odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
     odom_topic_, rclcpp::SensorDataQoS(),
     [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
+      const auto & q = msg->pose.pose.orientation;
+      const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
       stop_detector_.feed(
         nowSeconds(), msg->twist.twist.linear.x, msg->twist.twist.linear.y,
-        msg->twist.twist.angular.z);
+        msg->twist.twist.angular.z, yaw);
     });
 }
 
@@ -458,6 +462,66 @@ bool GoToWSBT::startStagingNav()
   return true;
 }
 
+// Parada ANTES do align (2026-10-26, F14/C2): o general_goal_checker do Nav2
+// aceita a staging sem olhar velocidade e a base ainda gira 0,22-0,50 rad/s
+// por ~0,7-1 s depois do "Reached the goal" (11 chegadas nos tours de 26/10,
+// LiDAR e AMCL concordam). O align partia nesse transitorio e o esquadro por
+// AMCL lia o erro mudando ~15 graus/s. Mesmo detector e parametros
+// stop_check_* da parada pos-align; a diferenca e' a politica no timeout:
+// aqui so' WARN e segue, porque o align vai comandar a base de qualquer
+// forma e a parada pos-align (gate duro) continua valendo.
+BT::NodeStatus GoToWSBT::startStagingStop()
+{
+  if (!stop_check_enabled_) {
+    if (!startAlign()) {
+      return fail("falha ao iniciar o approach/alinhamento.");
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+  stop_detector_.reset(nowSeconds());
+  stage_ = Stage::kStagingStop;
+  markStage("parada_staging");
+  armDeadline(stop_check_timeout_s_);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus GoToWSBT::onStagingStopTick()
+{
+  const auto state = stop_detector_.evaluate(nowSeconds());
+  const double waited_s = nowSeconds() - stage_start_s_;
+  const double drift_deg = stop_detector_.yawDrift() * 180.0 / M_PI;
+  if (state == StopDetector::State::kStopped) {
+    RCLCPP_INFO(logger(),
+      "[%s] base parada em %.1f s apos a staging (yaw mudou %+.1f graus; quieta ha "
+      "%.1f s, ultima amostra v=%.3f w=%.3f, %d amostras) — iniciando o align.",
+      dock_id_.c_str(), waited_s, drift_deg, stop_detector_.quietFor(),
+      stop_detector_.lastLin(), stop_detector_.lastAng(), stop_detector_.samples());
+  } else if (!deadlineExpired()) {
+    return BT::NodeStatus::RUNNING;
+  } else if (state == StopDetector::State::kNoOdom) {
+    // Sem odometria nao da' para saber se parou; a parada pos-align e' quem
+    // aplica stop_check_require_odom. Aqui segue para nao travar o docking.
+    RCLCPP_WARN(logger(),
+      "[%s] sem odometria fresca em '%s' nos %.1f s apos a staging (%d amostras): "
+      "parada antes do align NAO verificada; sigo para o align (a parada pos-align "
+      "decide por stop_check_require_odom=%s).",
+      dock_id_.c_str(), odom_topic_.c_str(), stop_check_timeout_s_,
+      stop_detector_.samples(), stop_check_require_odom_ ? "true" : "false");
+  } else {
+    RCLCPP_WARN(logger(),
+      "[%s] base AINDA EM MOVIMENTO %.1f s apos a staging (ultima amostra v=%.3f m/s, "
+      "w=%.3f rad/s; yaw mudou %+.1f graus; parada ha %.2f s de %.2f s exigidos): "
+      "sigo para o align assim mesmo — a parada pos-align e' que decide.",
+      dock_id_.c_str(), stop_check_timeout_s_, stop_detector_.lastLin(),
+      stop_detector_.lastAng(), drift_deg, stop_detector_.quietFor(),
+      stop_detector_.limits().window_s);
+  }
+  if (!startAlign()) {
+    return fail("falha ao iniciar o approach/alinhamento.");
+  }
+  return BT::NodeStatus::RUNNING;
+}
+
 bool GoToWSBT::startAlign()
 {
   const double wait_timeout = paramOr("server_wait_timeout", 10.0);
@@ -621,10 +685,10 @@ BT::NodeStatus GoToWSBT::onStopCheckTick()
   if (state == StopDetector::State::kStopped) {
     RCLCPP_INFO(logger(),
       "[%s] base parada: %.1f s abaixo de v<=%.3f m/s, w<=%.3f rad/s "
-      "(ultima amostra v=%.3f w=%.3f, %d amostras).",
+      "(ultima amostra v=%.3f w=%.3f, %d amostras; yaw mudou %+.1f graus desde o fim do align).",
       dock_id_.c_str(), stop_detector_.quietFor(), stop_detector_.limits().max_lin,
       stop_detector_.limits().max_ang, stop_detector_.lastLin(), stop_detector_.lastAng(),
-      stop_detector_.samples());
+      stop_detector_.samples(), stop_detector_.yawDrift() * 180.0 / M_PI);
     return finishSuccess(true);
   }
   if (!deadlineExpired()) {
@@ -663,8 +727,13 @@ BT::NodeStatus GoToWSBT::onRunning()
 {
   rclcpp::spin_some(node_);
 
+  // As duas esperas de parada usam o deadline como TIMEOUT proprio (nao e'
+  // falha de etapa): tratadas antes da checagem generica abaixo.
   if (stage_ == Stage::kStopCheck) {
     return onStopCheckTick();
+  }
+  if (stage_ == Stage::kStagingStop) {
+    return onStagingStopTick();
   }
 
   if (deadlineExpired()) {
@@ -716,10 +785,9 @@ BT::NodeStatus GoToWSBT::onRunning()
           last_note_ = AlignNote{};
           return startStopCheck();
         }
-        if (!startAlign()) {
-          return fail("falha ao iniciar o alinhamento fino.");
-        }
-        return BT::NodeStatus::RUNNING;
+        // Rollback uniciclo tambem navega antes do align: mesma espera de
+        // parada do fluxo padrao (F14).
+        return startStagingStop();
       }
     case Stage::kStagingNav: {
         rclcpp_action::ClientGoalHandle<NavigateToPose>::WrappedResult result;
@@ -742,10 +810,9 @@ BT::NodeStatus GoToWSBT::onRunning()
             "[%s] skip_align=true nao se aplica ao fluxo sem opennav "
             "(o align faz o approach) — ignorando.", dock_id_.c_str());
         }
-        if (!startAlign()) {
-          return fail("falha ao iniciar o approach/alinhamento.");
-        }
-        return BT::NodeStatus::RUNNING;
+        // Nav2 sucedeu com a base ainda girando (F14): espera parar antes
+        // do align, em vez de chamar startAlign() direto.
+        return startStagingStop();
       }
     case Stage::kAligning: {
         rclcpp_action::ClientGoalHandle<AlignToDock>::WrappedResult result;
@@ -777,7 +844,8 @@ BT::NodeStatus GoToWSBT::onRunning()
         }
         return finishSuccess(false);
       }
-    case Stage::kStopCheck:  // tratado acima
+    case Stage::kStopCheck:  // tratados acima
+    case Stage::kStagingStop:
     case Stage::kIdle:
     default:
       return fail("estado interno invalido.");

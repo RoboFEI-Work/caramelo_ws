@@ -495,3 +495,452 @@ def test_yaw_nao_medido_nao_gira_pelo_amcl():
     assert needs(float("nan"), YAW_TOL) is False
     for amcl_deg in (18.3, 15.5):
         assert abs(math.radians(amcl_deg)) > 0.20
+
+
+# ---------------------------------------------------------------------------
+# Revisao 2026-10-26: tours 19:45/19:52 (WS1/WS2/WS3/WS6 tortas e fora do
+# centro; docs/diagnostico_docking_tour_2026-10-26.md). Helpers puros novos
+# do align_to_dock e os casos do plano (secao 11: I1, I2, I3c, I4, I8, R3, R6).
+# ---------------------------------------------------------------------------
+import re        # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+merge = dan.merge_refine_results
+veto = dan.amcl_square_veto
+tight = dan.median_if_tight
+yaw_stable = dan.yaw_readings_stable
+Still = dan._StillWindow
+lat_cut = dan.lateral_cut_reached
+refit_decide = dan.refit_square_decision
+parse_dock = dan.parse_dock_entry
+center_pts = dan.face_center_from_points
+FaceFit = dan._FaceFit
+
+AGREE_TOL = 0.035       # refine_yaw_agree_tol (2,0 graus)
+AMCL_MAX = dan._AMCL_SQUARE_MAX_ERR_DEFAULT   # amcl_square_max_err (0,20)
+BANK = (1.0, 2.0, 0.5)
+REFINED_1 = (1.02, 2.01, 0.37)   # 1a leitura confiante (WS1-T2: -7,6 graus aplicados)
+REFINED_2 = (1.03, 2.00, 0.36)
+
+
+# I2 — sequencia (ok, rejeitado) mantem confident e o alvo refinado.
+def test_i2_segunda_leitura_rejeitada_mantem_o_alvo_da_primeira():
+    """WS1-T2 (F13): a 1a chamada do refino aplicou -7,6 graus e a 2a
+    (residuo 21 mm) sobrescrevia confident=False, jogando fora o alvo e
+    disparando o esquadro por AMCL contra ele."""
+    target, ok = merge(BANK, (REFINED_1, True), (REFINED_1, False))
+    assert ok is True
+    assert target == REFINED_1
+
+
+def test_i2_duas_confiantes_usa_a_ultima():
+    target, ok = merge(BANK, (REFINED_1, True), (REFINED_2, True))
+    assert ok is True and target == REFINED_2
+
+
+def test_i2_so_a_segunda_confiante():
+    target, ok = merge(BANK, (BANK, False), (REFINED_2, True))
+    assert ok is True and target == REFINED_2
+
+
+def test_i2_nenhuma_confiante_volta_ao_banco():
+    """So' aqui o WARN 'usando pose do banco' e' verdadeiro."""
+    target, ok = merge(BANK, (BANK, False), (BANK, False))
+    assert ok is False and target == BANK
+
+
+# I1 — veto do esquadro por AMCL.
+def test_i1_ws6_amcl_cw_contra_lidar_ccw_e_pulado_por_sinal():
+    """WS6 nos dois tours: AMCL pedia -9,7 graus (CW) e os fits do LiDAR
+    (rejeitados por residuo) diziam +5/+6 (CCW). Duas leituras concordantes
+    com o sinal oposto ao do AMCL = nao gira (e o motivo logado e' o sinal,
+    nao o limite)."""
+    why = veto(math.radians(-9.7), [math.radians(6.3), math.radians(5.9)],
+               AGREE_TOL, YAW_TOL, AMCL_MAX)
+    assert "sentido oposto" in why
+    # Leituras +5,0/+4,2 (media 4,6 < 5,2): veto por 'ja' dentro da tolerancia'.
+    assert "dentro da tolerancia" in veto(
+        math.radians(-9.7), [math.radians(5.0), math.radians(4.2)], AGREE_TOL, YAW_TOL, AMCL_MAX)
+
+
+def test_i1_limite_de_giro_pelo_amcl():
+    """|eyaw0| = 0,25 rad > 0,20: pulado por limite, mesmo sem LiDAR; 0,15
+    (dentro da janela) e o proprio limite passam."""
+    why = veto(0.25, [], AGREE_TOL, YAW_TOL, AMCL_MAX)
+    assert "limite" in why
+    assert veto(-0.25, None, AGREE_TOL, YAW_TOL, AMCL_MAX) != ""
+    assert veto(0.15, [], AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    assert veto(AMCL_MAX, [], AGREE_TOL, YAW_TOL, AMCL_MAX) == ""   # no limite: passa
+
+
+def test_i1_janela_de_giro_do_amcl_nao_e_vazia():
+    """Revisao 2026-10-26: com amcl_square_max_err 0,12 e yaw_coast_est 0,10
+    o giro exigia |e| > 0,12 (yaw_min_corr) e o veto descartava |e| > 0,12 —
+    o caminho ligado era codigo morto. Com os defaults atuais (no' e launch)
+    existe erro em (yaw_min_corr, max_err] sem veto; a janela fechada e'
+    detectada por amcl_square_window (WARN no init)."""
+    node_src = open(SCRIPT, encoding="utf-8").read()
+    launch = os.path.join(HERE, "..", "launch", "docking_server.launch.py")
+    launch_src = open(launch, encoding="utf-8").read()
+    m = re.search(r'\{"yaw_coast_est":\s*([0-9.]+)\}', launch_src)
+    assert m, "launch sem yaw_coast_est"
+    yaw_coast_launch = float(m.group(1))
+    assert re.search(r'declare_parameter\("yaw_coast_est",\s*%s\)' % re.escape("%.2f" % yaw_coast_launch),
+                     node_src)
+    assert re.search(r'declare_parameter\("amcl_square_max_err",\s*_AMCL_SQUARE_MAX_ERR_DEFAULT\)',
+                     node_src)
+    ymin, aberta = dan.amcl_square_window(yaw_coast_launch, AMCL_MAX)
+    assert ymin == pytest.approx(MIN_CORR) and aberta
+    e = 0.5 * (ymin + AMCL_MAX)              # meio da janela
+    assert ymin < e <= AMCL_MAX
+    assert veto(e, [], AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    assert veto(-e, [math.radians(-7.0), math.radians(-6.5)], AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    # O bug original: 0,12 com yaw_coast 0,10 => fechada.
+    assert dan.amcl_square_window(0.10, 0.12) == (pytest.approx(0.12), False)
+    assert dan.amcl_square_window(0.10, 0.121)[1] is True
+
+
+def test_i1_lidar_dentro_da_tolerancia_nao_gira():
+    """LiDAR ve a face a +2/+3 graus (dentro de 5,2): o robo ja' esta'
+    esquadrado pela face; o AMCL pedindo +8 nao manda."""
+    why = veto(math.radians(8.0), [math.radians(2.0), math.radians(3.0)],
+               AGREE_TOL, YAW_TOL, AMCL_MAX)
+    assert "dentro da tolerancia" in why
+
+
+def test_i1_lidar_concordando_no_sentido_deixa_girar():
+    """-6 graus (0,105 rad <= 0,12) com o LiDAR no mesmo sentido: pode."""
+    assert veto(math.radians(-6.0), [math.radians(-7.0), math.radians(-6.5)],
+                AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+
+
+def test_i1_leituras_discordantes_nao_vetam():
+    """WS6-T1 real: +5,0 e +2,8 (2,2 graus > agree_tol): sem veto pelo
+    sinal — quem segura esse caso e' a guarda 'so' sem face nenhuma' do
+    chamador (o refino ACHOU a face e rejeitou por residuo), nao o veto:
+    -9,7 graus (0,169 rad) cabe no limite de 0,20. Acima do limite (-13
+    graus) o veto segura mesmo com leituras discordantes."""
+    assert veto(math.radians(-6.0), [math.radians(5.0), math.radians(2.8)],
+                AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    assert veto(math.radians(-6.0), [math.radians(5.0)], AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    assert veto(math.radians(-9.7), [math.radians(5.0), math.radians(2.8)],
+                AGREE_TOL, YAW_TOL, AMCL_MAX) == ""
+    assert "limite" in veto(math.radians(-13.0), [math.radians(5.0), math.radians(2.8)],
+                            AGREE_TOL, YAW_TOL, AMCL_MAX)
+
+
+def test_i1_sem_amcl_nao_gira():
+    assert veto(None, [], AGREE_TOL, YAW_TOL, AMCL_MAX) != ""
+    assert veto(float("nan"), [], AGREE_TOL, YAW_TOL, AMCL_MAX) != ""
+
+
+def test_i1_default_desligado_no_no_e_no_launch():
+    """TESTE DE FONTE (regex, nao de comportamento): amcl_square_enabled
+    nasce False no no' e e' passado False no launch. Guarda minima contra
+    alguem religar o esquadro por AMCL sem passar pelo diagnostico."""
+    node_src = open(SCRIPT, encoding="utf-8").read()
+    assert re.search(r'declare_parameter\("amcl_square_enabled",\s*False\)', node_src)
+    launch = os.path.join(HERE, "..", "launch", "docking_server.launch.py")
+    launch_src = open(launch, encoding="utf-8").read()
+    assert re.search(r'\{"amcl_square_enabled":\s*False\}', launch_src)
+
+
+# I1c — mediana so' com >= 5 amostras estaveis.
+def test_i1c_mediana_so_com_amostras_estaveis():
+    assert tight([0.10, 0.11, 0.10, 0.12, 0.11], 5, 0.02) == pytest.approx(0.11)
+    assert tight([0.10, 0.11, 0.10, 0.12], 5, 0.02) is None            # poucas
+    assert tight([0.05, 0.08, 0.10, 0.12, 0.14], 5, 0.02) is None      # mudando (F14)
+    assert tight([0.1, None, 0.1, float("nan"), 0.1, 0.1, 0.1], 5, 0.02) == pytest.approx(0.1)
+
+
+# I3c — base parada por odometria e yaw da face estavel.
+def test_i3c_janela_de_parada_fecha_so_depois_de_min_s():
+    s = Still(0.02, 0.05, 0.5)
+    t = 0.0
+    # Nav2 declarou chegada, base ainda girando 0,25 rad/s por 0,4 s (F14).
+    for _ in range(20):
+        t += 0.02
+        assert s.update(t, 0.0, 0.25) is False
+    t_stop = t
+    settled = None
+    for _ in range(100):
+        t += 0.02
+        if s.update(t, 0.0, 0.0):
+            settled = t
+            break
+    assert settled is not None
+    assert settled - t_stop == pytest.approx(0.5, abs=0.021)
+
+
+def test_i3c_amostra_em_movimento_reabre_a_janela():
+    s = Still(0.02, 0.05, 0.5)
+    t = 0.0
+    for _ in range(20):
+        t += 0.02
+        s.update(t, 0.0, 0.0)
+    t += 0.02
+    assert s.update(t, 0.03, 0.0) is False    # 3 cm/s > 2 cm/s
+    t_open = t
+    for _ in range(100):
+        t += 0.02
+        if s.update(t, 0.0, 0.0):
+            break
+    assert t - t_open == pytest.approx(0.5, abs=0.021)
+
+
+def test_i3c_simulador_de_odom_que_para_em_0_8s():
+    """Plano I3: odom que para em 0,8 s => a janela de 0,5 s fecha em ~1,3 s."""
+    s = Still(0.02, 0.05, 0.5)
+    t, closed = 0.0, None
+    while t < 3.0 and closed is None:
+        t += 0.02
+        wz = 0.3 if t < 0.8 else 0.0
+        if s.update(t, 0.0, wz):
+            closed = t
+    assert closed == pytest.approx(1.3, abs=0.03)
+
+
+def test_i3c_yaw_da_face_estavel():
+    eps = math.radians(0.5)
+    deriva = [math.radians(d) for d in (-4.6, -7.6, -9.7)]     # WS1-T2 em 0,33 s
+    assert yaw_stable(deriva, 3, eps) is False
+    parado = [math.radians(d) for d in (-9.7, -9.9, -9.6)]
+    assert yaw_stable(parado, 3, eps) is True
+    assert yaw_stable(parado[:2], 3, eps) is False               # poucas leituras
+    assert yaw_stable(deriva + parado, 3, eps) is True           # so' as ultimas n
+    # Revisao 2026-10-26: still_yaw_eps default 0,035 rad (2 graus) — o fit
+    # leve oscila +-4 graus entre scans (final_yaw_spread_max) e 0,5 grau era
+    # inatingivel; com /odom o criterio e' so' advisorio. A deriva da WS1-T2
+    # (5,1 graus em 3 scans) continua reprovando com 2 graus; ruido tipico
+    # de 1,5 grau passa.
+    eps2 = 0.035
+    assert yaw_stable(deriva, 3, eps2) is False
+    assert yaw_stable([math.radians(d) for d in (-9.7, -11.2, -10.0)], 3, eps2) is True
+    node_src = open(SCRIPT, encoding="utf-8").read()
+    assert re.search(r'declare_parameter\("still_yaw_eps",\s*0\.035\)', node_src)
+
+
+# I4 — centro pelo pe' da perpendicular (scan sintetico).
+HY, EDGE, MAX_RES, WMIN, WMAX = 0.65, 0.08, 0.012, 0.48, 0.95   # center_* do no'
+
+
+def _face_points(dist, yaw_deg, half_width=0.40, offset_along=0.0, step=0.004):
+    """Face plana a `dist` m do centro do robo (pe' da perpendicular), normal
+    girada yaw_deg no frame do robo, centro da face deslocado offset_along
+    ao longo da reta (+ = esquerda). Devolve (pontos em base_frame, front
+    do muro = menor x no corredor |y| <= 0,21)."""
+    th = math.radians(yaw_deg)
+    nx, ny = math.cos(th), math.sin(th)
+    tx, ty = -ny, nx
+    pts = []
+    k = -half_width
+    while k <= half_width + 1e-9:
+        s = k + offset_along
+        pts.append((dist * nx + s * tx, dist * ny + s * ty))
+        k += step
+    corridor = [p[0] for p in pts if abs(p[1]) <= 0.21]
+    return pts, min(corridor)
+
+
+@pytest.mark.parametrize("yaw_deg", [7.0, -7.0])
+def test_i4_robo_girado_centrado_no_pe_da_perpendicular(yaw_deg):
+    """Face a 0,65 m, robo girado +-7 graus e fisicamente centrado no pe'
+    da perpendicular: c_foot ~ 0 e c_axis ~ +-0,65*tan(7) = +-7,98 cm —
+    o que o lateral(staging) demandava a mais antes do esquadro (F15: WS3
+    +16/+17,5 cm; previsao d*tan(yaw) bateu com o AMCL em 3 casos). Face
+    de 0,70 m: a banda funda [front-0,03, front+0,25] corta ~3 cm da ponta
+    mais proxima de uma face de 0,80 a 7 graus (propriedade do estimador,
+    nao o que se testa aqui)."""
+    pts, front = _face_points(0.65, yaw_deg, half_width=0.35)
+    c_axis, c_foot, width, why = center_pts(pts, front, HY, EDGE, MAX_RES, WMIN, WMAX)
+    assert why == ""
+    assert width == pytest.approx(0.70, abs=0.01)
+    assert c_foot == pytest.approx(0.0, abs=0.003)
+    expected = 0.65 * math.tan(math.radians(yaw_deg))
+    assert abs(expected) == pytest.approx(0.0798, abs=0.001)
+    assert c_axis == pytest.approx(expected, abs=0.003)
+    # Identidade c_foot = c_axis - d*tan(yaw).
+    assert c_foot == pytest.approx(c_axis - 0.65 * math.tan(math.radians(yaw_deg)), abs=0.003)
+
+
+def test_i4_sem_yaw_os_dois_coincidem():
+    pts, front = _face_points(0.65, 0.0, offset_along=0.06)
+    c_axis, c_foot, width, why = center_pts(pts, front, HY, EDGE, MAX_RES, WMIN, WMAX)
+    assert why == ""
+    assert c_axis == pytest.approx(c_foot, abs=1e-6)
+    assert c_axis == pytest.approx(0.06, abs=0.003)     # centro 6 cm a esquerda
+
+
+def test_i4_deslocamento_real_aparece_nos_dois():
+    """Robo girado +7 e o centro da face 5 cm a DIREITA do pe': c_foot
+    = -5 cm (o que precisa andar depois de esquadrar), c_axis = -5 + 8."""
+    pts, front = _face_points(0.65, 7.0, half_width=0.35, offset_along=-0.05)
+    c_axis, c_foot, _w, why = center_pts(pts, front, HY, EDGE, MAX_RES, WMIN, WMAX)
+    assert why == ""
+    assert c_foot == pytest.approx(-0.05, abs=0.003)
+    assert c_axis == pytest.approx(-0.05 + 0.0798, abs=0.003)
+
+
+def test_i4_guardas_continuam_valendo():
+    pts, front = _face_points(0.65, 0.0, half_width=0.15)     # 0,30 m: perna/objeto
+    assert center_pts(pts, front, HY, EDGE, MAX_RES, WMIN, WMAX)[3].startswith("largura")
+    assert center_pts([], 0.65, HY, EDGE, MAX_RES, WMIN, WMAX)[3].startswith("fit falhou")
+
+
+# R6 — corte do lateral pelo ponto de parada previsto.
+def test_r6_corte_previsto_com_lag():
+    """A 0,13 m/s, scan com 0,1 s de idade e periodo 0,05 s, coast 0,03: o
+    corte ocorre com erro ~0,03 + 0,13*0,15 = 0,0495 m (antes: so' em 0,03,
+    e o ESC retinha a referencia ~0,5 s = 5-10 cm de sobrecurso)."""
+    v, age, period, coast = 0.13, 0.1, 0.05, 0.03
+    limit = coast + v * (age + period)
+    assert limit == pytest.approx(0.0495, abs=1e-9)
+    assert lat_cut(0.049, 1.0, coast, v, age, period) is True
+    assert lat_cut(0.051, 1.0, coast, v, age, period) is False
+    assert lat_cut(-0.049, -1.0, coast, v, age, period) is True    # direita
+    assert lat_cut(-0.049, 1.0, coast, v, age, period) is True     # passou do centro: corta
+    assert lat_cut(0.14, 1.0, coast, v, age, period) is False      # WS3: demanda +14,1, longe
+
+
+def test_r6_sem_lag_e_o_corte_antigo():
+    assert lat_cut(0.03, 1.0, 0.03, 0.0, 0.1, 0.05) is True
+    assert lat_cut(0.031, 1.0, 0.03, 0.0, 0.1, 0.05) is False
+
+
+def test_r6_mesma_conta_do_nudge():
+    """lateral_cut_reached(err) == _nudge_cut_reached(mag, travelled) com
+    err = mag - travelled*sign."""
+    for travelled in (0.10, 0.15, 0.17, 0.19):
+        err = 0.20 - travelled
+        assert lat_cut(err, 1.0, COAST, MIN_V, 0.1, 0.05) is cut(
+            0.20, travelled, 1.0, COAST, v_cmd=MIN_V, odom_age=0.1, period=0.05)
+
+
+# I8 — refit_square devolve se girou.
+def _fit(ok, yaw_deg, reason="", width=0.64, residual=0.005):
+    return FaceFit(ok, reason, 0.64, math.radians(yaw_deg), width, residual, 120)
+
+
+def test_i8_refit_sem_fits_nao_gira():
+    """F12: 5/6 correcoes finais tiveram o refit rejeitado e o ciclo so'
+    recuou e voltou; corrected_once nao pode ser marcado."""
+    yaw, status, why = refit_decide(
+        _fit(False, 10.8, "face estreita demais (perna/objeto?)"), None,
+        AGREE_TOL, YAW_TOL, MIN_CORR, 0.64, 0.46)
+    assert yaw is None and status == "sem_fits" and "estreita" in why
+    yaw, status, why = refit_decide(_fit(True, 10.8), None, AGREE_TOL, YAW_TOL, MIN_CORR, 0.64, 0.46)
+    assert status == "sem_fits" and "sem /scan novo" in why
+    yaw, status, _ = refit_decide(_fit(True, 10.8), _fit(False, 10.0, "residuo alto"),
+                                  AGREE_TOL, YAW_TOL, MIN_CORR, 0.64, 0.46)
+    assert status == "sem_fits"
+    assert refit_decide(None, None, AGREE_TOL, YAW_TOL, MIN_CORR, 0.64, 0.46)[1] == "sem_fits"
+
+
+def test_i8_refit_com_fits_concordantes_gira():
+    yaw, status, why = refit_decide(_fit(True, 10.8), _fit(True, 11.4),
+                                    AGREE_TOL, YAW_TOL, MIN_CORR, 0.64, 0.46)
+    assert status == "girar" and why == ""
+    assert yaw == pytest.approx(math.radians(11.1))
+
+
+@pytest.mark.parametrize("y1, y2, front, status", [
+    (10.8, 14.0, 0.64, "discordam"),     # 3,2 graus > 2,0
+    (3.0, 3.5, 0.64, "dentro"),          # dentro de 5,2
+    (6.0, 6.5, 0.64, "coast"),           # 0,109 rad <= 0,12: o giro nem parte
+    (10.8, 11.4, 0.45, "perto"),         # front < rotate_min 0,46: bico raspa
+    (10.8, 11.4, None, "perto"),
+])
+def test_i8_refit_outros_motivos_nao_giram(y1, y2, front, status):
+    yaw, st, why = refit_decide(_fit(True, y1), _fit(True, y2),
+                                AGREE_TOL, YAW_TOL, MIN_CORR, front, 0.46)
+    assert st == status and st != "girar"
+    assert (yaw is None) == (status == "discordam")
+
+
+def test_i8_correction_counted_so_com_giro():
+    """Decisao pura 'conta como corrigido' (corrected_once): so' o status
+    'girou' do refit_square('correcao'); todos os outros (fits rejeitados,
+    discordam, dentro, coast, perto, sem_muro) deixam a correcao em aberto."""
+    assert dan.correction_counted("girou") is True
+    for st in ("sem_fits", "discordam", "dentro", "coast", "perto", "sem_muro", None, ""):
+        assert dan.correction_counted(st) is False
+
+
+def test_i8_corrected_once_so_quando_girou():
+    """TESTE DE FONTE (regex, nao de comportamento): guarda de regressao no
+    laco final de _run_attempt — a unica atribuicao corrected_once = True
+    fica sob `if correction_counted(st):` (st = status do
+    refit_square("correcao")); antes era incondicional (F12). A decisao em
+    si e' testada em test_i8_correction_counted_so_com_giro."""
+    node_src = open(SCRIPT, encoding="utf-8").read()
+    assert node_src.count("corrected_once = True") == 1
+    assert re.search(r'if correction_counted\(st\):\n\s+corrected_once = True', node_src)
+    assert re.search(r'_f, _n, _fy, st = refit_square\("correcao"\)', node_src)
+    assert dan._YAW_CORRECTION_MAX_CYCLES >= 1
+
+
+# R3 — refine_half_width_y por dock no docking.yaml.
+YAML_BASE = """
+dock_plugins:
+  caramelo_ws6_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    staging_x_offset: -0.25
+docks:
+  WS6:
+    type: caramelo_ws6_dock
+    frame: map
+    pose: [-0.1623, -5.7086, -1.617509]
+    id: WS6
+{extra}
+  WS1:
+    type: caramelo_ws6_dock
+    frame: map
+    pose: [1.0, 2.0, 0.5]
+    id: WS1
+    desired_face_dist: 0.40
+"""
+
+
+def _parse(extra, dock):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "docking.yaml"
+        path.write_text(YAML_BASE.format(extra=extra), encoding="utf-8")
+        return parse_dock(dan.load_yaml(path), dock, str(path))
+
+
+def test_r3_campo_presente_devolve_o_override():
+    x, y, yaw, frame, face_dist, staging, half_w = _parse("    refine_half_width_y: 0.35", "WS6")
+    assert (x, y, yaw) == (-0.1623, -5.7086, -1.617509)
+    assert frame == "map" and face_dist is None
+    assert staging == pytest.approx(0.25)
+    assert half_w == pytest.approx(0.35)
+
+
+def test_r3_campo_ausente_devolve_none_e_o_resto_igual():
+    """Sem o campo o no' usa o parametro global (0,45): None aqui."""
+    x, y, yaw, frame, face_dist, staging, half_w = _parse("", "WS6")
+    assert half_w is None and staging == pytest.approx(0.25)
+    _x, _y, _yaw, _f, face_dist, _s, half_w = _parse("", "ws1")   # id normalizado
+    assert face_dist == pytest.approx(0.40) and half_w is None
+
+
+@pytest.mark.parametrize("value", ["0", "-0.3", "abc", ".nan"])
+def test_r3_valor_invalido_cai_no_global(value):
+    assert _parse(f"    refine_half_width_y: {value}", "WS6")[6] is None
+
+
+def test_r3_dock_inexistente():
+    with pytest.raises(KeyError):
+        _parse("", "WS9")
+
+
+def test_r3_yaml_real_da_arena_tem_o_override_da_ws6():
+    """O docking.yaml da arenalegal_2026 (fora deste pacote) carrega 0,35
+    na WS6 e nada nas outras; o opennav so' le' type/frame/pose/id."""
+    real = Path(HERE) / ".." / ".." / "caramelo_mapping" / "maps" / "arenalegal_2026" / "docking.yaml"
+    if not real.exists():
+        pytest.skip("mapa arenalegal_2026 fora do workspace")
+    data = dan.load_yaml(real)
+    assert parse_dock(data, "WS6")[6] == pytest.approx(0.35)
+    assert parse_dock(data, "WS1")[6] is None

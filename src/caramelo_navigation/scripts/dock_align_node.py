@@ -10,8 +10,13 @@ Serve duas actions (caramelo_msgs) no mesmo no', nunca as duas ao mesmo tempo:
     validacao final de yaw pela face (2026-10-21): fora da tolerancia, recua
     ate a distancia de giro, esquadra pela face e refaz reto+lateral uma vez;
     ainda fora => 'yaw_fora_da_tolerancia' (sucesso com WARN, ou falha com
-    final_yaw_strict). Esquadro por AMCL so' quando o refino LiDAR nao
-    confia na face E a rejeicao nao foi 'face larga demais' (mesa+vizinho);
+    final_yaw_strict). 2026-10-26 (tours 19:45/19:52, WS1/WS2/WS3/WS6
+    tortas): espera a base PARAR antes de medir; esquadro pelo LiDAR no
+    staging ANTES do lateral e centro pelo pe' da perpendicular; esquadro
+    por AMCL DESLIGADO por default (amcl_square_enabled) e, ligado, so' sem
+    face nenhuma, base parada, |erro| <= amcl_square_max_err (0,20 rad) e
+    sem veto do LiDAR; o lateral do staging centra pelo eixo (c_axis) e so'
+    loga o pe' da perpendicular (c_foot);
     tentativas = approach_retries+1 (0 no launch = uma so'); so' recua na
     falha se parou perigosamente perto. Clientes: GoToWS (manip_bt) e GUI.
   - nudge_base: deslocamento LATERAL puro (+ = esquerda) em malha fechada por
@@ -263,6 +268,279 @@ def final_yaw_decision(face_yaw, tol, corrected_once, strict, min_correctable=0.
     return "falhar" if strict else "aceitar_com_aviso"
 
 
+# ---------------------------------------------------------------------------
+# Revisao 2026-10-26 (tours 19:45/19:52: WS1/WS2/WS3/WS6 tortas e fora do
+# centro; docs/diagnostico_docking_tour_2026-10-26.md, fatos F12-F15/F20,
+# causas C1-C3). Helpers puros das decisoes novas do align, testaveis sem
+# ROS (test/test_nudge_math.py).
+
+# Ciclos de "correcao final de yaw" (recuo + refit + reto + lateral) por
+# goal. F12: 6/6 correcoes dos tours foram inocuas porque o refit(correcao)
+# reprovou e o ciclo so' recuou e voltou; agora um ciclo sem giro NAO marca
+# corrected_once (I8), e este teto evita repetir o recuo cego ate o timeout.
+# Mais de 1 so' compensa depois de o refit aceitar faces estreitas (R1).
+_YAW_CORRECTION_MAX_CYCLES = 1
+
+# Folga acima do coast de giro (yaw_coast_est) abaixo da qual o _cut_drive em
+# z nem parte: yaw_min_corr = yaw_coast_est + _YAW_MIN_CORR_MARGIN.
+_YAW_MIN_CORR_MARGIN = 0.02
+# Giro maximo pelo AMCL (rad) quando amcl_square_enabled=true. Revisao de
+# 2026-10-26: com 0,12 a janela (yaw_min_corr, max_err] era VAZIA
+# (yaw_coast_est 0,10 + 0,02 = 0,12) e o esquadro ligado nunca rodava.
+# 0,20 (~11,5 graus) deixa a janela 6,9..11,5 graus; acima disso o dado do
+# AMCL, que ja' esteve 7-8 graus enviesado na chegada (F14), nao manda.
+_AMCL_SQUARE_MAX_ERR_DEFAULT = 0.20
+
+
+def amcl_square_window(yaw_coast, max_err):
+    """Janela de giro do esquadro por AMCL: (yaw_min_corr, max_err]. Devolve
+    (yaw_min_corr, aberta). Fechada (max_err <= yaw_min_corr) = o esquadro
+    por AMCL nunca gira, mesmo ligado — o no' avisa no init. Pura."""
+    yaw_min_corr = float(yaw_coast) + _YAW_MIN_CORR_MARGIN
+    return yaw_min_corr, float(max_err) > yaw_min_corr
+
+
+def correction_counted(status):
+    """I8 (F12): a correcao final de yaw so' conta como feita (corrected_once)
+    se o refit_square('correcao') devolveu 'girou' — recuo + reto sem giro
+    nao corrige nada. Pura, testavel."""
+    return status == "girou"
+
+
+def merge_refine_results(bank_target, first, second):
+    """I2 (F13, WS1-T2): o refino do staging roda duas vezes e a 2a chamada
+    sobrescrevia `confident` e o alvo — um 2o fit rejeitado (residuo 21 mm)
+    jogava fora o alvo que a 1a acabara de refinar (-7,6 graus aplicados) e
+    disparava o esquadro por AMCL contra ele. Regra: confiante se QUALQUER
+    uma foi; alvo = o da ULTIMA confiante; nenhuma = o do banco.
+    first/second = (alvo, confiante). Pura, testavel."""
+    t1, c1 = first
+    t2, c2 = second
+    if c2:
+        return t2, True
+    if c1:
+        return t1, True
+    return bank_target, False
+
+
+def amcl_square_veto(eyaw0, lidar_yaws, agree_tol, yaw_tol, max_eyaw):
+    """I1 (F13/C1): motivo para NAO esquadrar pelo AMCL ('' = pode girar).
+    eyaw0 = erro de yaw pelo AMCL (alvo - robo, rad; + = girar CCW), ja'
+    lido com a base parada; lidar_yaws = yaw_rel da face pelo LiDAR nas
+    leituras do staging (os fits REJEITADOS tambem trazem o yaw).
+      - sem eyaw0 (AMCL/TF ausente): nao gira;
+      - duas ultimas leituras do LiDAR concordando (agree_tol): se
+        |yaw_rel| <= yaw_tol o robo JA' esta' esquadrado pela face, e se o
+        sinal discorda de eyaw0 o AMCL pede o sentido ERRADO (WS6 nos dois
+        tours: -9,7/-9,4 CW contra +5/+6 CCW do LiDAR) — nao gira (o veto
+        do LiDAR vem ANTES do limite: e' o motivo que interessa no log);
+      - |eyaw0| > max_eyaw (amcl_square_max_err, 0,20 rad): giro grande
+        demais para um dado que
+        ja' esteve 7-8 graus enviesado na chegada (F14) — nao gira.
+    Leituras discordantes ou menos de duas: sem veto pelo LiDAR (quem
+    segura esse caso e' a guarda 'so' sem face nenhuma' do chamador).
+    Pura, testavel."""
+    if eyaw0 is None or not math.isfinite(eyaw0):
+        return "sem erro de yaw pelo AMCL"
+    yaws = [y for y in (lidar_yaws or []) if y is not None and math.isfinite(y)]
+    if len(yaws) >= 2:
+        y1, y2 = yaws[-2], yaws[-1]
+        if abs(_normalize_angle(y1 - y2)) <= agree_tol:
+            yaw_rel = 0.5 * (y1 + y2)
+            if abs(yaw_rel) <= yaw_tol:
+                return (f"LiDAR ve a face a {math.degrees(yaw_rel):+.1f} graus "
+                        f"(dentro da tolerancia {math.degrees(yaw_tol):.1f})")
+            if (yaw_rel > 0.0) != (eyaw0 > 0.0):
+                return (f"LiDAR pede o sentido oposto ({math.degrees(yaw_rel):+.1f} "
+                        f"graus vs AMCL {math.degrees(eyaw0):+.1f})")
+    if abs(eyaw0) > max_eyaw:
+        return (f"|erro| {math.degrees(abs(eyaw0)):.1f} graus > limite "
+                f"{math.degrees(max_eyaw):.1f}")
+    return ""
+
+
+def median_if_tight(vals, min_n, max_spread):
+    """I1c: mediana de >= min_n amostras com dispersao (max-min) <=
+    max_spread; senao None (erro do AMCL ainda mudando = nao gira). Pura."""
+    vals = sorted(v for v in vals if v is not None and math.isfinite(v))
+    if len(vals) < min_n or vals[-1] - vals[0] > max_spread:
+        return None
+    return vals[len(vals) // 2]
+
+
+def yaw_readings_stable(yaws, n, eps):
+    """I3c (F14/C2): as ultimas n leituras do yaw da face (fit leve) dentro
+    de eps (max-min). Menos de n leituras = ainda nao. Pura."""
+    if n <= 0 or len(yaws) < n:
+        return False
+    tail = yaws[-n:]
+    return max(tail) - min(tail) <= eps
+
+
+class _StillWindow:
+    """Base PARADA por odometria (I1c/I3c; F14: a TF ainda gira 6,7-7,8
+    graus nos 0,4 s depois de o Nav2 declarar chegada): |v| <= v_max e
+    |wz| <= w_max continuamente por min_s. update(t, v, wz) -> True quando
+    fechou; uma amostra em movimento reabre a janela. Pura, testavel."""
+
+    def __init__(self, v_max, w_max, min_s):
+        self.v_max = float(v_max)
+        self.w_max = float(w_max)
+        self.min_s = float(min_s)
+        self.since = None
+
+    def update(self, t, v, wz):
+        if abs(v) > self.v_max or abs(wz) > self.w_max:
+            self.since = None
+            return False
+        if self.since is None:
+            self.since = t
+        return t - self.since >= self.min_s
+
+
+def lateral_cut_reached(err, sign, coast, v_cmd, scan_age, period):
+    """R6 (F15/C3): corte do curso lateral pelo ponto de parada PREVISTO,
+    como _nudge_cut_reached e a reta: o que falta (err*sign) ja' cabe no
+    coast MAIS o que a base anda, a v_cmd, enquanto a medida envelhece
+    (scan_age) e ate a proxima decisao (period). Antes cortava so' em
+    err <= coast e o ESC retinha a referencia ~0,5 s: sobrecurso ADITIVO de
+    5-10 cm (WS3: demanda +14,1 -> remedida -7,6 cm). Pura, testavel."""
+    return err * sign <= coast + v_cmd * (scan_age + period)
+
+
+def refit_square_decision(first, second, agree_tol, yaw_tol, yaw_min_corr,
+                          front, rotate_min):
+    """Decisao do refit_square (I8/F12): (yaw_rel|None, status, motivo).
+    status 'girar' = esquadrar por yaw_rel; os outros NAO giram:
+    'sem_fits' (fit rejeitado ou sem 2a leitura), 'discordam', 'dentro'
+    (|yaw_rel| <= yaw_tol), 'coast' (abaixo do que o giro corrige), 'perto'
+    (front < rotate_min: o bico raspa a mesa). Pura, testavel."""
+    if first is None or not first.ok:
+        return None, "sem_fits", "sem scan" if first is None else first.reason
+    if second is None or not second.ok:
+        return None, "sem_fits", "sem /scan novo" if second is None else second.reason
+    if abs(_normalize_angle(first.yaw - second.yaw)) > agree_tol:
+        return None, "discordam", (
+            f"leituras discordam ({math.degrees(first.yaw):+.1f} vs "
+            f"{math.degrees(second.yaw):+.1f} graus, tol {math.degrees(agree_tol):.1f})")
+    yaw_rel = 0.5 * (first.yaw + second.yaw)
+    if not yaw_needs_correction(yaw_rel, yaw_tol):
+        return yaw_rel, "dentro", f"dentro da tolerancia ({math.degrees(yaw_tol):.1f})"
+    if abs(yaw_rel) <= yaw_min_corr:
+        return yaw_rel, "coast", (
+            f"fora da tolerancia mas abaixo do coast de giro "
+            f"({math.degrees(yaw_min_corr):.1f})")
+    if front is None or front < rotate_min - 1e-6:
+        return yaw_rel, "perto", (
+            f"fora da tolerancia mas front={'?' if front is None else '%.3f' % front} "
+            f"< rotate_min_front {rotate_min:.2f}")
+    return yaw_rel, "girar", ""
+
+
+def parse_dock_entry(data, dock_id, docking_path=""):
+    """R3: metadados de um dock do docking.yaml -> (x, y, yaw, frame,
+    desired_face_dist|None, staging_offset, refine_half_width_y|None).
+    `refine_half_width_y` e' OPCIONAL por dock (2026-10-26, F20: na WS6 um
+    bloco/parede a 0,42 m a esquerda do eixo cai dentro da janela global de
+    0,45 m e o refino do staging reprovava por residuo 46-53 mm; 0,35 deixa
+    o bloco fora). Ausente, <= 0 ou invalido = None (o no' usa o parametro
+    global). O opennav_docking le' o mesmo arquivo e ignora chaves extras
+    (utils.hpp parseDockFile: so' frame/type/pose/id). Pura, testavel."""
+    docks = data.get("docks", {}) or {}
+    entry = docks.get(dock_id.strip().upper())
+    if entry is None:
+        raise KeyError(f"dock '{dock_id}' nao esta em {docking_path}")
+    pose = entry.get("pose", [0.0, 0.0, 0.0])
+    face_dist = entry.get("desired_face_dist")
+    face_dist = float(face_dist) if face_dist is not None else None
+    staging_offset = 0.45
+    plugin = (data.get("dock_plugins", {}) or {}).get(entry.get("type", ""), {})
+    if isinstance(plugin, dict) and "staging_x_offset" in plugin:
+        staging_offset = abs(float(plugin["staging_x_offset"]))
+    half_w = entry.get("refine_half_width_y")
+    try:
+        half_w = float(half_w) if half_w is not None else None
+    except (TypeError, ValueError):
+        half_w = None
+    if half_w is not None and not (math.isfinite(half_w) and half_w > 0.0):
+        half_w = None
+    return (float(pose[0]), float(pose[1]), float(pose[2]),
+            entry.get("frame", "map"), face_dist, staging_offset, half_w)
+
+
+def face_center_from_points(pts, front, hy, edge_margin, max_residual, wmin, wmax):
+    """Centro da face a partir dos pontos do scan JA' no base_frame
+    (matematica de _face_center_from_scan, extraida em 2026-10-26 para
+    teste; o docstring do metodo explica as guardas). Devolve
+    (c_axis, c_foot, largura, '') ou (None, None, None, motivo):
+      c_axis = desvio do centro da face em relacao ao ponto onde o EIXO do
+               robo (+x) fura a face — o que a reta acerta SEM esquadrar;
+      c_foot = desvio em relacao ao PE' DA PERPENDICULAR do centro do robo
+               a reta da face — o que a reta acerta DEPOIS de um esquadro
+               (I4, F15/C3: com yaw theta e face a d, c_axis carrega
+               d*tan(theta): 0,65 m a 7 graus = 8 cm; c_foot nao).
+    Identidade: c_foot = c_axis - d*tan(face_yaw). +y = esquerda."""
+    deep = [p for p in pts
+            if front - 0.03 <= p[0] <= front + 0.25 and abs(p[1]) <= hy]
+    band = [p for p in deep if p[0] <= front + 0.10]
+    fit = _fit_line_tls(band)
+    if fit is None:
+        return None, None, None, "fit falhou (poucos pontos na banda)"
+    cx, cy, nx, ny = fit
+    if nx < 0:
+        nx, ny = -nx, -ny
+    inl = [p for p in deep if abs((p[0] - cx) * nx + (p[1] - cy) * ny) <= 0.025]
+    if len(inl) < 30:
+        return None, None, None, "menos de 30 inliers"
+    rms = math.sqrt(
+        sum(((p[0] - cx) * nx + (p[1] - cy) * ny) ** 2 for p in inl) / len(inl))
+    if rms > max_residual:
+        return None, None, None, f"residuo alto ({rms * 1000:.0f} mm, {len(inl)} pts)"
+    tang = (-ny, nx)
+    # Coordenada ao longo da reta e a lateral (y) de cada inlier, ordenadas.
+    along = sorted(
+        ((p[0] - cx) * tang[0] + (p[1] - cy) * tang[1], p[1]) for p in inl)
+    # Segmento que contem o eixo do robo (py cruza zero).
+    segs = []
+    cur = [along[0]]
+    for prev, item in zip(along, along[1:]):
+        if item[0] - prev[0] > 0.05:
+            segs.append(cur)
+            cur = []
+        cur.append(item)
+    segs.append(cur)
+    seg = None
+    for candidate in segs:
+        ys = [q[1] for q in candidate]
+        if min(ys) <= 0.0 <= max(ys):
+            seg = candidate
+            break
+    if seg is None:
+        return None, None, None, "nenhum segmento contem o eixo do robo"
+    width = seg[-1][0] - seg[0][0]
+    if not (wmin <= width <= wmax):
+        return None, None, None, f"largura {width:.2f} fora de [{wmin:.2f},{wmax:.2f}]"
+    # (Sem comparar com a largura do refino do staging: aquela janela de
+    # +-0.45 m CORTA uma mesa de 0.80 — e' por isso que os logs de campo
+    # sempre mostravam 0.62-0.65 m. Estimadores diferentes nao se comparam.)
+    y_lo = min(q[1] for q in seg)
+    y_hi = max(q[1] for q in seg)
+    if y_hi > hy - edge_margin or y_lo < -(hy - edge_margin):
+        # borda encostada no limite da janela: cortada
+        return None, None, None, (
+            f"borda na janela (y {y_lo:+.2f}..{y_hi:+.2f}, limite {hy - edge_margin:.2f})")
+    mid_along = 0.5 * (seg[0][0] + seg[-1][0])
+    if abs(nx) < 1e-6:
+        return None, None, None, "face paralela ao eixo"
+    # Ponto onde o EIXO do robo (direcao +x) cruza a face: (t, 0).
+    t_hit = (cx * nx + cy * ny) / nx
+    along_hit = (t_hit - cx) * tang[0] + (0.0 - cy) * tang[1]
+    # Pe' da perpendicular do centro do robo (origem) a reta: d*(nx, ny).
+    d = cx * nx + cy * ny
+    along_foot = (d * nx - cx) * tang[0] + (d * ny - cy) * tang[1]
+    return mid_along - along_hit, mid_along - along_foot, width, ""
+
+
 class DockAlignNode(Node):
     def __init__(self):
         super().__init__("dock_align_node")
@@ -493,6 +771,44 @@ class DockAlignNode(Node):
         # 0,07 rad (4 graus): o yaw entre fits oscila +-4 graus (2026-08-18).
         self.declare_parameter("final_yaw_spread_max", 0.07)
 
+        # ------- Revisao 2026-10-26 (tours 19:45/19:52; docs/
+        # diagnostico_docking_tour_2026-10-26.md). Esquadro por AMCL
+        # DESLIGADO por default (I1, F13/C1): na WS6 girou -9,7/-9,4 graus CW
+        # nos dois tours contra um LiDAR que pedia +5 CCW; na WS1-T2 -11,9
+        # contra o alvo recem-refinado. false = so' loga o que teria feito.
+        self.declare_parameter("amcl_square_enabled", False)
+        # Ligado: giro maximo pelo AMCL (rad). Acima disso nao gira e loga —
+        # o yaw da TF ja' esteve 7-8 graus enviesado na chegada (F14).
+        # PRECISA ser > yaw_coast_est + 0,02 (yaw_min_corr), senao a janela
+        # de giro fica vazia e o esquadro ligado nunca roda (ver
+        # _AMCL_SQUARE_MAX_ERR_DEFAULT e o WARN abaixo).
+        self.declare_parameter("amcl_square_max_err", _AMCL_SQUARE_MAX_ERR_DEFAULT)
+        # Espera de parada por /odom antes de medir (I3c, F14/C2: a TF ainda
+        # gira +6,7..+7,8 graus nos 0,4 s depois do "Reached the goal" do
+        # Nav2): |v| <= still_v_max e |wz| <= still_w_max por still_min_s,
+        # teto still_max_s. O yaw da face do fit leve (settle_stable_scans
+        # dentro de still_yaw_eps) e' so' ADVISORIO com /odom (vai para o
+        # log) e vira o criterio apenas sem /odom: o fit leve oscila +-4
+        # graus entre scans (final_yaw_spread_max, 2026-08-18), entao 0,5
+        # grau era inatingivel e a espera batia no teto em todo docking.
+        # 0,035 rad = 2 graus (= refine_yaw_agree_tol).
+        self.declare_parameter("still_v_max", 0.02)
+        self.declare_parameter("still_w_max", 0.05)
+        self.declare_parameter("still_min_s", 0.5)
+        self.declare_parameter("still_max_s", 3.0)
+        self.declare_parameter("still_yaw_eps", 0.035)
+        # 2026-10-26: janela de giro do esquadro por AMCL fechada = ligado
+        # mas inoperante; avisa no init (antes era silencioso).
+        _ymin, _open = amcl_square_window(
+            self.get_parameter("yaw_coast_est").value,
+            self.get_parameter("amcl_square_max_err").value)
+        if not _open:
+            self.get_logger().warn(
+                f"amcl_square_max_err ({float(self.get_parameter('amcl_square_max_err').value):.2f} rad) "
+                f"<= yaw_coast_est + {_YAW_MIN_CORR_MARGIN:.2f} ({_ymin:.2f}): a janela de giro e' "
+                "vazia — esquadro por AMCL efetivamente DESLIGADO mesmo com "
+                "amcl_square_enabled=true")
+
         self._ref_topic = self.get_parameter("reference_topic").value
         self._global_frame = self.get_parameter("global_frame").value
         self._base_frame = self.get_parameter("base_frame").value
@@ -533,9 +849,21 @@ class DockAlignNode(Node):
         self._last_face_width = None
         # 2026-10-21: yaw da face do fit leve do muro no ULTIMO _check_guards
         # (erro vivo do esquadro pelo LiDAR) e flag 'face larga demais' do
-        # refino do staging (inibe o esquadro por AMCL). Ambos por goal.
+        # refino do staging (inibia o esquadro por AMCL; desde 2026-10-26 o
+        # esquadro por AMCL so' roda sem face NENHUMA — fica como registro).
+        # Ambos por goal.
         self._live_face_yaw = None
         self._refine_wide_face = False
+        # 2026-10-26: yaw_rel de TODOS os fits do refino do staging neste
+        # goal (rejeitados inclusive — veto do esquadro por AMCL, I1);
+        # janela lateral do refino por dock (R3, None = parametro global);
+        # motivo da ultima reprovacao do fit leve do muro e o par
+        # (c_axis, c_foot) da ultima medida de centro (instrumentacao I6/I4).
+        self._refine_fit_yaws = []
+        self._dock_refine_half_width = None
+        self._wall_fit_reject = ""
+        self._center_last = (None, None)
+        self._center_medians = (None, None)
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
@@ -544,6 +872,9 @@ class DockAlignNode(Node):
         # Odometria do EKF: (x, y, yaw, hora de CHEGADA ns) — idade pela
         # chegada, como o scan (relogio da Pi nao e confiavel).
         self._odom = None
+        # Twist do /odom (vx, vy, wz, hora de CHEGADA ns): espera de parada
+        # antes de medir (2026-10-26, I3c) e instrumentacao.
+        self._odom_twist = None
         self.create_subscription(
             Odometry, self.get_parameter("odom_topic").value,
             self._odom_cb, qos_profile_sensor_data, callback_group=self._cb_group,
@@ -600,8 +931,10 @@ class DockAlignNode(Node):
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
         # Tupla atribuida de uma vez (leitura atomica pelas threads do nudge).
-        self._odom = (p.x, p.y, _yaw_from_quat(q.z, q.w, q.x, q.y),
-                      self.get_clock().now().nanoseconds)
+        rx_ns = self.get_clock().now().nanoseconds
+        self._odom = (p.x, p.y, _yaw_from_quat(q.z, q.w, q.x, q.y), rx_ns)
+        tw = msg.twist.twist
+        self._odom_twist = (tw.linear.x, tw.linear.y, tw.angular.z, rx_ns)
 
     def _odom_sample(self, max_age):
         """(x, y, yaw, idade_s, rx_ns) da ultima odometria se chegou ha
@@ -663,31 +996,20 @@ class DockAlignNode(Node):
     # --------------------------------------------------------------- Docks
     def _load_dock_pose(self, dock_id, map_name, map_dir):
         """Pose do dock + metadados: (x, y, yaw, desired_face_dist|None,
-        staging_offset). desired_face_dist e' a chave OPCIONAL por mesa
-        (2026-08-18); staging_offset vem do dock_plugins pelo type do dock e
-        dimensiona o recuo do retry (fallback 0.45)."""
+        staging_offset, refine_half_width_y|None). desired_face_dist e' a
+        chave OPCIONAL por mesa (2026-08-18); staging_offset vem do
+        dock_plugins pelo type do dock e dimensiona o recuo do retry
+        (fallback 0.45); refine_half_width_y e' a janela lateral do refino
+        por dock (2026-10-26, R3). Leitura em parse_dock_entry (pura)."""
         map_folder = resolve_map_folder(map_name, map_dir or None)
-        data = load_yaml(docking_file(map_folder))
-        docks = data.get("docks", {})
-        entry = docks.get(dock_id.strip().upper())
-        if entry is None:
-            raise KeyError(f"dock '{dock_id}' nao esta em {docking_file(map_folder)}")
-        pose = entry.get("pose", [0.0, 0.0, 0.0])
-        if entry.get("frame", "map") != self._global_frame:
+        path = docking_file(map_folder)
+        x, y, yaw, frame, face_dist, staging_offset, half_w = parse_dock_entry(
+            load_yaml(path), dock_id, str(path))
+        if frame != self._global_frame:
             self.get_logger().warn(
-                f"dock '{dock_id}' esta no frame '{entry.get('frame')}', "
+                f"dock '{dock_id}' esta no frame '{frame}', "
                 f"mas o no usa '{self._global_frame}'.")
-
-        face_dist = entry.get("desired_face_dist")
-        face_dist = float(face_dist) if face_dist is not None else None
-
-        staging_offset = 0.45
-        plugin = (data.get("dock_plugins", {}) or {}).get(entry.get("type", ""), {})
-        if isinstance(plugin, dict) and "staging_x_offset" in plugin:
-            staging_offset = abs(float(plugin["staging_x_offset"]))
-
-        return (float(pose[0]), float(pose[1]), float(pose[2]),
-                face_dist, staging_offset)
+        return x, y, yaw, face_dist, staging_offset, half_w
 
     # --------------------------------------------------------- Refino LiDAR
     def _scan_points_in_base(self, scan):
@@ -765,7 +1087,12 @@ class DockAlignNode(Node):
         """
         scan = self._last_scan
         self._side_min = (None, None)
+        # 2026-10-26 (I6): os retornos antecipados tambem registram o motivo,
+        # senao _measure_face_yaw agregava o motivo do fit ANTERIOR (ex.
+        # 'residuo x3' quando a causa era 'scan velho').
+        self._wall_fit_reject = ""
         if scan is None:
+            self._wall_fit_reject = "sem scan"
             return None, -1, float("inf"), None
         # Idade pela hora de CHEGADA (v4): o carimbo vem do relogio da Pi e ja
         # esteve 24 dias atrasado (2026-08-21). Avisa uma vez se divergir.
@@ -778,9 +1105,11 @@ class DockAlignNode(Node):
                 f"/scan: carimbo difere da chegada em {stamp_age - scan_age:+.2f} s "
                 "(relogio Pi x PC?) — usando a hora de chegada.")
         if scan_age > self.get_parameter("wall_max_scan_age").value:
+            self._wall_fit_reject = "scan velho"
             return None, -1, scan_age, None
         tfm = self._wall_tf(scan.header.frame_id)
         if tfm is None:
+            self._wall_fit_reject = "sem TF"
             return None, -1, scan_age, None
         r00, r01, r10, r11, ox, oy = tfm
 
@@ -820,6 +1149,7 @@ class DockAlignNode(Node):
 
         n = len(pts)
         if n < int(self.get_parameter("wall_min_points").value):
+            self._wall_fit_reject = f"corredor vazio ({n} pts)"
             return None, n, scan_age, None
         xs = sorted(p[0] for p in pts)
         k = max(1, math.ceil(self.get_parameter("wall_percentile").value * n))
@@ -830,7 +1160,13 @@ class DockAlignNode(Node):
         face_yaw = None
         band_pts = [p for p in pts if p[0] <= front + 0.10]
         fit = _fit_line_tls(band_pts)
-        if fit is not None and len(band_pts) >= 30:
+        # 2026-10-26 (I6): motivo da reprovacao do fit leve fica em
+        # _wall_fit_reject (agregado por _measure_face_yaw) e sai em DEBUG
+        # aqui — a 20 Hz um INFO por scan inundaria o log.
+        reject = ""
+        if fit is None or len(band_pts) < 30:
+            reject = f"npts {len(band_pts)}<30"
+        else:
             cx, cy, nx, ny = fit
             if nx < 0:
                 nx, ny = -nx, -ny
@@ -842,9 +1178,19 @@ class DockAlignNode(Node):
             # parava a cada segundo para "aparar" ruido.
             along = [-(p[0] - cx) * ny + (p[1] - cy) * nx for p in band_pts]
             extent = max(along) - min(along)
-            if (residual <= 0.025 and extent >= 0.25
-                    and abs(math.atan2(ny, nx)) <= math.radians(35)):
-                face_yaw = math.atan2(ny, nx)
+            yaw = math.atan2(ny, nx)
+            if residual > 0.025:
+                reject = f"residuo {residual * 1000:.0f}mm>25"
+            elif extent < 0.25:
+                reject = f"extensao {extent:.2f}<0.25"
+            elif abs(yaw) > math.radians(35):
+                reject = f"yaw {math.degrees(yaw):+.0f}>35"
+            else:
+                face_yaw = yaw
+        self._wall_fit_reject = reject
+        if reject:
+            self.get_logger().debug(
+                f"[inst] fit leve rejeitado: {reject} (front {front:.3f}, n {n})")
         return front, n, scan_age, face_yaw
 
     def _side_clear(self, direction, front, margin=0.05):
@@ -855,7 +1201,7 @@ class DockAlignNode(Node):
         side = self._side_min[0] if direction > 0.0 else self._side_min[1]
         return side is None or front is None or side > front - margin
 
-    def _face_center_from_scan(self, front):
+    def _face_center_from_scan(self, front, foot=False):
         """(desvio lateral do centro da face em m, +y = esquerda; largura) ou None.
 
         Endurecido (campo 18/08: o centro pulava -7 -> +17 cm em 2 s porque
@@ -868,87 +1214,35 @@ class DockAlignNode(Node):
           (4) residuo pequeno, largura plausivel E coerente com a largura
               medida no refino do staging, e as DUAS bordas longe do limite
               da janela lateral (borda cortada = centro enviesado).
+        Matematica em face_center_from_points (pura, 2026-10-26). O desvio
+        devolvido e' c_foot (pe' da perpendicular: o que a reta acerta
+        DEPOIS de um esquadro, I4/F15) com foot=True, ou c_axis (onde o
+        EIXO do robo fura a face) com foot=False; os dois ficam em
+        _center_last para o log. Duas bandas (campo 22/08: WS2/WS6 tinham
+        coisas 15-25 cm ATRAS da face e o fit unico saia com residuo de
+        6-13 cm): a reta usa so a banda RASA (+10 cm); a funda entra so
+        como fonte de inliers para largura/bordas.
         """
         scan = self._last_scan
         if scan is None or front is None:
             self._center_reject = "sem scan/front"
             return None
-        hy = self.get_parameter("center_half_width_y").value
-        edge_margin = self.get_parameter("center_edge_margin").value
         pts = self._scan_points_in_base(scan)
         if pts is None:
             self._center_reject = "sem TF"
             return None
-        # Duas bandas (campo 22/08: WS2/WS6 tinham coisas 15-25 cm ATRAS da
-        # face e o fit unico saia com residuo de 6-13 cm): o AJUSTE DA RETA
-        # usa so a banda RASA (+10 cm — o suficiente para ate ~7 graus de
-        # inclinacao); a banda funda entra depois, so como fonte de inliers
-        # para largura/bordas.
-        deep = [p for p in pts
-                if front - 0.03 <= p[0] <= front + 0.25 and abs(p[1]) <= hy]
-        band = [p for p in deep if p[0] <= front + 0.10]
-        fit = _fit_line_tls(band)
-        if fit is None:
-            self._center_reject = "fit falhou (poucos pontos na banda)"
+        c_axis, c_foot, width, reason = face_center_from_points(
+            pts, front,
+            self.get_parameter("center_half_width_y").value,
+            self.get_parameter("center_edge_margin").value,
+            self.get_parameter("center_max_residual").value,
+            self.get_parameter("center_width_min").value,
+            self.get_parameter("center_width_max").value)
+        if reason:
+            self._center_reject = reason
             return None
-        cx, cy, nx, ny = fit
-        if nx < 0:
-            nx, ny = -nx, -ny
-        inl = [p for p in deep if abs((p[0] - cx) * nx + (p[1] - cy) * ny) <= 0.025]
-        if len(inl) < 30:
-            self._center_reject = "menos de 30 inliers"
-            return None
-        rms = math.sqrt(
-            sum(((p[0] - cx) * nx + (p[1] - cy) * ny) ** 2 for p in inl) / len(inl))
-        if rms > self.get_parameter("center_max_residual").value:
-            self._center_reject = f"residuo alto ({rms * 1000:.0f} mm, {len(inl)} pts)"
-            return None
-        tang = (-ny, nx)
-        # Coordenada ao longo da reta e a lateral (y) de cada inlier, ordenadas.
-        along = sorted(
-            ((p[0] - cx) * tang[0] + (p[1] - cy) * tang[1], p[1]) for p in inl)
-        # Segmento que contem o eixo do robo (py cruza zero).
-        segs = []
-        cur = [along[0]]
-        for prev, item in zip(along, along[1:]):
-            if item[0] - prev[0] > 0.05:
-                segs.append(cur)
-                cur = []
-            cur.append(item)
-        segs.append(cur)
-        seg = None
-        for candidate in segs:
-            ys = [q[1] for q in candidate]
-            if min(ys) <= 0.0 <= max(ys):
-                seg = candidate
-                break
-        if seg is None:
-            self._center_reject = "nenhum segmento contem o eixo do robo"
-            return None
-        width = seg[-1][0] - seg[0][0]
-        wmin = self.get_parameter("center_width_min").value
-        wmax = self.get_parameter("center_width_max").value
-        if not (wmin <= width <= wmax):
-            self._center_reject = f"largura {width:.2f} fora de [{wmin:.2f},{wmax:.2f}]"
-            return None
-        # (Sem comparar com a largura do refino do staging: aquela janela de
-        # +-0.45 m CORTA uma mesa de 0.80 — e' por isso que os logs de campo
-        # sempre mostravam 0.62-0.65 m. Estimadores diferentes nao se comparam.)
-        y_lo = min(q[1] for q in seg)
-        y_hi = max(q[1] for q in seg)
-        if y_hi > hy - edge_margin or y_lo < -(hy - edge_margin):
-            self._center_reject = f"borda na janela (y {y_lo:+.2f}..{y_hi:+.2f}, limite {hy - edge_margin:.2f})"
-            return None  # borda encostada no limite da janela: cortada
-        # Desvio do centro da face em relacao ao ponto onde o EIXO do robo
-        # (direcao +x) cruza a face — e' isso que a reta final vai "acertar",
-        # mesmo com yaw residual. tang ~ (0, +1) => +y = esquerda.
-        mid_along = 0.5 * (seg[0][0] + seg[-1][0])
-        if abs(nx) < 1e-6:
-            self._center_reject = "face paralela ao eixo"
-            return None
-        t_hit = (cx * nx + cy * ny) / nx          # eixo do robo: (t, 0)
-        along_hit = (t_hit - cx) * tang[0] + (0.0 - cy) * tang[1]
-        return mid_along - along_hit, width
+        self._center_last = (c_axis, c_foot)
+        return (c_foot if foot else c_axis), width
 
     def _resolve_stop_dist(self):
         """Distancia de parada frontal: param > por-dock > global > desligado."""
@@ -995,7 +1289,10 @@ class DockAlignNode(Node):
             self.get_logger().warn(
                 f"{tag}: /scan com {scan_age:.1f}s de idade; descartado.")
             return _FaceFit(False, "scan velho", None, None, None, None, 0)
-        hy = self.get_parameter("refine_half_width_y").value
+        # Janela lateral: por dock (docking.yaml, R3 2026-10-26) > global.
+        hy = self._dock_refine_half_width
+        if hy is None:
+            hy = self.get_parameter("refine_half_width_y").value
         max_residual = self.get_parameter("refine_max_residual").value
         min_width = self.get_parameter("refine_min_face_width").value
         max_width = float(self.get_parameter("refine_max_face_width").value)
@@ -1016,6 +1313,11 @@ class DockAlignNode(Node):
             nx, ny = -nx, -ny
         face_dist = cx * nx + cy * ny
         face_yaw = math.atan2(ny, nx)  # orientacao da normal no frame do robo
+        # 2026-10-26 (I1b): o yaw de TODO fit do refino do staging, aceito
+        # ou nao, fica guardado para vetar o esquadro por AMCL (F13: na WS6
+        # os fits rejeitados por residuo diziam +5/+6 e o AMCL girou -9,7).
+        if tag.startswith("refino"):
+            self._refine_fit_yaws.append(face_yaw)
 
         # Guardas anti-falso-positivo: face plana (residuo), larga o bastante
         # (nao e' perna de mesa/objeto) mas nao demais (mesa + vizinho),
@@ -1029,7 +1331,8 @@ class DockAlignNode(Node):
         # Log SEMPRE (e' o instrumento de calibracao do refine_desired_face_dist).
         self.get_logger().info(
             f"{tag} face: dist={face_dist:.3f} m, yaw_rel={math.degrees(face_yaw):.1f} deg, "
-            f"largura={face_width:.2f} m, residuo={residual_rms*1000:.0f} mm, pts={len(pts)}")
+            f"largura={face_width:.2f} m, residuo={residual_rms*1000:.0f} mm, pts={len(pts)}, "
+            f"janela +-{hy:.2f}")
 
         reason = face_fit_reject_reason(
             residual_rms, face_width, min_width, max_width, max_residual)
@@ -1254,21 +1557,30 @@ class DockAlignNode(Node):
         return front, npts, face_yaw_f
 
     def _cut_drive(self, goal_handle, rate, deadline, attempt_end, axis, sign,
-                   error_fn, coast, max_s, phase_name):
+                   error_fn, coast, max_s, phase_name, lag_v=0.0):
         """Movimento CONTINUO no piso do eixo, cortado quando o erro vivo
         (error_fn() -> valor com sinal, ou None) fica <= coast — o ESC retem a
         referencia ~0,5 s e termina o curso. Sem medicao por 3 scans novos ou
-        inversao de sinal: corta. Devolve o resultado do _settle."""
+        inversao de sinal: corta. Devolve o resultado do _settle.
+        lag_v > 0 (2026-10-26, R6/F15): corta pelo ponto de parada PREVISTO,
+        coast + lag_v*(idade do scan + periodo), como a reta e o nudge
+        (lateral_cut_reached); 0 = corte cru em err <= coast (giro: R4)."""
         # Parte do repouso: piso x (1 + margem) nos 3 eixos, senao a roda
         # fica um ULP abaixo do piso do ESC e nao liga (2026-10-19).
         min_v, min_w = self._start_speeds()
+        period = 1.0 / float(self.get_parameter("control_frequency").value)
         start_s = self.get_clock().now().nanoseconds * 1e-9
         miss = 0
         last_seq = -1
+        odom0 = self._odom
+        reason = "max_s"
+        last_err = None
+        now_s = start_s   # o log do corte usa now_s mesmo se o laco nao rodar (shutdown)
         while rclpy.ok():
             front, _n, _fy = self._check_guards(goal_handle, deadline, attempt_end)
             now_s = self.get_clock().now().nanoseconds * 1e-9
             if now_s - start_s > max_s:
+                reason = "max_s"
                 break
             if self._scan_seq != last_seq:
                 last_seq = self._scan_seq
@@ -1276,11 +1588,18 @@ class DockAlignNode(Node):
                 if err is None:
                     miss += 1
                     if miss >= 3:
+                        reason = "3 scans sem medida"
                         break
                 else:
                     miss = 0
-                    if err * sign <= coast:
-                        break  # falta so o coast: corta e deixa o ESC terminar
+                    last_err = err
+                    age = self._wall_age
+                    if age is None or not math.isfinite(age):
+                        age = 0.0
+                    if lateral_cut_reached(err, sign, coast, lag_v, age, period):
+                        # falta so o coast (+ lag): corta e deixa o ESC terminar
+                        reason = "erro<=coast+lag" if lag_v > 0.0 else "erro<=coast"
+                        break
             if axis == "x":
                 self._publish_cmd(math.copysign(min_v, sign), 0.0, 0.0)
             elif axis == "y":
@@ -1290,15 +1609,120 @@ class DockAlignNode(Node):
             self._feedback(goal_handle, phase_name, 0.0, 0.0, 0.0)
             rate.sleep()
         self._publish_cmd(0.0, 0.0, 0.0)
-        return self._settle(goal_handle, rate, deadline, attempt_end, phase_name)
+        # 2026-10-26 (I6): motivo do corte, ultimo erro, idade do scan e o
+        # curso por odometria no corte e depois do settle (= coast real).
+        err_txt = "?" if last_err is None else (
+            f"{math.degrees(last_err):+.1f} graus" if axis == "z" else f"{last_err * 100:+.1f} cm")
+        age_txt = "?" if self._wall_age is None or not math.isfinite(self._wall_age) \
+            else f"{self._wall_age:.2f} s"
+        self.get_logger().info(
+            f"[inst] corte({phase_name}/{axis}): motivo={reason}, ultimo_erro={err_txt}, "
+            f"idade_scan={age_txt}, curso_odom={self._odom_course(odom0, axis)} "
+            f"({now_s - start_s:.1f} s)")
+        res = self._settle(goal_handle, rate, deadline, attempt_end, phase_name)
+        self.get_logger().info(
+            f"[inst] apos settle({phase_name}/{axis}): curso_odom="
+            f"{self._odom_course(odom0, axis)} (inclui o coast do ESC)")
+        return res
 
-    def _measure_center(self, goal_handle, rate, deadline, attempt_end):
+    def _odom_course(self, odom0, axis):
+        """Curso por odometria desde odom0 no eixo da primitiva, como texto
+        para o log (2026-10-26, I6): x = longitudinal, y = lateral
+        (_lateral_displacement, + = esquerda), z = giro. '?' sem odometria."""
+        odom = self._odom
+        if odom0 is None or odom is None:
+            return "?"
+        x0, y0, yaw0 = odom0[0], odom0[1], odom0[2]
+        if axis == "x":
+            return f"{_longitudinal_displacement(x0, y0, yaw0, odom[0], odom[1]) * 100:+.1f} cm"
+        if axis == "y":
+            return f"{_lateral_displacement(x0, y0, yaw0, odom[0], odom[1]) * 100:+.1f} cm"
+        return f"{math.degrees(_normalize_angle(odom[2] - yaw0)):+.1f} graus"
+
+    def _wait_still(self, goal_handle, rate, deadline, attempt_end, phase_name,
+                    v_max=None, w_max=None, min_s=None, max_s=None):
+        """2026-10-26 (I3c, F14/C2): publica zero e espera a base PARAR antes
+        de medir/decidir: /odom com |v| <= still_v_max e |wz| <= still_w_max
+        por still_min_s; teto still_max_s — estourou, avisa e segue. O Nav2
+        declara 'Reached the goal' com a base ainda girando (TF +6,7..+7,8
+        graus nos 0,4 s seguintes) e o refino e o esquadro partiam com o
+        erro mudando ~15 graus/s. A estabilidade do yaw da face do fit leve
+        (ultimos settle_stable_scans dentro de still_yaw_eps) e' ADVISORIA
+        quando ha' /odom (so' vai para o log: o fit leve oscila +-4 graus
+        entre scans e um gate por ele batia no teto em todo docking) e vira
+        o criterio apenas SEM /odom. Devolve
+        (esperou_s, odom_parado, yaw_estavel, yaw_inicial, yaw_final)."""
+        p = self.get_parameter
+        v_max = float(p("still_v_max").value) if v_max is None else float(v_max)
+        w_max = float(p("still_w_max").value) if w_max is None else float(w_max)
+        min_s = float(p("still_min_s").value) if min_s is None else float(min_s)
+        max_s = float(p("still_max_s").value) if max_s is None else float(max_s)
+        yaw_eps = float(p("still_yaw_eps").value)
+        n_stable = max(1, int(p("settle_stable_scans").value))
+        win = _StillWindow(v_max, w_max, min_s)
+        t0 = self.get_clock().now().nanoseconds * 1e-9
+        yaws = []
+        scans = 0
+        last_seq = -1
+        last_tw_ns = None
+        still = False
+        yaw_ok = False
+        done = False
+        while rclpy.ok():
+            _front, _n, face_yaw = self._check_guards(goal_handle, deadline, attempt_end)
+            self._publish_cmd(0.0, 0.0, 0.0)
+            self._feedback(goal_handle, phase_name, 0.0, 0.0, 0.0)
+            t = self.get_clock().now().nanoseconds * 1e-9
+            tw = self._odom_twist
+            if tw is not None and tw[3] != last_tw_ns:
+                last_tw_ns = tw[3]
+                still = win.update(t, math.hypot(tw[0], tw[1]), tw[2])
+            if self._scan_seq != last_seq:
+                last_seq = self._scan_seq
+                scans += 1
+                if face_yaw is not None:
+                    yaws.append(face_yaw)
+                # Sem yaw da face em n scans: nada a estabilizar pelo LiDAR.
+                yaw_ok = (yaw_readings_stable(yaws, n_stable, yaw_eps)
+                          or (scans >= n_stable and not yaws))
+            # Com /odom o gate e' a odometria (o yaw so' informa); sem /odom
+            # o yaw da face e' o unico sinal de parada que existe.
+            done = still if self._odom_twist is not None else yaw_ok
+            if done:
+                break
+            if t - t0 > max_s:
+                break
+            rate.sleep()
+        waited = self.get_clock().now().nanoseconds * 1e-9 - t0
+        y0 = yaws[0] if yaws else None
+        y1 = yaws[-1] if yaws else None
+        tail = yaws[-n_stable:] if yaws else []
+        spread_txt = "?" if not tail else f"{math.degrees(max(tail) - min(tail)):.1f}"
+        yaw_txt = "sem yaw da face" if y0 is None else (
+            f"{math.degrees(y0):+.1f} -> {math.degrees(y1):+.1f} graus "
+            f"(delta {math.degrees(y1 - y0):+.1f}, {len(yaws)} leituras, "
+            f"espalh ult{len(tail)}={spread_txt} graus vs eps {math.degrees(yaw_eps):.1f})")
+        line = (f"[inst] parada({phase_name}): esperou {waited:.2f} s, odom parado="
+                f"{still}{'' if self._odom_twist is not None else ' (sem /odom)'}, "
+                f"yaw_face estavel={yaw_ok}: {yaw_txt}")
+        if done:
+            self.get_logger().info(line)
+        else:
+            self.get_logger().warn(line + f" — teto {max_s:.1f} s estourado, sigo assim mesmo")
+        return waited, still, yaw_ok, y0, y1
+
+    def _measure_center(self, goal_handle, rate, deadline, attempt_end, foot=False):
         """Mediana de N medidas do centro da face em scans DISTINTOS; None se
-        o estimador nao confiou ou as medidas divergiram."""
+        o estimador nao confiou ou as medidas divergiram. foot: ver
+        _face_center_from_scan (I4). As medianas de c_axis e c_foot ficam
+        em _center_medians para o log (2026-10-26)."""
         n = int(self.get_parameter("center_samples").value)
         spread_max = self.get_parameter("center_spread_max").value
         vals = []
         widths = []
+        axis_vals = []
+        foot_vals = []
+        self._center_medians = (None, None)
         last_seq = -1
         tries = 0
         start_s = self.get_clock().now().nanoseconds * 1e-9
@@ -1310,11 +1734,18 @@ class DockAlignNode(Node):
             if self._scan_seq != last_seq:
                 last_seq = self._scan_seq
                 tries += 1
-                res = self._face_center_from_scan(front)
+                res = self._face_center_from_scan(front, foot=foot)
                 if res is not None:
                     vals.append(res[0])
                     widths.append(res[1])
+                    axis_vals.append(self._center_last[0])
+                    foot_vals.append(self._center_last[1])
             rate.sleep()
+        if axis_vals:
+            axis_vals.sort()
+            foot_vals.sort()
+            self._center_medians = (axis_vals[len(axis_vals) // 2],
+                                    foot_vals[len(foot_vals) // 2])
         if len(vals) < max(3, n - 1):
             self.get_logger().info(
                 f"centro: {len(vals)}/{n} medidas validas — ultima rejeicao: {self._center_reject}")
@@ -1338,6 +1769,7 @@ class DockAlignNode(Node):
         n = int(self.get_parameter("center_samples").value)
         spread_max = float(self.get_parameter("final_yaw_spread_max").value)
         vals = []
+        reject = collections.Counter()
         last_seq = -1
         tries = 0
         start_s = self.get_clock().now().nanoseconds * 1e-9
@@ -1351,7 +1783,14 @@ class DockAlignNode(Node):
                 tries += 1
                 if face_yaw is not None:
                     vals.append(face_yaw)
+                else:
+                    reject[self._wall_fit_reject or "sem muro"] += 1
             rate.sleep()
+        # 2026-10-26 (I6): uma linha por chamada com os motivos agregados
+        # (residuo/extensao/npts/35 graus) — hoje so' saia "x/5 fits".
+        rej_txt = ", ".join(f"{k} x{v}" for k, v in reject.most_common()) or "nenhuma"
+        self.get_logger().info(
+            f"[inst] yaw_final: {len(vals)}/{tries} fits leves da face; rejeicoes: {rej_txt}")
         if len(vals) < max(3, n - 1):
             return None, f"{len(vals)}/{n} fits confiaveis da face"
         vals.sort()
@@ -1365,7 +1804,9 @@ class DockAlignNode(Node):
                      deadline, attempt_budget, rate, attempt, attempts,
                      staging_offset):
         """v5 (pedido do operador 2026-08-21, 'o pre-docking esta otimo'):
-        do staging, (A) lateral pelo centro da face, (B) RETO no piso guiado
+        do staging, (A0, 2026-10-26) espera a base parar, refina e esquadra
+        pelo LiDAR ANTES de centrar, (A) lateral pelo centro da face (pe' da
+        perpendicular), (B) RETO no piso guiado
         pelo muro ate a distancia de parada (corte descontando o coast
         medido), com UMA pausa de refit/esquadro pelo LiDAR a
         ~refine_refit_front_m, (C) retoque lateral na mesa e (D) validacao
@@ -1395,29 +1836,10 @@ class DockAlignNode(Node):
         hard_min = self.get_parameter("hard_min_face_dist").value
 
         target = bank_target
+        tx, ty, tyaw = target
         confident = False
         self._refine_wide_face = False
-        if g.use_lidar_refine:
-            self._feedback(goal_handle, "refinando", 0.0, 0.0, 0.0)
-            target, confident = self._refine_target_from_scan(target, rate, goal_handle)
-            for _ in range(max(1, int(0.3 / period))):
-                rate.sleep()
-            target, confident = self._refine_target_from_scan(target, rate, goal_handle)
-            if not confident:
-                self.get_logger().warn(
-                    "refino por LiDAR sem confianca; usando pose do banco.")
-        tx, ty, tyaw = target
-
-        stop = self._resolve_stop_dist()
-        if stop is None:
-            return "soft_timeout", "sem distancia de parada (stop_face_dist)"
-        if stop < hard_min + 0.03 - 1e-6:
-            self.get_logger().warn(
-                f"stop {stop:.3f} a menos de 3 cm do hard_min {hard_min:.3f}: "
-                f"parada ajustada para {hard_min + 0.03:.3f}")
-            stop = hard_min + 0.03
-        window_lo = stop - 0.02
-        window_hi = stop + band + max(0.04, xy_tol)
+        self._refine_fit_yaws = []
 
         start_s = self.get_clock().now().nanoseconds * 1e-9
         attempt_end = start_s + attempt_budget
@@ -1430,6 +1852,8 @@ class DockAlignNode(Node):
             return self.get_clock().now().nanoseconds * 1e-9
 
         def amcl_errors():
+            # Le' tx/ty/tyaw do escopo externo NA CHAMADA: segue o alvo
+            # refinado depois de cada refino.
             pose = self._robot_pose()
             if pose is None:
                 return 0.0, 0.0, 0.0
@@ -1438,6 +1862,66 @@ class DockAlignNode(Node):
             return (math.cos(ryaw) * dx + math.sin(ryaw) * dy,
                     -math.sin(ryaw) * dx + math.cos(ryaw) * dy,
                     _normalize_angle(tyaw - ryaw))
+
+        def inst(where):
+            """2026-10-26 (I6): uma linha '[inst]' com AMCL (x, y, yaw do
+            alvo no frame do robo), LiDAR (front e yaw da face do fit leve)
+            e twist do /odom nas transicoes do docking, para o proximo tour
+            separar 'AMCL enviesado' de 'base ainda girando' (F14)."""
+            ex, ey, eyaw = amcl_errors()
+            front, _n, age, fy = self._front_wall_distance()
+            tw = self._odom_twist
+            tw_txt = "sem /odom" if tw is None else (
+                f"v={math.hypot(tw[0], tw[1]):.3f} m/s wz={tw[2]:+.3f} rad/s "
+                f"idade={(now() - tw[3] * 1e-9):.2f} s")
+            log(f"[inst] {where}: amcl x={ex * 100:+.1f} y={ey * 100:+.1f} cm "
+                f"yaw={math.degrees(eyaw):+.1f} graus | lidar front="
+                f"{'?' if front is None else '%.3f' % front} yaw_face="
+                f"{'?' if fy is None else '%+.1f' % math.degrees(fy)} graus "
+                f"idade={'?' if not math.isfinite(age) else '%.2f' % age} s | odom {tw_txt}")
+
+        inst("entrada do goal")
+        # 2026-10-26 (I3c, F14/C2): o Nav2 declara chegada com a base ainda
+        # girando (TF +6,7..+7,8 graus nos 0,4 s seguintes; yaw_rel do LiDAR
+        # derivando -4,6 -> -9,7 em 0,33 s na WS1-T2). Antes de QUALQUER
+        # medida: zero na referencia e espera /odom parado (o yaw da face
+        # do fit leve so' vai para o log; teto still_max_s; estourou, avisa
+        # e segue).
+        # Cancel/hard_stop aqui (antes do try principal) encerram a tentativa.
+        try:
+            self._wait_still(goal_handle, rate, deadline, attempt_end, "parando")
+        except self._AttemptAbort as ab:
+            self._publish_cmd(0.0, 0.0, 0.0)
+            return ab.outcome, ab.info
+
+        if g.use_lidar_refine:
+            self._feedback(goal_handle, "refinando", 0.0, 0.0, 0.0)
+            first = self._refine_target_from_scan(target, rate, goal_handle)
+            for _ in range(max(1, int(0.3 / period))):
+                rate.sleep()
+            second = self._refine_target_from_scan(first[0], rate, goal_handle)
+            # I2 (F13, WS1-T2): a 2a chamada NAO sobrescreve a 1a — confiante
+            # se qualquer uma foi; alvo = o da ultima confiante.
+            target, confident = merge_refine_results(bank_target, first, second)
+            tx, ty, tyaw = target
+            if not confident:
+                self.get_logger().warn(
+                    "refino por LiDAR sem confianca (2 leituras); usando pose do banco.")
+            elif not second[1]:
+                log("refino: 2a leitura sem confianca — mantenho o alvo refinado da 1a")
+            inst("apos refino")
+        tx, ty, tyaw = target
+
+        stop = self._resolve_stop_dist()
+        if stop is None:
+            return "soft_timeout", "sem distancia de parada (stop_face_dist)"
+        if stop < hard_min + 0.03 - 1e-6:
+            self.get_logger().warn(
+                f"stop {stop:.3f} a menos de 3 cm do hard_min {hard_min:.3f}: "
+                f"parada ajustada para {hard_min + 0.03:.3f}")
+            stop = hard_min + 0.03
+        window_lo = stop - 0.02
+        window_hi = stop + band + max(0.04, xy_tol)
 
         # Sanidade: estou mesmo no pre-docking gravado? (dock + staging_offset
         # ao longo do yaw do dock). Longe demais = mesa errada/AMCL perdido:
@@ -1459,40 +1943,102 @@ class DockAlignNode(Node):
         agree_tol = self.get_parameter("refine_yaw_agree_tol").value
         refit_front = float(self.get_parameter("refine_refit_front_m").value)
         second_read_s = float(self.get_parameter("refine_second_read_max_s").value)
-        # O giro so' corrige acima do coast (+2 cm de folga, como o esquadro
-        # por AMCL sempre fez): abaixo disso o _cut_drive nem parte.
-        yaw_min_corr = yaw_coast + 0.02
+        # O giro so' corrige acima do coast (+0,02 rad de folga, como o
+        # esquadro por AMCL sempre fez): abaixo disso o _cut_drive nem parte.
+        yaw_min_corr, _ = amcl_square_window(yaw_coast, 0.0)
 
         # Esquadro por AMCL: so quando o refino NAO confiou (mesa diagonal =
         # Nav2 chega torto e a vista de esguelha reprova o fit). Gira longe da
-        # mesa (rotate_min_front) e refaz o refino ja de frente. A guarda de
-        # sanidade acima garante que o AMCL merece confianca aqui.
-        # 2026-10-21: NUNCA quando a rejeicao foi 'face larga demais' (mesa +
-        # vizinho vistos do staging): na WS1 o AMCL girou +12,3 graus contra
-        # uma face que o LiDAR mediu a -15 logo depois. Esse caso fica para o
-        # refit perto da mesa (refit_square), onde a face aparece isolada.
-        if g.use_lidar_refine and not confident:
-            if self._refine_wide_face:
-                log("esquadro por AMCL pulado: face larga demais no staging "
-                    "(vizinho?) — o esquadro fica para o refit perto da mesa")
-            else:
-                f0, _n0, _fy0 = self._check_guards(goal_handle, deadline, attempt_end)
-                eyaw0 = amcl_errors()[2]
-                if abs(eyaw0) > yaw_min_corr and f0 is not None and f0 >= rotate_min:
-                    log(f"esquadro por AMCL: {math.degrees(eyaw0):+.1f} graus (refino sem face)")
-                    self._cut_drive(goal_handle, rate, deadline, attempt_end,
-                                    "z", 1.0 if eyaw0 > 0 else -1.0,
-                                    lambda _fr: amcl_errors()[2],
-                                    yaw_coast, abs(eyaw0) / 0.315 + 2.0, "esquadrando")
-                    target, confident = self._refine_target_from_scan(target, rate, goal_handle)
-                    if confident:
-                        tx, ty, tyaw = target
-                        log("refino apos esquadro: ok")
+        # mesa (rotate_min_front) e refaz o refino ja de frente.
+        # 2026-10-21: nunca quando a rejeicao foi 'face larga demais' (WS1:
+        # AMCL girou +12,3 contra uma face que o LiDAR mediu a -15).
+        # 2026-10-26 (I1, F13/C1): DESLIGADO por default (amcl_square_enabled)
+        # — na WS6 girou -9,7/-9,4 graus CW nos dois tours contra fits
+        # rejeitados por RESIDUO que diziam +5/+6 CCW (a guarda de 21/10 so'
+        # cobria 'face larga'), e na WS1-T2 -11,9 contra o alvo recem-
+        # refinado. Ligado, so' roda: (a) sem face NENHUMA no refino (poucos
+        # pontos/sem scan), nunca quando achou e rejeitou por residuo/largura;
+        # (c) com a base parada por /odom e a mediana de >= 5 amostras do erro
+        # com dispersao <= 0,02 rad; (d) |erro| <= amcl_square_max_err; (b)
+        # sem veto do LiDAR (amcl_square_veto: sinal oposto ou ja' dentro da
+        # tolerancia). Desligado, loga o que teria feito.
+        # PENDENTE (I1(e) do diagnostico): se o refino pos-giro reprovar, o
+        # giro NAO e' desfeito pela odometria ("sigo pelo banco", como
+        # antes). So' vale implementar depois de medir o coast real de giro
+        # (teste T5); enquanto o default for False nao tem efeito.
+        amcl_enabled = bool(self.get_parameter("amcl_square_enabled").value)
+        amcl_max_err = float(self.get_parameter("amcl_square_max_err").value)
+        # Cancel/hard_stop/timeout aqui (antes do try principal) encerram a
+        # tentativa com o mesmo vocabulario de outcome.
+        try:
+            if g.use_lidar_refine and not confident:
+                lidar_yaws = list(self._refine_fit_yaws)
+                if self._live_face_yaw is not None:
+                    lidar_yaws.append(self._live_face_yaw)
+                lidar_txt = ", ".join(f"{math.degrees(y):+.1f}" for y in lidar_yaws) or "nenhum"
+                if not amcl_enabled:
+                    log(f"esquadro por AMCL desligado (amcl_square_enabled=false): o AMCL "
+                        f"pede {math.degrees(amcl_errors()[2]):+.1f} graus; LiDAR yaw_rel "
+                        f"[{lidar_txt}] graus — nao giro")
+                elif self._refine_fit_yaws:
+                    log("esquadro por AMCL pulado: o refino ACHOU a face e rejeitou o fit "
+                        f"(LiDAR yaw_rel [{lidar_txt}] graus) — nao giro pelo AMCL contra "
+                        "uma face medida; fica para o refit perto da mesa")
+                else:
+                    _w, still, _yok, _y0, _y1 = self._wait_still(
+                        goal_handle, rate, deadline, attempt_end, "parando",
+                        w_max=0.03, min_s=0.3)
+                    samples = []
+                    t_s = now()
+                    while len(samples) < 5 and now() - t_s < 1.0:
+                        self._check_guards(goal_handle, deadline, attempt_end)
+                        self._publish_cmd(0.0, 0.0, 0.0)
+                        samples.append(amcl_errors()[2])
+                        rate.sleep()
+                    eyaw0 = median_if_tight(samples, 5, 0.02)
+                    f0, _n0, _fy0 = self._check_guards(goal_handle, deadline, attempt_end)
+                    if self._live_face_yaw is not None:
+                        lidar_yaws.append(self._live_face_yaw)
+                    veto = amcl_square_veto(eyaw0, lidar_yaws, agree_tol, yaw_tol, amcl_max_err)
+                    if not still:
+                        log("esquadro por AMCL pulado: base nao parou pelo /odom")
+                    elif eyaw0 is None:
+                        log("esquadro por AMCL pulado: erro do AMCL ainda mudando "
+                            f"({len(samples)} amostras, dispersao > 0,02 rad)")
+                    elif veto:
+                        log(f"esquadro por AMCL pulado: {veto}")
+                    elif abs(eyaw0) <= yaw_min_corr:
+                        log(f"esquadro por AMCL pulado: |erro| {math.degrees(abs(eyaw0)):.1f} graus "
+                            f"abaixo do coast de giro ({math.degrees(yaw_min_corr):.1f}) — "
+                            "o giro nao corrige")
+                    elif f0 is None or f0 < rotate_min:
+                        log("esquadro por AMCL pulado: front="
+                            f"{'?' if f0 is None else '%.3f' % f0} < rotate_min_front "
+                            f"{rotate_min:.2f} (bico raspa a mesa)")
                     else:
-                        log("refino apos esquadro: ainda sem confianca — sigo pelo banco")
+                        inst("antes do esquadro por AMCL")
+                        log(f"esquadro por AMCL: {math.degrees(eyaw0):+.1f} graus (refino sem face)")
+                        self._cut_drive(goal_handle, rate, deadline, attempt_end,
+                                        "z", 1.0 if eyaw0 > 0 else -1.0,
+                                        lambda _fr: amcl_errors()[2],
+                                        yaw_coast, abs(eyaw0) / 0.315 + 2.0, "esquadrando")
+                        inst("depois do esquadro por AMCL")
+                        target, confident = self._refine_target_from_scan(target, rate, goal_handle)
+                        if confident:
+                            tx, ty, tyaw = target
+                            log("refino apos esquadro: ok")
+                        else:
+                            log("refino apos esquadro: ainda sem confianca — sigo pelo banco")
+                        inst("apos refino pos-esquadro")
+        except self._AttemptAbort as ab:
+            self._publish_cmd(0.0, 0.0, 0.0)
+            return ab.outcome, ab.info
 
-        def lateral_adjust(where):
-            """UM ajuste lateral pelo centro da face, se confiavel e seguro."""
+        def lateral_adjust(where, foot=False):
+            """UM ajuste lateral pelo centro da face, se confiavel e seguro.
+            foot=True (2026-10-26, I4): centra pelo PE' DA PERPENDICULAR
+            (o que a reta acerta DEPOIS de um esquadro); False, pelo ponto
+            onde o eixo fura a face. Loga os dois."""
             front, npts, face_yaw = self._check_guards(
                 goal_handle, deadline, attempt_end)
             if not center_enabled or front is None:
@@ -1500,7 +2046,13 @@ class DockAlignNode(Node):
             if front < lateral_min - 1e-6:
                 log(f"lateral({where}): front={front:.3f} < {lateral_min:.2f} — pulando")
                 return front, npts, face_yaw
-            c = self._measure_center(goal_handle, rate, deadline, attempt_end)
+            c = self._measure_center(goal_handle, rate, deadline, attempt_end, foot=foot)
+            ca, cf = self._center_medians
+            log(f"[inst] lateral({where}): c_axis="
+                f"{'?' if ca is None else '%+.1f' % (ca * 100)} c_foot="
+                f"{'?' if cf is None else '%+.1f' % (cf * 100)} cm "
+                f"(uso {'c_foot' if foot else 'c_axis'}; yaw_face="
+                f"{'?' if face_yaw is None else '%+.1f' % math.degrees(face_yaw)} graus)")
             if c is None:
                 log(f"lateral({where}): centro sem confianca ({self._center_reject}) — nao mexo")
             elif abs(c) <= max(center_deadband, center_coast):
@@ -1513,7 +2065,7 @@ class DockAlignNode(Node):
                 c_hist = []
 
                 def center_err(front_now):
-                    res = self._face_center_from_scan(front_now)
+                    res = self._face_center_from_scan(front_now, foot=foot)
                     if res is None:
                         return None
                     c_hist.append(res[0])
@@ -1521,11 +2073,15 @@ class DockAlignNode(Node):
                     return sorted(c_hist)[len(c_hist) // 2]
 
                 before_c = c
+                # R6 (F15/C3, 2026-10-26): corte pelo ponto de parada
+                # PREVISTO (lag_v = velocidade comandada): o corte cru em
+                # err <= coast deixava 5-10 cm de sobrecurso aditivo.
                 front, npts, face_yaw = self._cut_drive(
                     goal_handle, rate, deadline, attempt_end,
                     "y", 1.0 if c > 0 else -1.0, center_err, center_coast,
-                    (abs(c) + 0.05) / min_v + 1.0, "centrando")
-                res = self._measure_center(goal_handle, rate, deadline, attempt_end)
+                    (abs(c) + 0.05) / min_v + 1.0, "centrando",
+                    lag_v=self._start_speeds()[0])
+                res = self._measure_center(goal_handle, rate, deadline, attempt_end, foot=foot)
                 log(f"lateral({where}): {before_c*100:+.1f} -> "
                     f"{'?' if res is None else '%+.1f' % (res*100)} cm")
             return front, npts, face_yaw
@@ -1552,45 +2108,53 @@ class DockAlignNode(Node):
             face numa banda rasa ao redor do muro (face isolada) e, se
             |yaw_rel| > yaw_tol e front >= rotate_min_front, esquadra pelo
             LiDAR. Nunca gira perto demais (bico raspa a mesa). Devolve
-            (front, npts, face_yaw) do muro."""
+            (front, npts, face_yaw, status) do muro; status e' o de
+            refit_square_decision e vale 'girou' SO' se o giro aconteceu
+            (2026-10-26, I8/F12: antes o chamador marcava a correcao como
+            feita mesmo com os fits rejeitados)."""
             t0 = now()
             self._publish_cmd(0.0, 0.0, 0.0)
             front, npts, face_yaw = self._settle(
                 goal_handle, rate, deadline, attempt_end, "refinando")
             if front is None:
                 log(f"refit({where}): sem medicao do muro apos parar — sigo sem esquadrar")
-                return front, npts, face_yaw
+                return front, npts, face_yaw, "sem_muro"
             first = self._refit_face_band(front, f"refit({where})")
             second = None
             if first.ok and self._wait_new_scan(second_read_s, rate, goal_handle):
                 second = self._refit_face_band(front, f"refit({where}, 2a leitura)")
-            if not first.ok or second is None or not second.ok:
-                why = first.reason if not first.ok else (
-                    "sem /scan novo" if second is None else second.reason)
+            yaw_rel, status, why = refit_square_decision(
+                first, second, agree_tol, yaw_tol, yaw_min_corr, front, rotate_min)
+            # I6: yaw da banda rasa (fit TLS) ao lado do fit leve do corredor
+            # (_live_face_yaw, o que fecha a malha do giro e o 'pronto:').
+            live = self._live_face_yaw
+            log(f"[inst] refit({where}): yaw_rel banda="
+                f"{'?' if yaw_rel is None else '%+.1f' % math.degrees(yaw_rel)} | fit leve="
+                f"{'?' if live is None else '%+.1f' % math.degrees(live)} graus, "
+                f"front={front:.3f}, status={status}")
+            if yaw_rel is not None:
+                self._last_face_width = second.width
+            if status == "sem_fits":
                 log(f"refit({where}): sem 2 fits confiaveis ({why}) — sigo sem "
                     f"esquadrar ({now() - t0:.1f} s)")
-                return front, npts, face_yaw
-            if abs(_normalize_angle(first.yaw - second.yaw)) > agree_tol:
-                log(f"refit({where}): leituras discordam ({math.degrees(first.yaw):+.1f} vs "
-                    f"{math.degrees(second.yaw):+.1f} graus, tol {math.degrees(agree_tol):.1f}) "
-                    f"— sigo sem esquadrar ({now() - t0:.1f} s)")
-                return front, npts, face_yaw
-            yaw_rel = 0.5 * (first.yaw + second.yaw)
-            self._last_face_width = second.width
+                return front, npts, face_yaw, status
+            if status == "discordam":
+                log(f"refit({where}): {why} — sigo sem esquadrar ({now() - t0:.1f} s)")
+                return front, npts, face_yaw, status
             yaw_txt = f"yaw_rel {math.degrees(yaw_rel):+.1f} graus"
-            if not yaw_needs_correction(yaw_rel, yaw_tol):
-                log(f"refit({where}): {yaw_txt} dentro da tolerancia "
-                    f"({math.degrees(yaw_tol):.1f}) ({now() - t0:.1f} s)")
-                return front, npts, face_yaw
-            if abs(yaw_rel) <= yaw_min_corr:
-                log(f"refit({where}): {yaw_txt} fora da tolerancia mas abaixo do coast "
-                    f"de giro ({math.degrees(yaw_min_corr):.1f}) — nao giro")
-                return front, npts, face_yaw
-            if front < rotate_min - 1e-6:
-                log(f"refit({where}): {yaw_txt} fora da tolerancia mas front={front:.3f} "
-                    f"< rotate_min_front {rotate_min:.2f} — NAO giro (bico raspa a mesa)")
-                return front, npts, face_yaw
-            return square_by_lidar(where, yaw_rel, front)
+            if status == "dentro":
+                log(f"refit({where}): {yaw_txt} {why} ({now() - t0:.1f} s)")
+                return front, npts, face_yaw, status
+            if status == "coast":
+                log(f"refit({where}): {yaw_txt} {why} — nao giro")
+                return front, npts, face_yaw, status
+            if status == "perto":
+                log(f"refit({where}): {yaw_txt} {why} — NAO giro (bico raspa a mesa)")
+                return front, npts, face_yaw, status
+            inst(f"antes do esquadro por LiDAR ({where})")
+            front, npts, fy = square_by_lidar(where, yaw_rel, front)
+            inst(f"depois do esquadro por LiDAR ({where})")
+            return front, npts, fy, "girou"
 
         def approach(allow_refit):
             """(B) RETO ate a janela, guiado pelo muro. Com allow_refit, pausa
@@ -1641,14 +2205,43 @@ class DockAlignNode(Node):
                 goal_handle, rate, deadline, attempt_end, "assentando")
             log(f"reto: parou em front={front if front is None else round(front, 3)} "
                 f"(janela [{window_lo:.3f}, {window_hi:.3f}])")
+            inst("parou do reto")
             return front, npts, face_yaw
 
         correct_enabled = bool(self.get_parameter("final_yaw_correction").value)
         strict = bool(self.get_parameter("final_yaw_strict").value)
 
         try:
+            # ---------- (A0) esquadro pelo LiDAR no STAGING (2026-10-26, I4) -
+            # C3/F15: o lateral media o centro com o robo torto e a demanda
+            # carregava front*tan(yaw) (WS3 +16/+17,5 cm nos dois tours,
+            # SH1-T2 -18,7); o giro vinha DEPOIS e nao desfazia a translacao.
+            # Agora esquadra antes (so' com refino confiante e front >=
+            # rotate_min; refit_square ja' exige 2 fits concordantes e
+            # |yaw_rel| > yaw_min_corr — sem giro, nada muda). O lateral do
+            # staging centra SEMPRE pelo ponto onde o eixo fura a face
+            # (c_axis): apos 'girou' c_axis ~ c_foot; nos demais status
+            # (dentro/coast/perto/sem_fits) nao vai haver giro e o robo anda
+            # pelo proprio eixo, entao c_axis e' o ponto que a reta acerta.
+            # Usar c_foot "apostando" que o refit do reto gira seria pior
+            # justamente nas docks com refino rejeitado, onde o refit da
+            # banda rasa tambem reprova (F11: WS2 residuo, WS6 face estreita)
+            # — ali c_foot carregaria d*tan(yaw) (WS2 +6..+8 cm, WS6 ~11 cm).
+            # c_foot fica so' no log [inst] ate um tour mostrar o contrario.
+            front0, _n0, _fy0 = self._check_guards(goal_handle, deadline, attempt_end)
+            square_possible = (g.use_lidar_refine and front0 is not None
+                               and front0 >= rotate_min)
+            staging_status = None
+            if square_possible and confident:
+                _f, _n, _fy, staging_status = refit_square("staging")
+            elif g.use_lidar_refine:
+                log("esquadro no staging pulado: " + (
+                    "refino sem confianca" if not confident else
+                    f"front={'?' if front0 is None else '%.3f' % front0} "
+                    f"< rotate_min_front {rotate_min:.2f}"))
+
             # ---------- (A) ajuste lateral no STAGING (longe = mais seguro) --
-            lateral_adjust("staging")
+            lateral_adjust("staging", foot=False)
 
             # ---------- (B) RETO ate a janela (com pausa de refit) -----------
             front, npts, face_yaw = approach(allow_refit=True)
@@ -1663,6 +2256,7 @@ class DockAlignNode(Node):
             # fits confiaveis); fora da tolerancia, recua ate a distancia
             # de giro, esquadra pela face e refaz reto+lateral UMA vez.
             corrected_once = False
+            correction_cycles = 0
             while True:
                 if front is None:
                     return "soft_timeout", "sem medicao do muro apos a chegada"
@@ -1684,7 +2278,9 @@ class DockAlignNode(Node):
                     return "success", (front - stop, ey, eyaw, "yaw_nao_medido")
                 now_s = now()
                 has_time = min(deadline, attempt_end) - now_s >= _YAW_CORRECTION_EST_S
-                can_correct = correct_enabled and not corrected_once and has_time
+                can_correct = (correct_enabled and not corrected_once
+                               and correction_cycles < _YAW_CORRECTION_MAX_CYCLES
+                               and has_time)
                 decision = final_yaw_decision(
                     yaw_m, yaw_tol, not can_correct, strict, min_correctable=yaw_min_corr)
                 yaw_deg = math.degrees(yaw_m)
@@ -1704,16 +2300,30 @@ class DockAlignNode(Node):
                                      min(deadline, attempt_end), period,
                                      target_front=target_front) == "canceled":
                         raise self._AttemptAbort("canceled")
-                    refit_square("correcao")
+                    correction_cycles += 1
+                    _f, _n, _fy, st = refit_square("correcao")
                     front, npts, face_yaw = approach(allow_refit=False)
                     front, npts, face_yaw = lateral_adjust("mesa")
-                    corrected_once = True
+                    # I8 (F12, 2026-10-26): so' conta como corrigido se o
+                    # esquadro ACONTECEU; 6/6 correcoes dos tours recuaram e
+                    # voltaram sem girar (refit rejeitado) e a flag
+                    # legitimava o mesmo yaw.
+                    if correction_counted(st):
+                        corrected_once = True
+                    else:
+                        self.get_logger().warn(
+                            f"{tag} correcao sem esquadro (refit {st}: fits rejeitados/"
+                            f"sem giro) — ciclo {correction_cycles}/"
+                            f"{_YAW_CORRECTION_MAX_CYCLES}; nao conto como corrigido")
                     log(f"correcao final de yaw custou {now() - t0:.1f} s "
                         f"(restam {deadline - now():.0f} s do align_timeout)")
                     continue
                 note = f"yaw_fora_da_tolerancia ({yaw_deg:+.1f} graus)"
                 if corrected_once:
                     cause = "ja' corrigido uma vez neste goal"
+                elif correction_cycles >= _YAW_CORRECTION_MAX_CYCLES:
+                    cause = (f"{correction_cycles} ciclo(s) de correcao SEM esquadro "
+                             "(refit rejeitado) — o yaw nao foi corrigido")
                 elif not correct_enabled:
                     cause = "final_yaw_correction=false"
                 elif not has_time:
@@ -1782,12 +2392,18 @@ class DockAlignNode(Node):
         rate = self._shared_rate(period)
 
         try:
-            bx, by, byaw, face_dist, staging_offset = self._load_dock_pose(
+            bx, by, byaw, face_dist, staging_offset, half_w = self._load_dock_pose(
                 g.dock_id, g.map_name, g.map_dir)
         except Exception as exc:  # noqa: BLE001
             return self._abort(goal_handle, result, f"falha ao carregar dock: {exc}")
         bank_target = (bx, by, byaw)
         self._dock_face_dist = face_dist
+        # Janela lateral do refino por dock (R3, 2026-10-26); None = global.
+        self._dock_refine_half_width = half_w
+        if half_w is not None:
+            self.get_logger().info(
+                f"[{g.dock_id}] refine_half_width_y por dock: +-{half_w:.2f} m "
+                f"(global {self.get_parameter('refine_half_width_y').value:.2f})")
         self._last_face_yaw_map = None  # portao de consistencia zera por goal
         self._last_face_width = None    # largura de referencia e' por mesa
         self._live_face_yaw = None

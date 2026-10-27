@@ -119,6 +119,8 @@ case_good() {
   run_case good 0 "" ""
   expect_count "$CASE_LOG" 2 "pose validada (x/y/yaw dentro dos limites)"
   expect_count "$CASE_LOG" 2 "base parada:"
+  # parada ANTES do align (2026-10-26, I3b): uma por estacao
+  expect_count "$CASE_LOG" 2 "apos a staging (yaw mudou"
   expect_count "$CASE_LOG" 2 "pronto para manipulacao."
   expect_count "$CASE_LOG" 0 "POSE FORA DOS LIMITES"
   expect_count "$CASE_LOG" 1 "PLACE concluido com sucesso"
@@ -141,7 +143,7 @@ case_retry() {
 }
 
 case_strict() {
-  run_case strict 0 "-p align_bad_count:=-1" ""
+  run_case strict 0 "-p align_bad_count:=-1" "-p pose_gate_strict:=true"
   # As duas estacoes recebem a pose ruim: cada uma re-docka uma vez e pula.
   expect_count "$CASE_LOG" 2 "undock + nova navegacao ate a staging + align (re-dock 0 restante(s) depois deste)."
   expect_count "$CASE_LOG" 1 "[WS1] POSE FORA DOS LIMITES apos 2 docking(s) (y +0.304 m > +0.200 m; yaw +0.319 rad (+18.3 graus) > +0.200 rad (+11.5 graus)) — pose_gate_strict=true: nao manipulo aqui."
@@ -180,6 +182,8 @@ case_no_odom() {
   run_case no_odom 0 "-p odom_publish:=false" "-p stop_check_timeout_s:=2.0"
   # linha de ERROR + linha de resumo, por estacao
   expect_count "$CASE_LOG" 4 "sem odometria fresca em '/odom' por 2.0 s (0 amostras)"
+  # parada antes do align sem /odom: WARN e segue (uma por estacao)
+  expect_count "$CASE_LOG" 2 "nos 2.0 s apos a staging"
   expect_count "$CASE_LOG" 0 "pronto para manipulacao."
   expect_count "$CASE_LOG" 1 "Arvore terminou com SUCESSO"
   run_case no_odom_lenient 0 "-p odom_publish:=false" \

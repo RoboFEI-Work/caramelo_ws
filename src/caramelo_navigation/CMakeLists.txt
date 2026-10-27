@@ -143,6 +143,16 @@ install(PROGRAMS
   RENAME compute_dock_distances
 )
 
+# Rosbag do tour / dos dockings (2026-10-26, diagnostico secao 8.1): os tours
+# nao tinham bag e os logs do Nav2 nao trazem pose. Nao e lancado pelo launch;
+# o operador roda antes do tour_docks. RENAME => copia (nao symlink) mesmo
+# com --symlink-install: editar o .sh exige rebuild do pacote.
+install(PROGRAMS
+  scripts/gravar_bag_tour.sh
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME gravar_bag_tour
+)
+
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   # Matematica pura do nudge_base (projecao da odometria, regra de aceite),

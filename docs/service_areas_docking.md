@@ -170,6 +170,28 @@ ros2 run caramelo_navigation validate_service_areas --map sala_520 --sync-dockin
 
 Isso recria o `docking.yaml` tecnico usado pelo Docking Server.
 
+### Cuidados Aprendidos Em 2026-10-26
+
+Detalhes em `docs/diagnostico_docking_tour_2026-10-26.md` (F18, F19) e na secao
+"Tour de 2026-10-26" de `docking_alinhamento_holonomico.md`.
+
+- **Os dois arquivos divergem em silencio.** A GUI (`/save_dock_pose`) e o
+  `a1d8e07` gravaram a WS5 so no `docking.yaml`; o `service_areas.yaml` ficou
+  com a pose antiga, 8,8 cm ao lado, por dois meses. Um `--sync-docking` feito
+  por qualquer outro motivo teria revertido a WS5. Antes de sincronizar, confira
+  pose a pose (`final_robot_pose` x `docks.<id>.pose`); em 2026-10-26 a WS5 foi
+  igualada ao `docking.yaml` e hoje os dez docks sao identicos.
+- **Yaw gravado nao e a normal da mesa.** Pelo `map.pgm`, o yaw gravado fica
+  ate 5 graus fora da normal da face desenhada (WS1 ~5, WS6 3-4, PP1 3-4,
+  FINISH 6) e a distancia gravada ate a face vai de 0,29 m (WS6) a 0,43 m (WS4).
+  O align esquadra pela face e para a 0,38 m pelo LiDAR, entao essas folgas
+  aparecem como `Yaw`/`Long` no relatorio do `tour_docks` sem que o docking
+  esteja errado. Para regravar (M3 do diagnostico): robo esquadrado pelo LiDAR
+  (`dock_pose_recorder_node`), depois `service_areas.yaml` + sync, nunca so um.
+- **Sinais no relatorio x no align.** `Long/Lat/Yaw` do tour = robo - dock no
+  frame do dock (Lat + = robo a esquerda); `final_x/y/yaw_error` do align =
+  alvo - robo no frame do robo. Mesma medida, sinal trocado (F7).
+
 ## Testar Docking
 
 Suba a navegacao com docking:

@@ -279,6 +279,11 @@ def _docking_from_entry(entry: dict, area_type: str) -> dict:
     # aqui, senao a distincao "nao calibrado" se perde.
     if docking.get("desired_face_dist") is not None:
         result["desired_face_dist"] = float(docking["desired_face_dist"])
+    # Meia-largura lateral da janela do refino do dock_align_node, POR MESA
+    # (2026-10-26, F20: WS6 tem bloco a 0,42 m dentro da janela global 0,45).
+    # Mesma regra: ausente = parametro global.
+    if docking.get("refine_half_width_y") is not None:
+        result["refine_half_width_y"] = float(docking["refine_half_width_y"])
     return result
 
 
@@ -409,6 +414,9 @@ def service_area_to_yaml_entry(area_id: str, area: dict) -> dict:
     if area["docking"].get("desired_face_dist") is not None:
         entry["docking"]["desired_face_dist"] = float(
             area["docking"]["desired_face_dist"])
+    if area["docking"].get("refine_half_width_y") is not None:
+        entry["docking"]["refine_half_width_y"] = float(
+            area["docking"]["refine_half_width_y"])
     entry["manipulation_enabled"] = bool(area["manipulation_enabled"])
     if area.get("notes"):
         entry["notes"] = str(area["notes"])
@@ -540,6 +548,11 @@ def sync_docking_from_service_areas(map_folder: Path, make_backup: bool = False)
         if normalized["docking"].get("desired_face_dist") is not None:
             docks[area_id]["desired_face_dist"] = float(
                 normalized["docking"]["desired_face_dist"])
+        # Janela lateral do refino por mesa (2026-10-26): sem isto o --sync
+        # apagava a chave da WS6 e ela voltava a janela global (F20).
+        if normalized["docking"].get("refine_half_width_y") is not None:
+            docks[area_id]["refine_half_width_y"] = float(
+                normalized["docking"]["refine_half_width_y"])
     data = {
         "dock_plugins": dock_plugins,
         "docks": docks,

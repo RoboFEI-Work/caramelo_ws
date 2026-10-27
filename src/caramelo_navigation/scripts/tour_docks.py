@@ -2,10 +2,13 @@
 # Tour de conferencia dos docks: leva o robo por TODOS os docks do mapa
 # (WS1..WSn, SH*, PP*, RT*, em ordem numerica) e termina no FINISH, com a
 # MESMA sequencia do GoToWS da missao (manip_bt/go_to_ws_bt.cpp) em cada
-# dock: undock -> Nav2 ate a staging -> align_to_dock (que faz o approach).
+# dock: undock -> Nav2 ate a staging -> espera a base PARAR (/odom) ->
+# align_to_dock (que faz o approach).
 # Mede por dock o tempo de cada etapa, o resultado de cada action e o erro
-# da pose final (TF map -> base_footprint) no frame do dock; fala em
-# /manip/speech e grava tour_<data>.md na pasta do mapa. Nao grava bag.
+# da pose final (TF map -> base_footprint) no frame do dock; o status sai
+# PELOS NUMEROS (--yaw-tol-deg / --y-max, por AMCL e LiDAR; 2026-10-26, F6/C7)
+# e o exit code e != 0 se algum dock foi reprovado; fala em /manip/speech e
+# grava tour_<data>.md na pasta do mapa. Nao grava bag.
 # Quem usa: operador, antes da missao, para conferir se cada ponto de
 # docking esta bem gravado e onde o robo tem dificuldade de chegar.
 # Como roda (stack no ar: ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=<mapa>):
@@ -30,9 +33,11 @@ import tf2_ros
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import DockRobot, NavigateToPose, UndockRobot
+from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient, get_action_names_and_types
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from rclpy.utilities import remove_ros_args
@@ -46,11 +51,12 @@ from caramelo_docking_common import (  # noqa: E402
     wait_for_action_servers, yaw_from_quaternion,
 )
 from caramelo_tour_common import (  # noqa: E402
-    FLOW_NAV_ONLY, FLOW_OPENNAV_ALIGN, FLOW_OPENNAV_ONLY, FLOW_STAGING_ALIGN,
-    STATUS_CANCELED, STATUS_FAIL, STATUS_OK, STATUS_SKIPPED, DockEntry, DockReport,
-    align_status, format_report_md, format_table, load_dock_entries,
-    parse_dock_list, plan_tour, pose_error_in_dock_frame, report_filename,
-    speech_failed, speech_ready, speech_summary, summarize,
+    FINAL_Y_MAX_M, FLOW_NAV_ONLY, FLOW_OPENNAV_ALIGN, FLOW_OPENNAV_ONLY, FLOW_STAGING_ALIGN,
+    STATUS_CANCELED, STATUS_FAIL, STATUS_FAIL_POSE, STATUS_OK, STATUS_SKIPPED, STOP_NO_ODOM,
+    YAW_TOL_RAD, DockEntry, DockReport, StopDetector, StopLimits, classify_dock,
+    format_report_md, format_table, load_dock_entries, parse_dock_list, plan_tour,
+    pose_error_in_dock_frame, report_filename, speech_failed, speech_ready, speech_summary,
+    summarize, tour_exit_code, wait_for_stop,
 )
 
 # Estados do feedback do /dock_robot (opennav_docking), como no dock_to.
@@ -105,6 +111,13 @@ class TourDocks(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._tf_warned = False
+        # /odom do EKF para a espera de parada na staging (2026-10-26,
+        # F14/C2). O detector so existe durante a espera; fora dela a amostra
+        # e descartada. qos_profile_sensor_data (best-effort) casa com
+        # publicador reliable ou best-effort, como no dock_align_node e GoToWS.
+        self._stop_detector = None
+        self.odom_sub = self.create_subscription(
+            Odometry, args.odom_topic, self._odom_cb, qos_profile_sensor_data)
         self.interrupted = False
         self._active_goal = None
         self._last_feedback = None
@@ -156,6 +169,41 @@ class TourDocks(Node):
                 return False
             rclpy.spin_once(self, timeout_sec=0.1)
         return True
+
+    # ----------------------------------------------------------- /odom
+    def _odom_cb(self, msg: Odometry):
+        if self._stop_detector is not None:
+            tw = msg.twist.twist
+            self._stop_detector.feed(time.monotonic(), tw.linear.x, tw.linear.y, tw.angular.z)
+
+    def wait_base_stopped(self, dock_id: str):
+        """Espera a base parar pelo /odom (|v| <= stop_max_lin, |w| <= stop_max_ang
+        por stop_window s; teto stop_timeout s). Estourou ou sem /odom: WARN e
+        segue (o tour mede e alinha mesmo assim, como antes). (parou, segundos)."""
+        args = self.args
+        limits = StopLimits(max_lin=args.stop_max_lin, max_ang=args.stop_max_ang,
+                            window_s=args.stop_window, timeout_s=args.stop_timeout)
+        self._stop_detector = StopDetector(limits, time.monotonic())
+        try:
+            stopped, waited, state = wait_for_stop(
+                self._stop_detector, time.monotonic,
+                lambda: rclpy.spin_once(self, timeout_sec=0.05))
+            det = self._stop_detector
+        finally:
+            self._stop_detector = None
+        if stopped:
+            self.log(dock_id, f"base parada apos {waited:.2f} s ({det.samples} amostras de "
+                              f"{args.odom_topic})")
+        elif state == STOP_NO_ODOM:
+            self.get_logger().warn(
+                f"[{dock_id}] sem odometria fresca em {args.odom_topic} por {waited:.1f} s "
+                f"({det.samples} amostras): nao confirmei a parada da base; sigo. "
+                f"Se o topico publica, confira se ele publica mesmo (assino best-effort, casa com qualquer QoS).")
+        else:
+            self.get_logger().warn(
+                f"[{dock_id}] base AINDA EM MOVIMENTO {waited:.1f} s apos a staging "
+                f"(ultima amostra |v| {det.last_lin:.3f} m/s, |w| {det.last_ang:.3f} rad/s); sigo.")
+        return stopped, waited
 
     # ------------------------------------------------------------- TF
     def robot_pose(self, settle_s: float = 0.5, wait_s: float = 2.0):
@@ -335,13 +383,27 @@ class TourDocks(Node):
             if out.status != A_OK:
                 self._measure(rep, dock)
                 return self._fail(rep, "navegacao ate a staging", out)
+            # Medida em Reached+0,5 s (como antes, so para registrar a deriva)
+            # e DEPOIS da base parar: o Nav2 declara a chegada com a base ainda
+            # girando 0,2-0,5 rad/s (2026-10-26, F14/C2) e a linha "na staging"
+            # saia enviesada; o align tambem partia com o yaw mudando ~15 graus/s.
             pose = self.robot_pose()
             if pose is not None:
-                rep.staging_err = pose_error_in_dock_frame(pose, staging)
+                rep.staging_err_moving = pose_error_in_dock_frame(pose, staging)
                 self.log(dock.dock_id,
-                         f"na staging: long {rep.staging_err[0] * 100:+.1f} cm, "
+                         f"na staging (Reached+0.5 s, base pode estar girando): "
+                         f"yaw {math.degrees(rep.staging_err_moving[2]):+.1f} graus")
+            rep.stop_ok, rep.t_stop = self.wait_base_stopped(dock.dock_id)
+            pose = self.robot_pose(settle_s=0.0)
+            if pose is not None:
+                rep.staging_err = pose_error_in_dock_frame(pose, staging)
+                drift = rep.staging_yaw_drift
+                drift_txt = "" if drift is None else f", deriva {math.degrees(drift):+.1f} graus"
+                self.log(dock.dock_id,
+                         f"na staging (base parada, esperou {rep.t_stop:.2f} s): "
+                         f"long {rep.staging_err[0] * 100:+.1f} cm, "
                          f"lat {rep.staging_err[1] * 100:+.1f} cm, "
-                         f"yaw {math.degrees(rep.staging_err[2]):+.1f} graus")
+                         f"yaw {math.degrees(rep.staging_err[2]):+.1f} graus{drift_txt}")
         else:
             # Rollback do GoToWS (use_opennav_approach=true): /dock_robot navega
             # ate a staging e faz o approach uniciclo.
@@ -361,6 +423,9 @@ class TourDocks(Node):
                 self._measure(rep, dock)
                 return self._fail(rep, "docking", out)
             rep.message = "dock_robot (approach uniciclo, sem align)"
+            if flow == FLOW_OPENNAV_ALIGN:
+                # Mesmo giro residual do "Reached" pode existir aqui (I3a).
+                rep.stop_ok, rep.t_stop = self.wait_base_stopped(dock.dock_id)
 
         # (3) align_to_dock.
         if flow in (FLOW_STAGING_ALIGN, FLOW_OPENNAV_ALIGN):
@@ -386,13 +451,17 @@ class TourDocks(Node):
                 self._measure(rep, dock)
                 return self._fail(rep, "alinhamento", out)
             rep.message = out.message
-            rep.status = align_status(out.message)
-        else:
-            rep.status = STATUS_OK
 
-        # (4) medida final + voz.
+        # (4) medida final, status PELOS NUMEROS (2026-10-26, F6/C7: antes o
+        # status vinha so do prefixo da message do align e "ok_aviso" contava
+        # como dock ok) e voz.
         self._measure(rep, dock)
-        if rep.status != STATUS_OK:
+        rep.status, rep.pose_verdict = classify_dock(
+            rep, yaw_tol=math.radians(args.yaw_tol_deg), y_max=args.y_max)
+        if rep.status == STATUS_FAIL_POSE:
+            rep.message = f"reprovada: {rep.pose_verdict}; {rep.message}".rstrip("; ")
+            self.get_logger().error(f"[{dock.dock_id}] pose REPROVADA: {rep.pose_verdict}")
+        elif rep.status != STATUS_OK:
             self.get_logger().warn(f"[{dock.dock_id}] chegou com ressalva: {rep.message}")
         self.say(speech_ready(dock.dock_id, rep.err_long, rep.err_lat, rep.err_yaw))
         return rep
@@ -446,6 +515,23 @@ def _parse_args(argv):
                    help="Segundos maximos aguardando os action servers no pre-flight.")
     p.add_argument("--global-frame", default="map")
     p.add_argument("--base-frame", default="base_footprint")
+    # Tolerancias da pose final (2026-10-26, I7): yaw = default_yaw_tolerance do
+    # docking; y_max provisorio da secao 6 do diagnostico, vale ate o teste T7.
+    p.add_argument("--yaw-tol-deg", type=float, default=math.degrees(YAW_TOL_RAD),
+                   help="Reprova o dock se |yaw| > isto (graus) por AMCL ou LiDAR "
+                        "(default %(default).2f = 0,09 rad do dock_align_node).")
+    p.add_argument("--y-max", type=float, default=FINAL_Y_MAX_M,
+                   help="Reprova o dock se |lateral| > isto (m) por AMCL (tour ou align) "
+                        "(default %(default).2f, provisorio ate o teste T7).")
+    # Espera de parada na staging (2026-10-26, I3a): mesmos limiares do
+    # stop_check_* do GoToWS (manip_bt).
+    p.add_argument("--odom-topic", default="/odom")
+    p.add_argument("--stop-max-lin", type=float, default=0.02, help="m/s (default %(default)s).")
+    p.add_argument("--stop-max-ang", type=float, default=0.05, help="rad/s (default %(default)s).")
+    p.add_argument("--stop-window", type=float, default=0.5,
+                   help="Segundos parado para considerar a base parada (default %(default)s).")
+    p.add_argument("--stop-timeout", type=float, default=3.0,
+                   help="Teto da espera pela parada (s); estourou: WARN e segue (default %(default)s).")
     return p.parse_args(remove_ros_args(args=argv)[1:])
 
 
@@ -623,18 +709,20 @@ def main(argv=None) -> int:
         elif reports:
             print("\n" + format_table(reports) + "\n")
             summary = summarize(reports)
-            node.say(speech_summary(summary["n_reached"], summary["n_total"]))
+            node.say(speech_summary(summary["n_ok"], summary["n_total"],
+                                    summary["n_warn"], summary["n_fail_pose"]))
             try:
                 report_path.parent.mkdir(parents=True, exist_ok=True)
                 report_path.write_text(format_report_md(
                     reports, map_name=args.map_name, map_folder=str(map_folder),
                     started=started, finished=finished, command=command,
-                    flow_text=_flow_text(args)), encoding="utf-8")
+                    flow_text=_flow_text(args), yaw_tol=math.radians(args.yaw_tol_deg),
+                    y_max=args.y_max), encoding="utf-8")
                 print(f"Relatorio: {report_path}")
             except OSError as exc:
                 print(f"Nao consegui gravar o relatorio em {report_path}: {exc}", file=sys.stderr)
-            if summary["n_reached"] < summary["n_total"]:
-                exit_code = 1
+            # != 0 com reprovada (2026-10-26, I7), falha, cancelamento ou pulado.
+            exit_code = tour_exit_code(summary)
         else:
             print("Nenhum dock visitado.")
             exit_code = 1

@@ -295,6 +295,20 @@ def _launch_setup(context, *args, **kwargs):
             {"final_yaw_strict": False},
             # Dispersao maxima do yaw da face na medida final (4 graus).
             {"final_yaw_spread_max": 0.07},
+            # ---- 2026-10-26 (tours 19:45/19:52; docs/diagnostico_docking_
+            # tour_2026-10-26.md, F13/C1): esquadro por AMCL DESLIGADO. Na
+            # WS6 girou -9,7/-9,4 graus CW nos dois tours contra fits do
+            # LiDAR que pediam +5/+6 CCW; na WS1-T2 -11,9 contra o alvo que
+            # o refino acabara de aplicar. O no' loga o que teria feito.
+            # true = volta a girar, mas so' sem face nenhuma no refino, com
+            # a base parada pelo /odom, yaw_coast_est + 0,02 < |erro| <=
+            # amcl_square_max_err (0,20 rad no no', ~11,5 graus; PRECISA ser
+            # > yaw_coast_est + 0,02 = 0,12, senao a janela de giro e' vazia
+            # e o no' avisa no init) e sem veto do LiDAR (sinal oposto / ja'
+            # dentro da tolerancia). A espera de parada antes de medir
+            # (still_*) e a ordem esquadro -> lateral no staging ficam nos
+            # defaults do no'.
+            {"amcl_square_enabled": False},
         ],
     )
 

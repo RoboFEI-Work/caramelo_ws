@@ -102,10 +102,13 @@ service_areas:
   WS5:
     type: workstation
     frame_id: map
+    # 2026-10-26: sincronizado com docking.yaml (F18). A pose antiga
+    # (1.0529, -4.3138, 0.57319) ficava 8.8 cm ao lado da que o docking usa
+    # desde a1d8e07; um --sync-docking a partir daqui reverteria a WS5.
     final_robot_pose:
-      x: 1.0529
-      y: -4.3138
-      yaw: 0.57319
+      x: 1.0834
+      y: -4.3961
+      yaw: 0.56729
     table:
       width: 0.8
       depth: 0.5
@@ -136,6 +139,10 @@ service_areas:
       linear_tolerance: 0.03
       angular_tolerance: 0.04
       use_docking: true
+      # 2026-10-26 (F20): bloco/parede a 0,42 m a esquerda do eixo dentro da
+      # janela global do refino (0,45); so' esta mesa usa 0,35. Copiado para o
+      # docking.yaml pelo --sync-docking (fonte da verdade e' este arquivo).
+      refine_half_width_y: 0.35
     manipulation_enabled: true
     notes: WS6 - pose final do robo em frente a mesa
   SH1:

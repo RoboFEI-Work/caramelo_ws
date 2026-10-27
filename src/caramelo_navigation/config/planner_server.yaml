@@ -112,7 +112,9 @@ global_costmap:
         # AJUSTAR_NO_ROBO: campo potencial para favorecer caminhos no centro dos corredores.
         # 0.85 -> 0.55: com 0.85 cada caixa projetava ~1 m de zona de custo alto;
         # em percurso apertado o robo "congelava de medo" (planner abortava com o
-        # robo dentro da zona inflada). 0.55 ainda cobre o circunscrito (0.44 m).
+        # robo dentro da zona inflada). 0.55 ainda cobre o circunscrito (0.40 m;
+        # footprint 0.68x0.39, x -0.285..+0.395, y +-0.195; o "0.44" antigo
+        # estava errado, conferido 2026-10-26, F24).
         inflation_radius: 0.55
         cost_scaling_factor: 3.0
         inflate_unknown: false

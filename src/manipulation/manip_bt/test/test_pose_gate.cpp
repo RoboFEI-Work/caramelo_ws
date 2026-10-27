@@ -268,6 +268,64 @@ TEST(StopDetector, NaoFinitoEhMovimento)
   EXPECT_EQ(det.evaluate(0.62), StopDetector::State::kMoving);
 }
 
+// Parada ANTES do align (2026-10-26, F14/C2): o detector e' o mesmo; o que
+// muda e' que o GoToWS o reseta no "Reached the goal" do Nav2 e o log diz
+// quanto o yaw mudou enquanto a base terminava de girar.
+
+TEST(StopDetector, ParadaAntesDoAlignComGiroResidual)
+{
+  // Chegada tipica dos tours de 26/10 (F14): wz 0,35 rad/s nas 40 primeiras
+  // amostras a 50 Hz (0,8 s) apos o "Reached the goal", depois zero. O
+  // detector so' fecha 0,5 s apos o giro acabar (~1,3 s) e o yaw acumulado
+  // aparece em yawDrift(). Bordas por INDICE (0,02*i nao e' exato em binario).
+  StopDetector det;
+  det.reset(0.0);
+  double yaw = 0.10;
+  for (int i = 1; i <= 90; ++i) {           // 50 Hz, 1,8 s
+    const double t = 0.02 * i;
+    const double wz = (i <= 40) ? 0.35 : 0.0;
+    yaw += wz * 0.02;
+    det.feed(t, 0.0, 0.0, wz, yaw);
+    const auto st = det.evaluate(t);
+    if (i <= 65) {                          // quieta desde i=41 (0,82 s): < 0,5 s
+      EXPECT_EQ(st, StopDetector::State::kMoving) << "i=" << i;
+    } else if (i >= 67) {                   // >= 0,52 s quieta
+      EXPECT_EQ(st, StopDetector::State::kStopped) << "i=" << i;
+    }
+  }
+  // Deriva = ultima - PRIMEIRA amostra (i=1 ja' traz um passo): 39 passos.
+  EXPECT_NEAR(det.yawDrift(), 0.35 * 0.02 * 39, 1e-6);   // 0,273 rad ~ 15,6 graus
+  EXPECT_NEAR(det.quietFor(), 1.8 - 0.82, 1e-6);
+}
+
+TEST(StopDetector, YawDriftEmbrulhaEIgnoraNaN)
+{
+  StopDetector det;
+  det.reset(0.0);
+  det.feed(0.02, 0.0, 0.0, 0.0);                   // sem yaw: nao conta
+  EXPECT_NEAR(det.yawDrift(), 0.0, 1e-12);
+  det.feed(0.04, 0.0, 0.0, 0.0, 3.10);              // primeira amostra com yaw
+  det.feed(0.06, 0.0, 0.0, 0.0, std::numeric_limits<double>::quiet_NaN());
+  det.feed(0.08, 0.0, 0.0, 0.0, -3.10);             // cruzou +-pi: giro de +0,083
+  EXPECT_NEAR(det.yawDrift(), 2.0 * M_PI - 6.20, 1e-9);
+  det.feed(0.10, 0.0, 0.0, 0.0, 3.00);              // volta: -0,10 desde a primeira
+  EXPECT_NEAR(det.yawDrift(), -0.10, 1e-9);
+}
+
+TEST(StopDetector, ResetZeraOYawDrift)
+{
+  StopDetector det;
+  det.reset(0.0);
+  det.feed(0.02, 0.0, 0.0, 0.0, 1.0);
+  det.feed(0.04, 0.0, 0.0, 0.0, 1.2);
+  EXPECT_NEAR(det.yawDrift(), 0.2, 1e-12);
+  det.reset(0.04);                                  // align terminou: janela nova
+  EXPECT_NEAR(det.yawDrift(), 0.0, 1e-12);
+  det.feed(0.06, 0.0, 0.0, 0.0, 1.2);
+  det.feed(0.08, 0.0, 0.0, 0.0, 1.25);
+  EXPECT_NEAR(det.yawDrift(), 0.05, 1e-12);
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);
