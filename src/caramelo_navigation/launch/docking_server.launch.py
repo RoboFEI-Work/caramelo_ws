@@ -309,6 +309,15 @@ def _launch_setup(context, *args, **kwargs):
             # (still_*) e a ordem esquadro -> lateral no staging ficam nos
             # defaults do no'.
             {"amcl_square_enabled": False},
+            # ---- 2026-10-27: CAMERA no docking (pedido do operador) ----
+            # RealSense do punho (braco em home) mede yaw + centro da mesa no
+            # staging e corrige por odometria; reto/lateral na mesa/yaw final
+            # = fusao camera+LiDAR com peso 0,8 para a camera. Sem medida da
+            # camera (braco fora de home, mesa nao vista) = fluxo LiDAR.
+            # false = volta ao docking so' por LiDAR. Calibracao:
+            # camera_yaw_offset / camera_y_offset (ver o no').
+            {"camera_enabled": True},
+            {"camera_weight": 0.8},
         ],
     )
 

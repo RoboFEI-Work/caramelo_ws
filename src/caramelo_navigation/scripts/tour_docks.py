@@ -34,6 +34,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import DockRobot, NavigateToPose, UndockRobot
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import JointState
 from rclpy.action import ActionClient, get_action_names_and_types
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -95,6 +96,22 @@ def _pose_goal(pose, stamp) -> PoseStamped:
     return goal
 
 
+def srdf_named_pose(pose_name: str, group: str = "arm") -> dict:
+    """Juntas de uma pose nomeada do SRDF que o stack carrega
+    (manip_moveit_config/config/caramelo.srdf). {} se nao achar."""
+    import xml.etree.ElementTree as ET
+    from ament_index_python.packages import get_package_share_directory
+    try:
+        path = Path(get_package_share_directory("manip_moveit_config")) / "config" / "caramelo.srdf"
+        root = ET.parse(path).getroot()
+    except Exception:  # noqa: BLE001
+        return {}
+    for gs in root.iter("group_state"):
+        if gs.get("name") == pose_name and gs.get("group") == group:
+            return {j.get("name"): float(j.get("value")) for j in gs.iter("joint")}
+    return {}
+
+
 class TourDocks(Node):
     """Cliente das 4 actions da missao + TF + voz. Uma visita por dock."""
 
@@ -121,6 +138,17 @@ class TourDocks(Node):
         self.interrupted = False
         self._active_goal = None
         self._last_feedback = None
+        # Braco em home antes de cada dock (2026-10-27, operador: a camera do
+        # docking so' ve a mesa na pose de navegacao). MoveGroup do move_group.
+        self._joints = {}
+        self._home = {}
+        self.move_client = None
+        if args.arm_pose:
+            from moveit_msgs.action import MoveGroup  # import tardio: so' com braco
+            self._MoveGroup = MoveGroup
+            self.move_client = ActionClient(self, MoveGroup, "/move_action")
+            self._home = srdf_named_pose(args.arm_pose)
+            self.create_subscription(JointState, "/joint_states", self._joint_cb, 10)
 
     # ------------------------------------------------------------ util
     def say(self, text: str):
@@ -227,6 +255,47 @@ class TourDocks(Node):
                         self._tf_warned = True
                     return None
                 rclpy.spin_once(self, timeout_sec=0.1)
+
+    # ------------------------------------------------------------ braco
+    def _joint_cb(self, msg: JointState):
+        self._joints.update(zip(msg.name, msg.position))
+
+    def arm_to_pose(self, dock_id: str) -> bool:
+        """Leva o braco a args.arm_pose (home) pelo MoveIt, salvo se ja' esta'
+        la' (todas as juntas a 0,05 rad). Falhar so' avisa: o docking cai no
+        LiDAR quando a camera nao ve a mesa."""
+        if self.move_client is None:
+            return True
+        if not self._home:
+            self.log(dock_id, f"braco: pose '{self.args.arm_pose}' nao achada no SRDF — sigo")
+            return False
+        self.spin_for(0.3)
+        if self._joints and all(
+                abs(self._joints.get(j, 1e9) - v) <= 0.05 for j, v in self._home.items()):
+            return True
+        from moveit_msgs.msg import Constraints, JointConstraint
+        goal = self._MoveGroup.Goal()
+        req = goal.request
+        req.group_name = "arm"
+        req.num_planning_attempts = 10
+        req.allowed_planning_time = 5.0
+        req.max_velocity_scaling_factor = 1.0
+        req.max_acceleration_scaling_factor = 1.0
+        req.start_state.is_diff = True
+        req.goal_constraints = [Constraints(joint_constraints=[
+            JointConstraint(joint_name=j, position=v, tolerance_above=0.01,
+                            tolerance_below=0.01, weight=1.0)
+            for j, v in self._home.items()])]
+        goal.planning_options.plan_only = False
+        self.log(dock_id, f"braco -> {self.args.arm_pose} (camera do docking)...")
+        out = self.run_action(self.move_client, goal, f"braco {self.args.arm_pose}", 30.0)
+        code = getattr(getattr(out.result, "error_code", None), "val", 1)
+        if out.status != A_OK or code != 1:
+            self.log(dock_id, f"braco: {out.status} {out.message} (error_code={code}) — "
+                              "sigo (sem a pose, o docking usa so' o LiDAR)")
+            return False
+        self.log(dock_id, f"braco em {self.args.arm_pose} ({out.seconds:.1f} s)")
+        return True
 
     # --------------------------------------------------------- actions
     def run_action(self, client: ActionClient, goal, label: str, deadline_s: float,
@@ -355,6 +424,11 @@ class TourDocks(Node):
             self.log(dock.dock_id, f"undock: {out.status} em {out.seconds:.1f} s {out.message}".rstrip())
             if out.status != A_OK:
                 return self._fail(rep, "undock", out)
+
+        # (1b) braco na pose de navegacao (home): a camera do docking so' ve a
+        # mesa dela. Depois do undock (longe da mesa) e antes de navegar.
+        if flow != FLOW_NAV_ONLY:
+            self.arm_to_pose(dock.dock_id)
 
         # (2) chegada.
         if flow == FLOW_NAV_ONLY:
@@ -500,6 +574,9 @@ def _parse_args(argv):
                    help="Arquivo do relatorio markdown (default: <pasta do mapa>/tour_<data>.md).")
     p.add_argument("--yes", action="store_true", help="Nao pede confirmacao antes de andar.")
     p.add_argument("--no-speech", action="store_true", help="Nao publica em /manip/speech.")
+    p.add_argument("--arm-pose", default="home",
+                   help="Pose do braco (SRDF) antes de cada dock: a camera do docking ve a "
+                        "mesa dela (default %(default)s). '' = nao mexe no braco.")
     # Timeouts: mesmos defaults do bt_yaml_executor (manip_bt).
     p.add_argument("--max-staging-time", type=float, default=120.0,
                    help="Tempo maximo do Nav2 ate a staging (s); o /dock_robot recebe o mesmo.")

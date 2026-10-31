@@ -19,6 +19,11 @@ Serve duas actions (caramelo_msgs) no mesmo no', nunca as duas ao mesmo tempo:
     loga o pe' da perpendicular (c_foot);
     tentativas = approach_retries+1 (0 no launch = uma so'); so' recua na
     falha se parou perigosamente perto. Clientes: GoToWS (manip_bt) e GUI.
+    2026-10-27 (camera_*): a RealSense do punho (braco em home) mede yaw e
+    centro da mesa (caramelo_dock_camera.py) e MANDA no staging (corrige por
+    odometria, remedindo); na pausa do reto, no lateral da mesa e no yaw
+    final vale a fusao camera+LiDAR. Fase de feedback "camera" (parado
+    medindo). Sem medida da camera = o fluxo LiDAR acima.
   - nudge_base: deslocamento LATERAL puro (+ = esquerda) em malha fechada por
     ODOMETRIA, com as mesmas guardas (muro, faixa lateral, scan velho,
     watchdog de progresso). Clientes: NudgeBase BT (manip_bt nudge_base_bt,
@@ -48,13 +53,20 @@ from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
 
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from std_msgs.msg import Float64, String
 import tf2_ros
 
 # Helpers compartilhados de docking (carregam docking.yaml por pasta de mapa).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from caramelo_docking_common import load_yaml, resolve_map_folder, docking_file  # noqa: E402
+from caramelo_docking_common import (  # noqa: E402
+    docking_file, load_yaml, resolve_map_folder, service_areas_file)
+import caramelo_dock_camera as dock_cam  # noqa: E402
+try:  # imagem de debug (cv2); sem cv2 o docking segue sem a imagem
+    import caramelo_dock_camera_debug as dock_cam_dbg  # noqa: E402
+except ImportError:  # pragma: no cover
+    dock_cam_dbg = None
+import numpy as np  # noqa: E402
 
 from caramelo_msgs.action import AlignToDock, NudgeBase  # noqa: E402
 
@@ -406,6 +418,36 @@ def lateral_cut_reached(err, sign, coast, v_cmd, scan_age, period):
     err <= coast e o ESC retinha a referencia ~0,5 s: sobrecurso ADITIVO de
     5-10 cm (WS3: demanda +14,1 -> remedida -7,6 cm). Pura, testavel."""
     return err * sign <= coast + v_cmd * (scan_age + period)
+
+
+def plan_rot_pulse(remaining, c, k, t_min, t_max, tol, max_over=1.5):
+    """Giro em PULSOS (2026-10-27): duracao do proximo pulso para girar
+    `remaining` rad com o modelo giro(T) = c + k*T (c = o que a base anda de
+    rampa/coast mesmo num pulso minimo; k = rad por segundo de pulso).
+    Devolve (T, "") ou (None, motivo): dentro da tolerancia, ou ate o pulso
+    minimo passaria do ponto (giro minimo > max_over * |remaining| = o
+    residuo do outro lado sairia maior que ~50% do erro). Pura, testavel."""
+    mag = abs(remaining)
+    if mag <= tol:
+        return None, "dentro"
+    d_min = c + k * t_min
+    if d_min > max_over * mag:
+        return None, "pulso minimo grande demais"
+    t = (mag - c) / k if k > 1e-6 else t_max
+    return min(t_max, max(t_min, t)), ""
+
+
+def update_rot_model(c, k, t, rot, t_min, k_min=0.05):
+    """Aprende o modelo do pulso com o giro MEDIDO `rot` (rad, ja' no
+    sentido do pulso; >0 = girou para onde devia). Pulso MINIMO: o que
+    girou alem de k*t e' rampa/coast -> ajusta c (o tamanho do menor giro
+    possivel); pulso maior -> ajusta k. Media 50/50 com o anterior: um
+    pulso fora da curva nao estraga o modelo. Pura."""
+    if rot <= 0.0:
+        return c, k
+    if t <= t_min + 1e-6 or rot <= c:
+        return max(0.0, 0.5 * c + 0.5 * (rot - k * t)), k
+    return c, max(k_min, 0.5 * k + 0.5 * (rot - c) / t)
 
 
 def refit_square_decision(first, second, agree_tol, yaw_tol, yaw_min_corr,
@@ -797,6 +839,70 @@ class DockAlignNode(Node):
         self.declare_parameter("still_min_s", 0.5)
         self.declare_parameter("still_max_s", 3.0)
         self.declare_parameter("still_yaw_eps", 0.035)
+
+        # ------- Camera no docking (2026-10-27, pedido do operador) -------
+        # A RealSense do punho, com o braco na pose de navegacao (home), ve o
+        # tampo inteiro do staging (caramelo_dock_camera.py). Ligada, ela
+        # MANDA: no staging mede yaw + centro da mesa e corrige por odometria
+        # (mede -> move -> remede, ate camera_max_steps movimentos); na pausa
+        # do reto e na validacao final o yaw/centro sao a FUSAO camera+LiDAR
+        # (peso camera_weight para a camera quando concordam; discordando,
+        # vale a camera). Sem medida da camera: o fluxo LiDAR de sempre.
+        # A assinatura do depth so' existe durante o goal.
+        self.declare_parameter("camera_enabled", True)
+        self.declare_parameter("camera_depth_topic", "/camera/camera/depth/image_rect_raw")
+        self.declare_parameter("camera_info_topic", "/camera/camera/depth/camera_info")
+        # Tipos de service area (service_areas.yaml) onde a camera NAO e'
+        # usada: a prateleira tem tampo em cima tapando o nivel de baixo.
+        self.declare_parameter("camera_skip_types", ["shelf"])
+        # 2026-10-27 (tour: cada medida levava ~4 s): 3 frames, teto 1,5 s.
+        self.declare_parameter("camera_frames", 3)          # frames por medida (mediana)
+        self.declare_parameter("camera_wait_s", 1.5)        # teto por medida
+        self.declare_parameter("camera_stride", 4)          # 1 de cada 4 pixels
+        self.declare_parameter("camera_yaw_spread_max", 0.035)    # 2 graus entre frames
+        self.declare_parameter("camera_center_spread_max", 0.03)
+        self.declare_parameter("camera_max_steps", 3)       # movimentos no staging
+        # Tolerancias da camera; o giro ainda fica limitado pelo coast
+        # (yaw_coast_est + 0,02): abaixo disso o giro nao corrige.
+        # "Bom o bastante" (operador 27/10: o manipulador tolera um pouco de
+        # angulo/centro; correr atras de 2 graus/2 cm custava dezenas de s).
+        self.declare_parameter("camera_yaw_tol", 0.07)      # 4 graus
+        self.declare_parameter("camera_center_tol", 0.04)   # 4 cm
+        # Abaixo disto (front do LiDAR) a borda da frente sai da imagem e o yaw
+        # so' pelas laterais errava ate 20 graus (WS1/WS3 27/10, disparando
+        # recuo + correcao a toa): perto da mesa vale so' o LiDAR.
+        self.declare_parameter("camera_min_front", 0.50)
+        self.declare_parameter("camera_max_lateral", 0.30)  # demanda lateral maior = medida suspeita
+        # Fusao camera+LiDAR: concordando dentro de *_agree, media com peso
+        # camera_weight para a camera; discordando, so' a camera.
+        self.declare_parameter("camera_weight", 0.8)
+        self.declare_parameter("camera_lidar_yaw_agree", 0.06)
+        self.declare_parameter("camera_lidar_center_agree", 0.04)
+        # Correcao final de yaw com a camera: recua ate aqui (a borda da
+        # frente volta ao campo de visao) em vez de rotate_min_front + 0,05.
+        self.declare_parameter("camera_view_front", 0.60)
+        # Calibracao (somadas a medida): robo docado PERFEITO pela trena,
+        # ler "[cam]" no log; offset = -(o que a camera mediu).
+        self.declare_parameter("camera_yaw_offset", 0.0)
+        self.declare_parameter("camera_y_offset", 0.0)
+        # Imagem de debug (rqt_image_view): depth com tampo/parede + vista de
+        # cima com as bordas, o centro e a decisao. So' desenha se alguem
+        # assina o topico.
+        # ---- Giro em PULSOS (2026-10-27, operador: "ele gira sempre a mesma
+        # quantidade e nunca se ajusta, so' entorta") ----
+        # O ESC (FOC, piso 650 rpm, rampas no firmware) faz cada giro continuo
+        # sair um degrau de ~12-20 graus. Em pulsos: pulso de T s -> para ->
+        # mede pelo LiDAR quanto girou -> aprende giro(T) = c + k*T -> proximo
+        # pulso pelo que falta. "continuo" = o corte antigo (_cut_drive).
+        self.declare_parameter("rotate_mode", "pulsos")
+        self.declare_parameter("rot_pulse_c0", 0.05)      # rad (~3 graus) de partida
+        self.declare_parameter("rot_pulse_k0", 0.30)      # rad por s de pulso
+        self.declare_parameter("rot_pulse_t_min", 0.15)
+        self.declare_parameter("rot_pulse_t_max", 0.80)
+        self.declare_parameter("rot_pulse_max", 6)        # pulsos por giro
+        self.declare_parameter("rot_pulse_tol", 0.035)    # 2 graus: para aqui
+        self.declare_parameter("camera_debug_image", True)
+        self.declare_parameter("camera_debug_topic", "/dock_align/camera_debug")
         # 2026-10-26: janela de giro do esquadro por AMCL fechada = ligado
         # mas inoperante; avisa no init (antes era silencioso).
         _ymin, _open = amcl_square_window(
@@ -867,6 +973,25 @@ class DockAlignNode(Node):
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+        # Camera no docking (2026-10-27): assinaturas criadas por goal
+        # (_cam_start/_cam_stop); depth = (msg, hora de CHEGADA ns).
+        self._cam_sub = None
+        self._cam_info_sub = None
+        self._cam_depth = None
+        self._cam_seq = 0
+        self._cam_k = None
+        self._cam_reject = ""
+        self._cam_goal_enabled = False
+        self._cam_dock_id = ""
+        # Modelo do giro em pulsos (c, k): aprendido e mantido entre goals
+        # (a base e' a mesma); None = ainda os valores iniciais dos params.
+        self._rot_model = None
+        self._cam_dbg_pub = self.create_publisher(
+            Image, self.get_parameter("camera_debug_topic").value, 1)
+        # Largura MEDIDA pela camera neste goal (duas laterais visiveis):
+        # nenhuma dimensao de mesa e' configurada (variam por arena).
+        self._cam_goal_width = None
 
         # ------- nudge_base (2026-08-28) -------
         # Odometria do EKF: (x, y, yaw, hora de CHEGADA ns) — idade pela
@@ -1010,6 +1135,197 @@ class DockAlignNode(Node):
                 f"dock '{dock_id}' esta no frame '{frame}', "
                 f"mas o no usa '{self._global_frame}'.")
         return x, y, yaw, face_dist, staging_offset, half_w
+
+    # ------------------------------------------------- Camera no docking
+    def _cam_setup_goal(self, dock_id, map_name, map_dir):
+        """Por goal: camera ligada para este dock? (param + tipo da service
+        area). Zera a largura medida (nada de dimensao do yaml)."""
+        self._cam_goal_width = None
+        self._cam_dock_id = dock_id
+        self._cam_goal_enabled = bool(self.get_parameter("camera_enabled").value)
+        if not self._cam_goal_enabled:
+            return
+        area_type = ""
+        try:
+            data = load_yaml(service_areas_file(resolve_map_folder(map_name, map_dir or None)))
+            area = ((data or {}).get("service_areas") or {}).get(dock_id) or {}
+            area_type = str(area.get("type", ""))
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(
+                f"[{dock_id}] camera: service_areas.yaml ilegivel ({exc}); sem filtro de tipo")
+        skip = list(self.get_parameter("camera_skip_types").value)
+        if area_type and area_type in skip:
+            self._cam_goal_enabled = False
+            self.get_logger().info(
+                f"[{dock_id}] camera desligada neste dock (tipo '{area_type}' em "
+                "camera_skip_types) — so' LiDAR")
+
+    def _cam_start(self):
+        if self._cam_sub is not None:
+            return
+        self._cam_depth = None
+        # RELIABLE (2026-10-27): o depth tem 600 KB e em best-effort chegavam
+        # 2 frames em 6 s (fragmentos perdidos) — cada medida esperava o teto.
+        # Reliable: ~10 frames/s. O driver da RealSense publica reliable.
+        qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        self._cam_sub = self.create_subscription(
+            Image, self.get_parameter("camera_depth_topic").value,
+            self._cam_depth_cb, qos, callback_group=self._cb_group)
+        self._cam_info_sub = self.create_subscription(
+            CameraInfo, self.get_parameter("camera_info_topic").value,
+            self._cam_info_cb, qos, callback_group=self._cb_group)
+
+    def _cam_stop(self):
+        for sub in (self._cam_sub, self._cam_info_sub):
+            if sub is not None:
+                self.destroy_subscription(sub)
+        self._cam_sub = None
+        self._cam_info_sub = None
+        self._cam_depth = None
+
+    def _cam_depth_cb(self, msg):
+        self._cam_depth = (msg, self.get_clock().now().nanoseconds)
+        self._cam_seq += 1
+
+    def _cam_info_cb(self, msg):
+        self._cam_k = np.array(msg.k, dtype=float).reshape(3, 3)
+
+    def _cam_cfg(self):
+        cfg = dock_cam.CamCfg()
+        cfg.stride = max(1, int(self.get_parameter("camera_stride").value))
+        cfg.expected_width = self._cam_goal_width
+        cfg.yaw_offset = float(self.get_parameter("camera_yaw_offset").value)
+        cfg.y_offset = float(self.get_parameter("camera_y_offset").value)
+        return cfg
+
+    def _cam_frame_measure(self, msg, cfg, label=""):
+        """Um frame de depth -> (TableMeasure, "") ou (None, motivo)."""
+        if msg.encoding not in ("16UC1", "mono16"):
+            return None, f"encoding '{msg.encoding}' (esperado 16UC1)"
+        if self._cam_k is None:
+            return None, "sem camera_info"
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                self._base_frame, msg.header.frame_id, rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ExtrapolationException,
+                tf2_ros.ConnectivityException) as exc:
+            return None, f"sem TF {self._base_frame}<-{msg.header.frame_id} ({exc})"
+        q = tf.transform.rotation
+        t = tf.transform.translation
+        depth = np.frombuffer(msg.data, dtype=np.uint16).reshape(
+            msg.height, msg.step // 2)[:, :msg.width]
+        m, why = dock_cam.measure_depth_frame(
+            depth, self._cam_k, dock_cam.quat_to_rot(q.x, q.y, q.z, q.w),
+            (t.x, t.y, t.z), cfg)
+        self._cam_publish_debug(msg, depth, m, why, label, cfg)
+        return m, why
+
+    def _cam_publish_debug(self, msg, depth, m, why, label, cfg):
+        if (dock_cam_dbg is None or not bool(self.get_parameter("camera_debug_image").value)
+                or self._cam_dbg_pub.get_subscription_count() == 0):
+            return
+        try:
+            img = dock_cam_dbg.draw(depth, m, label, why, cfg.stride)
+        except Exception as exc:  # noqa: BLE001 - debug nunca derruba o docking
+            self.get_logger().warn(f"[cam] imagem de debug falhou: {exc}", throttle_duration_sec=10.0)
+            return
+        out = Image()
+        out.header = msg.header
+        out.height, out.width = img.shape[:2]
+        out.encoding = "bgr8"
+        out.step = out.width * 3
+        out.data = img.tobytes()
+        self._cam_dbg_pub.publish(out)
+
+    def _measure_camera(self, goal_handle, rate, deadline, attempt_end, where):
+        """Mediana de camera_frames medidas da mesa em frames que CHEGARAM
+        depois do inicio da medida (base parada). Devolve dict (yaw, src,
+        c_axis, c_foot, front, width, sides; centro None se nao confiou) ou
+        None com o motivo em self._cam_reject."""
+        n = max(1, int(self.get_parameter("camera_frames").value))
+        wait_s = float(self.get_parameter("camera_wait_s").value)
+        yaw_spread = float(self.get_parameter("camera_yaw_spread_max").value)
+        c_spread = float(self.get_parameter("camera_center_spread_max").value)
+        cfg = self._cam_cfg()
+        self._cam_start()
+        start_ns = self.get_clock().now().nanoseconds
+        last_seq = self._cam_seq
+        got = []
+        reject = collections.Counter()
+        frames = 0
+        while len(got) < n:
+            if (self.get_clock().now().nanoseconds - start_ns) * 1e-9 > wait_s:
+                break
+            self._check_guards(goal_handle, deadline, attempt_end)
+            self._publish_cmd(0.0, 0.0, 0.0)
+            depth = self._cam_depth
+            if self._cam_seq != last_seq and depth is not None and depth[1] >= start_ns:
+                last_seq = self._cam_seq
+                frames += 1
+                m, why = self._cam_frame_measure(
+                    depth[0], cfg, f"[{self._cam_dock_id}] {where} frame {frames}")
+                if m is None:
+                    reject[why] += 1
+                    if why.startswith("camera fora"):
+                        break
+                elif not m.ok:
+                    reject[m.reason] += 1
+                else:
+                    got.append(m)
+            rate.sleep()
+        rej_txt = ", ".join(f"{k} x{v}" for k, v in reject.most_common(3)) or "nenhuma"
+        if frames == 0:
+            self._cam_reject = (f"nenhum frame de '{self.get_parameter('camera_depth_topic').value}' "
+                                f"em {wait_s:.1f} s")
+            return None
+        if len(got) < max(2, (n + 1) // 2):
+            self._cam_reject = f"{len(got)}/{frames} frames com a mesa; rejeicoes: {rej_txt}"
+            return None
+
+        def med(vals):
+            vals = sorted(vals)
+            return vals[len(vals) // 2]
+
+        yaws = [m.face_yaw for m in got]
+        if max(yaws) - min(yaws) > yaw_spread:
+            self._cam_reject = (f"yaw disperso entre frames ({math.degrees(min(yaws)):+.1f}.."
+                                f"{math.degrees(max(yaws)):+.1f} graus)")
+            return None
+        def mode(vals):
+            return collections.Counter(vals).most_common(1)[0][0]
+
+        res = {"yaw": med(yaws), "src": mode([m.yaw_src for m in got]),
+               "front": med([m.front for m in got]), "c_axis": None, "c_foot": None,
+               "width": None, "sides": "", "center_why": ""}
+        cen = [m for m in got if m.c_axis is not None]
+        if len(cen) >= max(2, (n + 1) // 2):
+            axes = [m.c_axis for m in cen]
+            if max(axes) - min(axes) <= c_spread:
+                res["c_axis"] = med(axes)
+                res["c_foot"] = med([m.c_foot for m in cen])
+                widths = [m.width for m in cen if m.width is not None]
+                res["width"] = med(widths) if widths else None
+                res["sides"] = mode([m.sides for m in cen])
+                if res["sides"] == "ambos" and res["width"] is not None \
+                        and self._cam_goal_width is None:
+                    self._cam_goal_width = res["width"]
+            else:
+                res["center_why"] = (f"centro disperso ({min(axes) * 100:+.1f}.."
+                                     f"{max(axes) * 100:+.1f} cm)")
+        else:
+            whys = collections.Counter(m.center_reason for m in got if m.c_axis is None)
+            res["center_why"] = whys.most_common(1)[0][0] if whys else "?"
+        g0 = got[0]
+        self.get_logger().info(
+            f"[cam] {where}: {len(got)}/{frames} frames, yaw={math.degrees(res['yaw']):+.1f} graus "
+            f"({res['src']}), c_axis="
+            f"{'?' if res['c_axis'] is None else '%+.1f' % (res['c_axis'] * 100)} c_foot="
+            f"{'?' if res['c_foot'] is None else '%+.1f' % (res['c_foot'] * 100)} cm "
+            f"({res['sides'] or res['center_why']}), largura="
+            f"{'?' if res['width'] is None else '%.2f' % res['width']} m, front="
+            f"{res['front']:.3f} m, mesa h={g0.table_h:.3f} m, inclinacao corrigida "
+            f"{g0.tilt_deg:.1f} graus")
+        return res
 
     # --------------------------------------------------------- Refino LiDAR
     def _scan_points_in_base(self, scan):
@@ -1625,6 +1941,62 @@ class DockAlignNode(Node):
             f"{self._odom_course(odom0, axis)} (inclui o coast do ESC)")
         return res
 
+    def _rotate_pulses(self, goal_handle, rate, deadline, attempt_end, target, tag,
+                       phase="esquadrando"):
+        """Gira `target` rad (+ = CCW) em PULSOS com medida entre eles: o
+        giro de cada pulso e' medido PARADO pela variacao do yaw da face no
+        LiDAR (mediana do _settle; sem face, odometria). Devolve
+        (girado, restante, (front, npts, face_yaw) do ultimo settle)."""
+        p = self.get_parameter
+        if self._rot_model is None:
+            self._rot_model = (float(p("rot_pulse_c0").value), float(p("rot_pulse_k0").value))
+        t_min = float(p("rot_pulse_t_min").value)
+        t_max = float(p("rot_pulse_t_max").value)
+        tol = float(p("rot_pulse_tol").value)
+        n_max = max(1, int(p("rot_pulse_max").value))
+        _v, w_start = self._start_speeds()
+        remaining = target
+        done = 0.0
+        res = self._settle(goal_handle, rate, deadline, attempt_end, phase)
+        for i in range(n_max):
+            c, k = self._rot_model
+            t, why = plan_rot_pulse(remaining, c, k, t_min, t_max, tol)
+            if t is None:
+                self.get_logger().info(
+                    f"{tag} giro em pulsos: falta {math.degrees(remaining):+.1f} graus — "
+                    + ("dentro da tolerancia" if why == "dentro" else
+                       f"o menor pulso (~{math.degrees(c + k * t_min):.1f} graus) passaria do ponto; paro"))
+                break
+            yaw_b = res[2]
+            o_b = self._odom_pose(0.5)
+            sign = 1.0 if remaining > 0 else -1.0
+            t0 = self.get_clock().now().nanoseconds * 1e-9
+            while self.get_clock().now().nanoseconds * 1e-9 - t0 < t:
+                self._check_guards(goal_handle, deadline, attempt_end)
+                self._publish_cmd(0.0, 0.0, math.copysign(w_start, sign))
+                self._feedback(goal_handle, phase, 0.0, 0.0, remaining)
+                rate.sleep()
+            self._publish_cmd(0.0, 0.0, 0.0)
+            self._wait_still(goal_handle, rate, deadline, attempt_end, phase)
+            res = self._settle(goal_handle, rate, deadline, attempt_end, phase)
+            yaw_a = res[2]
+            o_a = self._odom_pose(0.5)
+            if yaw_b is not None and yaw_a is not None:
+                rot, src = yaw_b - yaw_a, "lidar"
+            elif o_b is not None and o_a is not None:
+                rot, src = _normalize_angle(o_a[2] - o_b[2]), "odometria"
+            else:
+                self.get_logger().warn(f"{tag} giro em pulsos: sem como medir o giro — paro")
+                break
+            done += rot
+            remaining -= rot
+            self._rot_model = update_rot_model(c, k, t, rot * sign, t_min)
+            self.get_logger().info(
+                f"{tag} pulso {i + 1}: {t:.2f} s -> girou {math.degrees(rot):+.1f} graus ({src}); "
+                f"falta {math.degrees(remaining):+.1f}; modelo c={math.degrees(self._rot_model[0]):.1f} "
+                f"graus k={math.degrees(self._rot_model[1]):.1f} graus/s")
+        return done, remaining, res
+
     def _odom_course(self, odom0, axis):
         """Curso por odometria desde odom0 no eixo da primitiva, como texto
         para o log (2026-10-26, I6): x = longitudinal, y = lateral
@@ -1946,6 +2318,10 @@ class DockAlignNode(Node):
         # O giro so' corrige acima do coast (+0,02 rad de folga, como o
         # esquadro por AMCL sempre fez): abaixo disso o _cut_drive nem parte.
         yaw_min_corr, _ = amcl_square_window(yaw_coast, 0.0)
+        # Giro em pulsos (2026-10-27): corrige abaixo do coast do giro
+        # continuo; quem decide se o pulso cabe e' o _rotate_pulses.
+        pulses = self.get_parameter("rotate_mode").value == "pulsos"
+        yaw_min_rot = 0.0 if pulses else yaw_min_corr
 
         # Esquadro por AMCL: so quando o refino NAO confiou (mesa diagonal =
         # Nav2 chega torto e a vista de esguelha reprova o fit). Gira longe da
@@ -2093,11 +2469,15 @@ class DockAlignNode(Node):
             t0 = now()
             log(f"esquadro por LiDAR ({where}): yaw_rel {math.degrees(yaw_rel):+.1f} graus "
                 f"a front={front:.3f}")
-            front, npts, fy = self._cut_drive(
-                goal_handle, rate, deadline, attempt_end,
-                "z", 1.0 if yaw_rel > 0 else -1.0,
-                lambda _fr: self._live_face_yaw,
-                yaw_coast, abs(yaw_rel) / 0.315 + 2.0, "esquadrando")
+            if self.get_parameter("rotate_mode").value == "pulsos":
+                _d, _r, (front, npts, fy) = self._rotate_pulses(
+                    goal_handle, rate, deadline, attempt_end, yaw_rel, f"{tag} LiDAR({where})")
+            else:
+                front, npts, fy = self._cut_drive(
+                    goal_handle, rate, deadline, attempt_end,
+                    "z", 1.0 if yaw_rel > 0 else -1.0,
+                    lambda _fr: self._live_face_yaw,
+                    yaw_coast, abs(yaw_rel) / 0.315 + 2.0, "esquadrando")
             log(f"esquadro por LiDAR ({where}): yaw_face apos o giro "
                 f"{'?' if fy is None else '%+.1f' % math.degrees(fy)} graus, "
                 f"front={'?' if front is None else '%.3f' % front} ({now() - t0:.1f} s)")
@@ -2124,7 +2504,7 @@ class DockAlignNode(Node):
             if first.ok and self._wait_new_scan(second_read_s, rate, goal_handle):
                 second = self._refit_face_band(front, f"refit({where}, 2a leitura)")
             yaw_rel, status, why = refit_square_decision(
-                first, second, agree_tol, yaw_tol, yaw_min_corr, front, rotate_min)
+                first, second, agree_tol, yaw_tol, yaw_min_rot, front, rotate_min)
             # I6: yaw da banda rasa (fit TLS) ao lado do fit leve do corredor
             # (_live_face_yaw, o que fecha a malha do giro e o 'pronto:').
             live = self._live_face_yaw
@@ -2190,7 +2570,9 @@ class DockAlignNode(Node):
                     self._publish_cmd(0.0, 0.0, 0.0)
                     log(f"reto: pausa para refit a front={front:.3f} "
                         f"(alvo {refit_front:.2f} + coast {coast:.2f})")
-                    refit_square("reto")
+                    # Camera manda (2026-10-27); sem medida dela, o LiDAR.
+                    if not cam_used["v"] or camera_align("reto")[0] == "sem_camera":
+                        refit_square("reto")
                     continue
                 if front - lag <= stop + coast:
                     self._publish_cmd(0.0, 0.0, 0.0)
@@ -2207,6 +2589,247 @@ class DockAlignNode(Node):
                 f"(janela [{window_lo:.3f}, {window_hi:.3f}])")
             inst("parou do reto")
             return front, npts, face_yaw
+
+        # ---------- Camera no docking (2026-10-27) ----------
+        cam_steps = max(0, int(self.get_parameter("camera_max_steps").value))
+        # Em pulsos a base corrige abaixo do coast do giro continuo: o limiar
+        # vira a tolerancia da camera (o _rotate_pulses recusa o pulso que
+        # passaria do ponto).
+        cam_yaw_thr = float(self.get_parameter("camera_yaw_tol").value) \
+            if self.get_parameter("rotate_mode").value == "pulsos" \
+            else max(float(self.get_parameter("camera_yaw_tol").value), yaw_min_corr)
+        cam_c_thr = max(float(self.get_parameter("camera_center_tol").value), center_coast)
+        cam_max_lat = float(self.get_parameter("camera_max_lateral").value)
+        cam_w = float(self.get_parameter("camera_weight").value)
+        cam_yaw_agree = float(self.get_parameter("camera_lidar_yaw_agree").value)
+        cam_c_agree = float(self.get_parameter("camera_lidar_center_agree").value)
+        # "v" = a camera ja' mediu a mesa neste goal: dali em diante cada
+        # ponto de decisao (reto, mesa, yaw final) tenta a camera primeiro.
+        cam_used = {"v": False}
+
+        def fuse(cam_v, lidar_v, agree):
+            """Camera pesa mais: concordando, media ponderada; discordando
+            (ou sem LiDAR), so' a camera."""
+            if lidar_v is None:
+                return cam_v, "so' camera"
+            if abs(cam_v - lidar_v) <= agree:
+                return cam_w * cam_v + (1.0 - cam_w) * lidar_v, "camera+lidar"
+            return cam_v, "lidar discorda: camera"
+
+        def odom_drive(axis, demand, phase):
+            """Curso LATERAL por ODOMETRIA (a camera nao fecha malha a 10 Hz):
+            anda `demand` e remede depois. Giro: rotate_tracked."""
+            o0 = self._odom_pose(0.5)
+            if o0 is None:
+                log(f"camera: sem /odom fresco — nao mexo ({phase})")
+                return False
+
+            def err(_front):
+                o = self._odom_pose(0.5)
+                if o is None:
+                    return None
+                if axis == "z":
+                    return demand - _normalize_angle(o[2] - o0[2])
+                return demand - _lateral_displacement(o0[0], o0[1], o0[2], o[0], o[1])
+            sign = 1.0 if demand > 0 else -1.0
+            if axis == "z":
+                self._cut_drive(goal_handle, rate, deadline, attempt_end, "z", sign, err,
+                                yaw_coast, abs(demand) / 0.315 + 2.0, phase)
+            else:
+                self._cut_drive(goal_handle, rate, deadline, attempt_end, "y", sign, err,
+                                center_coast, (abs(demand) + 0.05) / min_v + 1.0, phase,
+                                lag_v=self._start_speeds()[0])
+            return True
+
+        def rotate_tracked(demand, phase):
+            """Giro de `demand` cortado pela variacao MEDIDA do yaw da face no
+            LiDAR (fit leve, a cada scan): rotacao = yaw0 - yaw(t). Tour de
+            27/10: a odometria subestimou o giro real em 30-70% e cada passo
+            da camera girava ~2x o pedido (vaivem de +-11 graus na WS2/WS6);
+            o esquadro do LiDAR, que fecha a malha assim, parava a +-1,5.
+            Sem face no LiDAR, cai na odometria. Devolve a fonte ou None."""
+            live0 = self._live_face_yaw
+            o0 = self._odom_pose(0.5)
+            if live0 is None and o0 is None:
+                log(f"camera: sem face no LiDAR nem /odom fresco — nao giro ({phase})")
+                return None
+
+            def err(_front):
+                ly = self._live_face_yaw
+                if live0 is not None and ly is not None:
+                    return demand - (live0 - ly)
+                o = self._odom_pose(0.5)
+                if o is None or o0 is None:
+                    return None
+                return demand - _normalize_angle(o[2] - o0[2])
+            self._cut_drive(goal_handle, rate, deadline, attempt_end, "z",
+                            1.0 if demand > 0 else -1.0, err, yaw_coast,
+                            abs(demand) / 0.315 + 2.0, phase)
+            return "lidar" if live0 is not None else "odometria"
+
+        def camera_align(where):
+            """Mede a mesa pela camera (fundida com o LiDAR) e corrige: primeiro
+            o yaw (giro cortado pelo LiDAR, se front >= rotate_min_front; se
+            passar do ponto, nao gira de novo), depois
+            o centro (c_axis); remede apos cada movimento, ate camera_max_steps
+            movimentos. Devolve (status, (front, npts, face_yaw)); status:
+            'alinhado' (yaw e centro dentro), 'esquadrado' (yaw dentro, sem
+            centro confiavel), 'parcial' (nao fechou), 'sem_camera' (nada
+            medido nem mexido) ou 'off'."""
+            if not self._cam_goal_enabled:
+                return "off", self._check_guards(goal_handle, deadline, attempt_end)
+            moved = False
+            rot_sign_prev = None
+            rot_blocked = False
+            lat_blocked = False
+            for step in range(cam_steps + 1):
+                front, npts, lidar_yaw = self._settle(
+                    goal_handle, rate, deadline, attempt_end, "camera")
+                self._feedback(goal_handle, "camera", 0.0, 0.0, 0.0)
+                m = self._measure_camera(goal_handle, rate, deadline, attempt_end,
+                                         f"{where}/{step}")
+                if m is None:
+                    log(f"camera({where}): sem medida ({self._cam_reject})"
+                        + ("" if moved else " — sigo pelo LiDAR"))
+                    return ("parcial" if moved else "sem_camera"), (front, npts, lidar_yaw)
+                cam_used["v"] = True
+                yaw, ysrc = fuse(m["yaw"], lidar_yaw, cam_yaw_agree)
+                c = csrc = None
+                lidar_c = None
+                if m["c_axis"] is not None:
+                    if front is not None and front >= lateral_min:
+                        res = self._face_center_from_scan(front, foot=False)
+                        lidar_c = None if res is None else res[0]
+                    c, csrc = fuse(m["c_axis"], lidar_c, cam_c_agree)
+                log(f"camera({where}/{step}): yaw cam {math.degrees(m['yaw']):+.1f} lidar "
+                    f"{'?' if lidar_yaw is None else '%+.1f' % math.degrees(lidar_yaw)} -> "
+                    f"{math.degrees(yaw):+.1f} graus ({ysrc}); centro cam "
+                    f"{'?' if m['c_axis'] is None else '%+.1f' % (m['c_axis'] * 100)} lidar "
+                    f"{'?' if lidar_c is None else '%+.1f' % (lidar_c * 100)} -> "
+                    f"{'?' if c is None else '%+.1f' % (c * 100)} cm"
+                    f"{'' if c is None else ' (' + csrc + ')'}; front lidar "
+                    f"{'?' if front is None else '%.3f' % front} cam {m['front']:.3f}")
+                if (rot_sign_prev is not None and not rot_blocked
+                        and abs(yaw) > cam_yaw_thr and (yaw > 0) != (rot_sign_prev > 0)):
+                    # Passou do ponto: girar de volta so' repete o vaivem
+                    # (o giro minimo da base e' maior que o erro).
+                    rot_blocked = True
+                    log(f"camera({where}): o giro passou do ponto (agora "
+                        f"{math.degrees(yaw):+.1f} graus do outro lado) — nao giro de novo")
+
+                def done_status():
+                    # "Bom o bastante" (operador 27/10: o manipulador tolera um
+                    # pouco de angulo/centro): o que nao da' mais para melhorar
+                    # (giro menor que o pulso minimo, lateral abaixo do passo)
+                    # conta como feito.
+                    yaw_ok = abs(yaw) <= cam_yaw_thr or rot_blocked
+                    c_ok = c is not None and (abs(c) <= cam_c_thr or lat_blocked)
+                    st = ("alinhado" if c_ok else "esquadrado") if yaw_ok else "parcial"
+                    log(f"camera({where}): {st} (yaw {math.degrees(yaw):+.1f} graus, limiar "
+                        f"{math.degrees(cam_yaw_thr):.1f}{', sem giro possivel' if rot_blocked else ''}"
+                        f"; centro {'?' if c is None else '%+.1f' % (c * 100)} cm, limiar "
+                        f"{cam_c_thr * 100:.1f}{', sem passo possivel' if lat_blocked else ''})")
+                    return st, (front, npts, lidar_yaw)
+
+                need_rot = abs(yaw) > cam_yaw_thr and not rot_blocked
+                need_lat = c is not None and abs(c) > cam_c_thr and not lat_blocked
+                if not need_rot and not need_lat:
+                    return done_status()
+                if step == cam_steps:
+                    log(f"camera({where}): {cam_steps} movimento(s) e ainda fora — sigo")
+                    break
+                if need_rot and (front is None or front < rotate_min):
+                    log(f"camera({where}): yaw {math.degrees(yaw):+.1f} graus fora mas front="
+                        f"{'?' if front is None else '%.3f' % front} < rotate_min_front "
+                        f"{rotate_min:.2f} — nao giro aqui")
+                    rot_blocked = True
+                elif need_rot:
+                    inst(f"antes do giro pela camera ({where})")
+                    if self.get_parameter("rotate_mode").value == "pulsos":
+                        log(f"camera({where}): giro {math.degrees(yaw):+.1f} graus em pulsos")
+                        done, _rest, _res = self._rotate_pulses(
+                            goal_handle, rate, deadline, attempt_end, yaw,
+                            f"{tag} camera({where})")
+                        if abs(done) >= 1e-3:
+                            moved = True
+                            continue   # remede depois de girar
+                        # Nenhum pulso cabe: decide o centro com ESTA medida
+                        # (antes media de novo so' para descobrir o mesmo).
+                        rot_blocked = True
+                    else:
+                        log(f"camera({where}): giro {math.degrees(yaw):+.1f} graus (corte pelo LiDAR)")
+                        src = rotate_tracked(yaw, "esquadrando")
+                        if src is None:
+                            break
+                        if src != "lidar":
+                            log(f"camera({where}): giro cortado pela {src} (sem face no LiDAR)")
+                        rot_sign_prev = yaw
+                        moved = True
+                        continue
+                need_lat = c is not None and abs(c) > cam_c_thr and not lat_blocked
+                if not need_lat:
+                    return done_status()
+                if abs(c) > cam_max_lat:
+                    log(f"camera({where}): centro {c * 100:+.1f} cm > camera_max_lateral "
+                        f"{cam_max_lat * 100:.0f} — medida suspeita, nao mexo")
+                    break
+                if front is None or front < lateral_min:
+                    log(f"camera({where}): front="
+                        f"{'?' if front is None else '%.3f' % front} < lateral_min_front — "
+                        "nao mexo de lado")
+                    break
+                if not self._side_clear(1.0 if c > 0 else -1.0, front):
+                    log(f"camera({where}): obstaculo na faixa lateral — nao mexo")
+                    break
+                log(f"camera({where}): lateral {c * 100:+.1f} cm por odometria")
+                o0 = self._odom_pose(0.5)
+                if not odom_drive("y", c, "centrando"):
+                    break
+                o1 = self._odom_pose(0.5)
+                if o0 is not None and o1 is not None and abs(
+                        _lateral_displacement(o0[0], o0[1], o0[2], o1[0], o1[1])) < 0.01:
+                    # Tour 27/10 (WS3/WS5): pedidos de 3-4 cm andaram 0,0 cm
+                    # tres vezes seguidas (abaixo do passo minimo da base).
+                    lat_blocked = True
+                    log(f"camera({where}): o lateral nao andou (abaixo do passo minimo) — "
+                        "nao repito")
+                    return done_status()
+                moved = True
+            return "parcial", self._check_guards(goal_handle, deadline, attempt_end)
+
+        cam_min_front = float(self.get_parameter("camera_min_front").value)
+
+        def cam_close(where):
+            front_now = self._check_guards(goal_handle, deadline, attempt_end)[0]
+            if front_now is not None and front_now < cam_min_front:
+                log(f"camera({where}): front={front_now:.3f} < camera_min_front "
+                    f"{cam_min_front:.2f} — perto demais, so' LiDAR")
+                return True
+            return False
+
+        def lateral_mesa():
+            """(C) com a camera, se ela ja' mediu neste goal e esta' longe o
+            bastante da mesa; senao LiDAR."""
+            if cam_used["v"] and not cam_close("mesa"):
+                st, res = camera_align("mesa")
+                if st != "sem_camera":
+                    return res
+            return lateral_adjust("mesa")
+
+        def final_yaw():
+            """(D) yaw final: LiDAR (mediana do fit leve) fundido com a camera."""
+            yaw_l, why = self._measure_face_yaw(goal_handle, rate, deadline, attempt_end)
+            if not cam_used["v"] or cam_close("final"):
+                return yaw_l, why
+            m = self._measure_camera(goal_handle, rate, deadline, attempt_end, "final")
+            if m is None:
+                log(f"yaw final: camera sem medida ({self._cam_reject}) — so' LiDAR")
+                return yaw_l, why
+            yaw, src = fuse(m["yaw"], yaw_l, cam_yaw_agree)
+            log(f"yaw final: cam {math.degrees(m['yaw']):+.1f} lidar "
+                f"{'?' if yaw_l is None else '%+.1f' % math.degrees(yaw_l)} -> "
+                f"{math.degrees(yaw):+.1f} graus ({src})")
+            return yaw, ""
 
         correct_enabled = bool(self.get_parameter("final_yaw_correction").value)
         strict = bool(self.get_parameter("final_yaw_strict").value)
@@ -2228,27 +2851,39 @@ class DockAlignNode(Node):
             # banda rasa tambem reprova (F11: WS2 residuo, WS6 face estreita)
             # — ali c_foot carregaria d*tan(yaw) (WS2 +6..+8 cm, WS6 ~11 cm).
             # c_foot fica so' no log [inst] ate um tour mostrar o contrario.
-            front0, _n0, _fy0 = self._check_guards(goal_handle, deadline, attempt_end)
-            square_possible = (g.use_lidar_refine and front0 is not None
-                               and front0 >= rotate_min)
-            staging_status = None
-            if square_possible and confident:
-                _f, _n, _fy, staging_status = refit_square("staging")
-            elif g.use_lidar_refine:
-                log("esquadro no staging pulado: " + (
-                    "refino sem confianca" if not confident else
-                    f"front={'?' if front0 is None else '%.3f' % front0} "
-                    f"< rotate_min_front {rotate_min:.2f}"))
+            # ---------- (Acam) CAMERA no staging (2026-10-27) ----------------
+            # Ve o tampo inteiro daqui: esquadra e centra por ela. So' cai no
+            # (A0)+(A) do LiDAR o que a camera nao resolveu.
+            cam_st, _res = camera_align("staging")
+            if cam_st == "alinhado":
+                log("staging pela camera: esquadro e lateral do LiDAR pulados")
+            else:
+                if cam_st == "esquadrado":
+                    log("staging: yaw pela camera, centro pelo LiDAR")
+                else:
+                    front0, _n0, _fy0 = self._check_guards(goal_handle, deadline, attempt_end)
+                    square_possible = (g.use_lidar_refine and front0 is not None
+                                       and front0 >= rotate_min)
+                    if square_possible and confident:
+                        refit_square("staging")
+                    elif g.use_lidar_refine:
+                        log("esquadro no staging pulado: " + (
+                            "refino sem confianca" if not confident else
+                            f"front={'?' if front0 is None else '%.3f' % front0} "
+                            f"< rotate_min_front {rotate_min:.2f}"))
 
-            # ---------- (A) ajuste lateral no STAGING (longe = mais seguro) --
-            lateral_adjust("staging", foot=False)
+                # ---------- (A) ajuste lateral no STAGING (longe = mais seguro)
+                lateral_adjust("staging", foot=False)
 
             # ---------- (B) RETO ate a janela (com pausa de refit) -----------
-            front, npts, face_yaw = approach(allow_refit=True)
+            # Staging fechado pela camera: sem a pausa no meio da reta (a reta
+            # e' curta; a pausa custava uma medida a mais por docking).
+            front, npts, face_yaw = approach(
+                allow_refit=cam_st not in ("alinhado", "esquadrado"))
 
             # ---------- (C) retoque lateral NA MESA, se ainda estiver torto --
             # (lateral puro nao avanca o bico; confirmado em campo 21/08)
-            front, npts, face_yaw = lateral_adjust("mesa")
+            front, npts, face_yaw = lateral_mesa()
 
             # ---------- (D) validacao final de YAW pela face (2026-10-21) ----
             # Antes o sucesso so' validava a janela frontal e a WS1 saiu
@@ -2268,7 +2903,7 @@ class DockAlignNode(Node):
                 # result levou +30,4 cm e nenhuma linha daqui mostrava isso).
                 x_txt = (f"erro X {((front - stop) * 100):+.1f} cm, "
                          f"Y(AMCL) {ey * 100:+.1f} cm")
-                yaw_m, why = self._measure_face_yaw(goal_handle, rate, deadline, attempt_end)
+                yaw_m, why = final_yaw()
                 if yaw_m is None:
                     self.get_logger().warn(
                         f"{tag} yaw_nao_medido: {why}; AMCL diz {math.degrees(eyaw):+.1f} graus "
@@ -2282,7 +2917,7 @@ class DockAlignNode(Node):
                                and correction_cycles < _YAW_CORRECTION_MAX_CYCLES
                                and has_time)
                 decision = final_yaw_decision(
-                    yaw_m, yaw_tol, not can_correct, strict, min_correctable=yaw_min_corr)
+                    yaw_m, yaw_tol, not can_correct, strict, min_correctable=yaw_min_rot)
                 yaw_deg = math.degrees(yaw_m)
                 if decision == "ok":
                     log(f"pronto: front={front:.3f} yaw_face={yaw_deg:+.1f} graus ({x_txt})")
@@ -2290,6 +2925,10 @@ class DockAlignNode(Node):
                 if decision == "corrigir":
                     t0 = now_s
                     target_front = rotate_min + 0.05
+                    if cam_used["v"]:
+                        # a borda da frente volta ao campo de visao da camera
+                        target_front = max(target_front, float(
+                            self.get_parameter("camera_view_front").value))
                     self.get_logger().warn(
                         f"{tag} yaw_face {yaw_deg:+.1f} graus > tolerancia "
                         f"{math.degrees(yaw_tol):.1f}: recuo ate front {target_front:.2f}, "
@@ -2301,9 +2940,16 @@ class DockAlignNode(Node):
                                      target_front=target_front) == "canceled":
                         raise self._AttemptAbort("canceled")
                     correction_cycles += 1
-                    _f, _n, _fy, st = refit_square("correcao")
+                    st = None
+                    if cam_used["v"]:
+                        cam_c, _res = camera_align("correcao")
+                        if cam_c in ("alinhado", "esquadrado"):
+                            # a camera esquadrou (ou confirmou o esquadro)
+                            st = "girou"
+                    if st is None:
+                        _f, _n, _fy, st = refit_square("correcao")
                     front, npts, face_yaw = approach(allow_refit=False)
-                    front, npts, face_yaw = lateral_adjust("mesa")
+                    front, npts, face_yaw = lateral_mesa()
                     # I8 (F12, 2026-10-26): so' conta como corrigido se o
                     # esquadro ACONTECEU; 6/6 correcoes dos tours recuaram e
                     # voltaram sem girar (refit rejeitado) e a flag
@@ -2363,6 +3009,7 @@ class DockAlignNode(Node):
             return self._execute_align(goal_handle)
         finally:
             self._publish_cmd(0.0, 0.0, 0.0)
+            self._cam_stop()
             self._motion_lock.release()
 
     def _shared_rate(self, period):
@@ -2398,6 +3045,7 @@ class DockAlignNode(Node):
             return self._abort(goal_handle, result, f"falha ao carregar dock: {exc}")
         bank_target = (bx, by, byaw)
         self._dock_face_dist = face_dist
+        self._cam_setup_goal(g.dock_id, g.map_name, g.map_dir)
         # Janela lateral do refino por dock (R3, 2026-10-26); None = global.
         self._dock_refine_half_width = half_w
         if half_w is not None:

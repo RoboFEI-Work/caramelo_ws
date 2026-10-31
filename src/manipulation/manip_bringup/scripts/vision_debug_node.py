@@ -40,6 +40,13 @@ detectores. Com espectador, processa no maximo rate_hz quadros/s (~10 ms
 cada, medido). So' LE: nao publica em topico de comando, nao chama servico
 nem action, nao mexe em TF.
 
+e) DOCKING (2026-10-27, pedido do operador: "o mesmo viewer para as duas
+   funcoes, trocando quando precisa"): enquanto o dock_align_node publica a
+   imagem de debug do docking por camera (/dock_align/camera_debug), ELA
+   sai neste mesmo topico no lugar da visao do pick/place; dock_hold_s sem
+   quadro do docking e volta sozinho. Assinada so' com espectador, como o
+   resto (e o dock_align_node so' desenha se alguem assina).
+
 Quem usa: o operador (rqt_image_view /manip/vision_debug/image, ou
 use_vision_viewer:=true no launch). Nada no robo depende deste no.
 Como roda: manip_stack.launch.py (use_vision_debug, default true) ou
@@ -702,6 +709,8 @@ def ros_main(argv=None) -> int:
             dp("base_frame", "manip_base_link")
             dp("camera_frame", "")            # "" = frame_id do camera_info
             dp("publish_topic", "/manip/vision_debug/image")
+            dp("dock_debug_topic", "/dock_align/camera_debug")
+            dp("dock_hold_s", 2.0)
             dp("rate_hz", 10.0)
             dp("detections_max_age_s", 0.5)
             dp("tf_max_age_s", 1.0)
@@ -753,6 +762,8 @@ def ros_main(argv=None) -> int:
             # espectador — criadas/destruidas em _check_viewer (1 Hz).
             self.image_sub = None
             self.info_sub = None
+            self.dock_sub = None
+            self.dock_last_mono = -1e9
             self.det_sub = None
             self.tf_buffer = Buffer()
             self.tf_listener = None
@@ -891,23 +902,34 @@ def ros_main(argv=None) -> int:
                 # ao processar (o limitador de taxa descarta sem custo).
                 self.image_sub = self.create_subscription(
                     Image, g("image_topic"), self._on_image_raw, sensor, raw=True)
+                self.dock_sub = self.create_subscription(
+                    Image, g("dock_debug_topic"), self._on_dock_debug, 1)
                 self.fps = 0.0
                 self.last_pub_mono = 0.0
                 self.next_allowed = 0.0
                 self.get_logger().info("espectador conectado: assinando imagem, camera_info, deteccoes e TF.")
             elif not want and self.image_sub is not None:
-                for sub in (self.image_sub, self.info_sub, self.det_sub):
-                    self.destroy_subscription(sub)
-                self.image_sub = self.info_sub = self.det_sub = None
+                for sub in (self.image_sub, self.info_sub, self.det_sub, self.dock_sub):
+                    if sub is not None:
+                        self.destroy_subscription(sub)
+                self.image_sub = self.info_sub = self.det_sub = self.dock_sub = None
                 if self.tf_listener is not None:
                     self.tf_listener.unregister()
                     self.tf_listener = None
                 self.dets = None
                 self.get_logger().info("sem espectador: tudo desassinado (custo zero).")
 
+        def _on_dock_debug(self, msg):
+            """Docking por camera em curso: o quadro dele vai direto para o
+            espectador (ja' vem desenhado) e segura a visao do pick/place."""
+            self.dock_last_mono = time.monotonic()
+            self.pub.publish(msg)
+
         def _on_image_raw(self, raw: bytes):
             if self.pub.get_subscription_count() == 0:
                 return                        # espectador sumiu: nao processa nada
+            if time.monotonic() - self.dock_last_mono < float(self.get_parameter("dock_hold_s").value):
+                return                        # docking usando o espectador
             rate = float(self.get_parameter("rate_hz").value)
             now_mono = time.monotonic()
             # Limitador por "proximo instante permitido" (nao por intervalo desde

@@ -276,6 +276,11 @@ struct MissionBuildContext
   bool simulate_navigation{false};
   std::string finish_dock_id;
   bool startup_home{true};
+  // 2026-10-27 (operador): braco em home antes de todo goto com docking —
+  // a camera do docking so' ve a mesa nessa pose. O task_planner ja' emite
+  // home antes de cada goto; isto cobre YAML de acoes escrito a mao. So'
+  // insere se a acao anterior pode ter deixado o braco fora de home.
+  bool home_before_dock{true};
   std::string startup_pose_name{"home"};
   // GoToWS falhou depois de todos os retries internos do align => PULA o
   // bloco da estacao (picks/places dela) e a missao segue, para nao perder
@@ -400,6 +405,8 @@ std::string buildTreeXmlFromActions(
     ctx.plan_rows.push_back("[ini] " + ctx.startup_pose_name + " (prologo automatico)");
   }
 
+  // Braco sabidamente em home (prologo/acao home) desde o ultimo pick/place?
+  bool arm_at_home = ctx.startup_home && ctx.startup_pose_name == "home";
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
   std::string current_station_ws;    // 'ws' do ultimo goto (p/ o place legado sem 'ws')
   std::string current_station_mesa;  // mesa do ultimo goto (fallback do amt1_sort)
@@ -509,6 +516,7 @@ std::string buildTreeXmlFromActions(
       close_reach_queue();
       xml << "      <GoToNamedPose name=\"home_" << i << "\" pose_name=\""
           << escapeXmlAttr(blackboardPort(pose_name_key)) << "\"/>\n";
+      arm_at_home = pose_name == "home";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] home  pose=" + pose_name);
@@ -531,6 +539,18 @@ std::string buildTreeXmlFromActions(
 
       close_reach_queue();
       close_station_block();
+      if (use_docking && ctx.home_before_dock && !arm_at_home) {
+        // ForceSuccess: sem home o docking ainda funciona (so' LiDAR).
+        const std::string pre_key = actionBlackboardKey(i, "pre_dock_pose");
+        blackboard->set(pre_key, std::string("home"));
+        xml << "      <ForceSuccess>\n";
+        xml << "      <GoToNamedPose name=\"home_antes_" << i << "\" pose_name=\""
+            << escapeXmlAttr(blackboardPort(pre_key)) << "\"/>\n";
+        xml << "      </ForceSuccess>\n";
+        ctx.plan_rows.push_back(
+          "[" + std::to_string(i) + "] home  (automatico antes do docking: camera)");
+        arm_at_home = true;
+      }
       const bool wrap = use_docking && ctx.skip_unreachable_station;
       if (wrap) {
         xml << "      <Fallback>\n";
@@ -557,6 +577,7 @@ std::string buildTreeXmlFromActions(
     }
 
     if (kind == "pick" || kind == "place" || kind == "amt1_sort") {
+      arm_at_home = false;
       if (ctx.map_config && !current_station_dock.empty() &&
         !ctx.map_config->manipulationEnabled(current_station_dock))
       {
@@ -1072,6 +1093,7 @@ int main(int argc, char ** argv)
     const std::string finish_dock_id =
       node->declare_parameter<std::string>("finish_dock_id", "FINISH");
     const bool startup_home = node->declare_parameter<bool>("startup_home", true);
+    const bool home_before_dock = node->declare_parameter<bool>("home_before_dock", true);
     const std::string startup_pose_name =
       node->declare_parameter<std::string>("startup_pose_name", "home");
 
@@ -1158,6 +1180,7 @@ int main(int argc, char ** argv)
     ctx.simulate_navigation = simulate_navigation;
     ctx.finish_dock_id = finish_dock_id;
     ctx.startup_home = startup_home;
+    ctx.home_before_dock = home_before_dock;
     ctx.startup_pose_name = startup_pose_name;
     // false = comportamento antigo (goto falhou => missao inteira falha).
     ctx.skip_unreachable_station =
@@ -1227,6 +1250,17 @@ int main(int argc, char ** argv)
       factory.registerNodeType<manip_bt::NudgeBaseBT>("NudgeBase");
     }
 
+    // --dry-run imprime ANTES de instanciar (2026-10-27): montar a arvore
+    // conecta cada GoToNamedPose ao /move_group, e sem o stack no ar o plano
+    // nem aparecia. A montagem continua depois (pega erro de porta).
+    if (dry_run) {
+      std::cout << "=== Plano da missao (" << yaml_path << ") ===\n";
+      for (const auto & row : ctx.plan_rows) {
+        std::cout << "  " << row << "\n";
+      }
+      std::cout << "=== XML gerado ===\n" << tree_xml << std::flush;
+    }
+
     RCLCPP_INFO(
       rclcpp::get_logger("bt_yaml_executor"),
       "Instanciando os nos da arvore (conectando ao /move_group — o MoveIt "
@@ -1239,11 +1273,7 @@ int main(int argc, char ** argv)
       std::chrono::duration<double>(std::chrono::steady_clock::now() - build_start).count());
 
     if (dry_run) {
-      std::cout << "=== Plano da missao (" << yaml_path << ") ===\n";
-      for (const auto & row : ctx.plan_rows) {
-        std::cout << "  " << row << "\n";
-      }
-      std::cout << "=== XML gerado ===\n" << tree_xml;
+      std::cout << "=== Arvore montada (dry-run ok) ===\n";
       rclcpp::shutdown();
       return 0;
     }

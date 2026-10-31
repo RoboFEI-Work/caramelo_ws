@@ -15,6 +15,8 @@ install(
 
 install(FILES
   scripts/caramelo_docking_common.py
+  scripts/caramelo_dock_camera.py
+  scripts/caramelo_dock_camera_debug.py
   scripts/run_mission.py
   scripts/caramelo_service_area_common.py
   scripts/caramelo_tour_common.py
@@ -55,6 +57,12 @@ install(PROGRAMS
   scripts/dock_align_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME dock_align_node
+)
+
+install(PROGRAMS
+  scripts/dock_camera_probe.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME dock_camera_probe
 )
 
 install(PROGRAMS
