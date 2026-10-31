@@ -32,7 +32,7 @@ start_state:
     obj_ids: [9]
     table: [9]
   WS_6:
-    obj_ids: [15]
+    obj_ids: [15] 
     table: [15]
 finish_state:
   WS_3:

@@ -1,0 +1,254 @@
+dock_plugins:
+  caramelo_start_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_finish_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.3
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws2_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.3
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws3_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.3
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws4_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_sh1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.5
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_pp1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.025
+    staging_x_offset: -0.45
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_rt1_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.35
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws5_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws6_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws7_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws8_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+  caramelo_ws9_dock:
+    plugin: opennav_docking::SimpleNonChargingDock
+    docking_threshold: 0.03
+    staging_x_offset: -0.2
+    staging_yaw_offset: 0.0
+    dock_direction: forward
+    rotate_to_dock: false
+    use_external_detection_pose: false
+    use_battery_status: false
+    use_stall_detection: false
+docks:
+  START:
+    type: caramelo_start_dock
+    frame: map
+    pose:
+    - 9.1412
+    - 0.938
+    - -3.12962
+    id: START
+  FINISH:
+    type: caramelo_finish_dock
+    frame: map
+    pose:
+    - 0.0161
+    - -0.0008
+    - 3.099752
+    id: FINISH
+  WS1:
+    type: caramelo_ws1_dock
+    frame: map
+    pose:
+    - 7.94
+    - 0.4033
+    - -1.030412
+    id: WS1
+  WS2:
+    type: caramelo_ws2_dock
+    frame: map
+    pose:
+    - 7.8303
+    - 2.0795
+    - 0.078573
+    id: WS2
+  WS3:
+    type: caramelo_ws3_dock
+    frame: map
+    pose:
+    - 6.4576
+    - 0.3504
+    - -1.569485
+    id: WS3
+  WS4:
+    type: caramelo_ws4_dock
+    frame: map
+    pose:
+    - 4.9514
+    - 1.2003
+    - 0.882272
+    id: WS4
+  SH1:
+    type: caramelo_sh1_dock
+    frame: map
+    pose:
+    - 7.2721
+    - 2.0769
+    - -3.043712
+    id: SH1
+  PP1:
+    type: caramelo_pp1_dock
+    frame: map
+    pose:
+    - 5.0781
+    - 0.2426
+    - -1.541791
+    id: PP1
+  RT1:
+    type: caramelo_rt1_dock
+    frame: map
+    pose:
+    - 0.0
+    - 0.0
+    - 0.0
+    id: RT1
+  WS5:
+    type: caramelo_ws5_dock
+    frame: map
+    pose:
+    - 3.6707
+    - 1.5882
+    - 1.619242
+    id: WS5
+  WS6:
+    type: caramelo_ws6_dock
+    frame: map
+    pose:
+    - 2.5336
+    - -0.1198
+    - -0.928405
+    id: WS6
+  WS7:
+    type: caramelo_ws7_dock
+    frame: map
+    pose:
+    - 1.9703
+    - 1.3968
+    - 1.591681
+    id: WS7
+  WS8:
+    type: caramelo_ws8_dock
+    frame: map
+    pose:
+    - 1.1928
+    - -0.2409
+    - -1.591702
+    id: WS8
+  WS9:
+    type: caramelo_ws9_dock
+    frame: map
+    pose:
+    - 1.2475
+    - 1.025
+    - -3.034737
+    id: WS9

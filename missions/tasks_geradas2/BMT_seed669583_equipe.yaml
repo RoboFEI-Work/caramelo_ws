@@ -1,0 +1,41 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: BMT — Basic Manipulation Test | Duracao: 6 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = area de empilhamento: pilha sobre a tag de referencia, da BASE
+#                ao TOPO. A tag esta em stacking_areas.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Objetos sao identificados so pelo ID da AprilTag; IDs nao se repetem nesta
+# task. A cor dos ATTCs nao e' informada: identificar cor e' tarefa do robo.
+task_id: BMT
+name: Basic Manipulation Test
+duration_min: 6
+active_service_areas: [WS_2, WS_3]
+objects:
+- {id: 1}
+- {id: 10}
+- {id: 19}
+- {id: 22}
+start_state:
+  WS_2:
+    obj_ids: [1, 10, 19, 22]
+    table: [22, 1, 10, 19]
+  WS_3:
+    obj_ids: []
+    table: []
+finish_state:
+  WS_2:
+    obj_ids: [10]
+    table: [10]
+  WS_3:
+    obj_ids: [1, 19, 22]
+    table: [22, 19, 1]

@@ -1,0 +1,46 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: BTT1 — Basic Transportation Test I | Duracao: 10 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = area de empilhamento: pilha sobre a tag de referencia, da BASE
+#                ao TOPO. A tag esta em stacking_areas.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Objetos sao identificados so pelo ID da AprilTag; IDs nao se repetem nesta
+# task. A cor dos ATTCs nao e' informada: identificar cor e' tarefa do robo.
+task_id: BTT1
+name: Basic Transportation Test I
+duration_min: 10
+active_service_areas: [WS_1, WS_2, WS_8]
+objects:
+- {id: 5}
+- {id: 10}
+- {id: 18}
+start_state:
+  WS_1:
+    obj_ids: [10]
+    table: [10]
+  WS_2:
+    obj_ids: [18]
+    table: [18]
+  WS_8:
+    obj_ids: [5]
+    table: [5]
+finish_state:
+  WS_1:
+    obj_ids: [18]
+    table: [18]
+  WS_2:
+    obj_ids: [5]
+    table: [5]
+  WS_8:
+    obj_ids: [10]
+    table: [10]

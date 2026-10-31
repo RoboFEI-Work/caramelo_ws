@@ -1,0 +1,26 @@
+ws_to_table_pose:
+  WS_1: Mesa10
+  WS_2: Mesa10
+  WS_3: Mesa10
+  WS_4: Mesa10
+  SH_1: MesaSh
+  PP_1: Mesa10
+  RT_1: Mesa10
+  WS_5: Mesa15
+  WS_6: Mesa15
+  WS_7: Mesa15
+  WS_8: Mesa5
+  WS_9: Mesa15
+ws_to_dock_id:
+  WS_1: WS1
+  WS_2: WS2
+  WS_3: WS3
+  WS_4: WS4
+  SH_1: SH1
+  PP_1: PP1
+  RT_1: RT1
+  WS_5: WS5
+  WS_6: WS6
+  WS_7: WS7
+  WS_8: WS8
+  WS_9: WS9
