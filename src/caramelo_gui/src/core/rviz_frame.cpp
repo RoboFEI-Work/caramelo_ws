@@ -122,6 +122,10 @@ void RVizFrame::createDisplays()
   add("rviz_default_plugins/TF", "TF", false, "", "");
   add("rviz_default_plugins/Map", "Mapa", true, "Topic", "/map");
   add("rviz_default_plugins/LaserScan", "Laser", true, "Topic", "/scan");
+  // Grafo do slam_toolbox (nos = poses dos scans, linhas = restricoes/loop
+  // closures): so o SLAM publica, entao fora do mapeamento fica vazio.
+  add("rviz_default_plugins/MarkerArray", "Grafo SLAM", true, "Topic",
+    "/slam_toolbox/graph_visualization");
   add("rviz_default_plugins/Map", "Costmap Global", false, "Topic", "/global_costmap/costmap");
   add("rviz_default_plugins/Map", "Costmap Local", false, "Topic", "/local_costmap/costmap");
   add("rviz_default_plugins/Path", "Caminho Global", true, "Topic", "/plan");
