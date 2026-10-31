@@ -55,8 +55,8 @@ amcl:
 
 
     resample_interval: 1
-    max_particles: 500 # 5000->500 (operador, CPU): laptop saturado. 500 localiza no mapa e alivia MUITO o filtro.
-    min_particles: 250
+    max_particles: 1000
+    min_particles: 600
     recovery_alpha_fast: 0.1
     # 2026-07-23: 0.1 -> 0.001. Com slow == fast a razao w_fast/w_slow fica ~1
     # e a injecao de recuperacao (1 - w_fast/w_slow) NUNCA dispara — o filtro
