@@ -98,6 +98,7 @@
 #include <thread>
 #include <vector>
 
+#include "manip_task_execution/arm_settle.hpp"
 #include "manip_task_execution/amt1_sort_planner.hpp"
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
@@ -135,6 +136,9 @@ public:
 
         container_state_file_ = this->declare_parameter<std::string>(
             "container_state_file", getDefaultContainerStatePath());
+        // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
+        // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
+        settle_params_ = manip_task_execution::declareArmSettleParams(*this);
         container_state_store_ =
             std::make_unique<manip_task_execution::ContainerStateStore>(container_state_file_);
         container_names_ = this->declare_parameter<std::vector<std::string>>(
@@ -517,6 +521,7 @@ private:
 
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
     std::string container_state_file_;
+    manip_task_execution::ArmSettleParams settle_params_;
     std::unique_ptr<manip_task_execution::ContainerStateStore> container_state_store_;
     std::vector<std::string> container_names_;
 
@@ -995,6 +1000,14 @@ private:
             timeout_s, label + " [execute]");
         if (!ok) {
             iface->stop();
+        } else {
+            // 2026-10-27: o JTC da Pi devolve SUCCEEDED com os servos ainda
+            // convergindo (3,0 rad/s, goal 0,30 rad); planejar a proxima
+            // trajetoria agora rende "start point deviates > 0.01" no
+            // move_group. Espera o grupo PARAR (ver arm_settle.hpp).
+            manip_task_execution::settleAfterMove(
+                *iface, settle_params_, this->get_logger(), label,
+                [this]() { return cancellationRequested(); });
         }
         return ok;
     }

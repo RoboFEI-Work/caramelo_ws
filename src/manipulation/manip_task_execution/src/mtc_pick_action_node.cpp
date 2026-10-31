@@ -47,6 +47,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #endif
 
+#include "manip_task_execution/arm_settle.hpp"
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
@@ -399,6 +400,9 @@ public:
         // 2026-08-29 (pedido do operador): com o bloco preso, subir na
         // VERTICAL (mesmo x,y) antes de recolher para pegar_obj. 0 = desliga.
         lift_after_grasp_m_ = this->declare_parameter<double>("pick_lift_after_grasp_m", 0.05);
+        // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
+        // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
+        settle_params_ = manip_task_execution::declareArmSettleParams(*this);
         // 2026-08-31 (pedido do operador: apos os picks falharem no robo,
         // "volte as mudancas da IK"): apontar a j1 pela TF velha e o
         // alinhamento so-j1 voltam DESLIGADOS por default — o fluxo de pega
@@ -1495,6 +1499,14 @@ private:
             timeout_s, label + " [execute]");
         if (!ok) {
             iface->stop();
+        } else {
+            // 2026-10-27: o JTC da Pi devolve SUCCEEDED com os servos ainda
+            // convergindo (3,0 rad/s, goal 0,30 rad); planejar a proxima
+            // trajetoria agora rende "start point deviates > 0.01" no
+            // move_group. Espera o grupo PARAR (ver arm_settle.hpp).
+            manip_task_execution::settleAfterMove(
+                *iface, settle_params_, this->get_logger(), label,
+                [this]() { return cancellationRequested(); });
         }
         return ok;
     }
@@ -2000,6 +2012,7 @@ private:
     /// Assim o braco estendido nunca varre a mesa girando.
     bool recompute_ik_after_j1_{true};
     int recompute_ik_settle_ms_{300};
+    manip_task_execution::ArmSettleParams settle_params_;
     std::string start_gripper_pose_;
     bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
     double lift_after_grasp_m_{0.05};
@@ -2848,33 +2861,45 @@ private:
         // Prateleira (pedido 2026-08-17): NUNCA passar por pegar_obj com o
         // bloco vindo da estante — o retorno ja deixou o braco em
         // pegar_obj_sh; segue direto ao pre_container.
-        if (!is_shelf) {
-            publishStage(goal_handle, "returning_to_pegar_obj");
-            speak("!Bloco seguro");
-            // Pedido do operador 2026-08-28: recolhe o braco (j2..j5) e so
-            // depois gira a base (j1) - o bloco nao varre a mesa girando.
-            std::array<double, 5> q_home{};
-            bool ok = false;
-            if (namedPoseJoints(arm, "pegar_obj", q_home)) {
-                ok = moveToJointTargetJoint1Last(arm, q_home, cycle_name + " return pegar_obj");
-            } else {
-                RCLCPP_WARN(this->get_logger(), "[%s] pegar_obj sem juntas nomeadas - retorno em movimento unico.", cycle_name.c_str());
-                arm->setStartStateToCurrentState();
-                arm->setEndEffectorLink("tcp");
-                arm->setNamedTarget("pegar_obj");
-                ok = planAndExecute(arm, cycle_name + " return pegar_obj");
-            }
-            if (!ok) {
+        // if (!is_shelf) {
+        //     publishStage(goal_handle, "returning_to_pegar_obj");
+        //     speak("!Bloco seguro");
+        //     // Pedido do operador 2026-08-28: recolhe o braco (j2..j5) e so
+        //     // depois gira a base (j1) - o bloco nao varre a mesa girando.
+        //     std::array<double, 5> q_home{};
+        //     bool ok = false;
+        //     if (namedPoseJoints(arm, "pegar_obj", q_home)) {
+        //         ok = moveToJointTargetJoint1Last(arm, q_home, cycle_name + " return pegar_obj");
+        //     } else {
+        //         RCLCPP_WARN(this->get_logger(), "[%s] pegar_obj sem juntas nomeadas - retorno em movimento unico.", cycle_name.c_str());
+        //         arm->setStartStateToCurrentState();
+        //         arm->setEndEffectorLink("tcp");
+        //         arm->setNamedTarget("pegar_obj");
+        //         ok = planAndExecute(arm, cycle_name + " return pegar_obj");
+        //     }
+        //     if (!ok) {
+        //         return TransferOutcome::kFailHolding;
+        //     }
+        // }
+
+        (void)is_shelf;  // so o retorno a pegar_obj (comentado acima) dependia disso
+
+        // Direto ao pre_container: recolhe j2..j5 e gira a j1 por ultimo (o
+        // bloco nao varre a mesa girando), como fazia o retorno a pegar_obj.
+        publishStage(goal_handle, "going_pre_container");
+        std::array<double, 5> q_pre{};
+        if (namedPoseJoints(arm, "pre_container", q_pre)) {
+            if (!moveToJointTargetJoint1Last(arm, q_pre, cycle_name + " pre_container")) {
                 return TransferOutcome::kFailHolding;
             }
-        }
-
-        publishStage(goal_handle, "going_pre_container");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pre_container");
-        if (!planAndExecute(arm, cycle_name + " pre_container")) {
-            return TransferOutcome::kFailHolding;
+        } else {
+            RCLCPP_WARN(this->get_logger(), "[%s] pre_container sem juntas nomeadas - movimento unico.", cycle_name.c_str());
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pre_container");
+            if (!planAndExecute(arm, cycle_name + " pre_container")) {
+                return TransferOutcome::kFailHolding;
+            }
         }
 
         publishStage(goal_handle, "going_container");

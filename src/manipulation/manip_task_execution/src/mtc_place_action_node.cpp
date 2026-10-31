@@ -56,6 +56,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #endif
 
+#include "manip_task_execution/arm_settle.hpp"
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
@@ -95,6 +96,9 @@ public:
         // com robo/braco movido = alvo fantasma; tambem evitaria que uma tag
         // velha "fingisse presenca" no skip_missing_place_tag).
         max_tag_age_sec_ = this->declare_parameter<double>("max_tag_age_sec", 1.0);
+        // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
+        // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
+        settle_params_ = manip_task_execution::declareArmSettleParams(*this);
 
         const auto default_container_state_file = getDefaultContainerStatePath();
         container_state_file_ = this->declare_parameter<std::string>(
@@ -353,6 +357,13 @@ public:
         // na estante. Mesmo vocabulario/parametro usados no no de pick.
         shelf_table_poses_ = this->declare_parameter<std::vector<std::string>>(
             "shelf_table_poses", std::vector<std::string>{"MesaSh"});
+        // 2026-10-27 (pedido do operador): na prateleira o braco passa todo
+        // esticado (pirocao) e treme a 3,0 rad/s. Os movimentos do place que
+        // envolvem a prateleira (-> pirocao, -> MesaSh, volta ao pirocao)
+        // rodam com estes fatores do MoveIt; 1.0 = velocidade normal. Lidos
+        // a cada movimento (da para ajustar com ros2 param set no teste).
+        this->declare_parameter<double>("shelf_velocity_scaling", 0.35);
+        this->declare_parameter<double>("shelf_acceleration_scaling", 0.25);
 
         // Frame da base do braco — a IK custom trabalha nele (2026-08-17,
         // entrega em alvo TF pela IK propria). Espelho do
@@ -1305,6 +1316,14 @@ private:
             timeout_s, label + " [execute]");
         if (!ok) {
             iface->stop();
+        } else {
+            // 2026-10-27: o JTC da Pi devolve SUCCEEDED com os servos ainda
+            // convergindo (3,0 rad/s, goal 0,30 rad); planejar a proxima
+            // trajetoria agora rende "start point deviates > 0.01" no
+            // move_group. Espera o grupo PARAR (ver arm_settle.hpp).
+            manip_task_execution::settleAfterMove(
+                *iface, settle_params_, this->get_logger(), label,
+                [this]() { return cancellationRequested(); });
         }
         return ok;
     }
@@ -1421,7 +1440,29 @@ private:
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(kShelfWaypointPose);
-        return planAndExecute(arm, label);
+        return planAndExecuteShelfSlow(arm, label);
+    }
+
+    /// planAndExecute com a velocidade reduzida da prateleira (2026-10-27);
+    /// devolve os fatores a 1.0 (o resto do ciclo roda a 1.0).
+    bool planAndExecuteShelfSlow(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & label)
+    {
+        const auto factor = [this](const char * name) {
+                return std::clamp(this->get_parameter(name).as_double(), 0.05, 1.0);
+            };
+        const double vel = factor("shelf_velocity_scaling");
+        const double acc = factor("shelf_acceleration_scaling");
+        RCLCPP_INFO(
+            get_logger(), "[SHELF] %s com velocidade %.2f / aceleracao %.2f.",
+            label.c_str(), vel, acc);
+        arm->setMaxVelocityScalingFactor(vel);
+        arm->setMaxAccelerationScalingFactor(acc);
+        const bool ok = planAndExecute(arm, label);
+        arm->setMaxVelocityScalingFactor(1.0);
+        arm->setMaxAccelerationScalingFactor(1.0);
+        return ok;
     }
 
     static constexpr const char * kShelfWaypointPose = "pirocao";
@@ -1494,6 +1535,7 @@ private:
     }
 
     double max_tag_age_sec_{1.0};
+    manip_task_execution::ArmSettleParams settle_params_;
 
     /// Leitura da tag por MEDIANA de varias deteccoes (2026-09-14).
     ///
@@ -5853,6 +5895,9 @@ private:
             arm->setStartStateToCurrentState();
             arm->setEndEffectorLink("tcp");
             arm->setNamedTarget(table_pose);
+            if (isShelfPlaceTarget(table_pose)) {
+                return planAndExecuteShelfSlow(arm, "go " + table_pose);
+            }
             return planAndExecute(arm, "go " + table_pose);
         }
 
