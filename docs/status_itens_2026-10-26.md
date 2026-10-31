@@ -85,3 +85,91 @@ Roteiro de validação (operador, robô ligado, stack relançado para carregar o
 3. `--only WS1,WS2,WS3,WS6,WS4` 3× (WS4 = controle). Em cada parada: trena das duas quinas dianteiras até a face (diferença ≤ 3,5 cm = < 5°) e do centro do robô ao centro do tampo.
 4. Comparar trena × `yaw_face`/`Y(AMCL)` do log × Lat/Yaw do relatório. Se o LiDAR e a trena concordarem e o AMCL não, a fonte do Y do gate é o próximo passo (R5).
 
+
+## 2026-10-27 — regressão do item 3: pick aborta com "object_still_grasped" (bloco preso na garra)
+
+**Sintoma (tour das 14:05, WS5/tag_13)**: a pega deu certo (`Bloco na garra`, esforço 1,1 N·m), mas o transporte falhou 2× e o pick abortou com `object_still_grasped: transporte falhou 2x com o bloco na garra`; a estação foi abortada. O place das 14:12 falhou do mesmo jeito (`surface above target [j2/j3 por ultimo]`). Em todos os casos o braço **não se mexeu**: o `execute()` voltou em 5 ms.
+
+**Causa (log do move_group)**: `Invalid Trajectory: start point deviates from current robot state more than 0.01 at joint 'manip_joint2'` (e j1, j5). Cadeia:
+1. Com 3,0 rad/s / 8,0 rad/s² (047d2dc) o plano acaba antes do servo: o JTC da Pi declara SUCCEEDED no fim do tempo da trajetória porque a tolerância de goal é 0,30 rad, com as juntas ainda convergindo.
+2. O move_group "espera o braço parar" olhando só 3 amostras seguidas de `joint_states` com variação < 0,01 rad por amostra. A 100 Hz isso são 30 ms: uma junta a 0,5 rad/s passa por parada (a 25 Hz, antes de 26/10, a mesma checagem cobria 120 ms e o plano era 2,5× mais lento).
+3. O nó planeja a próxima trajetória a partir desse estado; ~80 ms depois a validação do move_group vê a junta > 0,01 rad fora do ponto inicial e recusa. O nó lê "execução falhou" e, com o bloco na garra, aborta (correto: nunca pular com o bloco preso).
+
+Evidência de que é regressão: zero recusas em todos os logs até 23/10 (um deles com 451 execuções); 1, 2 e 3 (+1 no place) nos três stacks desde a noite de 26/10. O joint 4 no limite do servo (1,915 rad) **não** entra nessa conta: o plano parte do estado atual e o servo está parado lá.
+
+**Correção aplicada (sem commit ainda)**:
+- `manip_task_execution/include/manip_task_execution/arm_settle.hpp` (novo): após cada `execute()` bem-sucedido, pick, place e AMT1 esperam todas as juntas do grupo ficarem dentro de 4 mrad por 120 ms seguidos (até 1,5 s; depois avisa e segue). Não exige chegar no alvo, só parar — joint 4 no limite e garra no bloco passam. Parâmetros nos três nós: `post_move_settle_window_s` (0,12; 0 desliga), `post_move_settle_tol_rad` (0,004), `post_move_settle_timeout_s` (1,5). Custo: ~120–300 ms por movimento (log `braco assentou em N ms` quando passou de 170 ms).
+- `manip_moveit_config/config/moveit_controllers.yaml`: `allowed_start_tolerance: 0.03` (era o default 0,01) como rede para a deriva residual e para quem não passa pela espera (`go_to_named_pose_bt`, commander).
+- Compilado (`colcon build --packages-select manip_task_execution`, sem avisos). O yaml é symlink: vale ao relançar o stack de manipulação.
+
+**Validar no robô**: relançar o stack, repetir a WS5 (pick + place). Esperado: nenhuma linha `Invalid Trajectory` no log do move_group; linhas `braco assentou em ... ms` nos nós dizendo quanto o braço ainda andava depois do SUCCEEDED. Se aparecer `braco AINDA se mexia apos 1.50 s`, o servo não está convergindo (ver corrente/limite) — aí a conversa é no JTC/servo, não aqui. Alternativa se a espera incomodar: voltar `joint_limits.yaml` para 2,5/4,0 ou 1,2/1,0.
+
+## 2026-10-27 — docking pela câmera + prateleira mais lenta
+
+### Docking: a câmera do punho manda, o LiDAR apoia
+
+**Pedido**: o docking "às vezes muito bom, às vezes muito ruim"; usar a câmera, que já vê a mesa no pré-docking com o braço na pose de navegação.
+
+**Medido no robô (braço em `home`)**: D455 a 0,48 m do chão, x = 0,26 m, olhando 23° para baixo (imagem de cabeça para baixo). Vê o chão a partir de x ≈ 0,60 m e um tampo de 0,10 m a partir de x ≈ 0,53 m: do staging (face a ~0,63 m) o tampo 0,80 × 0,50 m aparece inteiro; na parada final (face a ~0,40 m) a borda da frente some, mas as laterais continuam visíveis. **Achado à parte**: o TF da câmera nessa pose está **5,45° errado em pitch** (o chão projetado sobe 5 cm a cada 0,5 m; roll 0,4°). O detector se corrige sozinho (ver abaixo), mas o mesmo erro pode estar na percepção do pick/place — vale conferir a calibração das juntas 2–4 / montagem da câmera.
+
+**Como mede** (`caramelo_navigation/scripts/caramelo_dock_camera.py`, numpy puro): depth → nuvem no `base_footprint` → planos horizontais por RANSAC → chão e tampo (0,03–0,30 m acima do chão, altura medida **sob a câmera**, invariante ao erro de inclinação) → corrige a inclinação girando a nuvem em torno da câmera → componente conexa do tampo que contém o eixo do robô → borda da frente (menor x por faixa de y) e laterais (extremos por faixa ao longo da normal), descartando pontos colados na borda da imagem (lá é campo de visão, não mesa). Sai yaw da face, `c_axis`/`c_foot` e largura, nas mesmas convenções do LiDAR. Testes sintéticos (`test/test_dock_camera.py`, renderização por raio com a pose real e o erro de 5,45°): yaw ±0,3°, centro ±5 mm do staging; ±0,6° / ±8 mm só pelas laterais na parada final; cubos no tampo e mesa vizinha não atrapalham.
+
+**Sem dimensões fixas (decisão do operador, 27/10)**: as mesas mudam de largura, profundidade e altura (5–15 cm) de arena para arena; nada disso é configurado. A mesa é reconhecida pelo **formato**: plano horizontal 3–20 cm acima do chão, cuja área (fechamento + abertura morfológica: filetes finos como a fatia de uma parede na altura do tampo somem) forma um retângulo — borda da frente reta (a **mais próxima** com comprimento, não a com mais pontos), laterais paralelas à normal, tampo preenchendo ≥ 75 % do retângulo observado, ≤ 8 % fora dele e fundo reto (tampo em L/peça grudada atrás = "fundo em degrau", sem centro). A largura medida com as duas laterais vistas fica guardada **só naquele docking** para centrar quando uma lateral sair da imagem. O `table.width/height` do `service_areas.yaml` não é usado (estava errado: 0,80 × 0,10 contra 0,61 × 0,15 medidos).
+
+**Paredes (operador, 27/10: muitas mesas têm parede atrás e/ou numa lateral, sempre branca como o tampo)**: cada ponto do depth ganha a normal local (diferença para o vizinho contínuo, ~2 cm); o que não é horizontal (normal > 50° da vertical) sai antes de qualquer conta — parede atrás, à esquerda, à direita ou no canto não entra no tampo nem gruda na lateral. A cor não importa (o depth é infravermelho). Testes: 15 cenários de parede (atrás/esq/dir/2 cantos × 3 poses), centro ±1,5 cm, largura ±3 cm. No robô: ~7 mil pontos de parede descartados por frame, medida igual à de antes.
+
+**Primeira medida no robô (27/10, pose aproximada de pré-docking, mesa com parede atrás)**: 15 frames, yaw −2,8° (dispersão 0,6°), `c_foot` +2,1 cm (dispersão 0,9), largura 0,61 m, frente 0,731 m, mesa 0,157 m, inclinação corrigida 5,8°. Antes da abertura morfológica, metade dos frames tomava a fatia da parede (1,17 m) como frente — caso coberto agora por `test_parede_logo_atras_da_mesa`. ~30 ms por frame.
+
+**Fluxo novo no `align_to_dock`** (`camera_*`, default ligado):
+1. **Staging**: mede a mesa pela câmera (mediana de 5 frames, base parada) fundida com o LiDAR (peso 0,8 para a câmera quando concordam; discordando, só a câmera). Gira e depois anda de lado **por odometria**, remedindo após cada movimento (até 3 movimentos). Alinhado pela câmera ⇒ o esquadro e o lateral do LiDAR no staging são pulados.
+2. **Pausa do reto** (~0,55 m): mesma coisa pela câmera; sem medida dela, o refit do LiDAR de sempre.
+3. **Lateral na mesa** e **yaw final**: fusão câmera+LiDAR. Na correção final de yaw, recua até 0,60 m (a borda volta ao campo de visão) e esquadra pela câmera.
+4. Sem medida da câmera (braço fora de `home`, mesa não vista, `camera_enabled:=false`) ⇒ exatamente o fluxo LiDAR anterior. Prateleira (`camera_skip_types: [shelf]`) fica só no LiDAR.
+
+**Limite que continua**: o giro mínimo da base é o coast do ESC (~6°, `yaw_coast_est` 0,10 + 0,02). Yaw abaixo de ~7° a câmera mede mas não consegue corrigir girando — isso é atuador, não medida.
+
+**Validar no robô** (stack relançado — o `dock_align_node` é cópia instalada):
+1. Robô parado de frente para uma mesa, braço em `home`: `ros2 run caramelo_navigation dock_camera_probe --frames 20`. Esperado: yaw e `c_foot` estáveis (dispersão < 1° / < 1 cm), largura = a da mesa real, `incl` ≈ 5,5–6°.
+2. **Calibração**: robô docado perfeito pela trena → `camera_yaw_offset = −(yaw em rad)`, `camera_y_offset = −(c_foot em m)` no `docking_server.launch.py`.
+3. Tour com `gravar_bag_tour`: procurar no log `[cam] staging/0:` e `camera(staging): alinhado`, comparar com a trena nas quinas. Se piorar: `camera_enabled:=false` volta ao LiDAR.
+
+### Place na prateleira mais lento
+
+O braço passa todo esticado (`pirocao`, todas as juntas em 0) e tremia a 3,0 rad/s. No `mtc_place_action_node`, os três movimentos da prateleira (pre_container → `pirocao`, `pirocao` → `MesaSh`, `MesaSh` → `pirocao` após soltar) rodam com `shelf_velocity_scaling` 0,35 / `shelf_acceleration_scaling` 0,25 (lidos a cada movimento: `ros2 param set /place_action_server shelf_velocity_scaling 0.25` para testar). O resto do ciclo continua a 1,0. Log: `[SHELF] ... com velocidade 0.35 / aceleracao 0.25`. Fora do place: o pick da prateleira e o primeiro movimento da task seguinte (que parte do `pirocao`) continuam em velocidade normal.
+
+### Tour com câmera (27/10, ~18h) — piorou: diagnóstico e correções
+
+**Resultado**: 2 ok / 7 reprovadas (WS5 perfeita; WS1/2/3/6/SH1/PP1 com 8–25° no fim). **A medida da câmera estava boa** (concordava com o LiDAR: −6,6×−6,3, −7,6×−7,9, −11,3×−9,2 graus); **o giro é que falhou**: os giros pela câmera eram fechados pela ODOMETRIA, que subestimou o giro real em 30–70% (pedido −7,7 → odometria −11,4 → câmera/LiDAR viram ~19° de giro real). Cada passo passava do ponto ~2× e o robô entrou em vaivém de ±11° (WS2: −7,6 → +11,8 → −11,3 → +11,6…; WS6: −8,8 → +11,3 → −9,6 → +10,9) até acabar os passos. O esquadro antigo do LiDAR, que corta pelo yaw da face medido durante o giro, parava a ±1,5° (WS1: −10,2 → +1,2).
+
+**Correções**:
+- Giro da câmera cortado pela **variação do yaw da face medida pelo LiDAR durante o giro** (a câmera dá o alvo, o LiDAR acompanha); odometria só sem face no LiDAR.
+- **Trava contra vaivém**: se um giro passa para o outro lado, não gira de novo (o giro mínimo da base é maior que o erro).
+- Frente × laterais discordando (WS1/WS3/WS6: frente batia com o LiDAR, laterais davam o dobro): vale a frente.
+- "Fundo em degrau" vira só informação (objetos no tampo escondiam o fundo e reprovavam mesas boas).
+- Corte pelo limite da região de busca (1,6 m) e pela **faixa sem depth da D455** (~50 px num lado) não vira mais "lateral" (o probe mostrou largura 0,40 inventada assim).
+
+**Imagem de debug** (pedido do operador): `ros2 run rqt_image_view rqt_image_view /dock_align/camera_debug`. Publicada pelo `dock_align_node` em cada frame medido durante o docking e pelo `dock_camera_probe --frames 0` (contínuo, robô parado). Esquerda: depth girado 180° com o tampo em verde e o descartado como parede/vertical em vermelho. Direita: vista de cima (robô embaixo, grade 10 cm) com o que a câmera vê (cinza), tampo (verde), borda da frente (amarelo), laterais (ciano), eixo do robô (branco), centro e normal (magenta) e o texto da decisão (verde = mediu centro, amarelo = só yaw, vermelho = sem mesa + motivo). `camera_debug_image:=false` desliga; só desenha se alguém assina.
+
+### Giro em pulsos e viewer único (27/10, após o tour)
+
+**Giro** (operador: "ele gira sempre a mesma quantidade, passa, gira de volta e nunca se ajusta, só entorta"): o ESC (FOC, piso 650 rpm, rampas no firmware) faz todo giro contínuo sair um degrau de ~12–20°, por mais cedo que o corte seja. Agora (`rotate_mode: pulsos`, default; `continuo` = antigo) todo giro do docking — pela câmera e o esquadro pelo LiDAR — é feito em **pulsos medidos**: pulso de T s → para → mede pelo LiDAR (yaw da face, parado) quanto girou → aprende `giro(T) = c + k·T` (pulso mínimo ajusta `c` = menor giro possível; pulso maior ajusta `k`) → próximo pulso pelo que falta, até 2° (`rot_pulse_tol`). Não dá pulso que passaria do ponto (menor giro > 1,5 × erro). O modelo é mantido entre dockings. Log: `pulso N: T s -> girou X graus (lidar); falta Y; modelo c=.. k=..`. Simulação (base com menor giro 8–13°, ruído ±15%): 120 giros, 79 pulsos, 5 trocas de sentido. Limite físico: erro menor que ~2/3 do menor giro da base não se corrige girando. Se o log mostrar `c` alto, testar `rot_pulse_t_min` menor (0,10).
+
+**Viewer único**: o `rqt_image_view` que abre com o robô (`/manip/vision_debug/image`) passa a mostrar a imagem do docking enquanto o `dock_align_node` mede pela câmera (o `vision_debug` repassa `/dock_align/camera_debug` no mesmo tópico) e volta sozinho para a visão do pick/place 2 s depois (`dock_hold_s`).
+
+### Braço em `home` antes de todo docking (27/10)
+
+A câmera do docking só vê a mesa com o braço na pose de navegação (`home`).
+- **Missões**: o `task_plan_search` já emite `home` antes de cada `goto` (e o executor tem o `home` do prólogo). Novo no `bt_yaml_executor`: se a ação anterior a um `goto` com docking pode ter deixado o braço fora de `home` (pick/place/amt1), ele insere `<ForceSuccess><GoToNamedPose home/></ForceSuccess>` (falhar não derruba a missão; o docking cai no LiDAR). Sem duplicar quando já há `home`. Parâmetro `home_before_dock` (default true). Conferido por `--dry-run` num YAML escrito à mão.
+- **`tour_docks`**: antes de cada dock (depois do undock, longe da mesa) manda o braço para `home` pelo MoveIt (`/move_action`, juntas lidas do `caramelo.srdf`), pulando se já está lá (0,05 rad). `--arm-pose ''` desliga.
+- `--dry-run` do executor agora imprime plano e XML **antes** de montar a árvore (antes travava esperando o `/move_group` com o stack fora do ar).
+
+### Tour com câmera + pulsos (27/10, ~20h): 8/9 ok — agora o TEMPO
+
+Resultado: 8 ok, PP1 "reprovada" por 7,6° de yaw no AMCL (o operador viu a mesa boa; tolerância do relatório 5,2°). Align 12–68 s por dock (mediana ~36 s). Para onde ia o tempo (log do `dock_align_node`):
+1. **Cada medida da câmera ~3,5–4 s**: a assinatura do depth era best-effort e a imagem (600 KB) perdia fragmentos — chegavam ~0,3 frame/s e toda medida esperava o teto de 3 s. Reliable: ~10 frames/s.
+2. **Movimentos que não andam, repetidos**: laterais de 3–4 cm (abaixo do passo mínimo da base) andaram 0,0 cm três vezes seguidas (WS3 12 s, WS5).
+3. **Medida extra** depois de "nenhum pulso cabe".
+4. **Câmera perto da mesa**: na parada final só vê as laterais e deu −20° com o LiDAR em −3° → recuo + correção à toa (WS1, WS3: +15–20 s cada).
+5. Perseguir 2°/2 cm quando o manipulador tolera mais.
+
+**Correções**: depth/camera_info em RELIABLE (nó e probe); 3 frames por medida, teto 1,5 s; tolerâncias da câmera 4° / 4 cm (`camera_yaw_tol` 0,07, `camera_center_tol` 0,04 — o pulso ainda mira 2° quando gira); sem nova medida quando nenhum pulso cabe (decide o centro com a mesma); lateral que não andou (< 1 cm) não se repete e conta como "melhor possível"; câmera desligada abaixo de `camera_min_front` 0,50 m (lateral na mesa e yaw final só LiDAR); sem a pausa no meio da reta quando o staging fechou pela câmera; detector 190 → 100 ms/frame (RANSAC e morfologia vetorizados com scipy) e imagem de debug 60–80 → 34 ms. Esperado: 1–3 medidas de ~1 s por dock em vez de 6–10 de ~4 s.
