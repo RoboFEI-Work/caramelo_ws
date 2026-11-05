@@ -22,6 +22,9 @@ Fila de alcance (2026-08-28):
   unseen_tags (lista de strings): tag nunca vista -> skipped=true SEM
       unreachable (fail_reason tag_nao_vista) — comportamento de hoje.
   reach_tolerance_m (default 0.06).
+  track_onboard (bool, default false; 2026-11-05): place de tag que nao foi
+      pega por este fake -> skipped=true (fail_reason tag_nao_a_bordo), como
+      o skip_missing_place_tag do no real.
   Avaliacao depois de latency_sec. Com final_attempt=false: success=true,
   skipped=true, unreachable=true, suggested_base_shift_m = quantize(restante)
   (sinal * clamp(round(|r|/0.05)*0.05, 0.10, 0.25); 0 se |r| < 0.05). Com
@@ -86,6 +89,8 @@ class FakePickPlace(Node):
         self.declare_parameter("unreachable_places", Parameter.Type.STRING_ARRAY)
         self.declare_parameter("unseen_tags", Parameter.Type.STRING_ARRAY)
         self.declare_parameter("reach_tolerance_m", 0.06)
+        self.declare_parameter("track_onboard", False)
+        self._onboard = set()
 
         self._lock = threading.Lock()
         self._base_shift_total = 0.0
@@ -195,6 +200,17 @@ class FakePickPlace(Node):
                      f" ws={getattr(req, 'ws', '')} stack_on={getattr(req, 'stack_on', '')}"
                      f" container_color={getattr(req, 'container_color', '')}")
 
+        if stage == "place" and bool(self._param("track_onboard")) and tag not in self._onboard:
+            goal_handle.succeed()
+            result.success = True
+            result.skipped = True
+            result.fail_reason = "tag_nao_a_bordo"
+            result.message = f"fake: {tag} nao esta a bordo"
+            self._set_if_has(result, "unreachable", False)
+            self._set_if_has(result, "suggested_base_shift_m", 0.0)
+            self.get_logger().warn(f"'place' PULADO: {tag} nao esta a bordo (fake).{extra}")
+            return result
+
         # Tag nunca vista: pula sem unreachable (como hoje).
         if tag in self._unseen:
             goal_handle.succeed()
@@ -253,6 +269,10 @@ class FakePickPlace(Node):
                 f"{remaining:+.3f} m, tolerancia {tolerance:.2f}).")
 
         goal_handle.succeed()
+        if stage == "pick":
+            self._onboard.add(tag)
+        else:
+            self._onboard.discard(tag)
         self.get_logger().info(f"'{stage}' concluido com sucesso (fake).{extra}")
         result.success = True
         result.message = "fake"

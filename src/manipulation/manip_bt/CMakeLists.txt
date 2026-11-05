@@ -29,6 +29,7 @@ add_executable(bt_yaml_executor
   src/pick_tag_bt.cpp
   src/place_tag_bt.cpp
   src/reach_queue_bt.cpp
+  src/task_plan_search.cpp
 )
 
 # task_planner: binario puro (sem rclcpp). task_plan_search = regras +

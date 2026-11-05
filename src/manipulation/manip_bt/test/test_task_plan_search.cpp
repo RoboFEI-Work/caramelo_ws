@@ -391,3 +391,57 @@ int main(int argc, char ** argv)
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// ---- re-tentativa no fim da missao (2026-11-05) --------------------------------
+TEST(StartState, RetryFromOnboardAndPendingPickWithUniformDistances)
+{
+  // Estado do executor depois de a WS_2 ser pulada: 1 a bordo (vai para
+  // WS_2), 3 ainda na WS_2 (vai para WS_3). Distancia uniforme = minimizar
+  // trocas: WS_2 (solta 1, pega 3) e WS_3 (solta 3), duas visitas.
+  tp::TransferItem onboard = transfer(1, "", "WS_2");
+  onboard.needs_pick = false;
+  const std::vector<tp::TransferItem> transfers{onboard, transfer(3, "WS_2", "WS_3")};
+  tp::PlannerState start;
+  start.picked.insert(1);
+  start.inventory.push_back(1);
+
+  std::mt19937 rng(0);
+  const std::vector<tp::Visit> greedy = tp::planGreedy(transfers, rng, start);
+  tp::CostModel m;
+  for (const std::string a : {"START", "FINISH", "WS_2", "WS_3"}) {
+    for (const std::string b : {"START", "FINISH", "WS_2", "WS_3"}) {
+      if (a < b) {
+        m.dist_m[a][b] = 3.0;
+      }
+    }
+  }
+  const tp::SearchResult r = tp::planOptimized(transfers, m, greedy, 1.0, start);
+  ASSERT_EQ(stations(r.visits), (std::vector<std::string>{"WS_2", "WS_3"}));
+  EXPECT_EQ(r.visits[0].places, (std::vector<int>{1}));
+  EXPECT_EQ(r.visits[0].picks, (std::vector<int>{3}));
+  EXPECT_EQ(r.visits[1].places, (std::vector<int>{3}));
+}
+
+TEST(StartState, UniformDistancesMinimizeRevisits)
+{
+  // Mesmo padrao da FINAL de 04/11: S tem 2 picks (a e b) e recebe 1 place
+  // (c, que vem de X). Com distancia uniforme o plano otimo passa em S uma
+  // vez so' (pega c antes), o guloso pode voltar a S.
+  const std::vector<tp::TransferItem> transfers{
+    transfer(1, "S", "P"), transfer(2, "S", "Q"), transfer(3, "X", "S")};
+  tp::CostModel m;
+  for (const std::string a : {"START", "FINISH", "S", "P", "Q", "X"}) {
+    for (const std::string b : {"START", "FINISH", "S", "P", "Q", "X"}) {
+      if (a < b) {
+        m.dist_m[a][b] = 3.0;
+      }
+    }
+  }
+  std::mt19937 rng(1);
+  const std::vector<tp::Visit> greedy = tp::planGreedy(transfers, rng);
+  const tp::SearchResult r = tp::planOptimized(transfers, m, greedy, 2.0);
+  const auto st = stations(r.visits);
+  EXPECT_EQ(std::count(st.begin(), st.end(), "S"), 1);
+  EXPECT_EQ(st.size(), 4u);   // X, S, P, Q (cada estacao uma vez)
+  simulate(r.visits, transfers);
+}

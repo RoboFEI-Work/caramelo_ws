@@ -1,12 +1,14 @@
 // Helpers PUROS do place de precisao (2026-10-21): encaixe do cubo num slot
-// da mesa de precisao (tags 101..107 coladas no FUNDO de cada cavidade) e
+// da mesa de precisao (tags 101..107: desde 2026-11-04 no TAMPO, ~4 cm alem
+// de cada cavidade - slotCenterOffset; antes, coladas no FUNDO) e
 // pilha sobre a tag de referencia da zona de empilhamento (tag 200 colada no
 // tampo) ou sobre outro cubo. Tudo aqui e' geometria/decisao sem ROS, para
 // o mtc_place_action_node reusar e o gtest cobrir (test_place_precision).
 //
 // FRAME: posicoes em manip_base_link (+X = direita do robo, +Y = frente,
 // +Z = cima); yaw em rad no plano XY. Alturas: a tag de um cubo fica na
-// face de CIMA dele; a tag de um slot fica no FUNDO da cavidade.
+// face de CIMA dele. 'z_slot_tag' abaixo = FUNDO da cavidade (o no' ja'
+// desconta a profundidade quando a tag esta no tampo).
 #pragma once
 
 #include <cstdint>
@@ -58,6 +60,15 @@ struct PlanarOffset
 /// (0,-s), (+s,+s), (-s,+s), ... Sem repeticao. step <= 0 ou max_radius < 0
 /// devolve so (0,0).
 std::vector<PlanarOffset> spiralOffsets(double step_m, double max_radius_m);
+
+/// Mesa de precisao com a tag de referencia no TAMPO, fora da cavidade
+/// (2026-11-04, operador: centro da tag ~4 cm ALEM do centro do slot,
+/// olhando do robo). Deslocamento tag -> centro do slot: `offset_m` ao longo
+/// da borda da tag (yaw_tag + k*90 graus) mais alinhada com a direcao
+/// (dir_x, dir_y) — segue o giro da mesa em vez do eixo do braco, e nao
+/// depende de como a tag foi colada (multiplos de 90). offset 0 ou direcao
+/// nula = (0, 0).
+PlanarOffset slotCenterOffset(double yaw_tag, double offset_m, double dir_x, double dir_y);
 
 /// Onde o cubo ficou em relacao ao slot, pela altura da tag dele.
 enum class SeatState

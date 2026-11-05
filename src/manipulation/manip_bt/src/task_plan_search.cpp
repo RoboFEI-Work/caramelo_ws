@@ -423,8 +423,14 @@ std::string chooseNextWs(
 
 std::vector<Visit> planGreedy(const std::vector<TransferItem> & transfers, std::mt19937 & rng)
 {
+  return planGreedy(transfers, rng, PlannerState{});
+}
+
+std::vector<Visit> planGreedy(
+  const std::vector<TransferItem> & transfers, std::mt19937 & rng, const PlannerState & initial)
+{
   std::vector<Visit> visits;
-  PlannerState state;
+  PlannerState state = initial;
   const std::set<std::string> candidate_ws = candidateStations(transfers);
 
   while (hasUnfinishedWork(transfers, state)) {
@@ -559,9 +565,9 @@ class BranchAndBound
 public:
   BranchAndBound(
     const std::vector<TransferItem> & transfers, const CostModel & model,
-    const double bound_cost, const double time_limit_s)
+    const double bound_cost, const double time_limit_s, const PlannerState & start_state)
   : transfers_(transfers), model_(model), bound_cost_(bound_cost),
-    time_limit_s_(time_limit_s)
+    time_limit_s_(time_limit_s), start_state_(start_state)
   {
     const std::set<std::string> cands = candidateStations(transfers);
     stations_.assign(cands.begin(), cands.end());
@@ -597,8 +603,7 @@ public:
     const auto t0 = std::chrono::steady_clock::now();
     deadline_ = t0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(time_limit_s_));
-    PlannerState state;
-    dfs(state, kStartIndex, 0.0);
+    dfs(start_state_, kStartIndex, 0.0);
     SearchResult result;
     result.visits = best_plan_;
     result.time_s = best_cost_;
@@ -875,6 +880,7 @@ private:
   const CostModel & model_;
   const double bound_cost_;
   const double time_limit_s_;
+  const PlannerState start_state_;
   std::vector<std::string> stations_;
   std::unordered_map<int, std::size_t> bit_by_id_;
   std::vector<std::vector<double>> d_;   // distancias por indice (estacoes, START, FINISH)
@@ -901,7 +907,8 @@ private:
 
 SearchResult planOptimized(
   const std::vector<TransferItem> & transfers, const CostModel & model,
-  const std::vector<Visit> & initial, const double time_limit_s)
+  const std::vector<Visit> & initial, const double time_limit_s,
+  const PlannerState & start_state)
 {
   SearchResult fallback;
   fallback.visits = initial;
@@ -924,7 +931,7 @@ SearchResult planOptimized(
     }
   }
 
-  BranchAndBound search(transfers, model, fallback.time_s, time_limit_s);
+  BranchAndBound search(transfers, model, fallback.time_s, time_limit_s, start_state);
   SearchResult result = search.run();
   if (!result.improved) {
     // Nada fechado dentro do prazo: fica o plano inicial.

@@ -103,6 +103,7 @@
 #include "manip_task_execution/container_state_store.hpp"
 #include "manip_task_execution/custom_ik.hpp"
 #include "manip_task_execution/manipulator_execution_lock.hpp"
+#include "manip_task_execution/place_precision.hpp"
 
 #include "caramelo_msgs/action/nudge_base.hpp"
 #include "my_robot_msgs/action/amt1_sort.hpp"
@@ -180,6 +181,23 @@ public:
         cube_height_m_ = this->declare_parameter<double>("cube_height_m", 0.042);
         slot_frame_prefix_ = this->declare_parameter<std::string>(
             "slot_frame_prefix", "tag_amt1_slot_");
+        // 2026-11-04 (operador): na mesa de precisao a tag do slot (101..107)
+        // fica no TAMPO e a cavidade 4 cm mais perto do robo (-x do base_link
+        // = -y do braco). Cada slot registrado pelo cubo casa com a tag da
+        // mesma posicao na fileira (snapSlotToSlotTag) e o place vai por ela
+        // com a logica do empilhar; slot_place_*_offset_m = os MESMOS do no
+        // de place (manip_base_link). Sem tag casada: slot pelo cubo (antigo).
+        // slot_tag_ids vazio = comportamento antigo.
+        slot_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
+            "slot_tag_ids", std::vector<int64_t>{101, 102, 103, 104, 105, 106, 107});
+        slot_place_x_offset_m_ = this->declare_parameter<double>("slot_place_x_offset_m", 0.0);
+        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.04);
+        slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.0005);
+        // Casamento slot <-> tag so' pelo LADO (a fileira tem ~13 cm entre slots).
+        slot_tag_match_m_ = this->declare_parameter<double>("slot_tag_match_m", 0.04);
+        // Passo da fileira (m por id, + = id cresce para a direita do robo)
+        // quando menos de 2 slots casam: medido 129-137 mm em 04/11.
+        slot_tag_pitch_m_ = this->declare_parameter<double>("slot_tag_pitch_m", 0.133);
         broadcast_rate_hz_ = this->declare_parameter<double>("broadcast_rate_hz", 10.0);
         min_seen_tags_ = this->declare_parameter<int>("min_seen_tags", 2);
         // 2026-08-28: default false - na AMT1 as 6 tags sao obrigatorias
@@ -248,11 +266,17 @@ public:
         place_local_max_shift_m_ = this->declare_parameter<double>("place_local_max_shift_m", 0.03);
         verify_after_sort_ = this->declare_parameter<bool>("verify_after_sort", true);
         verify_tol_m_ = this->declare_parameter<double>("verify_tol_m", 0.015);
-        refine_max_ops_ = this->declare_parameter<int>("refine_max_ops", 3);
+        // 2026-11-04 (operador: "depois de finalizar ele re-ajeita e ferra
+        // tudo"): 0 = a verificacao so' MEDE e avisa. A medida e' de longe
+        // (tag_direita/esquerda), contra slots registrados de longe: 2-3 cm
+        // de erro de leitura viravam re-pega de cubo ja' encaixado.
+        refine_max_ops_ = this->declare_parameter<int>("refine_max_ops", 0);
         verify_final_report_ = this->declare_parameter<bool>("verify_final_report", true);
         // 31/08 (pedido do operador): place por JUNTAS gravadas na pega do
         // slot (em vez da IK do ponto) e pick de reserva pela pose inicial.
-        place_joints_enabled_ = this->declare_parameter<bool>("place_joints_enabled", true);
+        // 2026-11-04 (operador): DESLIGADO - o place vai sempre pela tag do
+        // slot (ou, sem tag, pelo frame do slot), nunca repetindo a pega.
+        place_joints_enabled_ = this->declare_parameter<bool>("place_joints_enabled", false);
         place_joints_shift_tol_m_ = this->declare_parameter<double>("place_joints_shift_tol_m", 0.01);
         pick_fallback_slot_frame_ = this->declare_parameter<bool>("pick_fallback_slot_frame", true);
 
@@ -382,6 +406,12 @@ private:
         /// re-registro global. A verificacao compara com a BASE.
         double local_dx{0.0};
         double local_dy{0.0};
+        /// Centro da cavidade - cubo visto no registro (anchor; 2026-11-04).
+        /// Zero sem tag de slot casada. Ancora ORIGINAL intacta e' comparada
+        /// com onde o cubo estava (slot - snap), nao com o centro.
+        double snap_dx{0.0};
+        double snap_dy{0.0};
+        std::string slot_tag_frame;  ///< tag 101..107 casada ("" = nenhuma)
     };
 
     enum class ChildOutcome
@@ -542,6 +572,12 @@ private:
     double slot_min_spacing_m_{0.04};
     double cube_height_m_{0.042};
     std::string slot_frame_prefix_;
+    std::vector<int64_t> slot_tag_ids_;
+    double slot_place_x_offset_m_{0.0};
+    double slot_place_y_offset_m_{-0.04};
+    double slot_cavity_depth_m_{0.005};
+    double slot_tag_match_m_{0.04};
+    double slot_tag_pitch_m_{0.133};
     double broadcast_rate_hz_{10.0};
     int min_seen_tags_{2};
     bool allow_partial_{false};
@@ -568,9 +604,9 @@ private:
     double place_local_max_shift_m_{0.03};
     bool verify_after_sort_{true};
     double verify_tol_m_{0.015};
-    int refine_max_ops_{3};
+    int refine_max_ops_{0};
     bool verify_final_report_{true};
-    bool place_joints_enabled_{true};
+    bool place_joints_enabled_{false};
     double place_joints_shift_tol_m_{0.01};
     bool pick_fallback_slot_frame_{true};
 
@@ -1467,10 +1503,214 @@ private:
         return out;
     }
 
+    /// Rotacao anchor_frame <- braco (T0). nullopt sem TF anchor <- braco.
+    std::optional<Eigen::Matrix3d> armRotationInAnchor(const GoalState & gs) const
+    {
+        if (gs.ref_valid) {
+            return Eigen::Matrix3d(gs.ref_inv.inverse().linear());
+        }
+        try {
+            const auto tf = tf_buffer_->lookupTransform(
+                anchor_frame_, ik_reference_frame_, tf2::TimePointZero);
+            return Eigen::Matrix3d(toIsometry(tf.transform).linear());
+        } catch (const tf2::TransformException &) {
+            return std::nullopt;
+        }
+    }
+
+    /// 2026-11-04 (operador): cada slot (registrado pelo cubo) casa com a
+    /// tag de slot 101..107 da MESMA posicao na fileira (so' o deslocamento
+    /// lateral, +x do braco, decide: ate' slot_tag_match_m) e o place vai por
+    /// ELA, com a logica do empilhar (stack_on = tag_10x; o no de place soma
+    /// slot_place_*_offset_m). O frame do slot (verificacao/re-registro) fica
+    /// no mesmo ponto: tag + slot_place_*_offset_m (braco), z = tag -
+    /// slot_cavity_depth_m. Cada tag casa com um slot so'.
+    void snapSlotToSlotTag(const GoalState & gs, Slot & slot, std::set<int> & used)
+    {
+        if (slot_tag_ids_.empty()) {
+            return;
+        }
+        const std::optional<Eigen::Matrix3d> r = armRotationInAnchor(gs);
+        if (!r) {
+            RCLCPP_WARN(
+                get_logger(), "[AMT1] slot %d: sem TF %s <- %s - slot pelo cubo (sem a tag do slot).",
+                slot.index, anchor_frame_.c_str(), ik_reference_frame_.c_str());
+            return;
+        }
+        const Eigen::Vector3d lateral = *r * Eigen::Vector3d(1.0, 0.0, 0.0);
+        const Eigen::Vector3d frente = *r * Eigen::Vector3d(0.0, 1.0, 0.0);
+        const Eigen::Vector3d off =
+            *r * Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0);
+        const double cube_x = slot.tf_anchor.translation.x;
+        const double cube_y = slot.tf_anchor.translation.y;
+        int best_id = -1;
+        double best_side = 1e9;
+        double best_front = 0.0;
+        Eigen::Vector3d best_t{0.0, 0.0, 0.0};
+        geometry_msgs::msg::Quaternion best_q;
+        for (const int64_t id64 : slot_tag_ids_) {
+            const int id = static_cast<int>(id64);
+            const auto it = gs.samples.find(id);
+            if (it == gs.samples.end() || used.count(id)) {
+                continue;
+            }
+            const geometry_msgs::msg::Transform & t = it->second.tf_anchor;
+            const double vx = t.translation.x - cube_x;
+            const double vy = t.translation.y - cube_y;
+            const double side = vx * lateral.x() + vy * lateral.y();
+            if (std::abs(side) < std::abs(best_side)) {
+                best_side = side;
+                best_front = vx * frente.x() + vy * frente.y();
+                best_id = id;
+                best_t = Eigen::Vector3d(t.translation.x, t.translation.y, t.translation.z);
+                best_q = t.rotation;
+            }
+        }
+        if (best_id < 0 || std::abs(best_side) > slot_tag_match_m_) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[AMT1] slot %d (tag_%d): nenhuma tag de slot a ate' %.0f mm de lado do cubo%s - "
+                "slot pelo cubo (place pelo frame do slot).",
+                slot.index, slot.initial_tag, slot_tag_match_m_ * 1000.0,
+                best_id < 0 ? " (nenhuma vista)" :
+                (" (mais perto: tag_" + std::to_string(best_id) + " a " +
+                std::to_string(static_cast<int>(std::abs(best_side) * 1000.0)) + " mm)").c_str());
+            return;
+        }
+        used.insert(best_id);
+        const Eigen::Vector3d c(
+            best_t.x() + off.x(), best_t.y() + off.y(), best_t.z() - slot_cavity_depth_m_);
+        slot.snap_dx = c.x() - cube_x;
+        slot.snap_dy = c.y() - cube_y;
+        slot.tf_anchor.translation.x = c.x();
+        slot.tf_anchor.translation.y = c.y();
+        slot.tf_anchor.translation.z = c.z();
+        slot.tf_anchor.rotation = yawOnlyQuaternion(best_q);
+        slot.slot_tag_frame = "tag_" + std::to_string(best_id);
+        // Diagnostico: com o cubo na cavidade, "tag -> cubo" deve dar o
+        // proprio slot_place_*_offset_m (y negativo = cubo mais perto do robo).
+        RCLCPP_INFO(
+            get_logger(),
+            "[AMT1] slot %d -> %s (place por ela, logica do empilhar): tag -> cubo %+.0f mm de "
+            "lado, %+.0f mm em y do braco (esperado %+.0f/%+.0f); cubo a %.1f mm do alvo",
+            slot.index, slot.slot_tag_frame.c_str(), -best_side * 1000.0, -best_front * 1000.0,
+            slot_place_x_offset_m_ * 1000.0, slot_place_y_offset_m_ * 1000.0,
+            std::hypot(slot.snap_dx, slot.snap_dy) * 1000.0);
+    }
+
+    /// 2026-11-04 (operador: "as vezes faz certo, as vezes erra tudo"): slot
+    /// cuja tag 101..107 nao foi vista na observacao ficava pelo cubo (outro
+    /// metodo, ate' juntas gravadas). Aqui ele ganha a tag pela ORDEM da
+    /// fileira: passo com sinal (m por id) medido nos slots ja' casados, tag
+    /// = id do vizinho casado mais perto + round(distancia lateral / passo),
+    /// com resto < slot_tag_match_m e tag nao vista (vista e longe = nao e'
+    /// ela). O place le a tag ao vivo (logica do empilhar); o frame do slot
+    /// fica pelo cubo (sem leitura da tag para o centro).
+    void inferSlotTagsByOrder(const GoalState & gs, std::vector<Slot> & slots, std::set<int> & used)
+    {
+        const std::optional<Eigen::Matrix3d> r = armRotationInAnchor(gs);
+        if (!r || slot_tag_ids_.empty()) {
+            return;
+        }
+        const Eigen::Vector3d lateral = *r * Eigen::Vector3d(1.0, 0.0, 0.0);
+        auto cube_lat = [&](const Slot & s) {
+                const double x = s.tf_anchor.translation.x - s.snap_dx;
+                const double y = s.tf_anchor.translation.y - s.snap_dy;
+                return x * lateral.x() + y * lateral.y();
+            };
+        auto tag_id = [](const Slot & s) {
+                return std::stoi(s.slot_tag_frame.substr(4));
+            };
+        std::vector<double> pitches;
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            for (std::size_t j = i + 1; j < slots.size(); ++j) {
+                if (slots[i].slot_tag_frame.empty() || slots[j].slot_tag_frame.empty()) {
+                    continue;
+                }
+                const int did = tag_id(slots[j]) - tag_id(slots[i]);
+                if (did != 0) {
+                    pitches.push_back((cube_lat(slots[j]) - cube_lat(slots[i])) / did);
+                }
+            }
+        }
+        double pitch = slot_tag_pitch_m_;
+        if (!pitches.empty()) {
+            std::sort(pitches.begin(), pitches.end());
+            pitch = pitches[pitches.size() / 2];
+        } else if (std::any_of(slots.begin(), slots.end(), [](const Slot & s) {return s.slot_tag_frame.empty();})) {
+            RCLCPP_WARN(
+                get_logger(),
+                "[AMT1] menos de 2 slots casados - deduzo com o passo do parametro (%.0f mm).",
+                pitch * 1000.0);
+        }
+        if (std::abs(pitch) < 0.06 || std::abs(pitch) > 0.25) {
+            RCLCPP_WARN(
+                get_logger(), "[AMT1] passo da fileira %.0f mm fora do plausivel - nao deduzo tags.",
+                pitch * 1000.0);
+            return;
+        }
+        for (Slot & s : slots) {
+            if (!s.slot_tag_frame.empty()) {
+                continue;
+            }
+            const Slot * nb = nullptr;
+            for (const Slot & o : slots) {
+                if (!o.slot_tag_frame.empty() &&
+                    (!nb || std::abs(cube_lat(o) - cube_lat(s)) < std::abs(cube_lat(*nb) - cube_lat(s))))
+                {
+                    nb = &o;
+                }
+            }
+            if (!nb) {
+                continue;
+            }
+            const double dl = cube_lat(s) - cube_lat(*nb);
+            const long n = std::lround(dl / pitch);
+            const double resid = std::abs(dl - n * pitch);
+            const int cand = tag_id(*nb) + static_cast<int>(n);
+            const bool listed = std::find(slot_tag_ids_.begin(), slot_tag_ids_.end(), cand) != slot_tag_ids_.end();
+            if (n == 0 || !listed || used.count(cand) || gs.samples.count(cand) || resid > slot_tag_match_m_) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[AMT1] slot %d (tag_%d): nao deduzi a tag pela ordem (vizinho %s, %+.0f mm = %ld passos "
+                    "de %.0f mm, resto %.0f mm, tag_%d %s) - fica pelo cubo.",
+                    s.index, s.initial_tag, nb->slot_tag_frame.c_str(), dl * 1000.0, n, pitch * 1000.0,
+                    resid * 1000.0, cand,
+                    !listed ? "fora da lista" : used.count(cand) ? "ja usada" :
+                    gs.samples.count(cand) ? "vista em outro lugar" : "resto grande");
+                continue;
+            }
+            used.insert(cand);
+            s.slot_tag_frame = "tag_" + std::to_string(cand);
+            RCLCPP_INFO(
+                get_logger(),
+                "[AMT1] slot %d (tag_%d) -> %s DEDUZIDA pela ordem (vizinho %s, %ld passo(s) de %.0f mm, "
+                "resto %.0f mm): place por ela, logica do empilhar.",
+                s.index, s.initial_tag, s.slot_tag_frame.c_str(), nb->slot_tag_frame.c_str(), n,
+                pitch * 1000.0, resid * 1000.0);
+        }
+    }
+
+    /// Delta tag do cubo - slot para o re-registro/verificacao. Ancora
+    /// ORIGINAL intacta: contra onde o cubo estava no registro (slot - snap),
+    /// pois o centro da cavidade nao e' onde o cubo original estava.
+    static Eigen::Vector2d anchorDelta(
+        const geometry_msgs::msg::Transform & cube, const Slot & slot, bool intact)
+    {
+        Eigen::Vector2d d(
+            cube.translation.x - slot.tf_anchor.translation.x,
+            cube.translation.y - slot.tf_anchor.translation.y);
+        if (intact) {
+            d += Eigen::Vector2d(slot.snap_dx, slot.snap_dy);
+        }
+        return d;
+    }
+
     /// Monta os slots a partir da atribuicao e liga a difusao.
     void buildSlots(GoalState & gs)
     {
         std::vector<Slot> slots;
+        std::set<int> used_slot_tags;
         for (std::size_t k = 0; k < gs.assignment.slots.size(); ++k) {
             const amt1::TagPose & tp = gs.assignment.slots[k];
             const TagSample & s = gs.samples.at(tp.id);
@@ -1485,6 +1725,7 @@ private:
             slot.tf_anchor.translation.z -= cube_height_m_;
             slot.tf_anchor.rotation = yawOnlyQuaternion(s.tf_anchor.rotation);
             slot.shift_seen = s.shift_seen;
+            snapSlotToSlotTag(gs, slot, used_slot_tags);
             slots.push_back(slot);
             RCLCPP_INFO(
                 get_logger(),
@@ -1504,6 +1745,7 @@ private:
                 }
             }
         }
+        inferSlotTagsByOrder(gs, slots, used_slot_tags);
         {
             std::lock_guard<std::mutex> lock(slots_mutex_);
             slots_ = slots;
@@ -1765,9 +2007,26 @@ private:
     }
 
     /// 31/08: o place deste slot pode repetir as JUNTAS da pega (exatas)?
-    bool slotJointsUsable(const GoalState & gs, int slot) const
+    bool slotHasSlotTag(int slot)
+    {
+        std::lock_guard<std::mutex> lock(slots_mutex_);
+        for (const Slot & s : slots_) {
+            if (s.index == slot) {
+                return !s.slot_tag_frame.empty();
+            }
+        }
+        return false;
+    }
+
+    bool slotJointsUsable(const GoalState & gs, int slot)
     {
         if (!place_joints_enabled_ || gs.refining) {
+            return false;
+        }
+        // 2026-11-04: slot casado com a tag 101..107 = o place vai ao centro
+        // da cavidade pela tag, nunca pelas juntas da pega (que repetem onde
+        // o cubo original estava).
+        if (slotHasSlotTag(slot)) {
             return false;
         }
         const auto it = gs.slot_grasp.find(slot);
@@ -1783,6 +2042,16 @@ private:
         goal.ws = gs.ws;
         goal.stack_on = slotFrame(slot);
         goal.final_attempt = false;
+        // 2026-11-04: slot casado com a tag 101..107 -> o place le a tag e
+        // usa a logica do empilhar (nada de juntas gravadas).
+        {
+            std::lock_guard<std::mutex> lock(slots_mutex_);
+            for (const Slot & s : slots_) {
+                if (s.index == slot && !s.slot_tag_frame.empty()) {
+                    goal.stack_on = s.slot_tag_frame;
+                }
+            }
+        }
         if (slotJointsUsable(gs, slot)) {
             const auto & j = gs.slot_grasp.at(slot);
             goal.place_joints.assign(j.first.begin(), j.first.end());
@@ -1795,7 +2064,8 @@ private:
                 get_logger(),
                 "[AMT1] %s: juntas do slot %d NAO usadas (%s) — place pela IK do ponto.",
                 label.c_str(), slot,
-                gs.refining ? "passe de ajuste" : "base se moveu desde a pega");
+                gs.refining ? "passe de ajuste" :
+                slotHasSlotTag(slot) ? "slot pela tag da cavidade" : "base se moveu desde a pega");
         }
         RCLCPP_INFO(
             get_logger(),
@@ -2652,11 +2922,12 @@ private:
             if (it == gs.samples.end()) {
                 continue;
             }
+            const bool intact = gs.table[k] == slot.initial_tag && gs.touched.count(gs.table[k]) == 0;
+            const Eigen::Vector2d dv = anchorDelta(it->second.tf_anchor, slot, intact);
             amt1::AnchorDelta d;
             d.id = gs.table[k];
-            d.dx = it->second.tf_anchor.translation.x - slot.tf_anchor.translation.x;
-            d.dy = it->second.tf_anchor.translation.y - slot.tf_anchor.translation.y;
-            const bool intact = gs.table[k] == slot.initial_tag && gs.touched.count(gs.table[k]) == 0;
+            d.dx = dv.x();
+            d.dy = dv.y();
             all.push_back(d);
             if (intact) {
                 original.push_back(d);
@@ -2888,10 +3159,11 @@ private:
             if (it == tmp.samples.end()) {
                 continue;
             }
+            const Eigen::Vector2d dv = anchorDelta(it->second.tf_anchor, s, true);
             amt1::AnchorDelta d;
             d.id = tag_here;
-            d.dx = it->second.tf_anchor.translation.x - s.tf_anchor.translation.x;
-            d.dy = it->second.tf_anchor.translation.y - s.tf_anchor.translation.y;
+            d.dx = dv.x();
+            d.dy = dv.y();
             deltas.push_back(d);
         }
         // Sem medida valida: a correcao anterior do slot NAO fica (sobrescrita
@@ -3010,10 +3282,11 @@ private:
                 if (tag_here <= 0 || tag_here != sl.initial_tag || gs.touched.count(tag_here)) {continue;}
                 auto it = gs.samples.find(tag_here);
                 if (it == gs.samples.end()) {continue;}
+                const Eigen::Vector2d dv = anchorDelta(it->second.tf_anchor, sl, true);
                 amt1::AnchorDelta d;
                 d.id = tag_here;
-                d.dx = it->second.tf_anchor.translation.x - sl.tf_anchor.translation.x;
-                d.dy = it->second.tf_anchor.translation.y - sl.tf_anchor.translation.y;
+                d.dx = dv.x();
+                d.dy = dv.y();
                 anchors.push_back(d);
             }
             const amt1::RegistrationResult reg = amt1::registrationDelta(anchors, 1, reregister_max_spread_m_);
@@ -3052,8 +3325,12 @@ private:
             PlacementError e;
             e.id = id;
             e.slot = static_cast<int>(j);
-            e.dx = it->second.tf_anchor.translation.x - s->tf_anchor.translation.x - ref_dx;
-            e.dy = it->second.tf_anchor.translation.y - s->tf_anchor.translation.y - ref_dy;
+            // Cubo original nunca tocado: erro contra onde ele estava; pousado
+            // pelo robo: contra o centro da cavidade.
+            const bool intact = gs.touched.count(id) == 0 && id == s->initial_tag;
+            const Eigen::Vector2d dv = anchorDelta(it->second.tf_anchor, *s, intact);
+            e.dx = dv.x() - ref_dx;
+            e.dy = dv.y() - ref_dy;
             e.err = std::hypot(e.dx, e.dy);
             RCLCPP_INFO(
                 get_logger(), "[AMT1] %s: tag_%d no slot %zu: erro %.1f mm (dx %+.1f, dy %+.1f)%s.",
@@ -4054,10 +4331,25 @@ private:
                 std::sort(bad.begin(), bad.end(), [](const PlacementError & a, const PlacementError & b) {
                         return a.err > b.err;
                     });
-                if (bad.size() > static_cast<std::size_t>(std::max(0, refine_max_ops_))) {
+                const bool report_only = !bad.empty() && refine_max_ops_ <= 0;
+                if (report_only) {
+                    std::string txt;
+                    for (const PlacementError & e : bad) {
+                        txt += (txt.empty() ? "" : ", ") + std::to_string(e.id) + " (" +
+                            std::to_string(static_cast<int>(std::lround(e.err * 1000.0))) + " mm)";
+                    }
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[AMT1] verificacao: %zu tag(s) acima de %.0f mm pela leitura de longe: %s - "
+                        "so informativo (refine_max_ops=0, nao mexo na mesa).",
+                        bad.size(), verify_tol_m_ * 1000.0, txt.c_str());
+                    speak("!Terminei de ordenar a mesa");
+                } else if (bad.size() > static_cast<std::size_t>(std::max(0, refine_max_ops_))) {
                     bad.resize(static_cast<std::size_t>(std::max(0, refine_max_ops_)));
                 }
-                if (bad.empty()) {
+                if (report_only) {
+                    // so' medida (acima)
+                } else if (bad.empty()) {
                     RCLCPP_INFO(
                         get_logger(), "[AMT1] verificacao: %zu tag(s) medida(s), todas dentro de %.0f mm.",
                         errs.size(), verify_tol_m_ * 1000.0);

@@ -19,7 +19,7 @@
 task_id: FINAL
 name: Final Test
 duration_min: 30
-active_service_areas: [WS_1, WS_2, WS_3, WS_4, WS_5, WS_6, WS_7, SH_1, WS_8, WS_9, PP, ST]
+active_service_areas: [WS_1, WS_2, WS_3, WS_4, WS_5, WS_6, WS_7, SH_1, WS_8, WS_9, PP]
 objects:
 - {id: 4}
 - {id: 5}
@@ -38,7 +38,7 @@ precision_tables:
   PP:
     slot_tags: [101, 102, 103, 104, 105, 106, 107]
 stacking_areas:
-  ST: {reference_tag: 200}
+  WS_7: {reference_tag: 200}
 start_state:
   WS_1:
     obj_ids: [11]
@@ -79,9 +79,6 @@ start_state:
   PP:
     obj_ids: []
     slots: {101: null, 102: null, 103: null, 104: null, 105: null, 106: null, 107: null}
-  ST:
-    obj_ids: []
-    stack: []
 finish_state:
   WS_1:
     obj_ids: []
@@ -106,8 +103,8 @@ finish_state:
     obj_ids: []
     table: []
   WS_7:
-    obj_ids: []
-    table: []
+    obj_ids: [11, 22]
+    stack: [11, 22]
   SH_1:
     obj_ids: [10, 27]
     levels:
@@ -122,6 +119,3 @@ finish_state:
   PP:
     obj_ids: [4, 9]
     slots: {101: null, 102: null, 103: null, 104: 4, 105: 9, 106: null, 107: null}
-  ST:
-    obj_ids: [11, 22]
-    stack: [11, 22]

@@ -19,6 +19,8 @@ install(
     scripts/container_detector_node.py
     scripts/workstation_surface_node.py
     scripts/vision_debug_node.py
+    scripts/calib_camera_record.py
+    scripts/calib_camera_solve.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -56,7 +56,10 @@ BT::PortsList PlaceTagBT::providedPorts()
     // continua devolvendo SUCCESS em todo success=true.
     BT::OutputPort<bool>("unreachable"),
     BT::OutputPort<double>("suggested_base_shift_m"),
-    BT::OutputPort<bool>("skipped")
+    BT::OutputPort<bool>("skipped"),
+    // 2026-11-05: true so' quando o objeto foi de fato solto (nem pulado nem
+    // fora de alcance) - o executor usa para re-tentar o que faltou no fim.
+    BT::OutputPort<bool>("completed")
   };
 }
 
@@ -96,6 +99,7 @@ BT::NodeStatus PlaceTagBT::onStart()
   setOutput("unreachable", false);
   setOutput("suggested_base_shift_m", 0.0);
   setOutput("skipped", false);
+  setOutput("completed", false);
 
   RCLCPP_INFO(
     logger(),
@@ -220,6 +224,7 @@ BT::NodeStatus PlaceTagBT::onRunning()
   setOutput("unreachable", res.unreachable);
   setOutput("suggested_base_shift_m", static_cast<double>(res.suggested_base_shift_m));
   setOutput("skipped", res.skipped);
+  setOutput("completed", !res.skipped && !res.unreachable);
 
   if (res.unreachable) {
     RCLCPP_WARN(

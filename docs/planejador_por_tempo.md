@@ -109,6 +109,30 @@ Estação da task sem dock gravado (hoje: `ST` → `ST1` não existe no `docking
 — usando a media das conhecidas` e segue otimizando o resto. Dock com pose gravada **depois**
 da matriz (não está no arquivo) usa a reta entre as poses. Grave a pose e regere.
 
+### 2.1 Sem matriz e geração automática (2026-11-05)
+
+- O `run_mission` gera/atualiza o `dock_distances.yaml` sozinho antes de
+  planejar quando o arquivo falta ou é mais velho que `docking.yaml`,
+  `service_areas.yaml` ou `map.pgm` (a FINAL de 04/11 rodou na `arena_extendida`
+  sem a matriz: guloso sorteado, 18 visitas, SH_1 3 vezes; com a matriz, 12
+  visitas e SH_1 uma vez).
+- Sem matriz mesmo assim, a busca roda com **distância uniforme** (3 m entre
+  todas as estações): minimiza o número de trocas de estação. O guloso puro só
+  com `CARAMELO_PLANNER_MODE=greedy`. O `plan_estimate` traz
+  `distances: uniform`.
+
+### 2.2 Re-tentativa no fim da missão (executor)
+
+O `bt_yaml_executor` roda o plano, depois **uma** passada com o que não foi
+concluído (estação pulada porque o goto falhou, pick pulado, place pulado
+porque o objeto não estava a bordo, base não vista, fora de alcance) e só então
+home + FINISH. O resto é replanejado pelo mesmo `task_plan_search`
+(`planGreedy`/`planOptimized` com estado inicial: o que já foi feito e o que
+está a bordo, distância uniforme a partir da última estação); as ações são
+cópias das originais. `amt1_sort` não é re-tentado. Desligar:
+`-p retry_unfinished_at_end:=false`. Teste de bancada:
+`manip_bt/test/run_retry_scenario.sh`.
+
 ## 3. Busca
 
 Implementação em `src/manipulation/manip_bt/src/task_plan_search.cpp`

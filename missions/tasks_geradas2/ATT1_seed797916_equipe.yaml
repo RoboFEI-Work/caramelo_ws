@@ -19,7 +19,7 @@
 task_id: ATT1
 name: Advanced Transportation Test I
 duration_min: 20
-active_service_areas: [WS_1, WS_2, WS_5, SH_1, WS_8, ST]
+active_service_areas: [WS_1, WS_2, WS_5, SH_1, WS_8, WS_7]
 objects:
 - {id: 8}
 - {id: 9}
@@ -31,7 +31,7 @@ containers:
 - {color: BLUE, at: WS_1}
 - {color: RED, at: WS_8}
 stacking_areas:
-  ST: {reference_tag: 200}
+  WS_7: {reference_tag: 200}
 start_state:
   WS_1:
     obj_ids: [27]
@@ -54,7 +54,7 @@ start_state:
     table: [12]
     containers:
       RED: []
-  ST:
+  WS_7:
     obj_ids: []
     stack: []
 finish_state:
@@ -79,6 +79,6 @@ finish_state:
     table: []
     containers:
       RED: [27]
-  ST:
+  WS_7:
     obj_ids: [12, 17]
     stack: [12, 17]

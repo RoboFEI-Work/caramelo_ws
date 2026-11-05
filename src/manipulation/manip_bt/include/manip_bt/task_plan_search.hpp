@@ -110,6 +110,10 @@ std::string chooseNextWs(
 
 // Plano guloso historico. Lanca std::runtime_error se travar (sem progresso).
 std::vector<Visit> planGreedy(const std::vector<TransferItem> & transfers, std::mt19937 & rng);
+// Mesmo guloso partindo de `initial` (2026-11-05, re-tentativa no fim da
+// missao: objetos ja pegos/soltos e o que esta a bordo).
+std::vector<Visit> planGreedy(
+  const std::vector<TransferItem> & transfers, std::mt19937 & rng, const PlannerState & initial);
 
 // ---- modelo de custo ---------------------------------------------------------
 // tempo = soma, por troca de estacao, de dist/v_nav_mps + docking_s (home +
@@ -167,9 +171,12 @@ struct SearchResult
 // (estacao atual, pendentes, FINISH) / v_nav. `initial` (normalmente o
 // guloso) da o limite superior e e' devolvido se nada melhor for achado ou se
 // a busca estourar `time_limit_s` antes de fechar um plano.
+// `start_state` (2026-11-05): estado de partida (padrao = nada pego); o
+// robo parte de model.start_ws.
 SearchResult planOptimized(
   const std::vector<TransferItem> & transfers, const CostModel & model,
-  const std::vector<Visit> & initial, double time_limit_s);
+  const std::vector<Visit> & initial, double time_limit_s,
+  const PlannerState & start_state = PlannerState{});
 
 // ---- emissao -----------------------------------------------------------------
 // Chave do ws_table_mapping para a estacao da task: a exata quando existe;

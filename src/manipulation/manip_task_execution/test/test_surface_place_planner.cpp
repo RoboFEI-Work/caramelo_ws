@@ -171,6 +171,33 @@ TEST(SurfacePlacePlanner, ExtraObstaclesFromTfAreHonoured)
   }
 }
 
+TEST(SurfacePlacePlanner, DesiredClearanceKeepsBlocksApart)
+{
+  // Log de 05/11: blocos ja soltos perto do ponto preferido; sem folga
+  // desejada o melhor candidato fica colado (~3 cm) no vizinho porque o
+  // ponto preferido pesa mais que a folga.
+  const SurfaceGrid g = fullTable();
+  std::vector<SurfaceExtraObstacle> extra;
+  extra.push_back({-0.05, 0.31, 0.029, "tag_1"});
+  extra.push_back({0.07, 0.31, 0.029, "tag_19"});
+  SurfacePlannerOptions o = defaultOptions();
+  o.preferred_y = 0.32;
+  const SurfacePlan before = manip_task_execution::planSurfacePlacement(g, SurfacePlaceRules{}, extra, o);
+  ASSERT_FALSE(before.candidates.empty()) << before.diagnostics;
+  EXPECT_LT(before.candidates.front().clearance_obstacle_m, 0.045);
+
+  o.desired_object_clearance_m = 0.06;
+  const SurfacePlan after = manip_task_execution::planSurfacePlacement(g, SurfacePlaceRules{}, extra, o);
+  ASSERT_FALSE(after.candidates.empty()) << after.diagnostics;
+  EXPECT_GE(after.candidates.front().clearance_obstacle_m, 0.06 - 0.011)
+    << after.candidates.front().x << "," << after.candidates.front().y;
+  // Mesa cheia (so ha lugar a < 6 cm): o minimo duro de 2 cm ainda vale e
+  // a folga desejada nao zera os candidatos.
+  for (const auto & c : after.candidates) {
+    EXPECT_GE(c.clearance_obstacle_m, 0.02 - 0.011);
+  }
+}
+
 TEST(SurfacePlacePlanner, WallOnRightPushesCandidatesTenCentimetersAway)
 {
   const SurfaceGrid g = fullTable();

@@ -1,0 +1,21 @@
+# Cenario de bancada da RE-TENTATIVA NO FIM (2026-11-05) - usado pelo
+# run_retry_scenario.sh com os fakes em ROS_DOMAIN_ID=99. Sem `home` (sem
+# MoveIt na bancada) e sem epilogo (finish_dock_id vazio).
+#
+# fake_nav: fail_align_docks ['WS2:N'] -> o goto da WS_2 falha na 1a ida.
+# fake_pick_place: track_onboard -> place de tag nao pega e' pulado.
+#   WS_1: pick tag_1, pick tag_2 ......... ok
+#   WS_2: place tag_1, pick tag_3 ........ PULADA (goto falhou)
+#   WS_3: place tag_2 ok, place tag_3 .... pulado (tag_3 nao esta a bordo)
+#   re-tentativa: tag_1 a bordo (place WS_2), tag_3 (pick WS_2 + place WS_3)
+#     -> WS_2: place tag_1, pick tag_3 | WS_3: place tag_3
+actions:
+  - {kind: goto, ws: WS_1, mesa: Mesa0}
+  - {kind: pick, tag_frame: tag_1, table_pose: Mesa0}
+  - {kind: pick, tag_frame: tag_2, table_pose: Mesa0}
+  - {kind: goto, ws: WS_2, mesa: Mesa5}
+  - {kind: place, tag_frame: tag_1, table_pose: Mesa5, ws: WS_2}
+  - {kind: pick, tag_frame: tag_3, table_pose: Mesa5}
+  - {kind: goto, ws: WS_3, mesa: Mesa10}
+  - {kind: place, tag_frame: tag_2, table_pose: Mesa10, ws: WS_3}
+  - {kind: place, tag_frame: tag_3, table_pose: Mesa10, ws: WS_3}

@@ -501,9 +501,23 @@ def test_optimized_beats_greedy_on_att2(planner, tmp_path):
     assert sum(1 for a in actions if a["kind"] == "goto") <= 8, actions
 
 
-def test_without_matrix_is_greedy_and_says_so(planner, tmp_path):
+def test_without_matrix_searches_with_uniform_distances(planner, tmp_path):
+    """2026-11-05: sem dock_distances.yaml a busca roda com distancia uniforme
+    (minimiza trocas de estacao) em vez do guloso sorteado."""
     ws_map = _mapping_without_matrix(tmp_path)
     rc, log, actions = _run(planner, FIXTURES / "BTT2_seed597609_equipe.yaml", tmp_path, ws_map=ws_map)
+    assert rc == 0, log
+    assert "sem dock_distances.yaml" in log and "distancia UNIFORME" in log, log
+    assert "otimizado" in log, log
+    assert _run.last_output["plan_estimate"]["distances"] == "uniform"
+    _check_invariants(actions)
+
+
+def test_without_matrix_env_greedy_keeps_old_behavior(planner, tmp_path):
+    ws_map = _mapping_without_matrix(tmp_path)
+    rc, log, actions = _run(
+        planner, FIXTURES / "BTT2_seed597609_equipe.yaml", tmp_path, ws_map=ws_map,
+        env={"CARAMELO_PLANNER_MODE": "greedy"})
     assert rc == 0, log
     assert "sem dock_distances.yaml" in log and "otimizado" not in log, log
     assert "plan_estimate" not in _run.last_output

@@ -45,6 +45,12 @@ Um frame que não casa `tag_<n>` é sempre `kCube` — o comportamento atual (AM
 
 ## 3. Modo SLOT (encaixe de precisão)
 
+> **2026-11-04:** na mesa real a tag 101–107 fica no **tampo**, fora da cavidade, com o centro
+> ~4 cm **além** do centro do slot (olhando do robô). O nó calcula o centro do slot como
+> tag + `slot_center_offset_m` (0,04) **na direção do robô**, ao longo da borda da tag mais
+> alinhada com −y (segue o giro da mesa), e o fundo como z da tag − `slot_cavity_depth_m`
+> (`slot_tag_on_tabletop: true`). Daqui em diante, `z_tag` = esse fundo calculado.
+
 Geometria (tudo em `manip_base_link`): a tag do slot está no **fundo** da cavidade, em `z_tag`;
 o tampo fica `slot_cavity_depth_m` acima. O TCP do braço fica no plano da face de **cima** do cubo
 carregado (convenção do pick), então o TCP de soltura é
@@ -175,6 +181,10 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `slot_tag_ids` | [101..107] | — | ids que viram modo SLOT |
 | `stack_reference_tag_ids` | [200] | — | ids que viram modo REFERÊNCIA |
 | `slot_cavity_depth_m` | 0.005 | **sim** | fundo da cavidade (tag) → tampo (3–6 mm na mesa real) |
+| `slot_center_offset_m` | 0.04 | **sim** | tag no tampo → centro do slot, na direção do robô (0 = tag centrada no slot) |
+| `slot_tag_on_tabletop` | true | — | tag no tampo (fundo = tag − cavidade); false = tag colada no fundo |
+| `slot_use_stack_logic` | true | — | slot da PP com a **lógica do empilhar** (olha a tag antes de pegar, soltura na cota da tag de referência, verificação só olhando); false = encaixe antigo (espiral/re-pega) |
+| `slot_place_x_offset_m` / `slot_place_y_offset_m` | 0 / −0,04 | **sim** | alvo = tag + offset em `manip_base_link` (−0,04 em y = 4 cm mais perto do robô); a AMT1 usa os mesmos valores |
 | `slot_drop_clearance_m` | 0.003 | sim | fundo do cubo acima do tampo ao soltar |
 | `slot_pre_lift_m` | 0.02 | — | pré-pose acima da soltura (a 0,36 m, 0° só resolve a pré-pose com lift ≤ 0,02) |
 | `slot_tilt_ladder_deg` | [0, 15] | — | 0 preferido na descida final; a pré-pose pode usar 15 |

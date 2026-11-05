@@ -99,6 +99,27 @@ std::vector<PlanarOffset> spiralOffsets(double step_m, double max_radius_m)
   return out;
 }
 
+PlanarOffset slotCenterOffset(double yaw_tag, double offset_m, double dir_x, double dir_y)
+{
+  if (offset_m == 0.0 || std::hypot(dir_x, dir_y) < 1e-9) {
+    return PlanarOffset{0.0, 0.0};
+  }
+  // Das 4 bordas da tag, a de maior produto escalar com a direcao pedida.
+  double best_dot = -2.0;
+  PlanarOffset best{0.0, 0.0};
+  for (int k = 0; k < 4; ++k) {
+    const double a = yaw_tag + k * M_PI / 2.0;
+    const double ux = std::cos(a);
+    const double uy = std::sin(a);
+    const double dot = ux * dir_x + uy * dir_y;
+    if (dot > best_dot) {
+      best_dot = dot;
+      best = PlanarOffset{ux * offset_m, uy * offset_m};
+    }
+  }
+  return best;
+}
+
 double seatedCubeTagZ(double z_slot_tag, double cube_height_m)
 {
   return z_slot_tag + cube_height_m;

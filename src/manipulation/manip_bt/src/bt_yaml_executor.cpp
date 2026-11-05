@@ -38,6 +38,10 @@
 #include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <map>
+#include <optional>
+#include <random>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -51,6 +55,7 @@
 #include "manip_bt/pick_tag_bt.hpp"
 #include "manip_bt/place_tag_bt.hpp"
 #include "manip_bt/reach_queue_bt.hpp"
+#include "manip_bt/task_plan_search.hpp"
 
 namespace
 {
@@ -297,6 +302,11 @@ struct MissionBuildContext
   int reach_queue_max_nudges{2};
   double reach_queue_max_shift_m{0.25};
   double reach_queue_min_shift_m{0.10};
+  // 2026-11-05: a missao roda em ate' 3 arvores (principal, re-tentativa do
+  // que faltou e epilogo FINISH); cada montagem diz se leva o prologo (home
+  // inicial) e o epilogo (home + goto FINISH).
+  bool include_prologue{true};
+  bool include_epilogue{true};
   std::vector<std::string> plan_rows;  // tabela do --dry-run
 };
 
@@ -393,12 +403,13 @@ std::string buildTreeXmlFromActions(
   xml << "<root main_tree_to_execute=\"MainTree\">\n";
   xml << "  <BehaviorTree ID=\"MainTree\">\n";
   xml << "    <Sequence>\n";
+  xml << "      <AlwaysSuccess/>\n";  // arvore so' de epilogo/re-tentativa nunca fica vazia
 
   // Prologo: braco em home ANTES de qualquer acao (pedido do operador —
   // o robo pode bootar com o braco em pose qualquer; GoToNamedPose planeja
   // do estado atual via MoveIt, com colisoes da SRDF). Chave "prologue_*"
   // nunca colide com action_<i>_* nem com o epilogo (N/N+1).
-  if (ctx.startup_home) {
+  if (ctx.startup_home && ctx.include_prologue) {
     blackboard->set("prologue_pose_name", ctx.startup_pose_name);
     xml << "      <GoToNamedPose name=\"home_prologo\" pose_name=\""
         << escapeXmlAttr(blackboardPort("prologue_pose_name")) << "\"/>\n";
@@ -406,7 +417,8 @@ std::string buildTreeXmlFromActions(
   }
 
   // Braco sabidamente em home (prologo/acao home) desde o ultimo pick/place?
-  bool arm_at_home = ctx.startup_home && ctx.startup_pose_name == "home";
+  bool arm_at_home =
+    ctx.include_prologue && ctx.startup_home && ctx.startup_pose_name == "home";
   std::string current_station_dock;  // ultima estacao visitada (p/ warnings)
   std::string current_station_ws;    // 'ws' do ultimo goto (p/ o place legado sem 'ws')
   std::string current_station_mesa;  // mesa do ultimo goto (fallback do amt1_sort)
@@ -503,6 +515,14 @@ std::string buildTreeXmlFromActions(
         return std::string();
       }
       return " name=\"" + kind + "_" + std::to_string(action_index) + "\"";
+    };
+
+  // Saida `completed` de todo pick/place (dentro ou fora da fila): a
+  // re-tentativa do fim da missao le quem ficou por fazer.
+  const auto completed_attr = [&](const std::size_t action_index) {
+      const std::string key = actionBlackboardKey(action_index, "completed");
+      blackboard->set(key, false);
+      return " completed=\"" + escapeXmlAttr(blackboardPort(key)) + "\"";
     };
 
   for (std::size_t i = 0; i < actions.size(); ++i) {
@@ -613,7 +633,7 @@ std::string buildTreeXmlFromActions(
       xml << "      <PickTag" << reach_leaf_name("pick", i)
           << " tag_frame=\"" << escapeXmlAttr(blackboardPort(tag_frame_key))
           << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key)) << "\""
-          << reach_leaf_attrs(i) << "/>\n";
+          << reach_leaf_attrs(i) << completed_attr(i) << "/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] pick  tag=" + tag_frame +
@@ -777,7 +797,7 @@ std::string buildTreeXmlFromActions(
           << "\" stack_on=\"" << escapeXmlAttr(blackboardPort(stack_on_key))
           << "\" container_color=\"" << escapeXmlAttr(blackboardPort(container_color_key))
           << "\" wall_sides=\"" << escapeXmlAttr(blackboardPort(wall_sides_key))
-          << "\"" << reach_leaf_attrs(i) << "/>\n";
+          << "\"" << reach_leaf_attrs(i) << completed_attr(i) << "/>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] place tag=" + tag_frame + " mesa=" + table_pose +
@@ -1018,7 +1038,7 @@ std::string buildTreeXmlFromActions(
   // Epilogo: braco em home e ida ao FINISH (o undock de saida da ultima
   // estacao acontece dentro do proprio GoToWS). O task_planner nao emite o
   // FINISH — e' responsabilidade do executor fechar a missao.
-  if (!ctx.finish_dock_id.empty()) {
+  if (!ctx.finish_dock_id.empty() && ctx.include_epilogue) {
     const std::string finish_id =
       manip_bt::MissionMapConfig::normalizeDockId(ctx.finish_dock_id);
     if (ctx.map_config && !ctx.map_config->hasDock(finish_id)) {
@@ -1054,6 +1074,194 @@ std::string buildTreeXmlFromActions(
   xml << "</root>\n";
 
   return xml.str();
+}
+
+// ---- re-tentativa no fim da missao (2026-11-05) ------------------------------
+// Pedido do operador: "se ele nao conseguir chegar em uma ws, tentar de novo
+// no final e fazer o que tem que ser feito". Depois da arvore principal, o
+// que nao foi CONCLUIDO (saida `completed` das folhas): pick/place de
+// estacao pulada (goto falhou), pick pulado, place pulado (objeto nao
+// estava a bordo porque o pick dele nao aconteceu, base da pilha nao vista,
+// fora de alcance) vira um plano novo pelo MESMO planejador
+// (task_plan_search: capacidade 3, pilha, menos trocas de estacao), partindo
+// do que ja esta feito e do que esta a bordo. As acoes emitidas sao COPIAS
+// das originais (mesma mesa, slot, container, pilha). Uma passada so: o que
+// falhar de novo fica para tras. amt1_sort nao e' re-tentado.
+std::optional<YAML::Node> buildRetryActions(
+  const YAML::Node & actions_root, const BT::Blackboard::Ptr & blackboard,
+  std::vector<std::string> & report)
+{
+  namespace tp = manip_bt::task_plan;
+  const YAML::Node actions = actions_root["actions"];
+  struct Obj
+  {
+    int id{-1};
+    int pick_idx{-1};
+    int place_idx{-1};
+    bool pick_done{false};
+    bool place_done{false};
+    std::string from_ws;
+    std::string to_ws;
+    std::string stack_on;
+  };
+  std::map<std::string, Obj> objs;   // por tag_frame
+  std::map<std::string, YAML::Node> goto_of_ws;
+  std::string cur_ws;
+  int next_synthetic = 100000;
+  const auto completed = [&](const std::size_t i) {
+      bool done = false;
+      try {
+        blackboard->get(actionBlackboardKey(i, "completed"), done);
+      } catch (const std::exception &) {
+        done = false;
+      }
+      return done;
+    };
+  const auto obj_for = [&](const std::string & tag) -> Obj & {
+      Obj & o = objs[tag];
+      if (o.id < 0) {
+        int id = -1;
+        if (tag.rfind("tag_", 0) == 0) {
+          try {
+            id = std::stoi(tag.substr(4));
+          } catch (const std::exception &) {
+            id = -1;
+          }
+        }
+        o.id = id >= 0 ? id : next_synthetic++;
+      }
+      return o;
+    };
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    const YAML::Node a = actions[i];
+    const std::string kind = a["kind"].as<std::string>("");
+    if (kind == "goto") {
+      cur_ws = a["ws"].as<std::string>("");
+      if (goto_of_ws.count(cur_ws) == 0) {
+        goto_of_ws[cur_ws] = YAML::Clone(a);
+      }
+    } else if (kind == "pick") {
+      Obj & o = obj_for(a["tag_frame"].as<std::string>(""));
+      o.pick_idx = static_cast<int>(i);
+      o.pick_done = completed(i);
+      o.from_ws = cur_ws;
+    } else if (kind == "place") {
+      Obj & o = obj_for(a["tag_frame"].as<std::string>(""));
+      o.place_idx = static_cast<int>(i);
+      o.place_done = completed(i);
+      // Estacao do goto (e' por ela que a re-tentativa navega).
+      o.to_ws = cur_ws;
+      o.stack_on = a["stack_on"].as<std::string>("");
+    }
+  }
+
+  std::vector<tp::TransferItem> transfers;
+  tp::PlannerState state;
+  std::map<int, const Obj *> by_id;
+  for (const auto & [tag, o] : objs) {
+    const bool needs_pick = o.pick_idx >= 0 && !o.pick_done;
+    const bool needs_place = o.place_idx >= 0 && !o.place_done;
+    if (!needs_pick && !needs_place) {
+      continue;
+    }
+    if (needs_place && o.to_ws.empty()) {
+      continue;
+    }
+    tp::TransferItem t;
+    t.obj_id = o.id;
+    t.tag_frame = tag;
+    // So' estacoes com trabalho pendente (a busca indexa candidateStations).
+    t.from_ws = needs_pick ? o.from_ws : "";
+    t.to_ws = needs_place ? o.to_ws : "";
+    t.needs_pick = needs_pick;
+    t.needs_place = needs_place;
+    if (needs_place && !needs_pick) {
+      // Pego (ou ja a bordo) e nao solto: esta no container de bordo.
+      state.picked.insert(o.id);
+      state.inventory.push_back(o.id);
+    }
+    transfers.push_back(t);
+    by_id[o.id] = &o;
+  }
+  if (transfers.empty()) {
+    report.push_back("[re-tentativa] nada pendente.");
+    return std::nullopt;
+  }
+  // Pilha: topo pendente sobre base que tambem esta pendente.
+  for (auto & t : transfers) {
+    const Obj & o = *by_id.at(t.obj_id);
+    if (!o.stack_on.empty() && objs.count(o.stack_on) > 0) {
+      const int base_id = objs.at(o.stack_on).id;
+      if (by_id.count(base_id) > 0) {
+        t.stack_on_obj = base_id;
+        t.stack_on_frame = o.stack_on;
+      }
+    }
+  }
+  if (static_cast<int>(state.inventory.size()) > tp::kMaxOnboard) {
+    report.push_back("[re-tentativa] mais objetos a bordo que a capacidade - nao re-tento.");
+    return std::nullopt;
+  }
+
+  std::vector<tp::Visit> visits;
+  try {
+    std::mt19937 rng(0);
+    visits = tp::planGreedy(transfers, rng, state);
+    // Distancia uniforme: minimiza trocas de estacao a partir de onde o robo esta.
+    tp::CostModel model;
+    model.start_ws = cur_ws.empty() ? "START" : cur_ws;
+    std::set<std::string> names = tp::candidateStations(transfers);
+    names.insert(model.start_ws);
+    names.insert(model.finish_ws);
+    for (const auto & x : names) {
+      for (const auto & y : names) {
+        if (x < y) {
+          model.dist_m[x][y] = 3.0;
+        }
+      }
+    }
+    visits = tp::planOptimized(transfers, model, visits, 1.0, state).visits;
+  } catch (const std::exception & ex) {
+    report.push_back(std::string("[re-tentativa] sem plano para o que faltou: ") + ex.what());
+    return std::nullopt;
+  }
+
+  YAML::Node out;
+  YAML::Node seq(YAML::NodeType::Sequence);
+  std::string summary;
+  std::string last_ws;
+  for (const tp::Visit & v : visits) {
+    if (v.ws != last_ws) {
+      const auto g = goto_of_ws.find(v.ws);
+      if (g == goto_of_ws.end()) {
+        report.push_back("[re-tentativa] estacao " + v.ws + " sem goto no plano - ignorada.");
+        continue;
+      }
+      seq.push_back(YAML::Clone(g->second));
+      last_ws = v.ws;
+      summary += (summary.empty() ? "" : " | ") + v.ws + ":";
+    }
+    for (const int id : v.places) {
+      seq.push_back(YAML::Clone(actions[static_cast<std::size_t>(by_id.at(id)->place_idx)]));
+      summary += " place " + tp::findTransferById(transfers, id).tag_frame;
+    }
+    for (const int id : v.picks) {
+      seq.push_back(YAML::Clone(actions[static_cast<std::size_t>(by_id.at(id)->pick_idx)]));
+      summary += " pick " + tp::findTransferById(transfers, id).tag_frame;
+    }
+  }
+  if (seq.size() == 0) {
+    return std::nullopt;
+  }
+  out["actions"] = seq;
+  std::string pending;
+  for (const auto & t : transfers) {
+    pending += (pending.empty() ? "" : ", ") + t.tag_frame +
+      (t.needs_pick ? " (pick" : " (a bordo") + (t.needs_place ? " + place)" : ")");
+  }
+  report.push_back("[re-tentativa] pendente: " + pending);
+  report.push_back("[re-tentativa] plano: " + summary);
+  return out;
 }
 
 }  // namespace
@@ -1233,6 +1441,11 @@ int main(int argc, char ** argv)
 
     const std::string yaml_path = resolveActionsYamlPath(input_yaml);
     const YAML::Node actions_root = YAML::LoadFile(yaml_path);
+    // 2026-11-05: re-tentativa do que nao foi concluido, uma passada, ANTES
+    // do FINISH (buildRetryActions). false = arvore unica de sempre.
+    const bool retry_unfinished =
+      node->declare_parameter<bool>("retry_unfinished_at_end", true);
+    ctx.include_epilogue = !retry_unfinished;
     const std::string tree_xml = buildTreeXmlFromActions(actions_root, blackboard, ctx);
 
     BT::BehaviorTreeFactory factory;
@@ -1257,6 +1470,10 @@ int main(int argc, char ** argv)
       std::cout << "=== Plano da missao (" << yaml_path << ") ===\n";
       for (const auto & row : ctx.plan_rows) {
         std::cout << "  " << row << "\n";
+      }
+      if (retry_unfinished) {
+        std::cout << "  [fim] re-tentativa do que nao foi concluido (uma passada), depois home + "
+                  << "goto " << ctx.finish_dock_id << "\n";
       }
       std::cout << "=== XML gerado ===\n" << tree_xml << std::flush;
     }
@@ -1284,32 +1501,82 @@ int main(int argc, char ** argv)
       yaml_path.c_str(),
       simulate_navigation ? "SIMULADA" : "REAL");
 
-    rclcpp::Rate loop_rate(10.0);
-    BT::NodeStatus status = BT::NodeStatus::IDLE;
-    while (rclcpp::ok() && !g_interrupted) {
-      status = tree.tickRoot();
-      if (status == BT::NodeStatus::SUCCESS) {
-        RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "Arvore terminou com SUCESSO");
-        break;
-      }
-      if (status == BT::NodeStatus::FAILURE) {
-        RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "Arvore terminou com FALHA");
-        exit_code = 1;
-        break;
-      }
-      loop_rate.sleep();
-    }
+    // Tica uma arvore ate o fim. SUCCESS/FAILURE, ou IDLE se interrompida
+    // (Ctrl-C: halt limpo, cancelando os goals em voo).
+    const auto run_tree = [&](BT::Tree & t, const std::string & label) {
+        rclcpp::Rate loop_rate(10.0);
+        while (rclcpp::ok() && !g_interrupted) {
+          const BT::NodeStatus st = t.tickRoot();
+          if (st == BT::NodeStatus::SUCCESS) {
+            RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "%s terminou com SUCESSO",
+              label.c_str());
+            return st;
+          }
+          if (st == BT::NodeStatus::FAILURE) {
+            RCLCPP_ERROR(rclcpp::get_logger("bt_yaml_executor"), "%s terminou com FALHA",
+              label.c_str());
+            return st;
+          }
+          loop_rate.sleep();
+        }
+        // Nota: se o no atual for o GoToNamedPose (SyncActionNode com MoveIt
+        // bloqueante), o halt so acontece quando o tick dele retornar — os nos
+        // assincronos (GoToWS/PickTag/PlaceTag) cancelam imediatamente.
+        RCLCPP_WARN(
+          rclcpp::get_logger("bt_yaml_executor"),
+          "Interrompido (Ctrl-C): haltando a arvore e cancelando goals em voo...");
+        t.haltTree();
+        // Da um respiro para os cancels chegarem aos servers antes do shutdown.
+        rclcpp::sleep_for(std::chrono::milliseconds(800));
+        return BT::NodeStatus::IDLE;
+      };
 
-    if (g_interrupted) {
-      // Nota: se o no atual for o GoToNamedPose (SyncActionNode com MoveIt
-      // bloqueante), o halt so acontece quando o tick dele retornar — os nos
-      // assincronos (GoToWS/PickTag/PlaceTag) cancelam imediatamente.
-      RCLCPP_WARN(
-        rclcpp::get_logger("bt_yaml_executor"),
-        "Interrompido (Ctrl-C): haltando a arvore e cancelando goals em voo...");
-      tree.haltTree();
-      // Da um respiro para os cancels chegarem aos servers antes do shutdown.
-      rclcpp::sleep_for(std::chrono::milliseconds(800));
+    BT::NodeStatus status = run_tree(tree, "Arvore");
+    if (status == BT::NodeStatus::SUCCESS && retry_unfinished) {
+      std::vector<std::string> report;
+      const std::optional<YAML::Node> retry = buildRetryActions(actions_root, blackboard, report);
+      for (const auto & row : report) {
+        RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "%s", row.c_str());
+      }
+      if (retry) {
+        MissionBuildContext rctx = ctx;
+        rctx.include_prologue = false;
+        rctx.include_epilogue = false;
+        rctx.plan_rows.clear();
+        const std::string retry_xml = buildTreeXmlFromActions(*retry, blackboard, rctx);
+        for (const auto & row : rctx.plan_rows) {
+          RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "  [re-tentativa] %s", row.c_str());
+        }
+        tree = BT::Tree();  // solta os nos da principal (mesmos nomes de no ROS)
+        auto retry_tree = factory.createTreeFromText(retry_xml, blackboard);
+        status = run_tree(retry_tree, "Re-tentativa");
+        if (status == BT::NodeStatus::SUCCESS) {
+          // O que ainda faltar fica no log (sem segunda re-tentativa).
+          std::vector<std::string> left;
+          (void)buildRetryActions(*retry, blackboard, left);
+          for (const auto & row : left) {
+            if (row.find("plano:") == std::string::npos) {
+              RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "apos a re-tentativa: %s",
+                row.c_str());
+            }
+          }
+        }
+      }
+    }
+    if (status == BT::NodeStatus::SUCCESS && retry_unfinished && !ctx.finish_dock_id.empty()) {
+      MissionBuildContext ectx = ctx;
+      ectx.include_prologue = false;
+      ectx.include_epilogue = true;
+      ectx.plan_rows.clear();
+      YAML::Node empty;
+      empty["actions"] = YAML::Node(YAML::NodeType::Sequence);
+      auto end_tree = factory.createTreeFromText(
+        buildTreeXmlFromActions(empty, blackboard, ectx), blackboard);
+      status = run_tree(end_tree, "Epilogo (home + FINISH)");
+    }
+    if (status == BT::NodeStatus::FAILURE) {
+      exit_code = 1;
+    } else if (status == BT::NodeStatus::IDLE) {
       exit_code = 130;
     }
   } catch (const std::exception & ex) {

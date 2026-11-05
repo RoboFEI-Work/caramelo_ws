@@ -164,8 +164,33 @@ def _resolve_apriltag_cfg() -> Path:
     return cfg
 
 
+def _ensure_dock_distances(map_folder: Path) -> None:
+    """Gera/atualiza o dock_distances.yaml do mapa antes de planejar.
+
+    2026-11-05: sem ele o task_planner nao sabe a geografia da arena (a FINAL
+    de 04/11 rodou sem a matriz e passou 3 vezes na SH). Regera quando falta
+    ou quando o docking.yaml / service_areas.yaml / map.pgm sao mais novos.
+    Falhar aqui nao impede a missao: o planner cai na distancia uniforme.
+    """
+    out = map_folder / "dock_distances.yaml"
+    sources = [map_folder / n for n in ("docking.yaml", "service_areas.yaml", "map.pgm")]
+    newest = max((p.stat().st_mtime for p in sources if p.exists()), default=0.0)
+    if out.exists() and out.stat().st_mtime >= newest:
+        return
+    print(f"{'Atualizando' if out.exists() else 'Gerando'} {out} (compute_dock_distances)...")
+    proc = subprocess.run(
+        ["ros2", "run", "caramelo_navigation", "compute_dock_distances",
+         "--map-folder", str(map_folder)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("AVISO: compute_dock_distances falhou - o planner usa distancia uniforme:",
+              file=sys.stderr)
+        print(proc.stderr.strip(), file=sys.stderr)
+
+
 def _generate_actions(task_yaml: Path, apriltag_cfg: Path, map_folder: Path) -> Path:
     """Roda o task_planner e devolve o caminho do actions.yaml gerado."""
+    _ensure_dock_distances(map_folder)
     MISSIONS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     out = MISSIONS_DIR / f"{stamp}_actions.yaml"

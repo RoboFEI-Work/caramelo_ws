@@ -590,6 +590,12 @@ SurfacePlan planSurfacePlacement(
       double score = 0.0;
       score += options.weight_obstacle_clearance * std::min(c.clearance_obstacle_m, options.clearance_cap_m);
       score += options.weight_edge_clearance * std::min(c.clearance_edge_m, options.clearance_cap_m);
+      if (options.desired_object_clearance_m > 0.0 &&
+        c.clearance_obstacle_m < options.desired_object_clearance_m)
+      {
+        score -= options.weight_below_desired_clearance *
+          (options.desired_object_clearance_m - c.clearance_obstacle_m);
+      }
       if (options.preferred_x && options.preferred_y) {
         score -= options.weight_preferred_distance *
           std::hypot(x - *options.preferred_x, y - *options.preferred_y);

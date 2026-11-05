@@ -162,6 +162,14 @@ struct SurfacePlannerOptions
   double weight_preferred_distance{0.6};
   /// Folga acima disto nao melhora a nota (6 cm): evita fugir para o canto.
   double clearance_cap_m{0.06};
+  /// Folga DESEJADA ate os objetos (2026-11-05): abaixo dela a nota cai
+  /// `weight_below_desired_clearance` por metro que falta. Os 2 cm do
+  /// rulebook (object_clearance_m) continuam sendo o minimo duro; esta e'
+  /// a folga que o robo busca quando ha espaco (log de 05/11: soltou a
+  /// 3,1-3,5 cm do vizinho com candidato de 5,6 cm disponivel, porque o
+  /// ponto preferido puxava mais que a folga). 0 = desligado.
+  double desired_object_clearance_m{0.0};
+  double weight_below_desired_clearance{5.0};
   /// Candidatos devolvidos: no maximo `max_candidates`, espacados de
   /// `candidate_spacing_m` (supressao de nao-maximos) para a IK testar
   /// pontos DIFERENTES.

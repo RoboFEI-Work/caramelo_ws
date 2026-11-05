@@ -30,6 +30,9 @@ Parametros:
   align_bad_x / align_bad_y / align_bad_yaw (default -0.006 / 0.304 / 0.319:
                WS3 em 23/10 18:51) e align_bad_message (default
                'yaw_nao_medido; alinhado (tentativa 1/1)').
+  fail_align_docks (lista "DOCK:N", 2026-11-05): os primeiros N align_to_dock
+               dessa doca abortam (estacao inalcancavel na 1a ida; a
+               re-tentativa do fim da missao consegue).
   odom_publish (bool, default true): publica /odom (nav_msgs/Odometry,
                SensorDataQoS) a odom_rate_hz (50) com twist ZERO — a base
                parada, como o EKF real apos o align. odom_moving_s (default
@@ -98,6 +101,12 @@ class FakeNavActions(Node):
         self.declare_parameter("align_bad_y", 0.304)
         self.declare_parameter("align_bad_yaw", 0.319)
         self.declare_parameter("align_bad_message", "yaw_nao_medido; alinhado (tentativa 1/1)")
+        self.declare_parameter("fail_align_docks", [""])
+        self._fail_align_left = {}
+        for item in self.get_parameter("fail_align_docks").value:
+            if ":" in str(item):
+                dock, n = str(item).rsplit(":", 1)
+                self._fail_align_left[dock.strip()] = int(n)
         self.declare_parameter("odom_publish", True)
         self.declare_parameter("odom_rate_hz", 50.0)
         self.declare_parameter("odom_moving_s", 0.0)
@@ -242,6 +251,19 @@ class FakeNavActions(Node):
 
         2026-10-26: os primeiros align_bad_count aligns devolvem a pose ruim.
         """
+        dock = str(getattr(goal_handle.request, "dock_id", ""))
+        with self._lock:
+            forced = self._fail_align_left.get(dock, 0) > 0
+            if forced:
+                self._fail_align_left[dock] -= 1
+        if forced:
+            if not self._wait_latency(goal_handle, "align"):
+                return self._align_result(success=False)
+            goal_handle.abort()
+            self.get_logger().error(
+                f"align em '{dock}' abortado (fail_align_docks, restam "
+                f"{self._fail_align_left[dock]}).")
+            return self._align_result(success=False)
         result = self._execute(goal_handle, "align", self._align_result)
         if result.success:
             self._align_count += 1

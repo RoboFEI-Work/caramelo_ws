@@ -1403,6 +1403,10 @@ std::string fmtStats(const manip_bt::task_plan::PlanStats & st)
   return out.str();
 }
 
+// Distancia entre estacoes quando o mapa nao tem dock_distances.yaml
+// (tipica da arena, so' para a busca contar trocas de estacao).
+constexpr double kUniformDistanceM = 3.0;
+
 YAML::Node buildOutput(
   const std::vector<TransferItem> & transfers,
   const std::map<std::string, std::string> & ws_to_table_pose,
@@ -1417,8 +1421,30 @@ YAML::Node buildOutput(
   YAML::Node estimate;
   estimate["mode"] = "greedy";
 
-  const bool has_model = !transfers.empty() &&
+  bool has_model = !transfers.empty() &&
     loadDistancesFromMap(ws_map_yaml_path, transfers, opts.model);
+  bool uniform_model = false;
+  if (!has_model && !transfers.empty() && opts.mode != "greedy") {
+    // 2026-11-05 (operador: "passou na SH 3 vezes, dava para passar 1"): sem
+    // dock_distances.yaml o guloso sorteava empates e repetia estacoes. Com
+    // a MESMA distancia entre todas, a busca minimiza o numero de trocas de
+    // estacao (docking_s por troca) - a ordem geografica fica por conta do
+    // dock_distances.yaml quando existir.
+    std::set<std::string> names = tp::candidateStations(transfers);
+    names.insert(opts.model.start_ws);
+    names.insert(opts.model.finish_ws);
+    for (const auto & a : names) {
+      for (const auto & b : names) {
+        if (a < b) {
+          opts.model.dist_m[a][b] = kUniformDistanceM;
+        }
+      }
+    }
+    has_model = true;
+    uniform_model = true;
+    std::cout << "[task_planner] sem matriz de distancias: busca com distancia UNIFORME ("
+              << kUniformDistanceM << " m) - minimiza trocas de estacao." << std::endl;
+  }
   if (has_model) {
     tp::PlanStats greedy_stats;
     const double greedy_time = tp::estimatePlanTime(visits, opts.model, &greedy_stats);
@@ -1452,6 +1478,9 @@ YAML::Node buildOutput(
     estimate["visits"] = final_stats.visits;
     estimate["station_switches"] = final_stats.station_switches;
     estimate["distance_m"] = final_stats.distance_m;
+    if (uniform_model) {
+      estimate["distances"] = "uniform";
+    }
   }
 
   YAML::Node output;

@@ -158,7 +158,7 @@ ament_target_dependencies(
   "tf2_geometry_msgs"
 )
 target_link_libraries(amt1_sort_action_node
-  amt1_sort_planner container_state_store custom_ik yaml-cpp)
+  amt1_sort_planner container_state_store custom_ik place_precision yaml-cpp)
 
 install(
   TARGETS

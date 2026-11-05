@@ -37,6 +37,7 @@ using manip_task_execution::slotSeatState;
 using manip_task_execution::spiralOffsets;
 using manip_task_execution::stackLevelFromMemory;
 using manip_task_execution::StackMemoryEntry;
+using manip_task_execution::slotCenterOffset;
 using manip_task_execution::StackTargetKind;
 using manip_task_execution::tagIdFromFrame;
 using manip_task_execution::tiltDropZCompensation;
@@ -156,6 +157,27 @@ TEST(PlacePrecision, SpiralOffsetsOrderedByRadiusNoRepeat)
   }
   // Grade 7x7 cortada pelo circulo de 9 mm: 1 + 4 + 4 + 4 + 8 + 4 + 4 = 29.
   EXPECT_EQ(sp.size(), 29u);
+}
+
+TEST(PlacePrecision, SlotCenterOffsetFollowsTagEdgeTowardRobot)
+{
+  // Mesa de frente para o braco: 4 cm para -Y (para o robo), qualquer que
+  // seja o giro de 90 graus com que a tag foi colada.
+  for (const double yaw : {0.0, M_PI / 2.0, M_PI, -M_PI / 2.0}) {
+    const auto o = slotCenterOffset(yaw, 0.04, 0.0, -1.0);
+    EXPECT_NEAR(o.dx, 0.0, kTol) << yaw;
+    EXPECT_NEAR(o.dy, -0.04, kTol) << yaw;
+  }
+  // Mesa girada 10 graus: o deslocamento gira junto (nao fica no eixo do braco).
+  const double r = 10.0 * M_PI / 180.0;
+  const auto g = slotCenterOffset(M_PI / 2.0 + r, 0.04, 0.0, -1.0);
+  EXPECT_NEAR(g.dx, 0.04 * std::sin(r), kTol);
+  EXPECT_NEAR(g.dy, -0.04 * std::cos(r), kTol);
+  // Offset 0 ou direcao nula: tag centrada no slot.
+  const auto z = slotCenterOffset(0.3, 0.0, 0.0, -1.0);
+  EXPECT_NEAR(z.dx, 0.0, kTol); EXPECT_NEAR(z.dy, 0.0, kTol);
+  const auto n = slotCenterOffset(0.3, 0.04, 0.0, 0.0);
+  EXPECT_NEAR(n.dx, 0.0, kTol); EXPECT_NEAR(n.dy, 0.0, kTol);
 }
 
 TEST(PlacePrecision, SpiralOffsetsDegenerate)
