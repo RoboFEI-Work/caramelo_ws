@@ -46,6 +46,8 @@ def generate_launch_description():
     launch_pick_telemetry = LaunchConfiguration("launch_pick_telemetry")
     use_container_detector = LaunchConfiguration("use_container_detector")
     container_detector_always_on = LaunchConfiguration("container_detector_always_on")
+    use_pp_hole_detector = LaunchConfiguration("use_pp_hole_detector")
+    pp_hole_detector_always_on = LaunchConfiguration("pp_hole_detector_always_on")
     use_surface_detector = LaunchConfiguration("use_surface_detector")
     surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
     use_vision_debug = LaunchConfiguration("use_vision_debug")
@@ -96,6 +98,20 @@ def generate_launch_description():
             "container_detector_always_on",
             default_value="false",
             description="Detector processa sempre (calibracao/bag), nao so durante o place",
+        ),
+        DeclareLaunchArgument(
+            "use_pp_hole_detector",
+            default_value="true",
+            description=(
+                "Detector do BURACO (cavidade marrom no tampo branco) da mesa de precision "
+                "placement (pp_hole_detector_node.py): o place corrige o alvo xy do slot pelo "
+                "centro visto. So processa imagem enquanto ha um place ativo."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "pp_hole_detector_always_on",
+            default_value="false",
+            description="Detector de buracos processa sempre (calibracao/bag), nao so durante o place",
         ),
         # --- Superficie livre ---
         DeclareLaunchArgument(
@@ -592,6 +608,26 @@ def generate_launch_description():
         ],
     )
 
+    # --- Buraco da mesa de precision placement ---
+    # Cavidade MARROM no tampo BRANCO (anel branco obrigatorio): centros em
+    # /manip/pp_hole_detector/holes; o place corrige o alvo xy do slot
+    # (slot_hole_* no mtc_place_action_node). Plano do tampo vem do place em
+    # /manip/pp_plane_z. nice +15 como os outros de visao.
+    pp_hole_detector = Node(
+        package="manip_bringup",
+        executable="pp_hole_detector_node.py",
+        name="pp_hole_detector",
+        output="screen",
+        prefix="nice -n 15",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_pp_hole_detector),
+        parameters=[
+            os.path.join(manip_bringup_share, "config", "pp_hole_detector.yaml"),
+            {"always_on": ParameterValue(pp_hole_detector_always_on, value_type=bool)},
+        ],
+    )
+
     # --- Mapa da mesa (superficie livre) ---
     # Segmenta o tampo branco e projeta cada celula de 1 cm no plano do tampo
     # (cota em /manip/table_plane_z, do place). Publica nav_msgs/OccupancyGrid
@@ -670,6 +706,10 @@ def generate_launch_description():
                      LaunchConfiguration("use_container_detector"),
                      "' == 'true' and '",
                      LaunchConfiguration("container_detector_always_on"),
+                     "' == 'true' else 0) + (1 if '",
+                     LaunchConfiguration("use_pp_hole_detector"),
+                     "' == 'true' and '",
+                     LaunchConfiguration("pp_hole_detector_always_on"),
                      "' == 'true' else 0)"]),
                 value_type=int),
         }],
@@ -802,6 +842,7 @@ def generate_launch_description():
         renice_camera,
         apriltag,
         container_detector,
+        pp_hole_detector,
         workstation_surface,
         vision_debug,
         vision_viewer,

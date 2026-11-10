@@ -32,6 +32,14 @@ apriltag:
     # Tamanho confirmado pelo operador (2026-10-21): adesivos de 41 mm, iguais
     # as tags dos cubos (101..107 colados no fundo das cavidades da mesa de
     # precisao; 200 no tampo da area de empilhamento).
+    # 2026-11-09: o quadrado PRETO das tags mede 32 mm (regua do operador),
+    # e o `size` do apriltag e' esse lado. Mesmo assim 0.032 fez TODOS os
+    # picks falharem (garra fechou antes do cubo) e 0.041 funciona: a camera
+    # publica fx=386 na cor (640x480), que e' a focal do sensor de
+    # PROFUNDIDADE, nao da cor (~470-495). 0.041/0.032 = 1.28 compensa esse
+    # fx errado na distancia, mas nao nas laterais (calibracao de 09/11:
+    # escala 0.8 na distancia, rms 35 -> 17 mm). Fica 0.041 ate corrigir o
+    # camera_info da cor; so' entao voltar para 0.032.
     tag:
       ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
             11, 12, 13, 14, 15, 16, 17, 18, 19, 20,

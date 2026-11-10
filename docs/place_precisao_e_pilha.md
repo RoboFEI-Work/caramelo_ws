@@ -121,6 +121,44 @@ Guarda física: o nó **não** tem a mesa na planning scene, então a única pro
 a mesa de precisão é nunca comandar um z de re-pega abaixo da borda da cavidade — por isso só o
 caso "apoiado na borda" re-pega.
 
+### 3.1 Detector de buracos (`pp_hole_detector_node`, manip_bringup) e fusão tag + buraco
+
+O tampo da PP é branco e a cavidade aparece marrom: o detector publica os centros vistos em
+`/manip/pp_hole_detector/holes` (PoseArray em `manip_base_link`, 3 Hz, mediana de 2 amostras,
+só enquanto `/manip/place_active`), projetando no plano `z` recebido em `/manip/pp_plane_z`.
+
+**Bug de sequência (log real de 2026-11-09):** a cavidade só aparece na câmera na leitura de
+**garra vazia** (`preObserveStackBase`, pré-ponto TCP2 a ~13 cm), mas o plano do tampo só era
+publicado em `placeStackedOnFrame`, **depois** de pegar o cubo, com a câmera já tapada — e a
+correção exigia detecção com ≤ 2 s. Resultado: o detector nunca corrigiu nada (erro de 3–5 cm).
+
+**Sequência nova (2026-11-09):**
+0. a garra abre **antes** de olhar a base (se começasse fechada, o detector leria "segurando" e
+   mascararia o centro da imagem, tapando a cavidade);
+1. `preObserveStackBase`, slot da PP: publica o plano do tampo (z da tag) **só na leitura de
+   perto** (TCP2). A de longe erra 4–5 cm em z (log real: dz = +41..+55 mm) e publicar as duas
+   fazia o detector zerar o rastreio (muda > 5 mm) logo antes da espera. Do 2º slot em diante o
+   plano fica a < 5 mm do anterior, não há reset e as amostras colhidas enquanto a tag era lida
+   já servem (espera sai em 0 s). O nó guarda o instante da última mudança de plano e descarta
+   detecções com stamp anterior (projetadas no plano velho);
+2. ainda no TCP2, de garra vazia **e só se a leitura de perto deu certo**, espera até
+   `slot_hole_wait_sec` (passos de 100 ms) por um buraco a ≤ `slot_hole_max_correction_m` do alvo
+   nominal (tag + `slot_place_*_offset_m`, **sem** a escadinha) e o guarda (`stack_preseen_hole_`,
+   vale qualquer idade: a base não anda até soltar). Log `[SLOT] buraco visto de garra vazia:
+   dx dy ...`; sem buraco, o WARN distingue "nenhuma mensagem do detector", "detector vivo mas
+   nada segmentado" e "buraco(s) vistos, o mais próximo a N mm, acima do raio" — este último diz
+   se é preciso subir `slot_hole_max_correction_m`. Sem leitura de perto (sem IK/TCP2) não espera;
+3. o vetor tag→buraco (**mesma imagem**, quase imune ao erro da câmera) entra num aprendiz
+   (mediana por componente, `TagHoleOffsetLearner`), rejeitando amostras a mais de
+   `slot_hole_learn_max_dev_m` do nominal;
+4. na soltura (`fuseSlotTarget`): com buraco (guardado ou fresco) a ≤ raio de tag + nominal →
+   **média ponderada** `fuseSlotXy(tag + nominal, buraco, slot_hole_weight)` do **centro da
+   cavidade**, e a escadinha (`stack_place_*_offset_m`) é somada **inteira depois**, igual nos
+   três ramos (ela compensa cubo fora do centro da garra, que o buraco não enxerga); sem buraco e
+   com ≥ `slot_hole_learn_min_samples` amostras → tag + offset **aprendido** + escadinha; senão
+   alvo nominal, como antes. O log `[STACK] ... e' slot da PP` imprime o alvo final e o desvio em
+   relação ao nominal. z e yaw nunca mudam; falhar em melhorar nunca piora.
+
 ## 4. Modo REFERÊNCIA (tag 200, primeiro cubo da pilha)
 
 Mesmo fluxo de `placeStackedOnFrame` com `z_tcp = z_tag + ref_drop_clearance_m + cube_height_m`
@@ -184,7 +222,7 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `slot_center_offset_m` | 0.04 | **sim** | tag no tampo → centro do slot, na direção do robô (0 = tag centrada no slot) |
 | `slot_tag_on_tabletop` | true | — | tag no tampo (fundo = tag − cavidade); false = tag colada no fundo |
 | `slot_use_stack_logic` | true | — | slot da PP com a **lógica do empilhar** (olha a tag antes de pegar, soltura na cota da tag de referência, verificação só olhando); false = encaixe antigo (espiral/re-pega) |
-| `slot_place_x_offset_m` / `slot_place_y_offset_m` | 0 / −0,04 | **sim** | alvo = tag + offset em `manip_base_link` (−0,04 em y = 4 cm mais perto do robô); a AMT1 usa os mesmos valores |
+| `slot_place_x_offset_m` / `slot_place_y_offset_m` | 0 / −0,052 | **sim** | alvo = tag + offset em `manip_base_link` (−0,052 em y = 5,2 cm mais perto do robô: mediana de 27 leituras tag→cubo encaixado, 09/11). A escadinha (`stack_place_*`) **não** entra mais no slot; a AMT1 usa os mesmos valores |
 | `slot_drop_clearance_m` | 0.003 | sim | fundo do cubo acima do tampo ao soltar |
 | `slot_pre_lift_m` | 0.02 | — | pré-pose acima da soltura (a 0,36 m, 0° só resolve a pré-pose com lift ≤ 0,02) |
 | `slot_tilt_ladder_deg` | [0, 15] | — | 0 preferido na descida final; a pré-pose pode usar 15 |
@@ -201,6 +239,12 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `stack_memory_fallback` | true | — | base pela memória |
 | `stack_max_level` | 4 | — | só aviso |
 | `precision_verify_timeout_ms` | 4000 | sim | espera pela tag nas leituras de verificação/memória (mais amostras na mediana) |
+| `slot_hole_correction_enable` / `slot_hole_max_correction_m` / `slot_hole_max_age_sec` | true / 0.05 / 2.0 | sim | detector de buracos (§3.1): liga, raio máximo (tag + nominal)→buraco, idade máxima de uma detecção "fresca". Raio 0,035 → 0,05 em 2026-11-09: o erro a corrigir é de 3–5 cm e o slot vizinho fica a ≥ 10 cm |
+| `slot_hole_weight` | 0.7 | sim | peso do buraco na fusão xy (1 = só buraco, 0 = só tag) |
+| `slot_hole_wait_sec` | 2.5 | sim | espera no TCP2, de garra vazia, pelo buraco (detector a 3 Hz precisa de 2 amostras; com buraco já visto sai na hora) |
+| `slot_hole_learn_offset` | true | — | aprende o offset tag→buraco e o usa nos slots sem buraco visto |
+| `slot_hole_learn_min_samples` | 2 | — | amostras mínimas antes de usar o offset aprendido |
+| `slot_hole_learn_max_dev_m` | 0.05 | — | amostra a mais que isto do nominal (`slot_place_*_offset_m`) é buraco de outro slot: descartada (mesmo valor do raio) |
 
 Parâmetros existentes reusados sem mudança: `stack_place_z_offset` (0.05), `stack_pre_lift_m`,
 `stack_tilt_ladder_deg`, `stack_tag_samples/dwell/max_spread`, `stack_settle_ms`,

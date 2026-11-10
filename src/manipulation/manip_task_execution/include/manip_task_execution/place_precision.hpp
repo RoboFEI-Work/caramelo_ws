@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace manip_task_execution
@@ -262,5 +263,62 @@ PlacementDecision decidePlacement(
   const PlacementObservation & obs, const PlacementLimits & lim);
 
 const char * placementDecisionName(PlacementDecision d);
+
+/// Centro de cavidade VISTO pela camera (pp_hole_detector: mancha marrom no
+/// tampo branco da PP), xy em manip_base_link.
+struct HoleCandidate
+{
+  double x{0.0};
+  double y{0.0};
+};
+
+/// Buraco visto mais proximo de (x, y) dentro de max_dist_m: a correcao do
+/// alvo do slot troca o centro ESTIMADO pela tag (+offsets) pelo centro
+/// VISTO. nullopt quando nenhum candidato esta no raio — a correcao e'
+/// oportunista, o alvo da tag segue valendo (regra do empilhar: falhar em
+/// melhorar nunca pode piorar). max_dist_m <= 0 nunca corrige.
+std::optional<HoleCandidate> nearestHole(
+  const std::vector<HoleCandidate> & holes, double x, double y, double max_dist_m);
+
+/// Fusao do alvo xy do slot (2026-11-09): media ponderada entre o centro
+/// ESTIMADO pela tag (+offsets) e o centro VISTO do buraco. hole_weight em
+/// [0, 1] (fora disso e' saturado): 1 = so' o buraco, 0 = so' a tag. Nem a
+/// tag nem o detector sao perfeitos (a tag soma offset nominal + erro de
+/// escala; o buraco soma segmentacao + plano do tampo), entao um peso
+/// intermediario reduz o pior caso em vez de trocar um erro pelo outro.
+HoleCandidate fuseSlotXy(
+  double tag_x, double tag_y, const HoleCandidate & hole, double hole_weight);
+
+/// Aprende o vetor tag -> buraco (2026-11-09). Cada amostra e' a diferenca
+/// (buraco_xy - tag_xy) medida com a tag e o buraco na MESMA imagem, de
+/// garra vazia: o erro de escala/posicao da camera entra igual nos dois e
+/// se cancela, por isso o vetor e' quase imune ao erro da camera e e' um
+/// substituto melhor que o offset nominal (slot_place_x/y_offset_m) para os
+/// slots cujo buraco a garra tapou na hora de soltar (todos os slots da PP
+/// tem a tag colada na mesma posicao relativa a cavidade). Mediana por
+/// componente para um outlier (buraco de OUTRO slot, mancha) nao puxar a
+/// estimativa; amostras a mais de max_dev_m do nominal sao rejeitadas.
+class TagHoleOffsetLearner
+{
+public:
+  TagHoleOffsetLearner() = default;
+  TagHoleOffsetLearner(
+    std::size_t min_samples, double nominal_dx, double nominal_dy, double max_dev_m);
+
+  /// Aceita a amostra se |(dx,dy) - nominal| <= max_dev_m; devolve se aceitou.
+  bool push(double dx, double dy);
+  /// Mediana (dx, dy) quando size() >= min_samples; senao nullopt.
+  std::optional<std::pair<double, double>> estimate() const;
+  void reset();
+  std::size_t size() const;
+
+private:
+  std::size_t min_samples_{2};
+  double nominal_dx_{0.0};
+  double nominal_dy_{0.0};
+  double max_dev_m_{0.03};
+  std::vector<double> dx_;
+  std::vector<double> dy_;
+};
 
 }  // namespace manip_task_execution

@@ -18,6 +18,8 @@ using manip_task_execution::decideSlotAction;
 using manip_task_execution::effectiveSeatTolerance;
 using manip_task_execution::expectedPileTopZ;
 using manip_task_execution::findStackMemory;
+using manip_task_execution::fuseSlotXy;
+using manip_task_execution::HoleCandidate;
 using manip_task_execution::isSeatedInSlot;
 using manip_task_execution::nearestQuarterTurn;
 using manip_task_execution::PileFix;
@@ -39,6 +41,7 @@ using manip_task_execution::stackLevelFromMemory;
 using manip_task_execution::StackMemoryEntry;
 using manip_task_execution::slotCenterOffset;
 using manip_task_execution::StackTargetKind;
+using manip_task_execution::TagHoleOffsetLearner;
 using manip_task_execution::tagIdFromFrame;
 using manip_task_execution::tiltDropZCompensation;
 
@@ -521,4 +524,86 @@ TEST(PlacePrecision, DecidePlacementPileOneCorrection)
   unseen.seen = false;
   unseen.fk_err_xy_m = 0.05;
   EXPECT_EQ(decidePlacement(unseen, lim), PlacementDecision::kAcceptUnverified);
+}
+
+// ---- fusao tag + buraco e offset aprendido (2026-11-09) ------------------
+
+TEST(PlacePrecision, FuseSlotXyWeights)
+{
+  const HoleCandidate hole{0.110, -0.220};
+  // peso 0 = so' a tag; peso 1 = so' o buraco.
+  const HoleCandidate only_tag = fuseSlotXy(0.100, -0.200, hole, 0.0);
+  EXPECT_NEAR(only_tag.x, 0.100, kTol);
+  EXPECT_NEAR(only_tag.y, -0.200, kTol);
+  const HoleCandidate only_hole = fuseSlotXy(0.100, -0.200, hole, 1.0);
+  EXPECT_NEAR(only_hole.x, 0.110, kTol);
+  EXPECT_NEAR(only_hole.y, -0.220, kTol);
+  // 0,7: 70% do caminho da tag ate' o buraco.
+  const HoleCandidate mixed = fuseSlotXy(0.100, -0.200, hole, 0.7);
+  EXPECT_NEAR(mixed.x, 0.107, kTol);
+  EXPECT_NEAR(mixed.y, -0.214, kTol);
+}
+
+TEST(PlacePrecision, FuseSlotXyClampsWeight)
+{
+  const HoleCandidate hole{0.110, -0.220};
+  const HoleCandidate below = fuseSlotXy(0.100, -0.200, hole, -0.5);
+  EXPECT_NEAR(below.x, 0.100, kTol);
+  EXPECT_NEAR(below.y, -0.200, kTol);
+  const HoleCandidate above = fuseSlotXy(0.100, -0.200, hole, 3.0);
+  EXPECT_NEAR(above.x, 0.110, kTol);
+  EXPECT_NEAR(above.y, -0.220, kTol);
+  // NaN cai em 0 (so' tag): nunca manda lixo para o braco.
+  const HoleCandidate nan_w = fuseSlotXy(0.100, -0.200, hole, std::nan(""));
+  EXPECT_NEAR(nan_w.x, 0.100, kTol);
+  EXPECT_NEAR(nan_w.y, -0.200, kTol);
+}
+
+TEST(PlacePrecision, LearnerNeedsMinSamples)
+{
+  TagHoleOffsetLearner learner(2, 0.0, -0.040, 0.03);
+  EXPECT_EQ(learner.size(), 0u);
+  EXPECT_FALSE(learner.estimate().has_value());
+  EXPECT_TRUE(learner.push(0.002, -0.043));
+  EXPECT_EQ(learner.size(), 1u);
+  EXPECT_FALSE(learner.estimate().has_value());
+  EXPECT_TRUE(learner.push(0.004, -0.045));
+  ASSERT_TRUE(learner.estimate().has_value());
+  // Duas amostras: media dos dois valores.
+  EXPECT_NEAR(learner.estimate()->first, 0.003, kTol);
+  EXPECT_NEAR(learner.estimate()->second, -0.044, kTol);
+}
+
+TEST(PlacePrecision, LearnerMedianRejectsOutlier)
+{
+  TagHoleOffsetLearner learner(2, 0.0, -0.040, 0.03);
+  EXPECT_TRUE(learner.push(0.001, -0.050));
+  EXPECT_TRUE(learner.push(0.003, -0.052));
+  EXPECT_TRUE(learner.push(0.020, -0.054));  // dentro de 3 cm do nominal
+  // Buraco de OUTRO slot (10 cm ao lado): fora de max_dev, nao entra.
+  EXPECT_FALSE(learner.push(0.100, -0.040));
+  EXPECT_FALSE(learner.push(0.000, 0.030));
+  EXPECT_EQ(learner.size(), 3u);
+  ASSERT_TRUE(learner.estimate().has_value());
+  // Mediana por componente: o 0,020 em x nao puxa a estimativa (seria 0,008 na media).
+  EXPECT_NEAR(learner.estimate()->first, 0.003, kTol);
+  EXPECT_NEAR(learner.estimate()->second, -0.052, kTol);
+  // NaN nunca entra.
+  EXPECT_FALSE(learner.push(std::nan(""), -0.040));
+  EXPECT_EQ(learner.size(), 3u);
+}
+
+TEST(PlacePrecision, LearnerReset)
+{
+  TagHoleOffsetLearner learner(1, 0.0, -0.040, 0.03);
+  EXPECT_TRUE(learner.push(0.002, -0.041));
+  ASSERT_TRUE(learner.estimate().has_value());
+  learner.reset();
+  EXPECT_EQ(learner.size(), 0u);
+  EXPECT_FALSE(learner.estimate().has_value());
+  // Depois do reset volta a aprender do zero.
+  EXPECT_TRUE(learner.push(-0.005, -0.030));
+  ASSERT_TRUE(learner.estimate().has_value());
+  EXPECT_NEAR(learner.estimate()->first, -0.005, kTol);
+  EXPECT_NEAR(learner.estimate()->second, -0.030, kTol);
 }

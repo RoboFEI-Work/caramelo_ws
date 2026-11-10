@@ -191,7 +191,9 @@ public:
         slot_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
             "slot_tag_ids", std::vector<int64_t>{101, 102, 103, 104, 105, 106, 107});
         slot_place_x_offset_m_ = this->declare_parameter<double>("slot_place_x_offset_m", 0.0);
-        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.04);
+        // 2026-11-09: -0.04 -> -0.052 (mediana de 27 leituras tag->cubo
+        // encaixado; igual ao no de place, que tirou a escadinha do slot).
+        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.052);
         slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.0005);
         // Casamento slot <-> tag so' pelo LADO (a fileira tem ~13 cm entre slots).
         slot_tag_match_m_ = this->declare_parameter<double>("slot_tag_match_m", 0.04);
@@ -574,7 +576,7 @@ private:
     std::string slot_frame_prefix_;
     std::vector<int64_t> slot_tag_ids_;
     double slot_place_x_offset_m_{0.0};
-    double slot_place_y_offset_m_{-0.04};
+    double slot_place_y_offset_m_{-0.052};
     double slot_cavity_depth_m_{0.005};
     double slot_tag_match_m_{0.04};
     double slot_tag_pitch_m_{0.133};

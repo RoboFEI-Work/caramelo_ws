@@ -315,4 +315,95 @@ const char * placementDecisionName(PlacementDecision d)
   return "?";
 }
 
+std::optional<HoleCandidate> nearestHole(
+  const std::vector<HoleCandidate> & holes, double x, double y, double max_dist_m)
+{
+  if (max_dist_m <= 0.0) {
+    return std::nullopt;
+  }
+  std::optional<HoleCandidate> best;
+  double best_d = max_dist_m;
+  for (const auto & h : holes) {
+    const double d = std::hypot(h.x - x, h.y - y);
+    if (d <= best_d) {
+      best = h;
+      best_d = d;
+    }
+  }
+  return best;
+}
+
+HoleCandidate fuseSlotXy(
+  double tag_x, double tag_y, const HoleCandidate & hole, double hole_weight)
+{
+  // NaN no peso cai em 0 (so' tag): nunca propaga lixo para o alvo do braco.
+  double w = hole_weight;
+  if (!(w > 0.0)) {
+    w = 0.0;
+  } else if (w > 1.0) {
+    w = 1.0;
+  }
+  return HoleCandidate{
+    (1.0 - w) * tag_x + w * hole.x,
+    (1.0 - w) * tag_y + w * hole.y};
+}
+
+TagHoleOffsetLearner::TagHoleOffsetLearner(
+  std::size_t min_samples, double nominal_dx, double nominal_dy, double max_dev_m)
+: min_samples_(std::max<std::size_t>(1, min_samples)),
+  nominal_dx_(nominal_dx),
+  nominal_dy_(nominal_dy),
+  max_dev_m_(max_dev_m)
+{
+}
+
+bool TagHoleOffsetLearner::push(double dx, double dy)
+{
+  if (!std::isfinite(dx) || !std::isfinite(dy)) {
+    return false;
+  }
+  if (std::hypot(dx - nominal_dx_, dy - nominal_dy_) > max_dev_m_) {
+    return false;
+  }
+  dx_.push_back(dx);
+  dy_.push_back(dy);
+  return true;
+}
+
+namespace
+{
+double medianOf(std::vector<double> v)
+{
+  // v por copia: nth_element reordena. Tamanho par = media dos dois do meio.
+  const std::size_t n = v.size();
+  const std::size_t mid = n / 2;
+  std::nth_element(v.begin(), v.begin() + mid, v.end());
+  const double upper = v[mid];
+  if (n % 2 == 1) {
+    return upper;
+  }
+  const double lower = *std::max_element(v.begin(), v.begin() + mid);
+  return 0.5 * (lower + upper);
+}
+}  // namespace
+
+std::optional<std::pair<double, double>> TagHoleOffsetLearner::estimate() const
+{
+  if (dx_.empty() || dx_.size() < min_samples_) {
+    return std::nullopt;
+  }
+  return std::make_pair(medianOf(dx_), medianOf(dy_));
+}
+
+void TagHoleOffsetLearner::reset()
+{
+  dx_.clear();
+  dy_.clear();
+}
+
+std::size_t TagHoleOffsetLearner::size() const
+{
+  return dx_.size();
+}
+
 }  // namespace manip_task_execution

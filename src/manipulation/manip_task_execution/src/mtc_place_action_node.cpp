@@ -18,6 +18,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit_msgs/action/move_group.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
@@ -185,15 +186,21 @@ public:
         // (olha a tag de garra vazia antes de pegar, j1, descida, soltura na
         // cota da tag de referencia = tag no tampo + folga + cubo, verificacao
         // so' olhando), com o alvo deslocado de slot_place_*_offset_m em
-        // manip_base_link (+x direita, +y frente). Padrao: 4 cm NEGATIVOS em
-        // x do robo (base_link) = -0,04 em y do braco: a cavidade fica 4 cm
-        // mais perto do robo que a tag. A correcao da escadinha
-        // (stack_place_*_offset_m) tambem entra, como no empilhar.
+        // manip_base_link (+x direita, +y frente). Era -0,04 em y (4 cm mais
+        // perto do robo que a tag) MAIS a escadinha de -0,012: total -0,052.
+        // 2026-11-09: 27 leituras da AMT1 (cubos ja' encaixados, vetor
+        // tag->cubo medido na MESMA imagem) deram mediana -52 mm em y e
+        // -3 mm em x. O total estava certo, mas repartido errado: a escadinha
+        // e' correcao de empilhar (cubo sobre cubo) e NAO entra mais no slot;
+        // o -0,052 fica inteiro aqui. Importa porque a fusao com o buraco
+        // visto (fuseSlotTarget) e o offset aprendido substituem ESTE valor —
+        // se a escadinha continuasse por fora, o cubo passaria 12 mm do
+        // centro do buraco (folga da cavidade ~3,5 mm por lado).
         // false = encaixe antigo (placeIntoPrecisionSlot, espiral/re-pega;
         // usa slot_center_offset_m / slot_tag_on_tabletop).
         slot_use_stack_logic_ = this->declare_parameter<bool>("slot_use_stack_logic", true);
         slot_place_x_offset_m_ = this->declare_parameter<double>("slot_place_x_offset_m", 0.0);
-        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.04);
+        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.052);
         // Folga entre o fundo do cubo e o TAMPO na hora de soltar: o cubo cai
         // dentro se estiver alinhado. Calibrar no robo.
         slot_drop_clearance_m_ = this->declare_parameter<double>("slot_drop_clearance_m", 0.003);
@@ -220,6 +227,70 @@ public:
         // mais alto (camera mais longe dos dedos abertos). Calibrar no robo.
         slot_reobserve_extra_z_m_ =
             this->declare_parameter<double>("slot_reobserve_extra_z_m", 0.04);
+        // 2026-11-06 (pedido do operador): o tampo da PP e' BRANCO e a
+        // cavidade aparece MARROM — o pp_hole_detector_node (manip_bringup)
+        // publica os centros VISTOS em /manip/pp_hole_detector/holes
+        // (PoseArray em manip_base_link) e o alvo xy do slot e' trocado pelo
+        // buraco mais proximo, desde que a <= slot_hole_max_correction_m do
+        // alvo da tag (mais longe e' buraco de OUTRO slot) e fresco
+        // (<= slot_hole_max_age_sec). Vale para o place normal da PP (tags
+        // 101..107, kSlot) E para a AMT1 (frames slot_hole_frame_prefix*).
+        // z e yaw seguem da tag. Correcao OPORTUNISTA (regra do empilhar):
+        // sem buraco visto, o alvo tag+offset fica como esta.
+        // 2026-11-09: raio 0,035 -> 0,05 m. O erro que se quer corrigir e'
+        // de 3-5 cm, e com 0,035 o buraco certo era descartado como "outro
+        // slot" justamente nos casos ruins. A cavidade tem 5 cm de lado e o
+        // slot vizinho fica a >= 10 cm, entao 5 cm ainda nao alcanca o buraco
+        // do vizinho. O WARN de "sem buraco" imprime a distancia do mais
+        // proximo para calibrar isto com dado real.
+        slot_hole_correction_enable_ =
+            this->declare_parameter<bool>("slot_hole_correction_enable", true);
+        slot_hole_topic_ = this->declare_parameter<std::string>(
+            "slot_hole_topic", "/manip/pp_hole_detector/holes");
+        slot_hole_max_correction_m_ =
+            this->declare_parameter<double>("slot_hole_max_correction_m", 0.05);
+        slot_hole_max_age_sec_ =
+            this->declare_parameter<double>("slot_hole_max_age_sec", 2.0);
+        slot_hole_frame_prefix_ = this->declare_parameter<std::string>(
+            "slot_hole_frame_prefix", "tag_amt1_slot_");
+        // 2026-11-09: BUG DE SEQUENCIA no log real — o buraco so' aparece na
+        // camera na leitura de GARRA VAZIA (preObserveStackBase, pre-ponto
+        // TCP2 a ~13 cm), mas o plano do tampo so' era publicado em
+        // placeStackedOnFrame, DEPOIS de pegar o cubo, com a camera ja'
+        // tapada; e a correcao exigia deteccao de <= 2 s. Resultado: o
+        // detector nunca corrigiu nada. Agora o plano sai na leitura de
+        // PERTO de garra vazia (TCP2), o no' espera ate' slot_hole_wait_sec
+        // ali pelo buraco e guarda a deteccao (stack_preseen_hole_) para a
+        // soltura. O plano NAO sai na leitura de longe: ela erra 4-5 cm em z
+        // (log real), e publicar longe+perto fazia o detector zerar o rastreio
+        // (muda > 5 mm) bem antes da espera, jogando fora as amostras colhidas
+        // enquanto a tag era lida de perto. Espera 2,5 s: 2 amostras a 3 Hz
+        // sao ~0,7 s no melhor caso, e qualquer frame rejeitado (TF, camera
+        // em movimento) come o resto; com buraco ja' visto sai na hora.
+        // Peso da fusao tag+buraco: 1 = so' buraco (comportamento de 11-06),
+        // 0 = so' tag; 0,7 porque o detector tambem erra (plano, segmentacao).
+        slot_hole_weight_ = this->declare_parameter<double>("slot_hole_weight", 0.7);
+        slot_hole_wait_sec_ = this->declare_parameter<double>("slot_hole_wait_sec", 2.5);
+        // Offset tag->buraco APRENDIDO (mediana das deteccoes de garra vazia,
+        // tag e buraco na MESMA imagem): substitui slot_place_x/y_offset_m
+        // nos slots cujo buraco nao foi visto. Amostras a mais de
+        // slot_hole_learn_max_dev_m do nominal sao buraco de OUTRO slot.
+        // Mesmo valor do raio de aceitacao: um buraco aceito a d <= raio do
+        // alvo nominal e' uma amostra a d do nominal, e nao faria sentido
+        // aceitar o buraco e rejeitar a amostra.
+        slot_hole_learn_offset_ =
+            this->declare_parameter<bool>("slot_hole_learn_offset", true);
+        slot_hole_learn_min_samples_ =
+            this->declare_parameter<int>("slot_hole_learn_min_samples", 2);
+        slot_hole_learn_max_dev_m_ =
+            this->declare_parameter<double>("slot_hole_learn_max_dev_m", 0.05);
+        slot_hole_learner_ = manip_task_execution::TagHoleOffsetLearner(
+            static_cast<std::size_t>(std::max(1, slot_hole_learn_min_samples_)),
+            slot_place_x_offset_m_, slot_place_y_offset_m_, slot_hole_learn_max_dev_m_);
+        // Cota do TAMPO da PP (manip_base_link) para o ray-cast do detector,
+        // publicada latched quando um place de slot comeca.
+        pp_plane_topic_ = this->declare_parameter<std::string>(
+            "pp_plane_topic", "/manip/pp_plane_z");
         // Busca em espiral quando nao encaixa (passo/raio) e numero maximo
         // de solturas. Calibrar no robo.
         slot_search_step_m_ = this->declare_parameter<double>("slot_search_step_m", 0.003);
@@ -389,6 +460,19 @@ public:
         // destino, para o container_detector fazer o ray-cast no plano certo.
         container_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             container_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
+        // Cota do TAMPO da PP para o pp_hole_detector (mesma receita acima).
+        pp_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
+            pp_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
+        // Buracos (cavidades) da PP vistos pela camera, em manip_base_link.
+        // So' guarda a ultima mensagem; quem valida idade/distancia e'
+        // nearestLiveHole / fuseSlotTarget na hora de usar.
+        pp_holes_subscription_ =
+            this->create_subscription<geometry_msgs::msg::PoseArray>(
+                slot_hole_topic_, 10,
+                [this](geometry_msgs::msg::PoseArray::ConstSharedPtr msg) {
+                    std::lock_guard<std::mutex> lock(pp_holes_mutex_);
+                    pp_holes_ = std::move(msg);
+                });
         // 2026-08-28 (fila de alcance): deslocamento lateral ACUMULADO da base
         // desde o ultimo align_to_dock (+ = esquerda, base_footprint), que so
         // o dock_align_node publica (latched; zera a cada align_to_dock). A
@@ -765,13 +849,45 @@ private:
     bool slot_tag_on_tabletop_{true};
     bool slot_use_stack_logic_{true};
     double slot_place_x_offset_m_{0.0};
-    double slot_place_y_offset_m_{-0.04};
+    double slot_place_y_offset_m_{-0.052};
     double slot_drop_clearance_m_{0.004};
     double slot_pre_lift_m_{0.02};
     std::vector<double> slot_tilt_ladder_deg_{0.0, 15.0};
     double slot_seat_tolerance_m_{0.0025};
     double slot_xy_tolerance_m_{0.008};
     double slot_reobserve_extra_z_m_{0.04};
+    // Correcao do alvo do slot pelo BURACO visto (pp_hole_detector, 2026-11-06).
+    bool slot_hole_correction_enable_{true};
+    std::string slot_hole_topic_;
+    double slot_hole_max_correction_m_{0.05};
+    double slot_hole_max_age_sec_{2.0};
+    std::string slot_hole_frame_prefix_;
+    // Fusao tag+buraco e offset aprendido (2026-11-09), ver fuseSlotTarget.
+    double slot_hole_weight_{0.7};
+    double slot_hole_wait_sec_{2.5};
+    bool slot_hole_learn_offset_{true};
+    int slot_hole_learn_min_samples_{2};
+    double slot_hole_learn_max_dev_m_{0.05};
+    manip_task_execution::TagHoleOffsetLearner slot_hole_learner_;
+    /// Buraco visto de garra vazia (preObserveStackBase) para a base
+    /// `frame`; vale qualquer idade porque a base do robo nao anda ate' soltar.
+    struct PreseenHole
+    {
+        std::string frame;
+        double x;
+        double y;
+    };
+    std::optional<PreseenHole> stack_preseen_hole_;
+    std::string pp_plane_topic_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pp_plane_z_pub_;
+    /// Ultimo plano publicado e o instante em que ele MUDOU de verdade
+    /// (> 5 mm, mesmo criterio com que o detector zera o rastreio): buracos
+    /// com stamp anterior foram projetados no plano antigo e nao valem.
+    std::optional<double> pp_plane_last_z_;
+    rclcpp::Time pp_plane_reset_time_{0, 0, RCL_ROS_TIME};
+    rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr pp_holes_subscription_;
+    std::mutex pp_holes_mutex_;
+    geometry_msgs::msg::PoseArray::ConstSharedPtr pp_holes_;
     /// Leituras da tag do cubo por soltura no slot (1 + uma re-observacao).
     static constexpr int kSlotMaxObservations = 2;
     double slot_search_step_m_{0.003};
@@ -3792,10 +3908,13 @@ private:
         }
 
         // TCP = centro da base + correcao fixa da escadinha (stack_place_*_offset_m).
-        // So' em tag real (tag_<n>): os slots da AMT1 (tag_amt1_slot_k) ja'
-        // sao o centro da cavidade, sem cubo embaixo para enviesar.
+        // So' em tag real (tag_<n>) de EMPILHAR (cubo ou tag 200): os slots da
+        // AMT1 (tag_amt1_slot_k) ja' sao o centro da cavidade, e o slot da PP
+        // (kSlot) tem o total (-0,052) em slot_place_y_offset_m desde
+        // 2026-11-09 — a escadinha aqui dobraria a correcao e, com o buraco
+        // visto, passaria 12 mm do centro da cavidade.
         const Eigen::Vector3d xy_corr =
-            manip_task_execution::tagIdFromFrame(base_frame) ?
+            (manip_task_execution::tagIdFromFrame(base_frame) && kind != StackTargetKind::kSlot) ?
             Eigen::Vector3d(stack_place_x_offset_m_, stack_place_y_offset_m_, 0.0) :
             Eigen::Vector3d::Zero();
         // Retorno EXPLICITO: com auto o lambda devolvia a expressao do Eigen
@@ -3806,18 +3925,37 @@ private:
             kind == StackTargetKind::kSlot ?
             Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0) :
             Eigen::Vector3d::Zero();
+        // Cavidade da PP: liga o detector de buracos no plano do tampo (a
+        // tag do slot vive no tampo; a da AMT1 ja' e' o centro da cavidade).
+        if (isSlotLikeTarget(kind, base_frame)) {
+            publishPpPlaneZ(base_tf.transform.translation.z);
+        }
         auto target_from = [&](const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
-                return Eigen::Vector3d(
+                Eigen::Vector3d t = Eigen::Vector3d(
                     tf.transform.translation.x,
                     tf.transform.translation.y,
                     tf.transform.translation.z + z_offset) + slot_off + xy_corr;
+                // Buraco da PP VISTO (marrom no tampo branco): fusao com o
+                // centro real da cavidade (2026-11-09; antes trocava xy
+                // inteiro por uma deteccao fresca que nunca existia com o
+                // cubo na garra), ou o offset tag->buraco aprendido.
+                if (isSlotLikeTarget(kind, base_frame)) {
+                    fuseSlotTarget(t, base_frame, kind, framePosition(tf), slot_off, xy_corr);
+                }
+                return t;
             };
         Eigen::Vector3d target = target_from(base_tf);
         if (kind == StackTargetKind::kSlot) {
+            // Alvo FINAL (ja' com fusao/offset aprendido/escadinha) e o quanto
+            // ele saiu do nominal tag + slot_place_*_offset_m + escadinha.
+            const Eigen::Vector3d nominal = framePosition(base_tf) + slot_off + xy_corr;
             RCLCPP_INFO(
                 get_logger(),
-                "[STACK] %s e' slot da PP: alvo = tag %+.0f mm em x, %+.0f mm em y (manip_base_link).",
-                base_frame.c_str(), slot_off.x() * 1000.0, slot_off.y() * 1000.0);
+                "[STACK] %s e' slot da PP: nominal = tag %+.0f mm em x, %+.0f mm em y; alvo final "
+                "xy [%.4f %.4f], %+.1f/%+.1f mm do nominal (manip_base_link).",
+                base_frame.c_str(), slot_off.x() * 1000.0, slot_off.y() * 1000.0,
+                target.x(), target.y(),
+                (target.x() - nominal.x()) * 1000.0, (target.y() - nominal.y()) * 1000.0);
         }
         if (xy_corr.norm() > 1e-6) {
             RCLCPP_INFO(
@@ -4175,6 +4313,7 @@ private:
     {
         using manip_task_execution::StackTargetKind;
         stack_preseen_base_.reset();
+        stack_preseen_hole_.reset();
         publishStage(goal_handle, "stack_pre_observe");
         speak(
             kind == StackTargetKind::kSlot ?
@@ -4205,6 +4344,14 @@ private:
         if (cancellationRequested()) {
             return false;
         }
+        // 2026-11-09: slot da PP. O plano do tampo para o detector de
+        // buracos sai so' na leitura de PERTO (TCP2, abaixo): a de longe erra
+        // 4-5 cm em z (log real: dz=+41..+55 mm entre as duas) e publicar as
+        // duas fazia o detector zerar o rastreio (> 5 mm) logo antes da
+        // espera. Sem TCP2 nao ha' o que corrigir (a camera nao ve a cavidade
+        // de pegar_obj), e placeStackedOnFrame publica o plano como antes.
+        const bool slot_like = isSlotLikeTarget(kind, base_frame);
+        bool close_read_ok = false;  // tf veio da leitura de perto (TCP2)
 
         // Mesmo pre-alinhamento lateral do placeStackedOnFrame.
         constexpr double kTagXNearZero = 0.1;
@@ -4275,6 +4422,15 @@ private:
                             "dz=%+.1f mm em relacao a de longe.",
                             d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0);
                         tf = fresh;
+                        close_read_ok = true;
+                        // Plano do tampo pela leitura de perto. Do 2o slot em
+                        // diante fica a < 5 mm do anterior (mesmo tampo), o
+                        // detector NAO zera o rastreio e as amostras colhidas
+                        // durante a leitura da tag ja' servem: a espera
+                        // abaixo sai em 0 s.
+                        if (slot_like) {
+                            publishPpPlaneZ(tf.transform.translation.z);
+                        }
                     } else {
                         RCLCPP_WARN(
                             get_logger(),
@@ -4289,6 +4445,88 @@ private:
         }
         if (cancellationRequested()) {
             return false;
+        }
+
+        // 2026-11-09: ainda com a camera sobre a cavidade (garra vazia, antes
+        // de voltar a pegar_obj), espera o detector de buracos (3 Hz, 2
+        // amostras) e guarda o buraco mais proximo do alvo nominal para a
+        // soltura (fuseSlotTarget). O vetor tag->buraco desta MESMA imagem
+        // alimenta o offset aprendido para os slots sem buraco visto. So' com
+        // a leitura de PERTO: de longe a propria tag sai 3-5 cm deslocada
+        // (log real) e o buraco visto de la' seria comparado a um alvo errado.
+        if (seen && slot_like && slot_hole_correction_enable_ && !close_read_ok) {
+            RCLCPP_INFO(
+                get_logger(),
+                "[SLOT] sem leitura de perto (TCP2) de %s: nao espero o detector de buracos — "
+                "alvo pela tag%s.",
+                base_frame.c_str(),
+                slot_hole_learn_offset_ && slot_hole_learner_.estimate() ?
+                " + offset aprendido" : "");
+        }
+        if (seen && slot_like && slot_hole_correction_enable_ && close_read_ok) {
+            const Eigen::Vector3d tag_xy = framePosition(tf);
+            const Eigen::Vector3d expected =
+                tag_xy +
+                (kind == StackTargetKind::kSlot ?
+                Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0) :
+                Eigen::Vector3d::Zero());
+            const rclcpp::Time wait_start = this->get_clock()->now();
+            const double wait_max = std::max(0.0, slot_hole_wait_sec_);
+            std::optional<manip_task_execution::HoleCandidate> hole;
+            double age = -1.0;
+            std::size_t n_holes = 0;
+            double nearest_any = -1.0;
+            double waited = 0.0;
+            while (true) {
+                hole = nearestLiveHole(expected.x(), expected.y(), &age, &n_holes, &nearest_any);
+                waited = (this->get_clock()->now() - wait_start).seconds();
+                if (hole || waited >= wait_max) {
+                    break;
+                }
+                if (!sleepInterruptibly(std::chrono::milliseconds(100))) {
+                    return false;
+                }
+            }
+            if (hole) {
+                stack_preseen_hole_ = PreseenHole{base_frame, hole->x, hole->y};
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SLOT] buraco visto de garra vazia: dx=%+.1f dy=%+.1f mm do alvo nominal "
+                    "de %s (esperei %.1f s)",
+                    (hole->x - expected.x()) * 1000.0, (hole->y - expected.y()) * 1000.0,
+                    base_frame.c_str(), waited);
+                if (kind == StackTargetKind::kSlot && slot_hole_learn_offset_) {
+                    const double dx = hole->x - tag_xy.x();
+                    const double dy = hole->y - tag_xy.y();
+                    const bool accepted = slot_hole_learner_.push(dx, dy);
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SLOT] offset tag->buraco medido dx=%+.1f dy=%+.1f mm (%s; %zu amostra(s)).",
+                        dx * 1000.0, dy * 1000.0, accepted ? "aceito" : "rejeitado, longe do nominal",
+                        slot_hole_learner_.size());
+                }
+            } else if (age < 0.0) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: NENHUMA mensagem "
+                    "do detector (esta' no ar? topico %s) — alvo pela tag",
+                    base_frame.c_str(), waited, slot_hole_topic_.c_str());
+            } else if (n_holes == 0) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: detector vivo mas "
+                    "a ultima msg (idade %.1f s) nao segmentou nada — alvo pela tag",
+                    base_frame.c_str(), waited, age);
+            } else {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: %zu buraco(s) na "
+                    "ultima msg (idade %.1f s), o mais proximo a %.1f mm do alvo nominal, acima "
+                    "do raio de %.1f mm (slot_hole_max_correction_m) ou de antes da mudanca do "
+                    "plano — alvo pela tag",
+                    base_frame.c_str(), waited, n_holes, age, nearest_any * 1000.0,
+                    slot_hole_max_correction_m_ * 1000.0);
+            }
         }
 
         if (seen) {
@@ -4369,6 +4607,194 @@ private:
     {
         return kind == manip_task_execution::StackTargetKind::kReference ||
                (kind == manip_task_execution::StackTargetKind::kSlot && slot_use_stack_logic_);
+    }
+
+    /// Alvo e' uma cavidade da PP: slot por tag (101..107, kSlot) ou slot
+    /// inferido da AMT1 (frame com slot_hole_frame_prefix). So' esses podem
+    /// ser corrigidos pelo buraco visto (2026-11-06).
+    bool isSlotLikeTarget(
+        manip_task_execution::StackTargetKind kind, const std::string & frame) const
+    {
+        return kind == manip_task_execution::StackTargetKind::kSlot ||
+               (!slot_hole_frame_prefix_.empty() &&
+               frame.rfind(slot_hole_frame_prefix_, 0) == 0);
+    }
+
+    /// Cota do TAMPO da PP (manip_base_link) para o pp_hole_detector fazer o
+    /// ray-cast no plano certo (latched; o detector reseta o rastreio quando
+    /// o valor muda > 5 mm).
+    void publishPpPlaneZ(double tabletop_z)
+    {
+        // Espelha o reset do detector (pp_hole_detector_node._on_plane_z):
+        // plano novo ou > 5 mm do anterior => as deteccoes anteriores a este
+        // instante estao no plano errado (nearestLiveHole as descarta).
+        constexpr double kDetectorResetThresholdM = 0.005;
+        const bool changed =
+            !pp_plane_last_z_ || std::abs(tabletop_z - *pp_plane_last_z_) > kDetectorResetThresholdM;
+        if (changed) {
+            pp_plane_reset_time_ = this->get_clock()->now();
+        }
+        pp_plane_last_z_ = tabletop_z;
+        std_msgs::msg::Float64 msg;
+        msg.data = tabletop_z;
+        pp_plane_z_pub_->publish(msg);
+        RCLCPP_INFO(
+            get_logger(), "[SLOT] tampo da PP para o detector de buracos: z=%.3f%s.", tabletop_z,
+            changed ? " (plano mudou: rastreio do detector recomeca)" : "");
+    }
+
+    /// Buraco VISTO mais proximo de (x, y) (mancha marrom no tampo branco),
+    /// se a ultima mensagem do detector e' fresca (<= slot_hole_max_age_sec),
+    /// posterior a ultima mudanca de plano (pp_plane_reset_time_) e o
+    /// candidato esta a <= slot_hole_max_correction_m (mais longe e' buraco
+    /// de OUTRO slot). Nao altera alvo nenhum. Saidas de diagnostico, sempre
+    /// preenchidas (mesmo com PoseArray vazia, para o log distinguir "detector
+    /// desligado" de "detector vivo sem segmentar nada"): age_out = idade da
+    /// mensagem (-1 sem mensagem); n_out = buracos nela; nearest_any_out =
+    /// distancia ao buraco mais proximo SEM o raio (-1 sem buraco), para o
+    /// operador ver se o raio esta curto.
+    /// pp_holes_ so' e' tocado sob o mutex, e o mutex nao segura log nem sono.
+    std::optional<manip_task_execution::HoleCandidate> nearestLiveHole(
+        double x, double y, double * age_out = nullptr, std::size_t * n_out = nullptr,
+        double * nearest_any_out = nullptr)
+    {
+        if (age_out) {
+            *age_out = -1.0;
+        }
+        if (n_out) {
+            *n_out = 0;
+        }
+        if (nearest_any_out) {
+            *nearest_any_out = -1.0;
+        }
+        if (!slot_hole_correction_enable_) {
+            return std::nullopt;
+        }
+        geometry_msgs::msg::PoseArray::ConstSharedPtr holes;
+        {
+            std::lock_guard<std::mutex> lock(pp_holes_mutex_);
+            holes = pp_holes_;
+        }
+        if (!holes) {
+            return std::nullopt;
+        }
+        const rclcpp::Time stamp(holes->header.stamp);
+        const double age = (this->get_clock()->now() - stamp).seconds();
+        if (age_out) {
+            *age_out = age;
+        }
+        if (n_out) {
+            *n_out = holes->poses.size();
+        }
+        if (holes->poses.empty()) {
+            return std::nullopt;
+        }
+        std::vector<manip_task_execution::HoleCandidate> candidates;
+        candidates.reserve(holes->poses.size());
+        for (const auto & pose : holes->poses) {
+            candidates.push_back({pose.position.x, pose.position.y});
+        }
+        if (nearest_any_out) {
+            const auto any = manip_task_execution::nearestHole(
+                candidates, x, y, std::numeric_limits<double>::infinity());
+            if (any) {
+                *nearest_any_out = std::hypot(any->x - x, any->y - y);
+            }
+        }
+        if (age < 0.0 || age > slot_hole_max_age_sec_) {
+            RCLCPP_DEBUG(
+                get_logger(), "[SLOT] buracos vistos ha %.1f s (max %.1f) — correcao fora.",
+                age, slot_hole_max_age_sec_);
+            return std::nullopt;
+        }
+        if (stamp < pp_plane_reset_time_) {
+            RCLCPP_DEBUG(
+                get_logger(),
+                "[SLOT] buracos de antes da ultima mudanca do plano do tampo — correcao fora.");
+            return std::nullopt;
+        }
+        return manip_task_execution::nearestHole(candidates, x, y, slot_hole_max_correction_m_);
+    }
+
+    /// Alvo xy do slot pela FUSAO tag+buraco (2026-11-09). `t` entra como
+    /// tag + z_offset + slot_off_nominal + xy_corr e sai com xy:
+    ///   1. buraco visto de garra vazia desta base (stack_preseen_hole_,
+    ///      qualquer idade) ou, sem ele, buraco fresco do detector: media
+    ///      ponderada com slot_hole_weight, se a <= slot_hole_max_correction_m;
+    ///   2. senao, slot da PP com offset tag->buraco APRENDIDO: tag + offset
+    ///      aprendido + xy_corr no lugar do nominal;
+    ///   3. senao, nada muda (alvo nominal, como antes).
+    /// A ESCADINHA (xy_corr) fica FORA da fusao: o buraco observa o centro da
+    /// cavidade, e a fusao e' entre as duas estimativas desse centro
+    /// (tag + slot_off_nominal vs buraco); xy_corr e' somada INTEIRA depois,
+    /// nos tres ramos (antes, no ramo 1, ela entrava em `t` e era diluida
+    /// pelo peso: sobrava (1-w)*xy_corr). Ela compensa o cubo fora do centro
+    /// da garra e o vies de leitura tag->TCP, que o buraco nao enxerga (a
+    /// parte "leitura da tag" o buraco ate' corrige em parte; se a PP ficar
+    /// consistentemente 1 cm para tras com buraco visto, zerar
+    /// stack_place_y_offset_m so' para slot e' o proximo ajuste). O raio de
+    /// aceitacao e' medido contra tag + slot_off_nominal, a MESMA referencia
+    /// (`expected`) com que preObserveStackBase aceitou o buraco de garra
+    /// vazia — senao um buraco aceito la' a 4-5 cm era rejeitado aqui so'
+    /// pelos 12 mm da escadinha.
+    /// z e yaw nunca mudam. Oportunista: falhar em melhorar nunca piora.
+    void fuseSlotTarget(
+        Eigen::Vector3d & t, const std::string & frame,
+        manip_task_execution::StackTargetKind kind,
+        const Eigen::Vector3d & tag_pos, const Eigen::Vector3d & slot_off_nominal,
+        const Eigen::Vector3d & xy_corr)
+    {
+        if (!slot_hole_correction_enable_) {
+            return;
+        }
+        // Centro da cavidade estimado pela tag (sem escadinha).
+        const double base_x = tag_pos.x() + slot_off_nominal.x();
+        const double base_y = tag_pos.y() + slot_off_nominal.y();
+        std::optional<manip_task_execution::HoleCandidate> hole;
+        const char * source = "ao vivo";
+        if (stack_preseen_hole_ && stack_preseen_hole_->frame == frame) {
+            hole = manip_task_execution::HoleCandidate{stack_preseen_hole_->x, stack_preseen_hole_->y};
+            source = "garra vazia";
+        } else {
+            hole = nearestLiveHole(base_x, base_y);
+        }
+        if (hole) {
+            const double dist = std::hypot(hole->x - base_x, hole->y - base_y);
+            if (dist <= slot_hole_max_correction_m_) {
+                const auto fused =
+                    manip_task_execution::fuseSlotXy(base_x, base_y, *hole, slot_hole_weight_);
+                t.x() = fused.x + xy_corr.x();
+                t.y() = fused.y + xy_corr.y();
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SLOT] fusao tag+buraco (%s): tag+nominal [%.4f %.4f], buraco [%.4f %.4f], "
+                    "peso %.2f -> centro [%.4f %.4f] + escadinha [%+.1f %+.1f] mm = alvo "
+                    "[%.4f %.4f] (dist %.1f mm, fonte %s)",
+                    frame.c_str(), base_x, base_y, hole->x, hole->y, slot_hole_weight_,
+                    fused.x, fused.y, xy_corr.x() * 1000.0, xy_corr.y() * 1000.0,
+                    t.x(), t.y(), dist * 1000.0, source);
+                return;
+            }
+            RCLCPP_WARN(
+                get_logger(),
+                "[SLOT] buraco (%s) a %.1f mm do centro tag+nominal de %s, acima de %.1f mm — "
+                "ignorado.",
+                source, dist * 1000.0, frame.c_str(), slot_hole_max_correction_m_ * 1000.0);
+        }
+        if (slot_hole_learn_offset_ && kind == manip_task_execution::StackTargetKind::kSlot) {
+            const auto learned = slot_hole_learner_.estimate();
+            if (learned) {
+                t.x() = tag_pos.x() + learned->first + xy_corr.x();
+                t.y() = tag_pos.y() + learned->second + xy_corr.y();
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[SLOT] sem buraco para %s: uso o offset tag->buraco aprendido dx=%+.1f "
+                    "dy=%+.1f mm (%zu amostras) no lugar do nominal %+.1f/%+.1f",
+                    frame.c_str(), learned->first * 1000.0, learned->second * 1000.0,
+                    slot_hole_learner_.size(), slot_off_nominal.x() * 1000.0,
+                    slot_off_nominal.y() * 1000.0);
+            }
+        }
     }
 
     /// Yaw atual da LINHA DOS DEDOS (eixo X do TCP projetado no plano XY da
@@ -4960,13 +5386,39 @@ private:
             }
         }
 
+        // Liga o detector de buracos no plano do TAMPO (tag no tampo = cota
+        // da propria tag; tag no fundo = fundo + profundidade da cavidade).
+        publishPpPlaneZ(
+            slot_tf.transform.translation.z +
+            (slot_tag_on_tabletop_ ? 0.0 : slot_cavity_depth_m_));
+
         // slot_p = CENTRO do FUNDO da cavidade (nao a tag): a tag fica no
         // tampo, slot_center_offset_m alem do slot (ver os parametros).
-        auto slot_from_tag = [this](const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
+        auto slot_from_tag = [this, &slot_frame](
+            const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
                 const auto o = manip_task_execution::slotCenterOffset(
                     frameYaw(tf), slot_center_offset_m_, 0.0, -1.0);
-                return framePosition(tf) + Eigen::Vector3d(
+                Eigen::Vector3d p = framePosition(tf) + Eigen::Vector3d(
                     o.dx, o.dy, slot_tag_on_tabletop_ ? -slot_cavity_depth_m_ : 0.0);
+                // Buraco da PP VISTO (marrom no tampo branco): fusao com o
+                // centro real da cavidade, peso slot_hole_weight (2026-11-09;
+                // sem learner neste caminho). Oportunista.
+                double age = -1.0;
+                std::size_t n_holes = 0;
+                const auto hole = nearestLiveHole(p.x(), p.y(), &age, &n_holes);
+                if (hole) {
+                    const auto fused =
+                        manip_task_execution::fuseSlotXy(p.x(), p.y(), *hole, slot_hole_weight_);
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SLOT] %s: buraco visto a dx=%+.1f dy=%+.1f mm do alvo da tag — fusao "
+                        "peso %.2f -> alvo xy [%.4f %.4f] (%zu visto(s), %.1f s).",
+                        slot_frame.c_str(), (hole->x - p.x()) * 1000.0, (hole->y - p.y()) * 1000.0,
+                        slot_hole_weight_, fused.x, fused.y, n_holes, age);
+                    p.x() = fused.x;
+                    p.y() = fused.y;
+                }
+                return p;
             };
         Eigen::Vector3d slot_p = slot_from_tag(slot_tf);
         double slot_yaw = frameYaw(slot_tf);
@@ -6955,6 +7407,19 @@ private:
         // ao placeStackedOnFrame com leitura de camera: nao vale para slot da
         // mesa de precisao, prateleira nem replay por juntas gravadas (AMT1).
         stack_preseen_base_.reset();
+        stack_preseen_hole_.reset();
+        // 2026-11-09: a garra abre ANTES de olhar a base. Ela ia abrir logo
+        // em seguida de qualquer jeito (nada muda quando ja' esta aberta), mas
+        // se o goal comeca com a garra fechada (startup, goal anterior
+        // abortado no pick) o pp_hole_detector le joint6 > -0.12 como
+        // "segurando" e mascara o centro da imagem (dedos fechados), tapando
+        // a cavidade justo na leitura de perto do TCP2.
+        publishStage(goal_handle, "opening_gripper");
+        gripper->setStartStateToCurrentState();
+        gripper->setNamedTarget("gripper_open");
+        if (!planAndExecute(gripper, "open gripper")) {
+            return false;
+        }
         if (stack_observe_before_pick_ && !goal->stack_on.empty() &&
             !isShelfPlaceTarget(table_pose))
         {
@@ -6970,13 +7435,6 @@ private:
             {
                 return false;  // cancelado
             }
-        }
-
-        publishStage(goal_handle, "opening_gripper");
-        gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
-        if (!planAndExecute(gripper, "open gripper")) {
-            return false;
         }
 
         publishStage(goal_handle, "going_pre_container");
