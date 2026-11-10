@@ -20,11 +20,15 @@ velocity_smoother:
     # x,y: 0.20/0.16 -> 0.40 (operador, 2026-09-14). Tem que acompanhar o DWB:
     # o smoother e' o ULTIMO clamp antes do cmd_vel, entao um teto velho aqui
     # anularia o aumento. wz MANTIDO em 0.50 (pedido do operador).
-    max_velocity: [0.40, 0.40, 0.50]
+    # x 0.40 -> 0.60 (operador, 2026-11-07); y fica 0.40 (lateral e' a direcao
+    # que o LiDAR frontal menos enxerga e e' o que satura o ESC na diagonal).
+    max_velocity: [0.60, 0.40, 0.50]
     # x fica em -0.16: re' so' existe para o BackUp dos BTs (0.13), nao para
     # navegar (scan cobre so' a frente). y acompanha o max_vel_y para a lateral
     # ser simetrica nos dois sentidos.
-    min_velocity: [-0.16, -0.40, -0.50]
+    # x -0.16 -> -0.25: re permitida no MPPI ate o piso do ESC (0.25); abaixo
+    # disso o robo nao anda de qualquer jeito. (Tambem e' o teto da re do BackUp.)
+    min_velocity: [-0.25, -0.40, -0.50]
     # x,y dobrados junto com o DWB (2026-09-14). E' AQUI que a rampa acontece de
     # fato: o DWB usa o StandardTrajectoryGenerator, que amostra a faixa inteira
     # de velocidade e so' usa a aceleracao para SIMULAR a trajetoria — quem ramp

@@ -12,7 +12,31 @@ behavior_server:
     # curta (0.20 m) para escapar e melhor que ficar travado. Spin continua
     # DESABILITADO (giro perto de parede ainda arrisca colisao). O BackUp e
     # cego atras (LiDAR so na frente), por isso e curto e so como recovery.
-    behavior_plugins: ["wait", "backup"]
+    # escape_free_space (2026-11-07): behavior proprio (caramelo_behaviors).
+    # Le o custo do footprint ao redor do robo nos costmaps LOCAL (memoria do
+    # LiDAR) e GLOBAL (mesas/paredes do mapa) e anda uma distancia curta na
+    # direcao omni (frente, laterais, diagonais, re) de MENOR custo, checando
+    # colisao a cada ciclo; se nenhuma direcao e' segura, NAO se move e falha.
+    # Substitui a re cega como 1a recovery de escape nas 4 BTs; a action e' a
+    # mesma do DriveOnHeading, entao a BT usa o no nativo com server_name.
+    behavior_plugins: ["wait", "backup", "escape_free_space"]
+    escape_free_space:
+      plugin: "caramelo_behaviors::EscapeFreeSpace"
+      distance: 0.20 # m a andar se a BT mandar target.x <= 0 (a BT manda 0.20).
+      speed: 0.25 # m/s = piso operacional do ESC (abaixo disso nao anda com curva).
+      step: 0.02 # m entre poses avaliadas ao longo de cada direcao (= resolucao do costmap).
+      simulate_ahead_time: 1.0 # s de antevisao de colisao por ciclo (0.25 m a 0.25 m/s).
+      preference_weight: 10.0 # custo extra por "grau" de preferencia: frente 0, diagonal-frente 1, lateral 2, diagonal-re 3, re 4.
+      min_improvement: 10.0 # sem celula letal sob o robo: so' sai se o custo max no fim do curso for pelo menos isto menor que o atual (quando o atual e' alto).
+      high_cost: 128.0 # acima disto o robo esta "em apuros": exige melhora; abaixo, qualquer direcao livre serve.
+      # Celulas letais/desconhecidas que JA estao sob o footprint no inicio sao
+      # toleradas (deslizar para fora e' o objetivo); so' bloqueia celula ruim
+      # NOVA. old_bad_weight penaliza, no fim do curso, cada celula ruim antiga
+      # que ainda ficou sob o robo (prefere a direcao que sai de cima de tudo).
+      old_bad_weight: 40.0
+      exit_cost: 100.0 # para cedo (sucesso) quando nao ha mais celula ruim sob o robo e o custo max cai abaixo disto, depois de >= 5 cm.
+      allow_backward: true # re e diagonais de re entram na lista (checadas no costmap; sem sensor traseiro e' o unico jeito).
+      use_global_costmap: true # tambem checa o costmap global (static + obstaculos) — mesas do mapa atras do robo.
     wait:
       plugin: "nav2_behaviors::Wait"
     backup:

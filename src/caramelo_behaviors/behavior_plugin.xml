@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="caramelo_escape_free_space_behavior">
+    <class type="caramelo_behaviors::EscapeFreeSpace" base_class_type="nav2_core::Behavior">
+      <description>Escape omni guiado pelo costmap local+global: anda na direcao de menor custo com checagem de colisao do footprint; nao se move se nenhuma direcao e segura.</description>
+    </class>
+  </library>
+</class_libraries>

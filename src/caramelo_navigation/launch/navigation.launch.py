@@ -212,6 +212,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         package="nav2_controller",
         executable="controller_server",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "controller_server.yaml"),
             navigation_override_params,
@@ -227,6 +229,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="planner_server",
         name="planner_server",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "planner_server.yaml"),
             navigation_override_params,
@@ -239,6 +243,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="behavior_server",
         name="behavior_server",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "behavior_server.yaml"),
             {"use_sim_time": use_sim_time},
@@ -253,6 +259,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="bt_navigator",
         name="bt_navigator",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "bt_navigator.yaml"),
             {"use_sim_time": use_sim_time},
@@ -269,6 +277,8 @@ def _create_navigation_stack(context, *args, **kwargs):
                 executable="route_server",
                 name="route_server",
                 output="screen",
+                respawn=True,
+                respawn_delay=2.0,
                 parameters=[
                     os.path.join(caramelo_navigation_pkg, "config", "route_server.yaml"),
                     navigation_override_params,
@@ -284,6 +294,8 @@ def _create_navigation_stack(context, *args, **kwargs):
                 executable="waypoint_follower",
                 name="waypoint_follower",
                 output="screen",
+                respawn=True,
+                respawn_delay=2.0,
                 parameters=[
                     os.path.join(caramelo_navigation_pkg, "config", "waypoint_follower.yaml"),
                     {"use_sim_time": use_sim_time},
@@ -296,6 +308,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="smoother_server",
         name="smoother_server",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "smoother_server.yaml"),
             {"use_sim_time": use_sim_time},
@@ -307,6 +321,8 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="velocity_smoother",
         name="velocity_smoother",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "velocity_smoother.yaml"),
             {"use_sim_time": use_sim_time},
@@ -322,12 +338,19 @@ def _create_navigation_stack(context, *args, **kwargs):
         executable="collision_monitor",
         name="collision_monitor",
         output="screen",
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             os.path.join(caramelo_navigation_pkg, "config", "collision_monitor.yaml"),
             {"use_sim_time": use_sim_time},
         ],
     )
 
+    # respawn=True nos servers (2026-11-07): se um server do Nav2 cair (crash,
+    # kill por engano), o launch o sobe de novo em 2 s e o lifecycle manager,
+    # ao ver o bond voltar dentro de bond_respawn_max_duration, refaz o
+    # STARTUP de toda a pilha sozinho. Sem isso a queda de UM server deixava a
+    # navegacao inteira inativa ate relancar tudo (aconteceu em 2026-11-07).
     nav2_lifecycle_manager = Node(
         package="nav2_lifecycle_manager",
         executable="lifecycle_manager",
@@ -337,6 +360,8 @@ def _create_navigation_stack(context, *args, **kwargs):
             {"node_names": lifecycle_nodes},
             {"use_sim_time": use_sim_time},
             {"autostart": True},
+            {"attempt_respawn_reconnection": True},
+            {"bond_respawn_max_duration": 30.0},
         ],
     )
 

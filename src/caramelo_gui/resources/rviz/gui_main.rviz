@@ -193,7 +193,8 @@ Visualization Manager:
       Size (m): 0.05000000074505806
       Style: Flat Squares
       Topic:
-        Depth: 5
+      # Depth 5 -> 50 (2026-11-07): e' a fila do filtro de TF do display; com o TF odom->base chegando atrasado, 5 scans (0.3 s) estouravam e o RViz logava "queue is full".
+        Depth: 50
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last

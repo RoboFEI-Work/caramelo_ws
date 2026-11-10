@@ -88,6 +88,13 @@ controller_server:
       # trava a direcao). O shim gira NO LUGAR pelo lado MAIS CURTO quando o
       # erro de rumo passa de angular_dist_threshold, e so entao entrega ao
       # DWB. rotate_to_goal_heading tambem faz o giro final pelo lado curto.
+      #
+      # DIVISAO DE TRABALHO shim <-> DWB (estudo DWB 2026-11-07, Nav2 1.3.13):
+      # erro de rumo > 45 graus = shim gira parado ate 0.15 rad; erro < 45
+      # graus = DWB corrige ANDANDO (PathAlign); dentro de 0.10 m do goal =
+      # shim faz o yaw final (rotate_to_goal_heading usa a tolerancia XY do
+      # goal checker ATIVO, 0.10, nao o xy_goal_tolerance do DWB). O bloco do
+      # shim NAO mudou neste estudo (validado em campo).
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "dwb_core::DWBLocalPlanner" # Controlador principal por amostragem para mecanum.
       # REVERTIDO 30->45 graus: com 30 o shim engajava perto da bancada, a
@@ -96,7 +103,7 @@ controller_server:
       # A ronda completa validada rodou com 45. O giro-pelo-lado-longo ocasional
       # do DWB abaixo de 45 e um custo aceito por ora.
       angular_dist_threshold: 0.785
-      forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo.
+      forward_sampling_distance: 0.5 # Ponto do caminho usado para medir o rumo (medido a partir do INICIO do path).
       # 0.5 -> 0.35 (2026-08-18, oscilacao do giro final no staging): o shim e
       # bang-bang (comanda a vel cheia ate o disengage) e o ESC NAO freia no
       # neutro (coast ~0.5s) -> a 0.5 rad/s o overshoot medado era ~14 graus,
@@ -106,199 +113,465 @@ controller_server:
       # ciclo) o overshoot estimado cai p/ ~7-9 graus < janela. Calibrar em
       # campo +-0.02; NAO descer de 0.34.
       rotate_to_heading_angular_vel: 0.35
-      # NOVO (2026-08-18): default era ~0.3925 (22.5 graus) — o shim soltava o
+      # NOVO (2026-08-18): default era ~0.3925 (22.5 graus) - o shim soltava o
       # giro AINDA FORA da janela de 11.5 e o DWB tinha que fechar 22.5->11.5
-      # com min_speed_theta 0.34 (grosso demais) — a "terra de ninguem" onde a
+      # com min_speed_theta 0.34 (grosso demais) - a "terra de ninguem" onde a
       # oscilacao vivia. Com 0.15 (8.6 graus, DENTRO da janela de 0.20) o
       # proprio shim termina o giro e o checker fecha direto.
       angular_disengage_threshold: 0.15
       # 2.0 -> 7.0 (2026-08-03): o shim acelera em degraus de accel/20Hz A
-      # PARTIR DO ODOM. Com 2.0 o degrau era 0.1 rad/s — dentro da zona neutra
+      # PARTIR DO ODOM. Com 2.0 o degrau era 0.1 rad/s - dentro da zona neutra
       # do driver (<0.5x piso = 0.157) -> pulso neutro, robo parado, odom 0,
       # shim repete 0.1 = DEADLOCK (visto no gauntlet: "Failed to make
       # progress" em loop a caminho do FINISH). Com 7.0 o 1o degrau e 0.35 >=
       # piso 0.315: o giro parte no primeiro ciclo.
       max_angular_accel: 7.0
-      simulate_ahead_time: 1.0 # Checa colisao do giro no costmap antes de girar.
+      simulate_ahead_time: 1.0 # Checa colisao do giro no costmap antes de girar (so bloqueia LETHAL 254; o giro FINAL, |erro| < 45 graus, sai da checagem no 1o passo).
       rotate_to_goal_heading: true # Giro final do goal tambem pelo lado curto.
-      debug_trajectory_details: true # Publica detalhes das trajetorias para depuracao.
-      # RE PROIBIDA: o scan util cobre so os 180 graus FRONTAIS (scan_normalizer
-      # na Pi corta a metade traseira). Dar re e andar cego — houve colisao
-      # traseira real em teste. Se um dia houver sensor traseiro, reavaliar.
-      min_vel_x: 0.0 # Velocidade minima em x (sem re).
+
+      # ---------------- DWB (dwb_core::DWBLocalPlanner) ----------------
+      # Quando NENHUMA trajetoria e legal, o log diz "Could not find a legal
+      # trajectory: <critico>/<motivo>: N%": e assim que se diagnostica o
+      # "congela" (queixa 4): PathDist/GoalDist "Hits Obstacle" = centro do
+      # robo em celula >= 253; ObstacleFootprint "Hits Obstacle" = perimetro
+      # em LETHAL 254. Barato; fica ligado em competicao.
+      debug_trajectory_details: true
+      # Grade de custo dos MapGridCritics (PathDist/GoalDist) em /cost_cloud:
+      # mostra no RViz o anel 253 onde o centro do robo e rejeitado. Ligar
+      # (true) SO durante o teste de tuning: 62.5k pontos por ciclo pesam no
+      # Wi-Fi. Nome conferido em libdwb_core.so (2026-11-07).
+      publish_cost_grid_pc: false
+      # Default explicitado (2026-11-07) porque muda a LEITURA dos criticos: o
+      # plano transformado vai do ponto mais proximo do robo ate 2.0 m a frente
+      # (< meia-janela do costmap local 5 m / 2 = 2.5 m); o "goal" que GoalDist
+      # e GoalAlign enxergam e a ULTIMA pose desse trecho (cenoura a 2 m), nao o
+      # goal real. So o RotateToGoal e o zero_scale do PathAlign usam o goal real.
+      forward_prune_distance: 2.0
+      # Default explicitado (2026-11-07), ESSENCIAL para o piso do ESC: o
+      # comando publicado e a AMOSTRA crua da grade (>= 0.131 m/s); quem rampa
+      # e o velocity_smoother (OPEN_LOOP, mesmos 0.70/-0.90/2.0). Com true o
+      # DWB publicaria a velocidade limitada pela aceleracao no 1o passo da
+      # simulacao (0.70/20 Hz = 0.035 m/s), abaixo do piso em TODO ciclo.
+      limit_vel_cmd_in_traj: false
+      # SEM RE NO DWB: o scan util cobre so os 180 graus FRONTAIS (scan_normalizer
+      # na Pi corta a metade traseira) e o tuning do DWB foi validado sem re
+      # (houve colisao traseira real em teste). A re "permitida mas nao
+      # abusada" (operador, 2026-11-07) fica no perfil MPPI, que tem o
+      # PreferForwardCritic para dosar; o PreferForwardCritic do DWB tambem
+      # castiga andar DE LADO (vx < 0.1 e |wz| < 0.2 = penalty), hostil ao
+      # mecanum - nao usar. Se o DWB precisar de re, reavaliar com cuidado.
+      min_vel_x: 0.0 # Velocidade minima em x (sem re). Mantem a amostra vx=0 p/ girar no lugar e lateral puro.
       # 0.20 -> 0.40 (operador, 2026-09-14; 0.70 foi testado e ficou rapido
       # demais). Fundo de escala do ESC = 20.06 rad/s de roda = 1.003 m/s de
       # corpo em eixo puro. A 0.40 o pior caso fica FOLGADO: eixo puro 8.0 rad/s
       # (40% do FS), diagonal de modulo 0.40 11.3 rad/s (56%), e diagonal com
       # giro maximo junto 15.2 rad/s (76%). Ou seja, nao satura em combinacao
-      # nenhuma — o que a 0.70 acontecia (118% do FS na diagonal com giro), e
+      # nenhuma - o que a 0.70 acontecia (118% do FS na diagonal com giro), e
       # como o clamp do driver e' POR RODA e nao proporcional, saturar fazia o
       # robo sair da direcao comandada.
-      max_vel_x: 0.40 # Velocidade maxima em x.
+      # 0.40 -> 0.60 (operador, 2026-11-07; ver conta do ESC no bloco do MPPI).
+      # Conta refeita para 0.60 (2026-11-07): a pior amostra LEGAL (vx 0.467,
+      # vy 0.40, wz 0.50; hypot 0.615 > 0.60 ja e invalida, a valida e vx 0.447)
+      # pede roda 20.8 rad/s = 104% do FS -> clamp de 4% numa roda por 1 ciclo,
+      # so em diagonal cheia + giro cheio: rara. Se aparecer desvio de direcao
+      # nessa manobra, a opcao do OPERADOR e max_vel_y 0.30 (101%), dinamico
+      # (ros2 param set). NAO usar max_speed_xy 0.57 para isso: invalida a
+      # reta a 0.60 (hypot 0.60 > 0.57) e derruba o cruzeiro para 0.533.
+      max_vel_x: 0.60 # Velocidade maxima em x.
       min_vel_y: -0.40 # Velocidade minima lateral (simetrico com max_vel_y).
-      max_vel_y: 0.40 # Velocidade maxima lateral.
+      max_vel_y: 0.40 # Velocidade maxima lateral (pedido do operador; 0.30 e a opcao dele se a diagonal+giro desviar).
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
       # Pisos casados com o ESC (2026-08-03, firmware novo: piso 650rpm =
       # 0.1215 m/s / 0.315 rad/s de corpo, EXECUTADO exato apos o fix do mapa).
       # min_speed = 1.08x o piso fisico: o DWB nunca emite comando que o driver
       # nao consiga executar (abaixo disso as rodas zeravam e o robo congelava
       # com "Failed to make progress").
-      min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s.
+      # MANTIDO 0.131 (estudo DWB 2026-11-07) - NAO subir para 0.25. Regra do
+      # isValidSpeed (kinematic_parameters.hpp): amostra INVALIDA so se
+      # hypot(vx,vy) < min_speed_xy E |wz| < min_speed_theta; (0,0,0) NUNCA e
+      # amostrada, o DWB nao sabe "parar". Reto 0.131 e executavel (4 rodas
+      # iguais a 2.62 rad/s >= piso 2.43). O piso "operacional" 0.25 do
+      # operador e de comando COM CURVA e e atendido pela grade de vx abaixo
+      # (0.267 sai exato ate wz 0.377; 0.333 com qualquer wz). Por que nao
+      # 0.25: a amostra translacional mais lenta anda v*sim_time e passa do
+      # goal; PathDist 12 + GoalDist 9 = 21 pts/m de overshoot contra girar
+      # parado (9*d + 0.35): o robo prefere girar quando d < (21*v*T-0.35)/30.
+      # Hoje (v 0.171, T 1.7) d* = 0.19 m e o goal fecha (coast do ESC + ruido
+      # do AMCL); com 0.25 d* = 0.345 m > janela 0.10 do checker = o goal NUNCA
+      # fecharia (mesmo mecanismo do bug de 2026-08-03). O residuo de combos
+      # lentas com giro (vx 0.13-0.20 + wz alto -> roda em neutro/arredondamento)
+      # e limite do isValidSpeed, que so conhece modulo; resolve no firmware
+      # (KI/KP), nao aqui. Dinamico: ros2 param set /controller_server
+      # DWBHolonomic.min_speed_xy 0.25 testa ao vivo e 0.131 reverte.
+      min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s (reto executa exato).
       # Casado com max_vel_x/y: este e' o limite do MODULO e, se ficasse no valor
       # antigo, os tetos por eixo acima nao teriam efeito nenhum.
-      max_speed_xy: 0.40 # Limite do modulo da velocidade linear.
-      min_speed_theta: 0.34 # 1.08 x piso fisico 0.315 rad/s.
+      max_speed_xy: 0.60 # Limite do modulo da velocidade linear (0.40 -> 0.60, 2026-11-07). NAO baixar: invalida a reta 0.60.
+      min_speed_theta: 0.35 # 1.11 x piso fisico 0.315 rad/s de corpo (0.34 -> 0.35, operador 2026-11-07; = giro do shim). Com vtheta_samples 21 existe amostra EXATA em 0.35.
       # 0.35 -> 0.70 e -0.45 -> -0.90 (operador, 2026-09-14). MANTIDOS quando o
       # teto caiu de 0.70 para 0.40 m/s: o que incomodava era a velocidade de
       # cruzeiro, nao a resposta. Com 0.70 m/s2 o robo chega aos 0.40 em 0,57 s /
-      # 0,11 m — exatamente a mesma prontidao que a config original tinha para
+      # 0,11 m - exatamente a mesma prontidao que a config original tinha para
       # chegar aos 0.20 (0,57 s), agora com o dobro da velocidade final. Freada:
       # 0,44 s / 0,09 m. Razao decel/acel (1,29) mantida.
       # LIMITE REAL: o PI de velocidade do ESC entrega ~1 A dos 4 A disponiveis
       # (KI=10 no firmware). Rampa mais agressiva que isto so' faz o comando
-      # descolar da velocidade executada — o destravamento de verdade e' o
+      # descolar da velocidade executada - o destravamento de verdade e' o
       # KI 1000 / KP 6200 ainda por gravar.
+      # Nota (headers, 2026-11-07): o gerador Standard chama o iterador com
+      # dt = sim_time (1.7 s), entao acc*dt = 1.19 m/s cobre a faixa toda e a
+      # GRADE de amostras e sempre a cheia [0, 0.60] (comportamento "DWB", nao
+      # "DWA"); a limitacao de aceleracao entra so na simulacao das poses
+      # (projectVelocity) e no velocity_smoother, que usa os MESMOS valores.
       acc_lim_x: 0.70 # Aceleracao maxima em x.
       decel_lim_x: -0.90 # Desaceleracao maxima em x.
       acc_lim_y: 0.70 # Aceleracao maxima lateral.
       decel_lim_y: -0.90 # Desaceleracao maxima lateral.
       acc_lim_theta: 2.0 # Aceleracao angular maxima para girar com mais decisao.
       decel_lim_theta: -2.0 # Desaceleracao angular maxima para parar o giro com firmeza.
-      vx_samples: 8 # Amostras de velocidade em x.
-      vy_samples: 8 # Amostras de velocidade lateral.
-      vtheta_samples: 20 # Amostras angulares.
-      # 8x8x20 = 1280 trajetorias/ciclo (2026-07-21: o laptop nao segurava 20Hz
-      # com 3000; 1280 corta ~57% do custo do loop). Historico: 20x20x30=12000
-      # dava ~3Hz; 10x10x30=3000 dava ~9-13Hz com RViz aberto.
+      # 8 -> 10 (estudo DWB 2026-11-07, PASSO 2 do A/B): a grade e sempre a
+      # cheia [0, 0.60]; passo 0.60/9 = 0.0667 -> {0, 0.067, 0.133, 0.200,
+      # 0.267, 0.333, 0.400, 0.467, 0.533, 0.600}. Com 8 o passo era 0.0857 e a
+      # reta mais lenta LEGAL era 0.171 (0.086 < min_speed_xy): nao existia
+      # aproximacao do goal entre 0.131 e 0.17 e o stall d* ficava em 0.19 m.
+      # Agora a mais lenta e 0.133 (>= 0.131; roda 2.67 >= 2.43, executavel;
+      # d* cai para 0.146 m sem mexer em sim_time) e 0.267/0.333 caem
+      # exatamente nos niveis em que toda curva sai inteira no ESC. NAO usar
+      # 7 (passo 0.10): com min_speed_xy 0.131 a reta mais lenta viraria 0.20
+      # (d* 0.226, PIOR que hoje). NAO dinamico: exige relancar a navegacao.
+      vx_samples: 10 # Amostras de velocidade em x.
+      vy_samples: 8 # Amostras de velocidade lateral (+ zero extra do iterador = 9: 0, +-0.057, +-0.171, +-0.286, +-0.40). Mantido: nenhuma grade lateral elimina combos sub-piso.
+      # 20 -> 21 (estudo DWB 2026-11-07, PASSO 2): passo 1.0/20 = 0.05 inclui
+      # EXATAMENTE 0.35 = min_speed_theta = giro validado do shim (roda 2.7
+      # rad/s >= piso 2.43). Com 20 o passo era 0.0526 e a rotacao pura mais
+      # lenta LEGAL era 0.395 (0.342 ficava abaixo de 0.35). Rotacoes puras
+      # legais agora: 0.35, 0.40, 0.45, 0.50. Pode aparecer uma 22a amostra ~0
+      # por arredondamento binario do iterador: inofensiva. NAO dinamico.
+      vtheta_samples: 21 # Amostras angulares (0, +-0.05 ... +-0.50).
+      # 10 x 9 x 21 = 1890 trajetorias/ciclo (antes 8x9x21 = 1512 reais; o
+      # "1280" do comentario antigo nao contava os zeros que o iterador insere
+      # quando o intervalo cruza zero). Historico do laptop (2026-07-21):
+      # 20x20x30=12000 dava ~3Hz; 10x10x30=3000 dava ~9-13Hz com RViz aberto.
+      # No PC do robo (Core 7 150U, 12 threads) a CPU nao e mais gargalo;
+      # vigiar "Control loop missed its desired rate" no log mesmo assim.
+      # 1.7 MANTIDO (estudo 2026-11-07): a 0.60 m/s a ultima pose fica ~1.02 m
+      # a frente - e' nela que o ObstacleFootprint (abaixo) le o custo, ou seja,
+      # e' o horizonte de ANTECIPACAO de obstaculo; cabe no path podado (2.0 m)
+      # e na meia-janela do costmap (2.5 m) e cobre a freada 0.60->0 (0.20 m).
+      # RESERVA 1.2 s (d* da aproximacao cai p/ 0.10 m) so se, com vx_samples
+      # 10, o robo ainda hesitar a 10-20 cm do goal. Nao descer de 0.9: abaixo
+      # de 0.86 s (0.70*T < 0.60) a grade deixa de ser cheia.
       sim_time: 1.7 # Horizonte de simulacao em segundos.
+      # 0.05 MANTIDO (estudo 2026-11-07): o ObstacleFootprint rasteriza o
+      # perimetro so nas poses simuladas (21 a 0.60 m/s); uma celula LETHAL
+      # isolada entre duas poses (pe de mesa de 2-4 cm) pode escapar numa
+      # avaliacao, mas o ciclo seguinte (robo ~3 cm adiante) desloca o raster,
+      # a inflacao (253 ate 0.195 m) ja custa 5 pts na ultima pose com o
+      # scale 1.0 e o collision_monitor frontal e a ultima barreira. 0.02 (=
+      # resolucao) daria 51 poses x 1890 = ~96k poses/ciclo, 2.7x o de hoje:
+      # risco de perder os 20 Hz. RESERVA 0.03 (34 poses) se houver contato com
+      # pe de mesa fino E o log nunca mostrar "missed its desired rate".
       linear_granularity: 0.05 # Passo linear da simulacao.
-      angular_granularity: 0.025 # Passo angular da simulacao.
+      angular_granularity: 0.025 # Passo angular da simulacao (0.025 rad x raio circunscrito 0.40 m = 1 cm de varredura do canto por passo).
       transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
       # 0.05 -> 0.03 (2026-08-03): precisa ficar ESTRITAMENTE MENOR que a
-      # tolerancia de QUALQUER goal checker em uso (position 0.04, general
-      # 0.10) — senao o RotateToGoal engaja a fase "slowing" antes do checker
+      # tolerancia de QUALQUER goal checker em uso (position 0.10, general
+      # 0.10) - senao o RotateToGoal engaja a fase "slowing" antes do checker
       # fechar o goal, e com min_speed_xy 0.131 nao existe amostra translacional
       # "mais lenta que a atual" legal: o robo gira parado na borda do anel.
+      # Consequencia (desejada): o RotateToGoal e INERTE na pratica (so entra
+      # se o robo passar a 3 cm do goal); quem faz o yaw final e o shim.
       xy_goal_tolerance: 0.03
-      yaw_goal_tolerance: 0.20 # Coerente com o general_goal_checker (11.5 graus).
-      trans_stopped_velocity: 0.03 # Exige quase parar antes do RotateToGoal dominar.
-      short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores.
-      stateful: true # Mantem estado ao aproximar do goal.
-      # ObstacleFootprint (nao BaseObstacle): avalia o FOOTPRINT real 0.68x0.39 m
-      # (x -0.285..+0.395, y +-0.195, circunscrito 0.40 m; o "0.79x0.39" antigo
-      # estava errado; conferido no footprint do costmap local, 2026-10-26, F24)
-      # contra o costmap, em vez do custo no CENTRO do robo. Com BaseObstacle o
-      # centro entrava na zona inflada perto de caixas e TODAS as trajetorias
-      # viravam invalidas — robo congelava a ~0.3 m do obstaculo.
+      # REMOVIDOS (estudo DWB 2026-11-07): "yaw_goal_tolerance: 0.20" e
+      # "stateful: true" NAO existem no DWB 1.3.13 - nenhum critico/plugin le
+      # esses nomes (conferido nos headers e no strings de libdwb_core.so,
+      # libdwb_critics.so e libstandard_traj_generator.so; so existem
+      # .xy_goal_tolerance e .trans_stopped_velocity). Eram ignorados em
+      # silencio e sugeriam um comportamento que nao existe. O yaw final e do
+      # general_goal_checker (0.20) + shim; "stateful" so existe nos checkers.
+      trans_stopped_velocity: 0.03 # Lido pelo RotateToGoal: exige quase parar antes de so girar (inerte junto com xy 0.03).
+      short_circuit_trajectory_evaluation: true # Interrompe trajetorias ja piores (scores sao custos >= 0: resultado identico, so economiza CPU; a ORDEM da lista critics = ordem de avaliacao).
+      # ObstacleFootprint (nao BaseObstacle): avalia o PERIMETRO do footprint real
+      # 0.68x0.39 m (x -0.285..+0.395, y +-0.195, circunscrito 0.40 m; o
+      # "0.79x0.39" antigo estava errado; conferido no footprint do costmap
+      # local, 2026-10-26, F24) contra o costmap, em vez do custo no CENTRO do
+      # robo. Rejeita so LETHAL 254 (e UNKNOWN 255) em qualquer pose; a borda
+      # inscrita 253 e permitida. Com BaseObstacle o centro em 253 era ilegal e
+      # TODAS as trajetorias viravam invalidas - robo congelava a ~0.3 m.
+      # ATENCAO (map_grid.hpp): PathDist/GoalDist AINDA rejeitam qualquer pose
+      # com o CENTRO em celula >= 253 (stop_on_failure fixo no fonte) - e' a
+      # origem real do "congela" (queixa 4) quando algo entra a < 0.195 m do
+      # centro (contato lateral/traseiro real, cego para o LiDAR, ou marca
+      # fantasma sem clearing). Nao ha parametro que relaxe isso; a defesa e'
+      # a repulsao do ObstacleFootprint (nao chegar la) e a recovery nova.
+      # ORDEM: criticos baratos/filtro primeiro (RotateToGoal, Oscillation,
+      # ObstacleFootprint rejeitam cedo) e os MapGrid depois (short_circuit).
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
-      ObstacleFootprint.scale: 0.02 # Peso para custo de obstaculos.
+      # 0.02 -> 1.0 (estudo DWB 2026-11-07, PASSO 1 do A/B; queixas 1 e 2).
+      # FORMULA (obstacle_footprint.hpp l.75): getScale() = resolution * scale
+      # = 0.02 * scale por unidade de custo (0..253) do perimetro na ULTIMA
+      # pose. Com 0.02 o fator era 0.0004 e a penalidade MAXIMA possivel era
+      # 253*0.0004 = 0.10 pt, contra 0.24 pt por CELULA (2 cm) de desvio do
+      # PathDist: 2 cm de aderencia valiam mais que 35 cm de folga ate a mesa
+      # -> o critico so filtrava LETHAL, zero repulsao. Com 1.0 (fator 0.02):
+      # 5.06 pt na borda inscrita (folga <= 0.195 m), 3.7 a 0.30 m, 2.7 a
+      # 0.40 m, 1.7 a 0.55 m, 0.96 a 0.75 m (custo = 252*exp(-3*(d-0.195)) da
+      # inflacao 0.75/3.0 do costmap local); gradiente 15 pts/m na borda e
+      # 11 pts/m a 0.30 m. O QUE ISSO FAZ (honesto): a puxada LATERAL total
+      # ao path e ~32 pts/m (PathDist 12 + GoalDist 9 + PathAlign 7 + GoalAlign
+      # 4, todos Manhattan), entao 1.0 NAO tira o robo do path; ele (a) freia
+      # progressivamente perto de mesa (ultima pose cara), (b) entre trajetorias
+      # de mesma aderencia escolhe a que nao varre o nariz na mesa e (c) da
+      # ~5-10 cm a mais de folga ao contornar caixa/pessoa fora do mapa. TETO
+      # 1.5, e so se o staging a 0.30 m da bancada continuar fechando 3/3: perto
+      # do goal a puxada AO LONGO do path e so GoalDist 9 + GoalAlign 4 = 13/m
+      # (o PathDist nao puxa para frente); empurrao = 0.06*S*custo(d) ->
+      # S=1.0 equilibra a 0.245 m da bancada (chega), S=1.5 a ~0.38 m (para
+      # ~8 cm antes do goal: marginal), S>=2.0 a >= 0.5 m (goal NUNCA fecha,
+      # "Failed to make progress" no staging). NAO dinamico: YAML + relancar.
+      ObstacleFootprint.scale: 1.0 # Repulsao real: custo do perimetro na ultima pose, 0.02 pt por unidade de custo.
+      # Default explicitado (2026-11-07): false = so a ultima pose conta (max
+      # do perimetro nela). true somaria as ~23 poses, favoreceria trajetorias
+      # LENTAS (menos poses) e exigiria scale ~30x menor. NAO ligar.
+      ObstacleFootprint.sum_scores: false
+      # MapGrid (PathDist, GoalDist, PathAlign, GoalAlign): getScale() =
+      # resolution * 0.5 * scale = 0.01 * scale por CELULA de 2 cm (map_grid.hpp
+      # l.69) -> 0.5 * scale por METRO de desvio Manhattan. Aggregation "last":
+      # so a ultima pose (1.7 s) pontua; stop_on_failure (fixo) rejeita centro
+      # em celula >= 253 em qualquer pose no PathDist/GoalDist.
+      # PathAlign 14 -> 7 pts/m medido no ponto 0.2 m a frente da ultima pose:
+      # torque de rumo = 0.5*scale*fpd*sin(erro) = 1.4 (1.0 pt a 45 graus, 0.5
+      # a 20): fraco contra Twirling 0.5 e PathDist de curva (~1.8) - numa base
+      # omni sai mais barato andar de LADO torto do que girar (meio cego com
+      # LiDAR frontal). MANTIDO 14 no pacote inicial: a queixa 3 ("demora a
+      # virar PERTO de obstaculo") e geometrica - o nariz de 0.395 m varre
+      # LETHAL e o ObstacleFootprint rejeita as trajetorias com wz - e melhora
+      # com folga (PASSO 1), nao com PathAlign. PASSO 3 OPCIONAL: 14 -> 24
+      # (12 pts/m, torque 2.4) so se "demora a virar" persistir apos 1-2;
+      # sobe a puxada lateral total p/ ~37/m (reduz a repulsao) e muda como o
+      # robo percorre trechos laterais do lattice (vira o nariz em vez de
+      # andar de lado). NAO dinamico.
       PathAlign.scale: 14.0 # 8->14: alinha o rumo ao path mais cedo (menos arco tipo carro / "anda reto demais").
+      # MANTER 0.2: ponto a frente + anel inscrito (0.195) = 0.395 = exatamente
+      # o nariz real do footprint. Se o ponto cair em celula >= 253 o score e
+      # 62500*0.14 = 8750 (quase ilegal); com 0.325 nasceria um "nariz virtual"
+      # 12.5 cm alem do real que castiga toda trajetoria apontada para mesa/
+      # bancada a < 0.52 m (staging, passagens apertadas).
       PathAlign.forward_point_distance: 0.2 # 0.1->0.2: antecipa a curva olhando um pouco mais a frente.
-      GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal.
+      GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal (4 pts/m no ponto 0.1 m a frente; o "goal" aqui e a cenoura a 2 m).
       GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
-      PathDist.scale: 24.0 # Peso para manter proximo ao path.
-      GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal.
+      PathDist.scale: 24.0 # Peso para manter proximo ao path (12 pts/m de desvio Manhattan da ULTIMA pose; critico dominante).
+      GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal (9 pts/m ate a cenoura a 2 m; e' o UNICO incentivo de velocidade: 0.50 vs 0.60 por 1.7 s = 1.5 pt).
+      # RotateToGoal: scale*|erro de yaw| (32 pts/rad) SO dentro de
+      # xy_goal_tolerance 0.03; fora da janela devolve 0. INERTE por construcao
+      # (o checker fecha a 0.10 antes; o yaw final e do shim). Fica como guarda
+      # do caso raro de entrar em 3 cm ainda andando. NAO subir xy_goal_tolerance.
       RotateToGoal.scale: 32.0 # Fortalece giro no proprio eixo para alinhar yaw final.
       RotateToGoal.slowing_factor: 8.0 # 4->8: freia mais cedo no giro final (limita a vel angular perto do alvo, evita passar do yaw).
       RotateToGoal.lookahead_time: -1.0 # Usa a simulacao completa no giro final.
+      # Oscillation em defaults (0.05 m / 0.2 rad / x_only_threshold 0.05): so
+      # trava o SINAL de wz/vy com o robo parado (|vx| <= 0.05, handover do
+      # shim) e solta em 5 cm ou 0.2 rad - nao e causa de "demora a virar".
+      # Nao configurar.
       # ADR-01 item 4: numa base mecanum o Twirling penaliza girar quando daria
       # para transladar (inclusive de lado), evitando que o DWB "rode como
       # diferencial". Escala BAIXA para nao brigar com o RotateToGoal (32.0) do
-      # alinhamento final. AJUSTAR_NO_ROBO: subir se o robo girar demais no meio
-      # do caminho, baixar se demorar a alinhar o yaw no goal.
+      # alinhamento final. score = |wz| -> no maximo 0.5 pt: so desempata.
+      # AJUSTAR_NO_ROBO: subir se o robo girar demais no meio do caminho,
+      # baixar se demorar a alinhar o yaw no goal.
       # 2.0 -> 1.0: com a re proibida, girar virou obrigatorio para progredir;
       # operador reportou "demora pra virar" perto de obstaculo.
       Twirling.scale: 1.0 # Peso (baixo) contra giro desnecessario no meio do trajeto.
 
     MPPIHolonomic:
-      plugin: "nav2_mppi_controller::MPPIController" # Experimental para mecanum.
-      time_steps: 40 # 56->40 (horizonte 2.0s; CPU do laptop nao segura 2000x56).
-      model_dt: 0.05 # Intervalo entre pontos em segundos.
-      batch_size: 1200 # 2000->1200 (CPU; DWB com 1280 trajetorias roda ~15-20Hz aqui).
-      iteration_count: 1 # Iteracoes de otimizacao por ciclo.
-      vx_std: 0.1 # Ruido de amostragem em vx.
-      vy_std: 0.1 # Ruido de amostragem em vy.
-      wz_std: 0.2 # Ruido de amostragem em wz.
-      vx_max: 0.2 # Velocidade maxima em x.
-      vx_min: 0.0 # Sem re: scan cobre so a frente (mesmo racional do DWB).
-      vy_max: 0.2 # Velocidade maxima lateral.
-      wz_max: 1.0 # Velocidade angular maxima.
-      ax_max: 0.5 # Aceleracao maxima em x.
-      ax_min: -0.5 # Desaceleracao maxima em x.
-      ay_max: 0.5 # Aceleracao maxima lateral.
-      ay_min: -0.5 # Desaceleracao maxima lateral.
-      az_max: 1.5 # Aceleracao angular maxima.
-      prune_distance: 1.7 # Remove trecho distante atras do robo.
-      transform_tolerance: 0.6 # Atraso de TF aceito em segundos.
-      temperature: 0.3 # Explora trajetorias menos provaveis.
-      gamma: 0.015 # Peso do esforco de controle.
+      # REFEITO (2026-11-07). Em julho o MPPI "andava mas rastejava / colapsava
+      # para ~0" — era no NOTEBOOK (loop a 8-13 Hz, model_dt 0.05 assume 20 Hz)
+      # com vx_max 0.2, a 1.6x o piso do ESC. No PC do robo (Core 7 150U, 12
+      # threads) a CPU deixou de ser gargalo. Selecao: nav_profile:=mppi no
+      # launch (BT caramelo_lattice_mppi.xml / _through_mppi.xml); o DWB
+      # continua o titular com nav_profile:=dwb (default).
+      #
+      # SEM RotationShim (decisao do operador, 2026-11-07): o MPPI trabalha
+      # inteiro. O guia do Nav2 diz que com planner cinematicamente viavel
+      # (SmacLattice) o shim nao e' necessario; o modelo Omni gira no lugar
+      # sozinho — PathAngleCritic alinha o rumo no inicio, GoalAngleCritic fecha
+      # o yaw no fim. O shim existe no DWB porque o DWB nao girava; o MPPI gira.
+      # ATENCAO no teste: o giro final passa pelo piso do ESC (0.315 rad/s,
+      # neutro < 0.157). Se o robo "cacar" o yaw na chegada, a alternativa e'
+      # voltar ao embrulho do DWB (plugin RotationShim + primary_controller
+      # MPPIController + os 7 parametros do shim copiados do DWBHolonomic).
+      plugin: "nav2_mppi_controller::MPPIController" # Controlador preditivo por amostragem (mecanum).
+      # Horizonte 50 x 0.05 = 2.5 s -> ~1.5 m a 0.60 m/s (cabe na meia-janela de
+      # 2.5 m do costmap local 5x5). model_dt TEM que ser
+      # 1/controller_frequency (20 Hz). 2000 amostras: o nav2 mede 1000 @ 50 Hz
+      # num i5 de 4a geracao; aqui a 20 Hz sobra folga. Se o loop do controller
+      # cair abaixo de 20 Hz (ver "Control loop missed its desired rate" no log),
+      # baixar batch_size para 1500 ANTES de mexer em qualquer outra coisa.
+      time_steps: 50
+      model_dt: 0.05
+      batch_size: 2000
+      iteration_count: 1 # Recomendacao do nav2: 1 iteracao e batch maior.
+      # Desvio-padrao das amostras: ~1/3 do fundo de escala para o leque cobrir
+      # o range inteiro em poucos ciclos (0.1 com vx_max 0.2 era o que fazia o
+      # MPPI "rastejar": o otimo migra devagar e abaixo do piso do ESC).
+      # vx 0.15 -> 0.20 junto com o teto 0.60 (2026-11-07).
+      vx_std: 0.20
+      vy_std: 0.15
+      wz_std: 0.25
+      # Limites casados com o velocity_smoother (quem manda e' o ESC e o AMCL).
+      # 0.40 -> 0.60 m/s em x (operador, 2026-11-07: "a maxima do robo deve ser
+      # 0.6"). Fundo de escala do ESC = 1.003 m/s de corpo em eixo puro: 0.60
+      # puro = 60% do FS; diagonal com vy 0.40 = 72%; com giro 0.50 junto chega
+      # perto de saturar — por isso vy fica em 0.40 (lateral e' a direcao que o
+      # LiDAR frontal menos enxerga) e wz em 0.50 (AMCL acompanha o giro).
+      vx_max: 0.60
+      # RE PERMITIDA (operador, 2026-11-07): "nao e' proibida, so' nao abusar"
+      # — sem sensor traseiro. -0.25 = o piso do ESC: menos que isso nao anda.
+      # Quem segura o abuso e' o PreferForwardCritic (abaixo): a re so' vence
+      # quando e' claramente a melhor saida (ex.: preso na zona inscrita de
+      # frente para a mesa, que era o caso em que o robo "congelava").
+      vx_min: -0.25
+      vy_max: 0.40
+      wz_max: 0.50
+      ax_max: 0.70
+      ax_min: -0.90
+      ay_max: 0.70
+      ay_min: -0.90
+      az_max: 2.0
+      # Piso do ESC: fisico 0.1215 m/s / 0.315 rad/s POR RODA (firmware 650 rpm,
+      # maxon_motors_node: roda parada exige >= piso; girando, 0.4x..1x e'
+      # arredondado PARA CIMA). Operacional (operador, 2026-11-07): 0.25 m/s —
+      # e' o nivel em que um comando COM CURVA (vx + wz) sai inteiro sem roda
+      # sub-piso: |vx| - |vy| - 0.3855*|wz| >= 0.1215. O MPPI nao tem min_speed;
+      # o VelocityDeadbandCritic (no fim dos criticos) enviesa contra pedir
+      # 0 < |vx| < 0.25. So' vx: o critico penaliza tambem velocidade ZERO e,
+      # com vy/wz, incentivaria derivar de lado e girar a toa. O angular fica
+      # com o driver (clamp-up a partir de 0.126 rad/s com roda girando).
+      prune_distance: 2.0 # >= horizonte (1.5 m a 0.60 m/s) + folga; limita o path que os criticos olham.
+      transform_tolerance: 0.6 # Atraso de TF aceito em segundos (EKF da Pi).
+      temperature: 0.3 # Seletividade do softmax (default; 0 = so a melhor).
+      gamma: 0.015 # Peso do esforco de controle (default; raramente se mexe).
       motion_model: "Omni" # Modelo holonomico para base mecanum.
-      visualize: true # Publica trajetorias avaliadas para o RViz.
+      # Amostras (1 em 5) em /trajectories e otima em /optimal_trajectory para o
+      # RViz (displays "Trajetorias MPPI", desligados por padrao). So monta os
+      # markers se alguem assina; se o loop sofrer, desligar aqui.
+      visualize: true
       regenerate_noises: false # Reutiliza ruido para reduzir custo de CPU.
       TrajectoryVisualizer:
         trajectory_step: 5 # Mostra uma a cada cinco trajetorias.
         time_step: 3 # Mostra um a cada tres passos temporais.
-      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic"] # Criticos usados para avaliar trajetorias.
+      # Criticos: conjunto recomendado pelo nav2 para omni, mais Twirling (mecanum
+      # girando "como diferencial" no meio do caminho — mesma licao do DWB).
+      # PreferForward porque a re passou a ser permitida (vx_min -0.25): penaliza
+      # andar de re para o MPPI so' usar quando compensa de verdade. Sem
+      # ObstaclesCritic (o CostCritic usa o costmap inflado direto, recomendado
+      # no Jazzy).
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "TwirlingCritic", "VelocityDeadbandCritic"]
       ConstraintCritic:
         enabled: true # Penaliza comandos fora dos limites.
         cost_power: 1 # Expoente do custo.
         cost_weight: 4.0 # Peso do limite cinematico.
       CostCritic:
-        enabled: true # Penaliza proximidade de obstaculos.
+        # E' O critico do desvio de obstaculo. consider_footprint: true e'
+        # obrigatorio aqui: o robo e' 0.68 x 0.39 m e assimetrico (x -0.285..
+        # +0.395) — custo no CENTRO do robo foi o erro que travava o DWB
+        # (BaseObstacle). Com o footprint, a inflacao de 0.55 m vira zona de
+        # "custo" e nao de "proibido", e o MPPI desliza ao redor da caixa.
+        enabled: true
         cost_power: 1 # Expoente do custo.
-        cost_weight: 3.81 # Peso do custo do costmap.
-        near_collision_cost: 253 # Custo que indica quase colisao.
-        critical_cost: 300.0 # Custo critico da trajetoria.
-        consider_footprint: true # Usa o footprint SE2 na colisao.
-        collision_cost: 1000000.0 # Penalidade para colisao.
-        near_goal_distance: 1.0 # Distancia onde reduz esse custo perto do goal.
+        cost_weight: 3.81 # Peso do custo do costmap (default). AJUSTAR_NO_ROBO: subir (5-6) se ainda colar nas mesas; baixar se nao entrar nos corredores.
+        near_collision_cost: 253 # Custo (inscrito) a partir do qual conta como quase colisao.
+        critical_cost: 300.0 # Penalidade por ponto acima de near_collision_cost.
+        consider_footprint: true # Usa o footprint SE2 real na colisao.
+        collision_cost: 1000000.0 # Penalidade para colisao de verdade.
+        # 1.0 -> 0.5 (default): a staging do docking fica a ~0.30 m da bancada,
+        # DENTRO da inflacao; nos ultimos 0.5 m o critico para de empurrar o
+        # robo para longe da mesa e deixa o GoalCritic fechar o goal.
+        near_goal_distance: 0.5
         trajectory_point_step: 2 # Intervalo de pontos verificados no costmap.
       GoalCritic:
         enabled: true # Penaliza distancia restante ao goal.
         cost_power: 1 # Expoente do custo.
         cost_weight: 5.0 # Peso da distancia ate o goal.
-        threshold_to_consider: 1.4 # Ativa dentro desta distancia do goal.
+        threshold_to_consider: 1.5 # = horizonte (1.5 m a 0.60 m/s): passagem limpa do PathFollow para o Goal.
       GoalAngleCritic:
-        enabled: true # Penaliza erro de orientacao final.
+        enabled: true # Penaliza erro de orientacao final (o shim faz o grosso do giro).
         cost_power: 1 # Expoente do custo.
         cost_weight: 3.0 # Peso da orientacao final.
         threshold_to_consider: 0.5 # Ativa perto do goal.
       PathAlignCritic:
-        enabled: true # Mantem a trajetoria alinhada ao path.
+        # 14 -> 10 (default). 14 era o valor do DWB (PathAlign.scale) copiado;
+        # no MPPI as escalas sao outras e alinhamento alto demais e' justamente
+        # o que impede o desvio: o critico briga com o CostCritic pelo path.
+        enabled: true
         cost_power: 1 # Expoente do custo.
-        cost_weight: 14.0 # Peso do alinhamento.
-        max_path_occupancy_ratio: 0.05 # Rejeita path quase todo ocupado.
+        cost_weight: 10.0 # Peso do alinhamento ao path.
+        # 0.05 -> 0.07 (default): fracao do path ocupada a partir da qual o
+        # alinhamento e' IGNORADO e o CostCritic + PathFollow desviam sozinhos.
+        max_path_occupancy_ratio: 0.07
         trajectory_point_step: 4 # Intervalo de pontos avaliados.
-        threshold_to_consider: 0.5 # Ativa quando perto do path.
-        offset_from_furthest: 20 # Ponto do path usado como referencia.
-        use_path_orientations: false # Nao exige orientacao do path global.
+        threshold_to_consider: 0.5 # Solta o path nos ultimos 0.5 m (goal critics assumem).
+        offset_from_furthest: 20 # So alinha quando a trajetoria ja esta seguindo o path.
+        use_path_orientations: false # Nao exige a orientacao do path (o shim ja alinhou o rumo).
       PathFollowCritic:
-        enabled: true # Incentiva progresso pelo path.
+        enabled: true # E' quem puxa o robo path adentro (velocidade de cruzeiro).
         cost_power: 1 # Expoente do custo.
         cost_weight: 5.0 # Peso do progresso.
-        offset_from_furthest: 5 # Ponto futuro usado como referencia.
-        threshold_to_consider: 1.4 # Ativa longe do goal.
+        offset_from_furthest: 6 # Ponto do path a frente do mais longe alcancado (default).
+        threshold_to_consider: 1.5 # = horizonte; abaixo disso o GoalCritic assume.
       PathAngleCritic:
-        enabled: true # Penaliza angulo ruim em relacao ao path.
+        enabled: true # Penaliza trajetoria muito angulada em relacao ao path.
         cost_power: 1 # Expoente do custo.
-        cost_weight: 2.0 # Peso do angulo do path.
-        offset_from_furthest: 4 # Ponto futuro usado para calcular angulo.
-        threshold_to_consider: 0.5 # Ativa longe do goal.
-        max_angle_to_furthest: 1.0 # Maior angulo aceito ate o ponto futuro.
-        mode: 0 # Usa o modo padrao de angulo do path.
+        cost_weight: 2.2 # Peso do angulo do path (default).
+        offset_from_furthest: 20 # Pontos do path alem do mais longe alcancado (default).
+        threshold_to_consider: 0.5 # Solta nos ultimos 0.5 m.
+        max_angle_to_furthest: 0.785 # 45 graus (default): acima disso o MPPI prefere girar no lugar antes de seguir (papel que o shim faz no DWB).
+        mode: 0 # Preferencia frontal: sensores so na frente, andar de frente e' mais seguro.
+      PreferForwardCritic:
+        # Re custa: |vx| negativo e' penalizado em cada ponto da trajetoria.
+        # Default do nav2 (5.0). AJUSTAR_NO_ROBO: subir se o robo der re a toa;
+        # baixar (3.0) se ele preferir "congelar" a sair de re da zona inscrita.
+        enabled: true
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 5.0 # Peso contra andar de re.
+        threshold_to_consider: 0.5 # Perto do goal libera a re para o ajuste fino.
+      TwirlingCritic:
+        # AJUSTAR_NO_ROBO: subir se girar demais no meio do caminho, baixar se
+        # demorar a virar perto de obstaculo (no DWB 2.0 -> 1.0 por isso).
+        enabled: true
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 3.0 # Peso contra giro desnecessario no meio do trajeto.
+      VelocityDeadbandCritic:
+        # Piso operacional 0.25 m/s em vx (ver nota acima). Efeito colateral
+        # conhecido: chega no goal a ~0.25 e para em degrau (coast do ESC
+        # ~0.15-0.20 m); se a staging do docking piorar, baixar cost_weight
+        # para 10-15 ANTES de mexer no deadband.
+        enabled: true
+        cost_power: 1 # Expoente do custo.
+        cost_weight: 35.0 # Default do nav2.
+        deadband_velocities: [0.25, 0.0, 0.0] # [vx, vy, wz]; 0.0 = sem acao naquele eixo.
 
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 5.0
-      publish_frequency: 2.0
+      # 5 -> 10 Hz (2026-11-07): a 0.40 m/s o robo anda 8 cm entre atualizacoes
+      # a 5 Hz; o MPPI (20 Hz, horizonte 1 m) e o desvio de obstaculo dinamico
+      # dependem de costmap fresco. 250x250 celulas a 10 Hz e' barato no PC do
+      # robo (nao era no notebook).
+      update_frequency: 10.0
+      # 2 -> 5 Hz (2026-11-07): o behavior_server (BackUp / escape_free_space)
+      # checa colisao no costmap_raw PUBLICADO; a 2 Hz ele via dados de ate
+      # 0.5 s atras (12 cm a 0.25 m/s). 5x5 m a 2 cm = 62 kB por msg.
+      publish_frequency: 5.0
       global_frame: odom
       robot_base_frame: base_footprint
       use_sim_time: false
       rolling_window: true
       transform_tolerance: 0.6 # EKF da Pi tem picos de atraso de TF (~0.5s)
-      width: 3
-      height: 3
+      # 3 -> 5 m (operador, 2026-11-07): o horizonte do MPPI a 0.60 m/s (1.5 m)
+      # precisa caber na meia-janela; 5x5 a 2 cm = 62.5k celulas, barato aqui.
+      width: 5
+      height: 5
       resolution: 0.02
       footprint: "[[0.395, 0.055], [0.395, -0.055], [0.285, -0.055], [0.285, -0.195], [-0.285, -0.195], [-0.285, 0.195], [0.285, 0.195], [0.285, 0.055]]"
       footprint_padding: 0.0
@@ -317,6 +590,11 @@ local_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
+          # NOVO (2026-11-07): feixes "inf" (sem retorno, ~8% do scan, dentro
+          # dos 180 graus frontais) passam a LIMPAR em vez de serem descartados
+          # — era a origem de obstaculo-fantasma no costmap local. Ver o mesmo
+          # parametro no costmap global (planner_server.yaml).
+          inf_is_valid: true
       denoise_layer:
         plugin: "nav2_costmap_2d::DenoiseLayer"
         enabled: true
@@ -327,7 +605,13 @@ local_costmap:
         enabled: true
         # AJUSTAR_NO_ROBO: 0.85 -> 0.55, mesmo racional do costmap global (o robo
         # congelava dentro da zona inflada perto de caixas).
-        inflation_radius: 0.55
+        # 0.55 -> 0.75 (2026-11-07): cauda suave com a MESMA escala 3.0 (custo
+        # ate 0.55 m identico; ver racional completo no costmap global). E' o
+        # campo que o CostCritic do MPPI soma ao longo da trajetoria: sem a
+        # cauda, no meio do corredor custo = 0 e nada empurra o robo ao centro.
+        # Ao vivo: ros2 param set /local_costmap/local_costmap
+        # inflation_layer.inflation_radius 0.55 (voltar).
+        inflation_radius: 0.75
         cost_scaling_factor: 3.0
         inflate_unknown: false
         inflate_around_unknown: false

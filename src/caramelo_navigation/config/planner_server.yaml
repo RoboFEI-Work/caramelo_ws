@@ -26,7 +26,12 @@ planner_server:
     SmacLattice:
       plugin: "nav2_smac_planner::SmacPlannerLattice" # Plugin Lattice; em Iron ou anterior use "/".
       allow_unknown: true                 # Permite planejar por espaco desconhecido.
-      tolerance: 0.05                     # Tolerancia baixa para aceitar aproximacao do goal sem perder precisao.
+      # 0.05 -> 0.10 (2026-11-07): casada com o xy_goal_tolerance dos goal
+      # checkers (0.10). Tolerancia MENOR que a do checker so' gera "no valid
+      # path" em goal de staging encostado na bancada (footprint nao fecha o
+      # ponto exato) e dispara recovery a toa; o checker fecha em 0.10 de
+      # qualquer jeito.
+      tolerance: 0.10
       max_iterations: 1000000             # Maximo de iteracoes antes de falhar.
       max_on_approach_iterations: 1000    # Tentativas extras quando ja esta perto do goal.
       max_planning_time: 5.0              # Tempo maximo para planejar e suavizar em segundos.
@@ -97,6 +102,12 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
+          # NOVO (2026-11-07): o /scan chega com ~8% dos feixes em "inf" (sem
+          # retorno), ESPALHADOS dentro dos 180 graus frontais — nao e' o corte
+          # traseiro. Com o default (false) esses feixes eram DESCARTADOS: nada
+          # era limpo naquela direcao e obstaculo que sumiu virava fantasma.
+          # true = trata inf como "livre ate raytrace_max_range" e limpa.
+          inf_is_valid: true
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_topic: /map
@@ -115,7 +126,17 @@ global_costmap:
         # robo dentro da zona inflada). 0.55 ainda cobre o circunscrito (0.40 m;
         # footprint 0.68x0.39, x -0.285..+0.395, y +-0.195; o "0.44" antigo
         # estava errado, conferido 2026-10-26, F24).
-        inflation_radius: 0.55
+        # 0.55 -> 0.75 (2026-11-07, guia de tuning do Nav2 "Inflation Potential
+        # Fields"): a escala 3.0 fica IGUAL, entao todo custo ate 0.55 m e' o
+        # mesmo de antes (0.30 m -> 185, 0.55 m -> 86); so' ganha uma CAUDA
+        # suave de 0.55 a 0.75 m (86 -> 48). Efeito: corredor de ~1.2-1.5 m
+        # entre mesas deixa de ter faixa de custo ZERO no meio, e o lattice
+        # (cost_penalty) + o CostCritic do MPPI passam a ter gradiente para
+        # centralizar — o "passa colado na mesa" nasce da faixa plana. Nao
+        # muda a zona inscrita (253), logo nao reintroduz o "congela de medo"
+        # de 0.85. Ao vivo: ros2 param set /global_costmap/global_costmap
+        # inflation_layer.inflation_radius 0.55 (voltar).
+        inflation_radius: 0.75
         cost_scaling_factor: 3.0
         inflate_unknown: false
         inflate_around_unknown: false
