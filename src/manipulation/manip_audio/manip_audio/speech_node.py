@@ -307,6 +307,12 @@ class KokoroBackend(TtsBackend):
                     # Modelo ja baixado: nao consultar o Hub (sem internet na arena
                     # cada arquivo esperaria o timeout de 10 s).
                     os.environ.setdefault('HF_HUB_OFFLINE', '1')
+                # Silencia os avisos do torch/kokoro (FutureWarning do weight_norm
+                # e UserWarning do dropout da LSTM): sao do modelo, nao nossos, e
+                # enchiam o terminal do launch a cada inicio (2026-11-07).
+                import warnings
+                warnings.filterwarnings('ignore', category=FutureWarning)
+                warnings.filterwarnings('ignore', category=UserWarning, message='.*dropout.*')
                 import torch
                 torch.set_num_threads(max(1, self.threads))
                 from kokoro import KPipeline
