@@ -8,3 +8,6 @@ __pycache__/
 *.py[cod]
 # backups gerados por caramelo_docking_common.backup_file a cada save de docking/service_areas
 *.yaml.bak
+
+# worktrees temporarios dos agentes do Claude Code (2026-11-09)
+.claude/
