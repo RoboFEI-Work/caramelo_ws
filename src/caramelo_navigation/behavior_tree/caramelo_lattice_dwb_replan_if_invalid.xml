@@ -1,0 +1,71 @@
+<!--
+  2026-11-11 (rodada 2, OPCAO desligada por default; liga com bt_replan:=invalid):
+  igual a caramelo_lattice_dwb.xml, mas o planner so' e' chamado de novo quando
+  (a) o goal mudou, (b) o path suavizado ficou invalido (footprint sobre celula
+  LETAL do costmap global, servico is_path_valid do planner_server) ou (c) o path
+  tem mais de 15 s. Motivo (bags de 11/11 18h58 e 19h16): com replanejamento a
+  1 Hz o plano trocava de rota a cada limpeza do costmap global (rota direta
+  bloqueada <-> contorno da parede central), o shim girava 180 graus atras de
+  cada troca, e os "Start occupied" apareciam a cada segundo com o robo parado
+  na staging (dentro da inflacao da mesa). Padrao do Nav2 Jazzy:
+  nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml.
+  Reverter = bt_replan:=rate (ou omitir).
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="SmacLatticeSavitzkyDWB">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
+            <Fallback name="ReplanOnlyIfNeeded">
+              <!-- Mantem o path atual enquanto: nao expirou (15 s), o goal nao
+                   mudou e o footprint ao longo do path suavizado nao toca
+                   celula letal. Qualquer uma falhando -> replaneja. -->
+              <ReactiveSequence name="PathStillGood">
+                <Inverter>
+                  <PathExpiringTimer seconds="15" path="{smoothed_path}"/>
+                </Inverter>
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{smoothed_path}"/>
+              </ReactiveSequence>
+              <Sequence name="ComputeAndSmoothPath">
+                <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice" error_code_id="{compute_path_error_code}"/>
+                <!-- check_for_collisions=false: mesmo motivo da BT base (corredor
+                     apertado raspa celula inflada e abortava o pipeline). -->
+                <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="false"/>
+              </Sequence>
+            </Fallback>
+            <!-- Recovery de contexto (igual a BT base): limpa o global so' se o
+                 erro do planner e' do tipo que limpar resolve. -->
+            <Sequence name="ClearGlobalIfItHelps">
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+
+        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
+          <FollowPath path="{smoothed_path}" controller_id="DWBHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <Sequence name="ClearLocalIfItHelps">
+            <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="1.0"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <ReactiveFallback name="EscapeFallback">
+        <GoalUpdated/>
+        <RoundRobin name="EscapeRecoveries">
+          <DriveOnHeading server_name="escape_free_space" dist_to_travel="0.20" speed="0.25" time_allowance="10"/>
+          <Sequence name="ClearGlobalAndWait">
+            <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+            <Wait wait_duration="1.0"/>
+          </Sequence>
+          <BackUp backup_dist="0.10" backup_speed="0.25" time_allowance="10"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

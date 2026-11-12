@@ -37,6 +37,12 @@ behavior_server:
       exit_cost: 100.0 # para cedo (sucesso) quando nao ha mais celula ruim sob o robo e o custo max cai abaixo disto, depois de >= 5 cm.
       allow_backward: true # re e diagonais de re entram na lista (checadas no costmap; sem sensor traseiro e' o unico jeito).
       use_global_costmap: true # tambem checa o costmap global (static + obstaculos) — mesas do mapa atras do robo.
+      # 2026-11-11: mapa diz >= 20 celulas letais sob o robo e o LiDAR diz 0 =>
+      # AMCL deslocado (bags 21h08/21h15: robo "dentro" da WS5 pelo mapa, livre
+      # pelo LiDAR, "NENHUMA direcao segura" x30). Entao este escape ignora o
+      # global e sai pelo LiDAR, para o filtro receber movimento. false = antigo.
+      ignore_map_if_contradiction: true
+      map_contradiction_min_cells: 20
     wait:
       plugin: "nav2_behaviors::Wait"
     backup:

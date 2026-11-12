@@ -15,6 +15,7 @@ install(
 
 install(FILES
   scripts/caramelo_docking_common.py
+  scripts/caramelo_bag_common.py
   scripts/caramelo_dock_camera.py
   scripts/caramelo_dock_camera_debug.py
   scripts/run_mission.py
@@ -153,12 +154,48 @@ install(PROGRAMS
 
 # Rosbag do tour / dos dockings (2026-10-26, diagnostico secao 8.1): os tours
 # nao tinham bag e os logs do Nav2 nao trazem pose. Nao e lancado pelo launch;
-# o operador roda antes do tour_docks. RENAME => copia (nao symlink) mesmo
-# com --symlink-install: editar o .sh exige rebuild do pacote.
+# o operador roda antes do tour_docks. Desde 2026-11-11 e' um atalho para o
+# modo CLI do caramelo_bag_common.py (mesma lista/compressao das corridas).
+# RENAME => copia (nao symlink) mesmo com --symlink-install: editar o .sh
+# exige rebuild do pacote.
 install(PROGRAMS
   scripts/gravar_bag_tour.sh
   DESTINATION lib/${PROJECT_NAME}
   RENAME gravar_bag_tour
+)
+
+# Resumo offline de um bag de corrida (rosbag2_py): duracao, tamanho, msgs
+# por topico, taxa real de /cmd_vel_nav, offset de relogio Pi x PC e fracao
+# de "caranguejo" por goal (2026-11-11).
+install(PROGRAMS
+  scripts/bag_resumo.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME bag_resumo
+)
+
+# Limite de velocidade por proximidade (2026-11-11): publica nav2_msgs/SpeedLimit
+# em /speed_limit a partir do menor alcance do /scan; o controller_server
+# repassa ao DWB (setSpeedLimit). Ligado por use_speed_limit no navigation.launch.py.
+install(PROGRAMS
+  scripts/speed_limit_by_scan.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME speed_limit_by_scan
+)
+
+# Bancada OFFLINE do controller_server (2026-11-11): controller + costmap local
+# com odom/scan falsos em ROS_DOMAIN_ID=99 e mede Hz do laco do DWB por variante.
+install(PROGRAMS
+  scripts/bench_controller_offline.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME bench_controller_offline
+)
+
+# Bancada OFFLINE do SmacLattice (2026-11-10): map_server + planner_server em
+# ROS_DOMAIN_ID=99 e mede % frente/lateral/re/giros por conjunto de primitivas.
+install(PROGRAMS
+  scripts/bench_lattice_offline.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME bench_lattice_offline
 )
 
 if(BUILD_TESTING)
@@ -178,6 +215,14 @@ if(BUILD_TESTING)
   # Helpers puros do mission_server (action /caramelo/run_mission usada pela
   # GUI e pelo painel web), sem grafo ROS.
   ament_add_pytest_test(test_mission_server_helpers test/test_mission_server_helpers.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Rosbag por corrida: montagem do comando, politica de limpeza (pastas
+  # falsas em tmp), opt-out e parada sem SIGKILL, sem ROS ativo (2026-11-11).
+  ament_add_pytest_test(test_bag_common test/test_bag_common.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Fumaca real (publica um topico falso, grava 5 s, le com bag_resumo).
+  # Pula sozinho a menos que CARAMELO_BAG_SMOKE=1; forca ROS_DOMAIN_ID=99.
+  ament_add_pytest_test(test_bag_common_ros test/test_bag_common_ros.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

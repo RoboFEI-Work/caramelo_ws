@@ -27,6 +27,11 @@ painel web subidos juntos), este processo avisa e sai (single_instance:=true).
 Publica MissionStatus em /caramelo/mission/status (transient_local, depth 64:
 quem conecta no meio da missao recebe o historico recente).
 
+Rosbag por corrida (2026-11-11): o mesmo iniciar_bag/parar_bag do run_mission
+(caramelo_bag_common) em volta do executor; a action NAO mudou. Parametros do
+no': bag_enabled (default true; CARAMELO_BAG=0 tambem desliga), bag_extra,
+bag_camera e bag_nav_profile (so metadado).
+
 Como roda: ros2 launch caramelo_navigation mission_server.launch.py
            (incluido pelos launches da GUI e do painel web)
 """
@@ -60,6 +65,7 @@ for _pasta in (os.path.dirname(os.path.realpath(__file__)),
                os.path.dirname(os.path.abspath(__file__))):
     if _pasta not in sys.path:
         sys.path.insert(0, _pasta)
+import caramelo_bag_common as bag_common  # noqa: E402
 import run_mission as rm  # noqa: E402
 
 ACTION_NAME = "/caramelo/run_mission"
@@ -165,11 +171,16 @@ class MissionServer(Node):
     def __init__(self):
         super().__init__("caramelo_mission_server")
         self.declare_parameter("single_instance", True)
+        self.declare_parameter("bag_enabled", True)
+        self.declare_parameter("bag_extra", False)
+        self.declare_parameter("bag_camera", False)
+        self.declare_parameter("bag_nav_profile", "")
 
         self._cb_group = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._busy = False
         self._proc = None
+        self._bag = None
         self._goal_handle = None
         self._mission_started = time.monotonic()
         self._task_id = ""
@@ -321,7 +332,7 @@ class MissionServer(Node):
     def _run(self, goal, goal_handle, result):
         # --- planejamento ---
         self._publish(MissionStatus.STATE_PLANNING, "Preparando a missao...")
-        _task_yaml, map_folder, actions_yaml, linhas, actions = self._planejar(goal)
+        task_yaml, map_folder, actions_yaml, linhas, actions = self._planejar(goal)
         self._mission_id = actions_yaml.stem
         result.actions_yaml = str(actions_yaml)
         result.plan_rows = linhas
@@ -358,19 +369,25 @@ class MissionServer(Node):
             goal_handle.abort()
             return result
 
+        # --- bag da corrida (nunca impede a missao) ---
+        self._iniciar_bag(actions_yaml, task_yaml, map_folder)
+
         # --- execucao ---
         cmd = executor_cmd(actions_yaml, map_folder, goal)
         self.get_logger().info(f"Executando: {' '.join(cmd)}")
         self._publish(MissionStatus.STATE_RUNNING, "Executor da missao iniciado.", stage="inicio")
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        with self._lock:
-            self._proc = proc
-        leitor = threading.Thread(
-            target=self._ler_saida, args=(proc,), daemon=True, name="executor_stdout")
-        leitor.start()
-        codigo = proc.wait()
-        leitor.join(timeout=2.0)
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            with self._lock:
+                self._proc = proc
+            leitor = threading.Thread(
+                target=self._ler_saida, args=(proc,), daemon=True, name="executor_stdout")
+            leitor.start()
+            codigo = proc.wait()
+            leitor.join(timeout=2.0)
+        finally:
+            self._parar_bag()
 
         # Exit codes do bt_yaml_executor: 0 SUCCESS, 1 FAILURE, 130 SIGINT.
         if codigo == 0:
@@ -386,6 +403,30 @@ class MissionServer(Node):
             self._publish(MissionStatus.STATE_FAILED, result.message, stage="fim")
             goal_handle.abort()
         return result
+
+    # ----------------------------------------------------------- rosbag
+    def _iniciar_bag(self, actions_yaml: Path, task_yaml: Path, map_folder: Path):
+        if not self.get_parameter("bag_enabled").value:
+            return
+        bag = bag_common.iniciar_bag(
+            actions_yaml.stem, task_yaml.stem, map_folder.name, actions_yaml,
+            extra=bool(self.get_parameter("bag_extra").value),
+            camera=bool(self.get_parameter("bag_camera").value),
+            nav_profile=str(self.get_parameter("bag_nav_profile").value) or None)
+        with self._lock:
+            self._bag = bag
+        if bag is not None:
+            self._publish(MissionStatus.STATE_RUNNING, f"Rosbag: {bag.saida}", stage="bag")
+
+    def _parar_bag(self):
+        """Fecha o bag (SIGINT, espera, SIGTERM; nunca SIGKILL). Idempotente."""
+        with self._lock:
+            bag, self._bag = self._bag, None
+        if bag is None:
+            return
+        saida = bag_common.parar_bag(bag)
+        self.get_logger().info(f"Rosbag da corrida: {saida}")
+        bag_common.imprimir_info_bag(saida)
 
     def _cancelado(self, goal_handle, result):
         result.success = False
@@ -416,6 +457,9 @@ class MissionServer(Node):
             proc.wait(timeout=10.0)
         except subprocess.TimeoutExpired:
             self.get_logger().error("Executor nao encerrou em 10 s; segue vivo.")
+        # O finally do _run tambem para o bag; aqui e' a rede para o caso de
+        # o executor da action ja ter sido derrubado pelo shutdown do rclpy.
+        self._parar_bag()
 
 
 def main(argv=None):

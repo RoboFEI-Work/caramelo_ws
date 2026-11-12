@@ -18,6 +18,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(caramelo_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_executable(bt_yaml_executor
   src/bt_yaml_executor.cpp
@@ -66,6 +67,7 @@ ament_target_dependencies(
   nav_msgs
   caramelo_msgs
   std_msgs
+  std_srvs
 )
 
 install(TARGETS bt_yaml_executor

@@ -70,6 +70,14 @@ protected:
   double min_travel_for_exit_{0.05};
   bool allow_backward_{true};
   bool use_global_{true};
+  // 2026-11-11: se o costmap GLOBAL (mapa estatico) diz que ha' >= N celulas
+  // letais sob o robo e o LOCAL (LiDAR) diz 0, o robo fisicamente nao esta
+  // dentro de uma mesa: a localizacao e' que deslocou. Nesse caso o escape
+  // ignora o global e sai pelo que o LiDAR ve, para o AMCL voltar a receber
+  // movimento (bags de 11/11: "NENHUMA direcao segura" x30 com o robo
+  // "dentro" da WS5 pelo AMCL, livre pelo LiDAR).
+  bool ignore_map_if_contradiction_{true};
+  int map_contradiction_min_cells_{20};
   ChoiceParams choice_;
 
   std::unique_ptr<nav2_costmap_2d::CostmapSubscriber> local_sub_;

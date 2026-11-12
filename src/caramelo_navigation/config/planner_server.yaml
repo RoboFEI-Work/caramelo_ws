@@ -36,23 +36,30 @@ planner_server:
       max_on_approach_iterations: 1000    # Tentativas extras quando ja esta perto do goal.
       max_planning_time: 5.0              # Tempo maximo para planejar e suavizar em segundos.
       analytic_expansion_ratio: 3.5       # Frequencia das expansoes analiticas na aproximacao final.
+      # Com lattice_set:=nariz o launch impoe 0.8 (2026-11-11): para omni a
+      # expansao analitica e' uma reta ate o goal com o yaw interpolado, que no
+      # frame do robo vira lateral/re' (respondia por ~40% do plano).
       analytic_expansion_max_length: 3.0  # Comprimento maximo permitido na expansao analitica.
       analytic_expansion_max_cost: 200.0  # Maior custo aceito em uma expansao analitica.
       analytic_expansion_max_cost_override: false # Permite ignorar o custo maximo perto do goal.
-      downsample_obstacle_heuristic: false # Mantem heuristica em resolucao total perto de quinas e docas.
-      use_quadratic_cost_penalty: false   # Usa penalidade de custo linear, nao quadratica.
+      # Removidos em 2026-11-11 por NAO existirem no SmacLattice do Jazzy (eram
+      # ignorados; conferido em libnav2_smac_planner_lattice.so): goal_heading_mode,
+      # coarse_search_resolution, use_quadratic_cost_penalty (so' no Hybrid),
+      # downsample_obstacle_heuristic (so' no Hybrid).
       reverse_penalty: 2.0                # Penalidade para primitivas em re; deve ser >= 1.
       change_penalty: 0.05                # Penalidade para trocar a direcao do movimento.
       non_straight_penalty: 1.02          # Penalidade baixa: mecanum translada lateral/diagonal naturalmente.
       cost_penalty: 3.0                   # Maior aversao a custo alto para proteger o ressalto frontal em quinas.
+      # Com lattice_set:=nariz o launch impoe 3.0 (2026-11-11): no lattice omni
+      # re' e lateral custam o mesmo que frente (reverse_penalty nao vale para
+      # omni), e com a lateral encarecida no conjunto nariz o giro precisa custar
+      # mais para nao virar giro+frente+giro a cada passo.
       rotation_penalty: 1.0               # Giro no eixo deve ser barato para evitar curvas longas tipo carro.
       retrospective_penalty: 0.015        # Prefere manobras tardias para reduzir a busca.
-      lattice_filepath: "config/lattice/caramelo_omni_2cm_16bins.json" # O launch injeta o caminho instalado absoluto.
+      lattice_filepath: "config/lattice/caramelo_omni_2cm_16bins.json" # O launch injeta o caminho instalado absoluto (lattice_set).
       lookup_table_size: 10.0             # Tabela menor e suficiente para ambiente indoor com base omni.
       cache_obstacle_heuristic: false     # Mantem o cache heuristico desligado para testes consistentes.
       allow_reverse_expansion: false      # Desligado: para omni, re e so outra translacao coberta pelas primitives.
-      coarse_search_resolution: 1         # Numero de bins pulados na busca de orientacao final.
-      goal_heading_mode: "DEFAULT"        # Respeita a orientacao da seta do 2D Goal Pose com tolerancia no controller.
       smooth_path: false                  # A BT usa savitzky_golay_smoother para preservar primitives omni.
       smoother:
         max_iterations: 1000              # Maximo de iteracoes do smoother interno.

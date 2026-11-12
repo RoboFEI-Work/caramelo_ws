@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <rclcpp/rclcpp.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include <atomic>
@@ -1307,6 +1308,33 @@ int main(int argc, char ** argv)
 
     auto blackboard = BT::Blackboard::create();
     blackboard->set("max_staging_time", node->declare_parameter<double>("max_staging_time", 120.0));
+    // 2026-11-11: perna curta (GoToWS). O XML default vem do share do
+    // caramelo_navigation; vazio desliga.
+    blackboard->set(
+      "staging_short_dist", node->declare_parameter<double>("staging_short_dist", 0.30));
+    // 2026-11-11: re-tentativa da staging (GoToWS) com nomotion update do AMCL.
+    blackboard->set(
+      "staging_nav_retries",
+      static_cast<int>(node->declare_parameter<int64_t>("staging_nav_retries", 2)));
+    blackboard->set(
+      "staging_nav_retry_wait_s",
+      node->declare_parameter<double>("staging_nav_retry_wait_s", 4.0));
+    blackboard->set(
+      "staging_nav_retry_nomotion_calls",
+      static_cast<int>(node->declare_parameter<int64_t>("staging_nav_retry_nomotion_calls", 3)));
+    {
+      std::string curta_xml = node->declare_parameter<std::string>("staging_short_bt_xml", "");
+      if (curta_xml.empty()) {
+        try {
+          curta_xml = ament_index_cpp::get_package_share_directory("caramelo_navigation") +
+            "/behavior_tree/caramelo_lattice_dwb_curta.xml";
+        } catch (const std::exception & e) {
+          RCLCPP_WARN(node->get_logger(),
+            "caramelo_navigation nao encontrado (%s): perna curta desligada.", e.what());
+        }
+      }
+      blackboard->set("staging_short_bt_xml", curta_xml);
+    }
     // 90 s: o align faz 2 tentativas de ate 40 s (settle, esquadro, centragem
     // e pulsos) + recuo entre elas; o GoToWS da +15 s e o recuo final usa
     // esse tempo (medido 2026-08-21, docking v4).

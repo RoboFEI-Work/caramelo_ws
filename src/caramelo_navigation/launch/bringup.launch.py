@@ -23,6 +23,9 @@ def generate_launch_description():
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
     costmap_resolution = LaunchConfiguration("costmap_resolution")
     nav_profile = LaunchConfiguration("nav_profile")
+    lattice_set = LaunchConfiguration("lattice_set")
+    bt_replan = LaunchConfiguration("bt_replan")
+    use_speed_limit = LaunchConfiguration("use_speed_limit")
     use_route_server = LaunchConfiguration("use_route_server")
     use_waypoint_follower = LaunchConfiguration("use_waypoint_follower")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
@@ -87,6 +90,23 @@ def generate_launch_description():
             description="Perfil de navegacao (BT + controlador): dwb ou mppi",
         ),
         DeclareLaunchArgument(
+            "lattice_set",
+            default_value="omni",
+            description="Primitivas do Smac lattice: omni (default) ou nariz (experimental; "
+                        "ver navigation.launch.py --show-args)",
+        ),
+        DeclareLaunchArgument(
+            "use_speed_limit",
+            default_value="true",
+            description="2026-11-11: limite de velocidade por proximidade do LiDAR (ver navigation.launch.py)",
+        ),
+        DeclareLaunchArgument(
+            "bt_replan",
+            default_value="rate",
+            description="Replanejamento da BT: rate (default) ou invalid (2026-11-11; "
+                        "ver navigation.launch.py --show-args)",
+        ),
+        DeclareLaunchArgument(
             "use_route_server",
             default_value="true",
             description="Sobe o Route Server do Nav2 com o route_graph.geojson do mapa (so se tiver nos e arestas)",
@@ -141,6 +161,9 @@ def generate_launch_description():
                 "navigation_start_delay": navigation_start_delay,
                 "costmap_resolution": costmap_resolution,
                 "nav_profile": nav_profile,
+                "lattice_set": lattice_set,
+                "bt_replan": bt_replan,
+                "use_speed_limit": use_speed_limit,
                 "use_route_server": use_route_server,
                 "use_waypoint_follower": use_waypoint_follower,
                 "use_cmd_vel_relay": use_cmd_vel_relay,

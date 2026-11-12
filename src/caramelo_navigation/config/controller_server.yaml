@@ -8,7 +8,7 @@ controller_server:
     min_theta_velocity_threshold: 0.001 # Ignora ruido muito pequeno em wz.
     failure_tolerance: 0.3 # Tempo maximo de falha antes de abortar.
     progress_checker_plugins: ["progress_checker"] # Jazzy: lista (a chave singular antiga era ignorada; o id default coincidia).
-    goal_checker_plugins: ["position_goal_checker", "general_goal_checker"]
+    goal_checker_plugins: ["position_goal_checker", "general_goal_checker", "staging_goal_checker"] # staging_goal_checker: so' a BT curta (2026-11-11).
     controller_plugins: ["DWBHolonomic", "FollowPath", "MPPIHolonomic"] # DWB e o principal; RPP/MPPI ficam experimentais.
     odom_topic: /odom
 
@@ -53,6 +53,18 @@ controller_server:
       yaw_goal_tolerance: 0.20
       stateful: true # Mantem a posicao concluida enquanto alinha yaw.
 
+    staging_goal_checker:
+      # 2026-11-11: usado SO' pela BT caramelo_lattice_dwb_curta.xml, que o
+      # GoToWS escolhe quando a staging destino esta a < staging_short_dist
+      # (0,30 m) da pose atual (ex.: SH1 -> WS2, 0,25 m). Com xy 0,30 o robo
+      # ja' nasce "na posicao" e o ramo rotate_to_goal_heading do shim gira
+      # direto para o yaw do goal, sem perseguir o ultimo ponto de um path de
+      # 7-20 cm (bags de 11/11: 32-76 s de vaivem de +-170 graus nessa perna).
+      # A posicao fina continua sendo do align_to_dock.
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.30
+      yaw_goal_tolerance: 0.20
+      stateful: true
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController" # Experimental para comparacao.
       desired_linear_vel: 0.2 # Velocidade linear maxima em m/s.
@@ -128,6 +140,17 @@ controller_server:
       max_angular_accel: 7.0
       simulate_ahead_time: 1.0 # Checa colisao do giro no costmap antes de girar (so bloqueia LETHAL 254; o giro FINAL, |erro| < 45 graus, sai da checagem no 1o passo).
       rotate_to_goal_heading: true # Giro final do goal tambem pelo lado curto.
+      # 2026-11-11 (rodada 1 pos-bags 18h58/19h16): giro de rumo SO' UMA VEZ por
+      # goal. Com false (default) o shim reavaliava o rumo a cada path novo
+      # (1 Hz) e girava de novo: nos bags, 55-74% do tempo de navegacao foi
+      # giro parado; na perna SH1->WS2 (0,22 m) o robo ficou 76 s alternando
+      # 170 graus entre o rumo do ponto do path (atras dele) e o yaw do goal,
+      # e na staging da WS2 deu uma volta completa de 350 graus. Com true o
+      # shim gira no inicio da perna e no yaw final (rotate_to_goal_heading);
+      # no meio do caminho quem corrige o rumo e' o DWB (PathAlign). Risco
+      # aceito: curva fechada no meio do path vira arco/caranguejo em vez de
+      # parar e girar. Reverter = false + relancar.
+      rotate_to_heading_once: true
 
       # ---------------- DWB (dwb_core::DWBLocalPlanner) ----------------
       # Quando NENHUMA trajetoria e legal, o log diz "Could not find a legal
@@ -329,7 +352,16 @@ controller_server:
       # S=1.0 equilibra a 0.245 m da bancada (chega), S=1.5 a ~0.38 m (para
       # ~8 cm antes do goal: marginal), S>=2.0 a >= 0.5 m (goal NUNCA fecha,
       # "Failed to make progress" no staging). NAO dinamico: YAML + relancar.
-      ObstacleFootprint.scale: 1.0 # Repulsao real: custo do perimetro na ultima pose, 0.02 pt por unidade de custo.
+      # 2026-11-11 (rodada 2 pos-bags): 1.0 -> 0.02, o valor em uso ate 07/11.
+      # Com 1.0 o critico vale ate 5 pt (253 x resolucao 0,02 x 1.0), da ordem
+      # do que GoalDist paga por avancar 0,5 m; em corredor (custo 220-245 no
+      # perimetro em qualquer pose) o DWB ficou 30-80 s alternando giro
+      # +-0,35 e passos laterais de 6 cm em vez de seguir o path (3 bags), e
+      # nas pernas abertas andou de lado para o custo menor (caranguejo,
+      # relatado "depois do sabado 07/11"). Com 0.02 o critico so' rejeita
+      # LETAL sob o perimetro; quem afasta o robo das mesas e' o planner
+      # (cost_penalty 3) e o path. Reverter = 1.0.
+      ObstacleFootprint.scale: 0.02
       # Default explicitado (2026-11-07): false = so a ultima pose conta (max
       # do perimetro nela). true somaria as ~23 poses, favoreceria trajetorias
       # LENTAS (menos poses) e exigiria scale ~30x menor. NAO ligar.

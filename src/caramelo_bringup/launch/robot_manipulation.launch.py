@@ -26,6 +26,9 @@ def generate_launch_description():
     use_rviz_manip = LaunchConfiguration("use_rviz_manip")
     use_docking = LaunchConfiguration("use_docking")
     nav_profile = LaunchConfiguration("nav_profile")
+    lattice_set = LaunchConfiguration("lattice_set")
+    bt_replan = LaunchConfiguration("bt_replan")
+    use_speed_limit = LaunchConfiguration("use_speed_limit")
     use_keepout = LaunchConfiguration("use_keepout")
     use_sim_time = LaunchConfiguration("use_sim_time")
     navigation_start_delay = LaunchConfiguration("navigation_start_delay")
@@ -177,6 +180,23 @@ def generate_launch_description():
             description="Perfil de navegacao: dwb ou mppi",
         ),
         DeclareLaunchArgument(
+            "lattice_set",
+            default_value="omni",
+            description="Primitivas do Smac lattice: omni (default) ou nariz (experimental; "
+                        "ver caramelo_navigation navigation.launch.py --show-args)",
+        ),
+        DeclareLaunchArgument(
+            "use_speed_limit",
+            default_value="true",
+            description="2026-11-11: limite de velocidade por proximidade do LiDAR (ver caramelo_navigation navigation.launch.py)",
+        ),
+        DeclareLaunchArgument(
+            "bt_replan",
+            default_value="rate",
+            description="Replanejamento da BT de navegacao: rate (default) ou invalid "
+                        "(2026-11-11; ver caramelo_navigation navigation.launch.py --show-args)",
+        ),
+        DeclareLaunchArgument(
             "use_keepout",
             default_value="false",
             description="Ativa o Keepout Filter (parede virtual RK-04)",
@@ -235,6 +255,9 @@ def generate_launch_description():
                 "navigation_start_delay": navigation_start_delay,
                 "costmap_resolution": costmap_resolution,
                 "nav_profile": nav_profile,
+                "lattice_set": lattice_set,
+                "bt_replan": bt_replan,
+                "use_speed_limit": use_speed_limit,
                 "use_route_server": use_route_server,
                 "use_waypoint_follower": use_waypoint_follower,
                 "use_cmd_vel_relay": use_cmd_vel_relay,

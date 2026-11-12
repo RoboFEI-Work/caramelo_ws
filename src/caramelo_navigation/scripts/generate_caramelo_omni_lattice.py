@@ -1,8 +1,45 @@
 #!/usr/bin/env python3
-"""Gera as primitivas do Smac State Lattice (omni) da base mecanum do Caramelo:
-config/lattice/caramelo_omni_2cm_16bins.json, lido pelo planner_server.
-Quem usa: operador, so' quando mudar resolucao/primitivas (arquivo versionado).
-Como roda: ros2 run caramelo_navigation generate_caramelo_omni_lattice [saida.json]
+"""Gera as primitivas do Smac State Lattice da base mecanum do Caramelo, em
+conjuntos NOMEADOS (--conjunto), lidos pelo planner_server:
+
+  omni  -> config/lattice/caramelo_omni_2cm_16bins.json  (DEFAULT do launch)
+  nariz -> config/lattice/caramelo_nariz_2cm_16bins.json (lattice_set:=nariz)
+
+Quem usa: operador, so' quando mudar resolucao/primitivas (arquivos versionados).
+Como roda: ros2 run caramelo_navigation generate_caramelo_omni_lattice
+           (sem argumento gera OS DOIS arquivos no lugar versionado)
+           ros2 run caramelo_navigation generate_caramelo_omni_lattice --conjunto nariz /tmp/x.json
+
+Conjuntos (2026-11-11):
+- omni: o conjunto original de 2026-07-06 (8 translacoes de heading fixo:
+  frente, re', laterais, diagonais frente e diagonais re' + giro no lugar para
+  todos os headings). A saida tem de continuar BYTE-IDENTICA ao JSON versionado
+  (conferir com cmp depois de mexer aqui).
+- nariz: frente 0.16; diagonais frente (0.10, +-0.10) com comprimento DECLARADO
+  = geometrico x 1.5; laterais (0, +-0.10) com comprimento DECLARADO = geometrico
+  x 2.0; SEM re' (nem (-0.08, 0) nem (-0.06, +-0.08)); giros no lugar iguais ao
+  omni. Objetivo: plano global com o nariz para a frente nas pernas longas (o
+  scan cobre so' os 180 graus frontais; o robo "caranguejava").
+
+Por que o fator de comprimento funciona: no nav2_smac_planner do Jazzy
+(src/node_lattice.cpp, getTraversalCost) o custo de atravessar uma primitiva usa
+SO' o campo trajectory_length do JSON, nao a geometria das poses; e reverse_penalty
+nao vale para omni (allow_reverse_expansion fica desligado). Logo, declarar a
+lateral com o dobro do comprimento geometrico e' a unica forma de o A* preferir
+frente a lateral sem tirar a lateral do conjunto. straight_length e as poses
+continuam geometricos (so' o custo muda).
+
+Numeros da bancada offline (bench_lattice_offline.py, arena_extendida, 156 pares
+staging->staging, 2026-11-11), com SmacLattice.analytic_expansion_max_length 0.8 e
+SmacLattice.rotation_penalty 3.0 (o launch impoe os dois com lattice_set:=nariz):
+  omni  :  7.5% do comprimento do plano para a frente, 3.9 giros/plano
+  nariz : 90.0% para a frente (99.0% contando so' as primitivas), 4.0 giros/plano,
+          comprimento total +0.6% (+1.1% contra o omni com a analitica default 3.0),
+          0 falhas, tempo de plano max 0.5 s.
+  Validacao deste gerador (bateria 3, mesmo dia): nariz 89.9% (arena_extendida) e
+  87.5% (arenalegal_2026) de frente contra 9.2% / 9.8% do omni; 0 falhas.
+Sem limitar a analitica (3.0 m default) o nariz cai para 65% de frente: a expansao
+analitica e' uma reta ate o goal com yaw interpolado, que vira lateral/re'.
 """
 
 from __future__ import annotations
@@ -15,7 +52,6 @@ from pathlib import Path
 
 GRID_RESOLUTION = 0.02
 TURNING_RADIUS = 0.0
-DATE_GENERATED = "2026-07-06"
 
 # Mesmos bins de orientacao das amostras omni de 16 bins do Nav2: angulos
 # alinhados a grade, nao uniformemente espacados.
@@ -38,18 +74,37 @@ HEADING_ANGLES = [
     5.81953769817878,
 ]
 
-# Translacoes no frame local. A base mecanum anda de lado e na diagonal sem
-# precisar de raio de giro.
-TRANSLATION_PRIMITIVES = [
-    (0.16, 0.0),
-    (-0.08, 0.0),
-    (0.0, 0.10),
-    (0.0, -0.10),
-    (0.10, 0.10),
-    (0.10, -0.10),
-    (-0.06, 0.08),
-    (-0.06, -0.08),
-]
+# Translacoes no frame local, por conjunto: (x_local, y_local, fator_de_custo).
+# fator_de_custo multiplica SO' o trajectory_length declarado (campo usado no
+# custo do A*); straight_length e as poses ficam geometricos. A base mecanum
+# anda de lado e na diagonal sem precisar de raio de giro.
+TRANSLATION_SETS = {
+    # Conjunto original (2026-07-06): todas as direcoes custam o mesmo por metro.
+    "omni": [
+        (0.16, 0.0, 1.0),
+        (-0.08, 0.0, 1.0),
+        (0.0, 0.10, 1.0),
+        (0.0, -0.10, 1.0),
+        (0.10, 0.10, 1.0),
+        (0.10, -0.10, 1.0),
+        (-0.06, 0.08, 1.0),
+        (-0.06, -0.08, 1.0),
+    ],
+    # Nariz para a frente (2026-11-11): sem re', diagonal x1.5, lateral x2.0.
+    "nariz": [
+        (0.16, 0.0, 1.0),
+        (0.10, 0.10, 1.5),
+        (0.10, -0.10, 1.5),
+        (0.0, 0.10, 2.0),
+        (0.0, -0.10, 2.0),
+    ],
+}
+
+# date_generated gravado no JSON. O do omni NAO muda (saida byte-identica).
+DATE_GENERATED = {
+    "omni": "2026-07-06",
+    "nariz": "2026-11-11",
+}
 
 
 def rounded(value: float) -> float:
@@ -99,9 +154,10 @@ def translation_poses(x_local: float, y_local: float, heading: float) -> list[li
     ]
 
 
-def build_primitives() -> dict:
+def build_primitives(conjunto: str) -> dict:
     primitives = []
     trajectory_id = 0
+    translations = TRANSLATION_SETS[conjunto]
 
     for start_index, start_heading in enumerate(HEADING_ANGLES):
         for end_index, end_heading in enumerate(HEADING_ANGLES):
@@ -123,7 +179,7 @@ def build_primitives() -> dict:
             )
             trajectory_id += 1
 
-        for x_local, y_local in TRANSLATION_PRIMITIVES:
+        for x_local, y_local, cost_factor in translations:
             distance = math.hypot(x_local, y_local)
             primitives.append(
                 {
@@ -132,7 +188,8 @@ def build_primitives() -> dict:
                     "end_angle_index": start_index,
                     "left_turn": True,
                     "trajectory_radius": TURNING_RADIUS,
-                    "trajectory_length": rounded(distance),
+                    # Unico campo que entra no custo do A* (node_lattice.cpp).
+                    "trajectory_length": rounded(distance * cost_factor),
                     "arc_length": 0.0,
                     "straight_length": rounded(distance),
                     "poses": translation_poses(x_local, y_local, start_heading),
@@ -142,7 +199,7 @@ def build_primitives() -> dict:
 
     return {
         "version": 1.0,
-        "date_generated": DATE_GENERATED,
+        "date_generated": DATE_GENERATED[conjunto],
         "lattice_metadata": {
             "motion_model": "omni",
             "turning_radius": TURNING_RADIUS,
@@ -156,32 +213,53 @@ def build_primitives() -> dict:
     }
 
 
-def default_output_path() -> Path:
+def default_output_path(conjunto: str) -> Path:
     return (
         Path(__file__).resolve().parents[1]
         / "config"
         / "lattice"
-        / "caramelo_omni_2cm_16bins.json"
+        / f"caramelo_{conjunto}_2cm_16bins.json"
+    )
+
+
+def write_lattice(conjunto: str, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    data = build_primitives(conjunto)
+    with output.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    print(
+        f"Gerado {output} (conjunto {conjunto}, "
+        f"{data['lattice_metadata']['number_of_trajectories']} primitivas)"
     )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "output",
         nargs="?",
         type=Path,
-        default=default_output_path(),
-        help="Caminho do JSON de saida.",
+        default=None,
+        help="Caminho do JSON de saida (exige --conjunto; default: os arquivos versionados).",
+    )
+    parser.add_argument(
+        "--conjunto",
+        choices=sorted(TRANSLATION_SETS),
+        default=None,
+        help="Conjunto de translacoes (ver TRANSLATION_SETS). Sem ele, gera todos.",
     )
     args = parser.parse_args()
 
-    output = args.output.expanduser().resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        json.dump(build_primitives(), handle, indent=2)
-        handle.write("\n")
-    print(f"Gerado {output}")
+    if args.output is not None:
+        if args.conjunto is None:
+            parser.error("com um caminho de saida explicito, escolha --conjunto")
+        write_lattice(args.conjunto, args.output.expanduser().resolve())
+        return
+    conjuntos = [args.conjunto] if args.conjunto else sorted(TRANSLATION_SETS)
+    for conjunto in conjuntos:
+        write_lattice(conjunto, default_output_path(conjunto))
 
 
 if __name__ == "__main__":

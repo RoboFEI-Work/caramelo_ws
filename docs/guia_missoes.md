@@ -134,6 +134,8 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
   tem `dock_distances.yaml` (linha `Tempo estimado guloso: … ; otimizado: …` no log do
   planner); sem o arquivo, o planejador guloso de sempre. Ver `docs/planejador_por_tempo.md`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
+- Cada corrida grava um **rosbag** em `~/bags/<stamp>_<task>_<mapa>/` (§2.3): `--no-bag`
+  desliga; `--bag-extra` e `--bag-camera` gravam mais.
 
 ### 2.1 Conferir os docks antes da missão (`tour_docks`)
 
@@ -195,13 +197,13 @@ WS1/WS2/WS3/WS6 individualmente):
 #    controller_server/amcl (C++), que já deixam log por PID em ~/.ros/log de qualquer jeito.
 OVERRIDE_LAUNCH_PROCESS_OUTPUT=both ros2 launch caramelo_bringup robot_manipulation.launch.py map_name:=arenalegal_2026
 
-# 2. Terminal 2: gravar o bag (mcap se o plugin existir, senão sqlite3; sai em ~/bags/tour_<data>).
-#    Lista de tópicos da seção 8.1 do diagnóstico (scan, scan_raw, tf, odom, odom/wheel, imu,
-#    amcl_pose, particle_cloud, cmd_vel*, mecanum_controller/reference, costmaps, plan,
-#    collision_monitor_state, joint_states, feedback/status de align_to_dock e navigate_to_pose).
-#    O comando completo é impresso no início; Ctrl-C fecha o bag. ~1–2 GB por tour.
-ros2 run caramelo_navigation gravar_bag_tour            # ou: gravar_bag_tour ws6_3x
-#    (BAG_DIR=/outro/lugar muda a pasta; fonte: src/caramelo_navigation/scripts/gravar_bag_tour.sh)
+# 2. Terminal 2: gravar o bag (mcap + zstd, sai em ~/bags/<stamp>_tour_<mapa>; mesma lista e
+#    compressão do rosbag por corrida do §2.3). --extra acrescenta scan_raw, particle_cloud e o
+#    costmap global (o que a versão de 10/2026 gravava sempre, sem compressão). O comando é
+#    impresso no início; Ctrl-C fecha o bag e imprime `ros2 bag info`.
+ros2 run caramelo_navigation gravar_bag_tour --mapa arenalegal_2026 --extra   # ou: gravar_bag_tour ws6_3x --mapa ...
+#    (BAG_DIR=/outro/lugar muda a pasta; fonte: src/caramelo_navigation/scripts/gravar_bag_tour.sh,
+#     que chama o caramelo_bag_common.py)
 
 # 3. Terminal 3: o tour (ou --only WS6 repetido 3x) como no §2.1.
 ros2 run caramelo_navigation tour_docks --map-name arenalegal_2026 --yes
@@ -226,8 +228,65 @@ O que conferir depois (T8 do diagnóstico, com o `PoseProgressChecker` de 2026-1
 grep -c "Failed to make progress" ~/.ros/log/controller_server_*.log      # esperado 0 nas pernas
 grep -c "clear entirely the local_costmap" ~/.ros/log/*.log               # esperado 0 durante as pernas
 grep -c "Running backup" ~/.ros/log/behavior_server_*.log                 # esperado 0 durante as pernas
-ros2 bag info ~/bags/tour_<data>                                          # todos os tópicos com mensagens
+ros2 bag info ~/bags/<stamp>_tour_<mapa>                                  # todos os tópicos com mensagens
+ros2 run caramelo_navigation bag_resumo ~/bags/<stamp>_tour_<mapa>        # taxa do laço, relógio, caranguejo (§2.3)
 ```
+
+### 2.3 Rosbag por corrida
+
+Desde 2026-11-11 toda missão — `run_mission` no terminal ou GUI/painel web via `mission_server`
+— grava um rosbag sozinha, do fim do pre-flight ao fim do executor (também com Ctrl-C, cancel
+ou falha). A lógica mora em `src/caramelo_navigation/scripts/caramelo_bag_common.py`
+(`iniciar_bag`/`parar_bag`); o desenho veio da pesquisa de 10/11 (rosbag2 0.26.11, mcap, zstd).
+
+- **Onde fica**: `~/bags/<stamp>_<task>_<mapa>/`, com o mesmo `stamp` do
+  `~/.ros/caramelo_missions/<stamp>_actions.yaml`. Dentro: `metadata.yaml`, `<pasta>_N.mcap`
+  (um arquivo novo a cada 500 MB), `corrida.yaml` (task, mapa, actions, git, `nav_profile`,
+  hora, hostname, lista de tópicos) e `record.log` (saída do `ros2 bag record`, mostra quais
+  tópicos ele de fato assinou). mcap com `zstd_fast` por chunk e cache de 16 MB (numa queda
+  perde no máximo ~10 s). Lista mínima: cadeia `/cmd_vel_nav → /cmd_vel_smoothed → /cmd_vel →
+  /mecanum_controller/reference`, `/maxon/wheel_velocity`, `/odom`, `/odom/wheel`, IMU,
+  `/joint_states`, `/amcl_pose`, `/scan`, `/tf`, `/tf_static`, `/plan`, `/local_plan`, costmap
+  local, footprint, `/collision_monitor_state`, `/rosout`, `/caramelo/mission/status` e o
+  feedback/status de `navigate_to_pose`, `follow_path`, `dock_robot` e `align_to_dock`
+  (`TOPICOS_MIN`). Estimativa: ~60 MB/min brutos, bem menos comprimido. **Pendente**: medir
+  na primeira corrida real se o laço do controller piora (`grep -c "missed its desired rate"`
+  no log do `controller_server` com e sem bag) antes de confiar nele em competição.
+- **Como desligar**: `--no-bag` no `run_mission`; `bag_enabled:=false` no
+  `mission_server.launch.py`; ou `CARAMELO_BAG=0` no ambiente (vale para os dois caminhos).
+  Com menos de 10 GB livres a missão roda sem bag (aviso `[bag] ... GB livres`) — nunca
+  aborta por causa do bag. `CARAMELO_BAG_DIR=/outro/lugar` muda a pasta raiz.
+- **Mais dados, sob demanda**: `--bag-extra` (`bag_extra:=true`) acrescenta
+  `/global_costmap/costmap`, `/particle_cloud`, `/transformed_global_plan`,
+  `/received_global_plan`, `/scan_raw`, `/behavior_tree_log`, `/diagnostics`, `/speed_limit`
+  (dobra o tamanho). `--bag-camera` (`bag_camera:=true`) sobe um `image_transport republish`
+  raw → JPEG e grava `/manip/vision_debug/image/compressed` — assinar a imagem acorda o
+  processamento do `vision_debug_node`, por isso é opt-in.
+- **Limpeza automática**: ao iniciar cada corrida, apaga as pastas mais antigas de `~/bags`
+  até ficar ≤ 40 GB e ≤ 40 corridas. `touch ~/bags/<corrida>/.keep` protege uma corrida
+  importante.
+- **Como ler**: `ros2 bag info ~/bags/<corrida>` e
+  `ros2 run caramelo_navigation bag_resumo ~/bags/<corrida>` (duração, tamanho, mensagens e
+  bytes por tópico; taxa real de `/cmd_vel_nav` = laço do controller, com intervalos > 100 ms;
+  offset `header.stamp` × recepção em `/odom` e `/scan` = relógio Pi × PC, esperado |mediana|
+  < 5 ms com chrony; e, por goal do `/navigate_to_pose`, a fração do tempo em movimento com
+  |vy| > |vx| — o "caranguejo"; `--json` para scripts). Replay só com RViz, **nunca com o
+  Nav2 no ar**: `ros2 bag play ~/bags/<corrida> --clock 100 --topics /tf /tf_static /scan
+  /local_costmap/costmap /plan /cmd_vel_nav` + `rviz2 --ros-args -p use_sim_time:=true`.
+  Análise própria em Python: `rosbag2_py` (modelo em `bag_resumo.py`; o campo `t` do
+  `read_next()` é o instante de recepção no PC).
+- **O que NUNCA gravar e por quê**: `/marker`, `/evaluation`, `/cost_cloud` (DWB) e
+  `/trajectories`, `/optimal_trajectory` (MPPI) — o Nav2 só **constrói** essas mensagens quando
+  há assinante, e o gravador viraria esse assinante dentro do laço de 20 Hz que já perde taxa
+  (o DWB montaria 1680 trajetórias por ciclo só para o marker); `*/costmap_raw` e
+  `*/costmap_updates` (vazios com `always_send_full_costmap: true`); imagem crua da câmera
+  (~276 MB/min e acorda o `vision_debug_node`). A lista é `TOPICOS_NUNCA` no
+  `caramelo_bag_common.py` e `montar_topicos` recusa qualquer um deles. Também não se usa
+  `-a` nem `--qos-profile-overrides-path` (o record adota o QoS do publisher).
+- **Parada**: SIGINT no gravador, espera até 30 s (ele fecha o `metadata.yaml`), SIGTERM de
+  reserva, **nunca SIGKILL** (perderia cache e metadata). Pasta sem `metadata.yaml` (queda de
+  energia): `ros2 bag reindex ~/bags/<corrida> mcap`. Testes: `test_bag_common.py` (sem
+  ROS) e `CARAMELO_BAG_SMOKE=1 ... test_bag_common_ros.py` (fumaça em `ROS_DOMAIN_ID=99`).
 
 ## 3. Formato do YAML da missão
 
@@ -1102,6 +1161,8 @@ Datas que estavam nos títulos das seções (a cronologia completa fica no git):
 - **2026-08-25** — YAML novo do @Work Commander (§3.2); container por cor sem tag (§3.4).
 - **2026-08-28** — AMT1 (§3.6); fila de alcance `ReachQueue` + `nudge_base` (§5.2);
   busca lateral com a base; ordem das juntas na pega (§5.1).
+- **2026-11-11** — rosbag automático por corrida (`caramelo_bag_common`, `bag_resumo`,
+  `gravar_bag_tour` reescrito sobre o módulo) (§2.3).
 - **2026-08-29** — varredura só com a j1, precisão do place (mediana, re-registro local,
   verificação), garra larga em `pegar_obj`, subida vertical pós-pega, re-detecção após a j1,
   recuo antes do lateral (§3.6, §5.1).

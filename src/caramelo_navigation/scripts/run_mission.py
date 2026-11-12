@@ -14,6 +14,11 @@ Este script NAO usa rclpy diretamente: ele apenas orquestra os processos via
 `ros2 run`, no mesmo espirito dos demais utilitarios do pacote. Ctrl+C e'
 repassado como SIGINT ao executor, que faz o halt limpo da BT (nunca SIGKILL).
 
+Rosbag por corrida (2026-11-11): depois do pre-flight sobe um `ros2 bag record`
+(caramelo_bag_common.iniciar_bag) em ~/bags/<stamp>_<task>_<mapa>/ e o fecha no
+fim, aconteca o que acontecer com o executor. --no-bag ou CARAMELO_BAG=0
+desligam; --bag-extra e --bag-camera gravam mais (ver docs/guia_missoes.md).
+
 As tasks vivem em missions/ na raiz do workspace (fonte unica); --task e'
 um caminho absoluto ou relativo ao CWD, sem fallback para share de pacote.
 
@@ -32,6 +37,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from caramelo_bag_common import imprimir_info_bag, iniciar_bag, parar_bag  # noqa: E402
 from caramelo_docking_common import (  # noqa: E402
     docking_file, graph_action_names, resolve_map_folder, service_areas_file,
     wait_for_action_servers,
@@ -65,6 +71,16 @@ def _parse_args(argv):
     p.add_argument("--preflight-timeout", type=float, default=120.0,
                    help="Segundos maximos aguardando os servidores da missao "
                         "(move_group, pick/place, nav) antes de abortar.")
+    p.add_argument("--no-bag", action="store_true",
+                   help="Nao grava o rosbag da corrida (idem CARAMELO_BAG=0).")
+    p.add_argument("--bag-extra", action="store_true",
+                   help="Bag com os topicos EXTRA (costmap global, particle_cloud, "
+                        "scan_raw...). Dobra o tamanho.")
+    p.add_argument("--bag-camera", action="store_true",
+                   help="Bag com a camera do punho anotada (JPEG via republish).")
+    p.add_argument("--nav-profile", default=None,
+                   help="dwb|mppi, so' como metadado do bag (default: "
+                        "CARAMELO_NAV_PROFILE ou 'desconhecido').")
     return p.parse_args(argv[1:])
 
 
@@ -298,7 +314,18 @@ def main(argv=None) -> int:
     if not _preflight(args, actions):
         return 1
 
-    return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=False))
+    # Bag da corrida: nasce depois do pre-flight (stack no ar, topicos
+    # descobertos) e morre no finally, com ou sem Ctrl-C no executor.
+    bag = None
+    if not args.no_bag:
+        bag = iniciar_bag(actions_yaml.stem, task_yaml.stem, map_folder.name, actions_yaml,
+                          extra=args.bag_extra, camera=args.bag_camera,
+                          nav_profile=args.nav_profile)
+    try:
+        return _run_executor(_executor_cmd(actions_yaml, map_folder, args, dry_run=False))
+    finally:
+        if bag is not None:
+            imprimir_info_bag(parar_bag(bag))
 
 
 if __name__ == "__main__":

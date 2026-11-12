@@ -1,0 +1,83 @@
+<!--
+  2026-11-11 (rodada 2): BT para PERNA CURTA (staging a < 0,30 m da pose atual;
+  o GoToWS manda esta BT no campo behavior_tree do NavigateToPose). Identica a
+  caramelo_lattice_dwb.xml, so' troca o goal checker por staging_goal_checker
+  (xy 0,30 m): o robo ja' conta como "na posicao", o RotationShim gira para o
+  yaw do goal (rotate_to_goal_heading) e o checker fecha quando o yaw entra em
+  0,20 rad. Evita o vaivem de +-170 graus atras do ultimo ponto de um path de
+  centimetros (SH1 -> WS2: 76 s e 32 s nos bags de 11/11).
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
+      <PipelineSequence name="SmacLatticeSavitzkyDWB">
+        <!-- 2026-07-20: ControllerSelector REMOVIDO. O painel Selector do RViz
+             publicava um default != DWB (MPPI), e o MPPI colapsa para ~0 e
+             CONGELA o robo. O controlador e' FIXO por BT; o launch escolhe a BT
+             por nav_profile:=dwb|mppi. -->
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
+            <Sequence name="ComputeAndSmoothPath">
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice" error_code_id="{compute_path_error_code}"/>
+              <!-- check_for_collisions=false: em corredor apertado o caminho suavizado
+                   raspa celulas infladas e a checagem abortava o pipeline inteiro
+                   (robo parado em loop de replanejamento). A protecao real contra
+                   colisao ja e do controlador + collision_monitor. -->
+              <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="false"/>
+            </Sequence>
+            <!-- Recovery de CONTEXTO (2026-11-07, padrao Jazzy): so' limpa o costmap
+                 global se o erro e' do tipo que limpar resolve (NO_VALID_PATH,
+                 TIMEOUT, UNKNOWN = obstaculo-fantasma). START_OCCUPIED / goal
+                 ocupado / TF vao direto para a recovery de escape (re + limpa),
+                 sem gastar uma tentativa limpando a toa. -->
+            <Sequence name="ClearGlobalIfItHelps">
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+
+        <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
+          <FollowPath path="{smoothed_path}" controller_id="DWBHolonomic" goal_checker_id="staging_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <!-- Idem: limpa o costmap local so' para FAILED_TO_MAKE_PROGRESS /
+               NO_VALID_CONTROL / PATIENCE_EXCEEDED / UNKNOWN (path invalido ou
+               TF nao melhoram limpando). -->
+          <Sequence name="ClearLocalIfItHelps">
+            <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+            <!-- ClearEntire -> ClearCostmapExceptRegion (2026-11-07): limpa so' o
+                 que esta a mais de 1.0 m do robo. A memoria do LiDAR perto do
+                 robo (inclusive atras/ao lado, fora da vista atual) e' o que o
+                 escape_free_space e o BackUp usam para nao bater; apaga-la a
+                 cada falha do controller era deixar a recovery cega. Fantasma
+                 na frente ja' some pelo raytracing (inf_is_valid). -->
+            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="1.0"/>
+          </Sequence>
+        </RecoveryNode>
+      </PipelineSequence>
+
+      <ReactiveFallback name="EscapeFallback">
+        <GoalUpdated/>
+        <RoundRobin name="EscapeRecoveries">
+          <!-- 1) ESCAPE INTELIGENTE (2026-11-07): behavior caramelo_behaviors::
+               EscapeFreeSpace (server escape_free_space, mesma action do
+               DriveOnHeading). Le o custo do footprint nos costmaps local E
+               global em 8 direcoes omni e anda 0.20 m na de menor custo com
+               checagem de colisao por ciclo; sem direcao segura -> falha SEM
+               se mover. NAO limpa o costmap antes: a memoria do LiDAR e as
+               mesas do mapa sao justamente o que protege a traseira. -->
+          <DriveOnHeading server_name="escape_free_space" dist_to_travel="0.20" speed="0.25" time_allowance="10"/>
+          <!-- 2) Limpa so' o GLOBAL (fantasma longe) e espera o scan atualizar. -->
+          <Sequence name="ClearGlobalAndWait">
+            <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+            <Wait wait_duration="1.0"/>
+          </Sequence>
+          <!-- 3) Ultimo recurso: re curta COM memoria (o costmap local nao e'
+               mais limpo antes, entao o BackUp checa colisao contra o que o
+               LiDAR viu ao entrar). 0.25 m/s = piso operacional do ESC
+               (0.13 ficava abaixo). Spin continua fora (colisao = -50%). -->
+          <BackUp backup_dist="0.10" backup_speed="0.25" time_allowance="10"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

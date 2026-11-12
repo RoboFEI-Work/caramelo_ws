@@ -5,7 +5,7 @@
 # twist_relay), service_area_manager/markers e, com use_docking, o
 # docking_server.launch.py. Quem usa: bringup.launch.py (GUI "Ligar navegacao")
 # e caramelo_bringup/robot_manipulation.launch.py.
-# Como roda: ros2 launch caramelo_navigation navigation.launch.py map_name:=<mapa> [nav_profile:=dwb|mppi]
+# Como roda: ros2 launch caramelo_navigation navigation.launch.py map_name:=<mapa> [nav_profile:=dwb|mppi] [lattice_set:=omni|nariz]
 import os
 from pathlib import Path
 
@@ -67,8 +67,44 @@ def _resolve_costmap_resolution(context):
         return 0.20
 
 
+# Conjuntos de primitivas do Smac lattice (2026-11-11), por valor de lattice_set.
+# Cada entrada: arquivo em config/lattice/ e overrides do SmacLattice que o
+# launch injeta por cima do planner_server.yaml (os valores que a bancada
+# offline mediu JUNTO com o conjunto; sem eles o conjunto nao entrega o
+# resultado). "omni" e' o default de producao e nao sobrescreve nada.
+LATTICE_SETS = {
+    "omni": {
+        "arquivo": "caramelo_omni_2cm_16bins.json",
+        "smac_overrides": {},
+    },
+    # nariz: frente + diagonais frente (custo x1.5) + laterais (custo x2.0),
+    # sem re'. analytic_expansion_max_length 3.0 -> 0.8: a expansao analitica
+    # e' uma reta ate o goal com yaw interpolado (vira lateral/re' no frame do
+    # robo); limitada a 0.8 m deixa de responder por ~40% do plano.
+    # rotation_penalty 1.0 -> 3.0: com a lateral mais cara, o giro no lugar
+    # precisa custar mais para o A* nao trocar lateral por giro+frente+giro a
+    # cada passo (bancada: 90% do plano de frente, +0.6% de comprimento).
+    "nariz": {
+        "arquivo": "caramelo_nariz_2cm_16bins.json",
+        "smac_overrides": {
+            "analytic_expansion_max_length": 0.8,
+            "rotation_penalty": 3.0,
+        },
+    },
+}
+
+
+def _resolve_lattice_set(context):
+    lattice_set = LaunchConfiguration("lattice_set").perform(context).strip().lower()
+    if lattice_set not in LATTICE_SETS:
+        raise RuntimeError(
+            f"lattice_set precisa ser um de {sorted(LATTICE_SETS)}; veio '{lattice_set}'.")
+    return lattice_set, LATTICE_SETS[lattice_set]
+
+
 def _make_navigation_override_params(map_name, resolution, lattice_filepath,
-                                     route_graph_filepath, keepout_enabled=False):
+                                     route_graph_filepath, keepout_enabled=False,
+                                     smac_overrides=None):
     # Parametros por costmap (local e global). So injetamos o Keepout Filter
     # (RK-04) quando use_keepout:=true, para nao gerar avisos de "esperando
     # CostmapFilterInfo" quando os servidores de mascara nao estao no ar.
@@ -84,12 +120,15 @@ def _make_navigation_override_params(map_name, resolution, lattice_filepath,
             costmap_params["filters"] = ["keepout_filter"]
             costmap_params["keepout_filter"] = keepout_plugin
 
+    # SmacLattice: caminho do lattice + overrides do conjunto escolhido
+    # (lattice_set). Entram na copia do YAML, por cima do planner_server.yaml.
+    smac_params = {"lattice_filepath": lattice_filepath}
+    smac_params.update(smac_overrides or {})
+
     params = {
         "planner_server": {
             "ros__parameters": {
-                "SmacLattice": {
-                    "lattice_filepath": lattice_filepath,
-                },
+                "SmacLattice": smac_params,
             },
         },
         "local_costmap": {
@@ -143,7 +182,18 @@ def _bt_xml_for_profile(context, package_share):
     # through_poses do Nav2 usa Spin, que nao existe mais no behavior_server
     # (RK-05) — sem o override, o bt_navigator falhava ao ativar e o lifecycle
     # abortava o bringup inteiro ("navegacao inativa").
-    to_pose = os.path.join(package_share, "behavior_tree", f"caramelo_lattice_{profile}.xml")
+    # 2026-11-11: bt_replan escolhe COMO a BT de to_pose replaneja. "rate" =
+    # arquivo de sempre (ComputePathToPose a 1 Hz); "invalid" = so' replaneja
+    # se o goal mudou, o path ficou invalido ou passou 15 s (opcao da rodada 2
+    # pos-bags; so' existe para dwb). through_poses nao muda.
+    bt_replan = LaunchConfiguration("bt_replan").perform(context).strip().lower()
+    if bt_replan not in ("rate", "invalid"):
+        raise RuntimeError("bt_replan precisa ser 'rate' ou 'invalid'.")
+    if bt_replan == "invalid" and profile != "dwb":
+        raise RuntimeError("bt_replan:=invalid so' existe para nav_profile:=dwb.")
+    sufixo = "_replan_if_invalid" if bt_replan == "invalid" else ""
+    to_pose = os.path.join(
+        package_share, "behavior_tree", f"caramelo_lattice_{profile}{sufixo}.xml")
     through = os.path.join(
         package_share, "behavior_tree", f"caramelo_lattice_through_{profile}.xml")
     return profile, to_pose, through
@@ -157,6 +207,7 @@ def _create_navigation_stack(context, *args, **kwargs):
     use_route_server = LaunchConfiguration("use_route_server")
     use_waypoint_follower = LaunchConfiguration("use_waypoint_follower")
     use_cmd_vel_relay = LaunchConfiguration("use_cmd_vel_relay")
+    use_speed_limit = LaunchConfiguration("use_speed_limit")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
     mecanum_reference_topic = LaunchConfiguration("mecanum_reference_topic")
     use_service_area_manager = LaunchConfiguration("use_service_area_manager")
@@ -177,11 +228,12 @@ def _create_navigation_stack(context, *args, **kwargs):
     docking_launch = os.path.join(caramelo_navigation_pkg, "launch", "docking_server.launch.py")
     nav_profile_value, bt_xml, bt_through_xml = _bt_xml_for_profile(
         context, caramelo_navigation_pkg)
+    lattice_set_value, lattice_set = _resolve_lattice_set(context)
     lattice_filepath = os.path.join(
         caramelo_navigation_pkg,
         "config",
         "lattice",
-        "caramelo_omni_2cm_16bins.json",
+        lattice_set["arquivo"],
     )
     map_folder = _resolve_map_folder(context)
     route_graph_filepath = str(map_folder / "route_graph.geojson")
@@ -206,6 +258,7 @@ def _create_navigation_stack(context, *args, **kwargs):
         lattice_filepath,
         route_graph_filepath,
         keepout_enabled=keepout_enabled,
+        smac_overrides=lattice_set["smac_overrides"],
     )
 
     nav2_controller_server = Node(
@@ -379,6 +432,22 @@ def _create_navigation_stack(context, *args, **kwargs):
         condition=IfCondition(use_cmd_vel_relay),
     )
 
+    # 2026-11-11: limite de velocidade por proximidade (pedido do operador:
+    # "perto de objeto e em curva fechada, mais devagar"). O no' olha o menor
+    # alcance do /scan e publica /speed_limit (percentual); o controller_server
+    # aplica no DWB. Nunca abaixo de 70%: max_vel_theta 0,50 x 0,70 = 0,35 =
+    # min_speed_theta, abaixo disso o DWB nao teria giro valido.
+    speed_limit_node = Node(
+        package="caramelo_navigation",
+        executable="speed_limit_by_scan",
+        name="speed_limit_by_scan",
+        output="screen",
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(use_speed_limit),
+    )
+
     service_area_manager = Node(
         package="caramelo_navigation",
         executable="service_area_manager_node",
@@ -435,9 +504,11 @@ def _create_navigation_stack(context, *args, **kwargs):
     )
 
     return [
+        speed_limit_node,
         LogInfo(msg=f"Resolucao dos costmaps: {costmap_resolution:.3f} m/celula"),
-        LogInfo(msg=f"Perfil Nav2: {nav_profile_value}"),
-        LogInfo(msg=f"Primitivas do Smac lattice: {lattice_filepath}"),
+        LogInfo(msg=f"Perfil Nav2: {nav_profile_value} (BT to_pose: {os.path.basename(bt_xml)})"),
+        LogInfo(msg=f"Primitivas do Smac lattice ({lattice_set_value}): {lattice_filepath}"),
+        LogInfo(msg=f"Overrides do SmacLattice pelo lattice_set: {lattice_set['smac_overrides'] or 'nenhum'}"),
         LogInfo(msg=f"Grafo de rotas: {route_graph_filepath} ({route_graph_nodes} nos, {route_graph_edges} arestas)"),
         LogInfo(msg=f"Route server ligado: {start_route_server}"),
         delayed_navigation,
@@ -482,6 +553,32 @@ def generate_launch_description():
             "nav_profile",
             default_value="dwb",
             description="Perfil de navegacao (BT + controlador): dwb ou mppi",
+        ),
+        DeclareLaunchArgument(
+            "use_speed_limit",
+            default_value="true",
+            description="2026-11-11: sobe speed_limit_by_scan (reduz a velocidade maxima do DWB "
+                        "para 70% quando o LiDAR ve algo a menos de 0,70 m; 100% acima de 0,85 m). "
+                        "Desligar = use_speed_limit:=false.",
+        ),
+        DeclareLaunchArgument(
+            "bt_replan",
+            default_value="rate",
+            description="Replanejamento da BT de NavigateToPose: rate (default, a 1 Hz) ou "
+                        "invalid (2026-11-11, so' dwb: replaneja se o goal mudou, o path "
+                        "ficou invalido ou passou 15 s; evita a troca de rota a cada "
+                        "limpeza do costmap e os 'Start occupied' na staging). "
+                        "Voltar = bt_replan:=rate.",
+        ),
+        DeclareLaunchArgument(
+            "lattice_set",
+            default_value="omni",
+            description="Primitivas do Smac lattice: omni (default, conjunto atual: frente, "
+                        "re', lateral e diagonais com o mesmo custo por metro) ou nariz "
+                        "(experimental 2026-11-11: sem re', diagonal custo x1.5, lateral x2.0; "
+                        "o launch tambem impoe SmacLattice.analytic_expansion_max_length 0.8 e "
+                        "SmacLattice.rotation_penalty 3.0, medidos juntos na bancada offline: "
+                        "90% do plano de frente contra 7% do omni). Voltar = lattice_set:=omni.",
         ),
         DeclareLaunchArgument(
             "use_route_server",

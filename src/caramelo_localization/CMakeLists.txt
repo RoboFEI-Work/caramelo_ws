@@ -12,6 +12,23 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# 2026-11-11: vigia de localizacao (AMCL preso a odometria em janelas curtas)
+# + nucleo puro e replay offline sobre bags.
+install(PROGRAMS
+  scripts/localization_watchdog.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME localization_watchdog
+)
+install(PROGRAMS
+  scripts/loc_watchdog_offline.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME loc_watchdog_offline
+)
+install(FILES
+  scripts/loc_watchdog_core.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

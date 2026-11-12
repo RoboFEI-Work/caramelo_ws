@@ -50,6 +50,8 @@ void EscapeFreeSpace::onConfigure()
   declare("min_travel_for_exit", min_travel_for_exit_);
   declare("allow_backward", allow_backward_);
   declare("use_global_costmap", use_global_);
+  declare("ignore_map_if_contradiction", ignore_map_if_contradiction_);
+  declare("map_contradiction_min_cells", map_contradiction_min_cells_);
 
   // Topicos dos costmaps/footprint: os mesmos que o behavior_server usa.
   std::string local_topic = "local_costmap/costmap_raw";
@@ -245,10 +247,34 @@ EscapeFreeSpace::ResultStatus EscapeFreeSpace::onRun(
     RCLCPP_ERROR(logger_, "[%s] footprint fora do costmap local", behavior_name_.c_str());
     return ResultStatus{Status::FAILED, ActionT::Result::UNKNOWN};
   }
+  const int bad_local0 = start.new_bad + start.old_bad;
   if (have_map_) {
     double gx, gy, gyaw;
     odomToMap(x0, y0, yaw0, gx, gy, gyaw);
-    evalOn(global_cm_, gx, gy, gyaw, keys0_global_, start, &keys0_global_);
+    // Avalia o global em separado para poder compara-lo com o local.
+    PoseEval only_map;
+    CellKeys keys_map;
+    evalOn(global_cm_, gx, gy, gyaw, keys_map, only_map, &keys_map);
+    const int bad_map0 = only_map.new_bad + only_map.old_bad;
+    if (ignore_map_if_contradiction_ && bad_local0 == 0 &&
+      bad_map0 >= map_contradiction_min_cells_)
+    {
+      // 2026-11-11: mapa diz "dentro de obstaculo", LiDAR diz "livre" => a
+      // pose no mapa esta errada (AMCL deslocado). Sair pelo LiDAR e' o unico
+      // jeito de o filtro receber movimento e se corrigir.
+      RCLCPP_WARN(
+        logger_, "[%s] mapa global diz %d celulas LETAIS sob o robo e o LiDAR (costmap "
+        "local) diz 0: localizacao provavelmente deslocada; este escape ignora o costmap "
+        "global e decide so' pelo LiDAR.", behavior_name_.c_str(), bad_map0);
+      have_map_ = false;
+    } else {
+      keys0_global_ = keys_map;
+      start.new_bad += only_map.new_bad;
+      start.old_bad += only_map.old_bad;
+      start.max_cost = std::max(start.max_cost, only_map.max_cost);
+      start.sum_cost += only_map.sum_cost;
+      start.n_cells += only_map.n_cells;
+    }
   }
   bad0_ = start.new_bad + start.old_bad;  // total de celulas ruins sob o robo no inicio
   const double current_max = start.max_cost;

@@ -1,0 +1,183 @@
+# Estado atual
+
+Última atualização: 2026-11-11 22h40 (Claude: bag 22h03 = AMCL atravessou a parede central e perdeu 89 graus
+enquanto giroscopio e odometria concordavam; rodada 4 = localization_watchdog (AMCL preso a odometria),
+modelo do AMCL de volta a likelihood_field; aguarda teste). Branch `detectando_container_e_usando_yaml_novo`, HEAD 833c13d,
+**em sincronia com `origin`** (`git status -sb`, 10/11). Árvore limpa exceto `.jarvis/` e
+`CLAUDE.md`, não rastreados e não commitados. Não existe branch local `main`; `origin/main`
+parou em 2025-09-28 (2 commits) e todo o trabalho de 2026 está na branch acima. Stash
+`stash@{0}` = experimento de nav lattice "frente" revertido em 2026-11-06; **não** aplicar.
+
+## Objetivo ativo
+
+Preparar o robô para a competição de 2026-11-18: cubo encaixado no buraco certo da mesa
+de precisão (PP) e navegação sem travar/raspar. Confiabilidade acima de melhoria.
+
+## Tarefas
+
+| Id | Tarefa | Status | Responsável | Checkpoint / próximo passo |
+|---|---|---|---|---|
+| T1 | PP: cubo no buraco certo (fusão tag + buraco de visão) | em andamento | Claude (aguarda operador) | Commitado em d1cc749. Teste real de 2026-11-09 18h: visão usada em 5/6 slots; erro residual após soltar 8–17 mm, dy +10 mm nos slots à esquerda (x<0) e −15 mm à direita (x>0), sugerindo giro ~3° câmera–braço. **Próximo**: operador manda foto de cima da mesa. Se o padrão bater → implementar aprendizado do resíduo pós-soltura aplicado aos slots seguintes (função da posição lateral), limitado a ≤3 cm. Se não bater → a leitura de verificação é que está enviesada; medir o giro e corrigir no URDF. |
+| T2 | Antes da competição: desligar imagens de depuração do detector | pendente | qualquer | `save_debug_dir: ""` em `src/manipulation/manip_bringup/config/pp_hole_detector.yaml` (hoje `/tmp/pp_hole_debug`). |
+| T3 | Validar no robô a rodada de navegação de 2026-11-07 (commit 304fb09) | testada em 11/11 (2 bags): nav funciona, mas 55–74 % do tempo é giro parado; ver T15–T17 e `docs/relatorio_testes_2026-11-11.md` | operador + Claude | Nada validado no robô ainda, exceto o plugin de escape subido em namespace `/teste` em 07/11 (relato da sessão). gtest: a sessão de 07/11 registrou 7/7; hoje `src/caramelo_behaviors/test/test_escape_scoring.cpp` tem 9 `TEST` e não há registro de rodada da versão atual. Conferir: DWB `ObstacleFootprint.scale 1.0` desvia sem travar; recoveries gated; costmap `inf_is_valid`; `respawn` dos servers. Relançar exige `source install/setup.bash` novo (pacote novo `caramelo_behaviors`). Uma mudança por vez; reverter = YAML + relançar. |
+| T4 | Calibração câmera–braço (leituras longe × perto diferem 35–55 mm) | bloqueada | — | Solver de montagem rígida não fecha (rms 32 mm; com escala de alcance 13,7 mm; resíduo depende da pose → suspeita de offsets de junta). Decisão: tag size fica 0.041, não mexer antes de 18/11. Dados em `/tmp/calib.jsonl` (voláteis). Scripts `calib_camera_record.py` / `calib_camera_solve.py` em `manip_bringup/scripts` (verificar que ainda existem antes de usar). |
+| T5 | Detector de buraco agnóstico à cor (tampo/cavidade da arena podem ter outra cor) | pendente | — | Oferecido ao operador, não iniciado. Hoje o detector usa HSV marrom + anel branco (`pp_hole_detector.yaml`). |
+| T6 | Docking: validação no robô das correções de 26/10 e do alinhamento por câmera de 31/10 (0e76eee) | status desconhecido (mantido em aberto, 10/11) | operador | Código confirmado em 10/11: `amcl_square_enabled: False`, `camera_enabled: True`, `camera_weight 0.8`, `rotate_mode "pulsos"` em `src/caramelo_navigation/launch/docking_server.launch.py` e `dock_align_node.py`. Último relato de resultado: tours de 26/10 (`src/caramelo_mapping/maps/arenalegal_2026/tour_2026-10-26_19*.md`) e tour de 31/10 em `arena_extendida` (commit 76041b2; conteúdo não lido nesta análise). Nenhum registro posterior de docking bom/ruim; confirmar com o operador. |
+| T7 | Push dos commits de 2026-11-09 (c1c7873..833c13d) | concluída (verificado 10/11) | operador | `origin/detectando_container_e_usando_yaml_novo` = 833c13d. Quem fez o push não está registrado. |
+| T8 | Place nos containers / pilha | concluída (código); validação em arena desconhecida | — | Fluxo de pilha do commit 26d665c (observação prévia com garra vazia, escadinha (0, −0,012) só na pilha, slots 101–107 pela lógica de pilha, `stack_verify_correct=false` = verificação só mede). Não tocado em 09/11. Pilha de 4 cubos (pedido de 21/10) nunca teve resultado registrado. |
+| T9 | Limite do joint 4 do braço: servo para em 1,913 rad, URDF e poses do SRDF pedem até 2,2 | pendente de decisão do time desde 26/10 | time | `docs/status_itens_2026-10-26.md` (item 3). Em 10/11 o URDF em `src/manipulation/manip_description/urdf/arm.xacro` ainda tem `upper="2.2"` (relato do agente de leitura). Opções (a) subir limite no servo ou (b) URDF 1,91 + regravar poses. |
+| T10 | Pose de dock da ST1 ausente em `arenalegal_2026/docking.yaml` (fica fora da matriz de distâncias do planejador) | pendente | operador | `missions/README.md` e `docs/status_itens_2026-10-26.md` item 4; confirmado em 10/11. Para `arena_extendida` não foi verificado. |
+| T11 | `missions/tasks_geradas2/` (seeds novas + `empilha.yaml`, commit 26d665c) não é varrida pela GUI nem pelo painel web | pendente (só documentado) | — | `src/caramelo_gui/src/competicao_module.cpp` (`kSubpastasDeTasks`) e `src/caramelo_web/caramelo_web/missoes.py` (`SUBPASTAS`) só listam `tasks geradas` e a raiz. Pelo terminal (`run_mission`) funciona. |
+| T12 | Possíveis bugs encontrados na leitura de 10/11 (NÃO corrigidos; sem autorização) | pendente de confirmação | — | Ver seção "Divergências e possíveis bugs" abaixo: `slot_cavity_depth_m` 0.0005 no AMT1 vs 0.005 no place; sinal de `slot_center_offset_m` (−0,045 declarado, 0,04 no membro; só modo legado); `--use-lidar-refine` no-op; deps não declaradas; fixtures de teste divergentes das tasks. |
+| T13 | Docs desatualizados em relação ao código (lista na seção abaixo) | pendente (só documentado) | — | Principais: `docs/place_precisao_e_pilha.md`, `docs/guia_missoes.md` §3.2/3.3/3.6, `docs/docking_alinhamento_holonomico.md` (orquestração e piso do ESC), `README.md` §7 ("sem teste no robô" para a PP), `docs/status_itens_2026-10-26.md` (item 2.5 já feito). |
+| T14 | Navegação/controle: diagnóstico e plano (caranguejo, laço lento, colisões, MPPI) | em andamento: 1ª rodada de feedback com bags feita em 11/11 (relatório + rodada 1 aplicada); plano escrito, implementações opcionais em curso, **nada validado no robô** | Claude + operador | Plano: `docs/plano_navegacao_2026-11-11.md`. **Próximo**: operador aprova a fase 0 (rosbag, energia, publish_* false, failure_tolerance 1,0) e a fase 1 (vy_samples 4); testar `lattice_set:=nariz` em 3 pernas longas com bag; uma mudança por rodada. Parâmetros de produção ainda não foram alterados. |
+| T15 | Giro parado do RotationShim (55–74 % do tempo de nav; pernas < 0,5 m viram vaivém de ±170°) | rodada 1 testada (bag 3: giro 74→44 %, pernas longas 28–40 %); perna curta ainda 32 s → rodada 2b aplicada | Claude + operador | `rotate_to_heading_once: true` em `controller_server.yaml`. Medir no próximo bag a coluna "girando" por perna (`scripts/bag_forense/analise_pernas.py` ou §1 do relatório). Reverter = false. Se continuar nas pernas curtas (SH1→WS2): pular `NavigateToPose` quando a staging está a < 0,3 m (código) ou `xy_goal_tolerance` 0,20. |
+| T16 | Flip-flop de rota após `ClearEntireCostmap` global + "Start occupied" a cada replan na staging | preparada (desligada); bag 3 sem flip-flop relevante | operador decide | `bt_replan:=invalid` (`behavior_tree/caramelo_lattice_dwb_replan_if_invalid.xml`; replaneja só se goal mudou / path inválido / 15 s). Build feito, `--show-args` OK; não testado no robô. |
+| T17 | Trancos físicos: rodas a 8–16 rad/s com referência zero/constante (7 eventos bag 1, 17 bag 2; encoder confirma; recuo de 0,3 m sem comando após undock WS5) | bloqueada (ESC/Maxon intocáveis até 18/11); bag 3: 4 eventos | equipe de hardware | Tabela em `docs/relatorio_testes_2026-11-11.md` §A3; 2 eventos coincidem com gap > 150 ms na referência; demais com comandos mistos pequenos (rodas perto do piso 2,43 rad/s). Reproduzir com `/joint_states` + `/mecanum_controller/reference` dos bags. |
+| T18 | Beco: meia-volta no corredor WS5/parede central quando a rota oeste está bloqueada (2 goals abortados, colisão na quina leste) | sem solução por parâmetro | time | Sem ré (`min_vel_x` 0) e com o shim, o robô não sai de um corredor em que o costmap está em 253 nas 8 direções. Operacional: ordem das estações / re-tentativa (funcionou). Experimento pós-competição: `min_vel_x` −0,25. |
+| T19 | Rodada 2 pós-bags (aplicada 11/11 ~23h, aguarda teste): `ObstacleFootprint.scale` 0.02; BT curta (`staging_short_dist` 0,30 no executor + `staging_goal_checker`); `speed_limit_by_scan` (70 % abaixo de 0,70 m); bag `--all-topics` | aguarda teste | operador + Claude | Relatório §6–§9. Reverter item a item: `scale 1.0`; `staging_short_dist:=0`; `use_speed_limit:=false`; `CARAMELO_BAG_TUDO=0`. |
+| T20 | Localização com obstáculo dinâmico (caixa junto da WS5): AMCL derrapa 0,5–0,8 m para dentro da mesa durante o giro na staging; cascata de 8 estações puladas em 90 s | rodada 3 aplicada 2026-11-12 ~01h, aguarda teste | operador + Claude | Relatório §10–§13. AMCL `likelihood_field_prob` + `do_beamskip` + z 0,5/0,5 + recovery 0; escape ignora global se mapa≥20 letais e LiDAR 0; GoToWS `staging_nav_retries` 2 com `/request_nomotion_update`. Verificar no bag: `map→odom` estável na staging da WS5. |
+| T21 | Vigia de localização (`localization_watchdog`, caramelo_localization): reinicia o AMCL via `/initialpose` na pose propagada pela odometria quando a pose do AMCL foge (0,10 m + 8 %/m; 8° + 8 %/rad; 2 strikes) | aplicada 2026-11-11 22h40, aguarda teste | operador + Claude | Relatório §14–§16. Replay offline: 0 disparos nos bags bons, dispara aos 91 s no bag 22h03. `use_loc_watchdog:=false` desliga. AMCL voltou a `likelihood_field` (prob+beamskip piorou). |
+
+## Localização: checkpoint de 2026-11-11 22h40 (bag 22h03; T21)
+
+- **Fato decisivo**: giroscópio −467°, odometria (EKF) −465°, AMCL −378° em 150 s → o AMCL perdeu 89° e cruzou a parede central aos 93–99 s; a odometria estava certa (o operador tinha razão). Com `likelihood_field_prob` + beamskip a nuvem ficou 3× mais apertada e o salto mais rápido.
+- **Aplicado (T21)**: vigia de localização + modelo do AMCL de volta a `likelihood_field`. Replay offline nos 4 bags OK; nó testado no domínio 99.
+- **Cuidado**: `map→odom` variando metros neste bag é braço de alavanca do erro de yaw (origem do odom a 10 m), não métrica de erro.
+
+## Localização: checkpoint de 2026-11-12 01h (bags 4/5 com a caixa; T20)
+
+- **Fato**: nas duas corridas, ao chegar na staging da WS5 e girar para a mesa com a caixa à vista, `map→odom` mudou 2,4 m / 31° em 12 s com o robô parado; pose do AMCL foi parar dentro da mesa (σ 0,13). Depois: "Start occupied" ×76, escape "nenhuma direção segura" (global), 8 estações puladas em 90 s, docking apontando errado. A pose derrapada casa melhor com o mapa (43–76 % dos feixes) do que a certa (0–10 %) porque as paredes da caixa encaixam nas bordas das mesas.
+- **Aplicado**: ver T20. Nada commitado. Bag das 21h08 ficou aberto até 21h46 (run_mission morto sem `finally`).
+- **Rodada 2 (T19)**: funcionou no que media — giro 21–32 %, lateral 15 %, sem vaivém do DWB, nó de velocidade ativo; BT curta não foi acionada (SH1→WS2 a 0,24–0,29 m vs limiar 0,30; subir para 0,35 se voltar a demorar).
+
+## Navegação: checkpoint de 2026-11-11 23h (bag 3 + rodada 2; T19)
+
+- **Bag 3** (`~/bags/20261111_203107_*`, 842 s, missão completa): nav 278 s em 11 pernas; girando 44 % (122 s); lateral 13 % (37 s); laço do DWB mediana 16 Hz; trancos 4. Pernas ruins: WS5→WS8 56 s (DWB alternando no corredor; obstáculo ainda na rota oeste), WS8→WS1 42 s (caranguejo + encostou na WS6, scan 0,06 m), SH1→WS2 32 s para 7 cm (shim perseguindo path curto; `rotate_to_heading_once` não cobre porque `isGoalChanged` é true enquanto `in_rotation_`).
+- **Aplicado (rodada 2)**: ver T19. Build + `--show-args` + 18 pytests do bag + gtests manip_bt + fumaça do nó de velocidade (domínio 99) OK. Nada commitado; robô não tocado.
+
+## Navegação: checkpoint de 2026-11-11 (bags dos testes ATT1; T14–T18)
+
+- **Fonte**: `~/bags/20261111_185756_*` (669 s, sem obstáculo) e `~/bags/20261111_191614_*` (984 s, obstáculo novo; 2 goals abortados). Relatório completo: `docs/relatorio_testes_2026-11-11.md`; figuras em `docs/img/testes_2026-11-11/`; scripts em `src/caramelo_navigation/scripts/bag_forense/`.
+- **Números de referência para a próxima comparação**: nav = 178 s / 470 s; girando parado 98 s (55 %) / 349 s (74 %); laço do DWB mediana 7 Hz (mín. 3,6); 3 + 4 "Start occupied"; 1 + 14 "Failed to make progress"; trancos 7 + 17.
+- **Mecanismos confirmados**: (1) shim reengaja a cada replan e, em paths < 0,5 m, alterna entre o último ponto do path (atrás) e o yaw do goal → vaivém; (2) beco WS5: costmap 253 em volta → DWB só com giro legal → `PoseProgressChecker` aborta → `ClearGlobalAndWait` devolve a rota bloqueada → shim gira 180° ida e volta; saída cortando a quina (4,8; 0,75) → "Start occupied" global; (3) trancos abaixo da referência (Pi/ESC).
+- **Alterações não commitadas desta rodada**: `controller_server.yaml` (`rotate_to_heading_once: true`), BT nova + arg `bt_replan` em 3 launches, `docs/relatorio_testes_2026-11-11.md`, `docs/img/testes_2026-11-11/`, `scripts/bag_forense/`. Build de `caramelo_navigation` e `caramelo_bringup` feito.
+- **Cosmético pendente**: `corrida.yaml` grava `nav_profile: desconhecido` (o `mission_server.launch.py` não repassa `bag_nav_profile`).
+
+## Navegação: checkpoint de 2026-11-10 (só leitura; T14)
+
+**Problemas já relatados pelo operador (sessão 99a9f780)**
+- 05/11: em espaços apertados e curvas fechadas o robô anda "de lado" (holonômico) e bate a lateral; LiDAR só na frente.
+- 06/11: depois do experimento "lattice frente" (4 mudanças juntas) ficou pior → revertido (stash@{0}). Com a config original: "chega muito perto dos obstáculos e às vezes colide". Tentado ao vivo `cost_penalty` 4,0 (passo 1); em 07/11 o operador voltou para 3,0. Resultado do teste: não registrado.
+- 07/11: trajetórias "não adequadas ao ambiente real"; MPPI tinha mais sucesso em outras equipes; ao entrar na zona inflada (ciano) o robô trava ou dá ré e bate no que não vê; mínimos operacionais 0,25 m/s e 0,35 rad/s; ré só com moderação; máximo 0,6. Depois: "MPPI ainda não está legal" → DWB titular. Nada disso validado no robô depois de 304fb09.
+- 27/10 (docking): giro fechado pela odometria subestimou o giro real em 30–70% → nunca fechar giro pela odometria; giro sai em degraus fixos de ~12–20° (rampa do ESC) → `rotate_mode` "pulsos".
+
+**Fatos (lidos no código/config; não vistos rodando)**
+- F1. O planner é omni: o caminho pode mandar o robô andar de lado ou de ré; a orientação ao longo do caminho vem das primitivas. A RotationShim só gira quando o desvio passa de 45°; abaixo disso o DWB pode seguir de lado (vy até 0,40).
+- F2. Só a frente é vista (`scan_normalizer` 180°). Costmap local mantém obstáculos marcados atrás, mas só os vistos antes; o collision monitor também só vê a frente.
+- F3. Ré existe em três lugares: escape (permite ré), BackUp 0,10 m e MPPI (vx_min −0,25). O DWB não dá ré.
+- F4. O piso do ESC é aplicado só por roda na Pi (2,43 rad/s com histerese). Comandos pequenos do smoother (rampa de 0,035 m/s por ciclo) passam pelo ROS, mas a roda fica parada até o piso; em diagonal uma roda pode ligar e a outra não.
+- F5. `reference_timeout` 0,15 s no controller da Pi × mensagem carimbada com o relógio do PC no relay: depende do chrony PC↔Pi (doc `relogio_chrony.md`; houve um salto de 6,2 dias num boot).
+- F6. `dock_align_node` e o Nav2 publicam na mesma referência por caminhos diferentes (o docking pula smoother/collision monitor).
+- F7. Geometria divergente: URDF 0,381 × controller 0,3855 × doc de calibração 0,381; encoders 2–3% abaixo; trims de pulso medidos (−11, −2, −11 µs) não aplicados.
+- F8. IMU publicada com covariância zero e `imu_covariance.py` não lançado; o EKF funde só vyaw da IMU.
+- F9. Inflação 0,75 m com escala 3,0 nos dois costmaps. No RViz, ciano = custo inscrito (centro do robô a menos de 0,195 m de obstáculo) e cinza = desconhecido (sessão de 07/11). O operador relatou que o robô trava ou dá ré quando entra no ciano.
+
+**Hipóteses (não confirmadas; não agir sobre elas antes do relato)**
+- H1. Andar de lado vem do planner omni + DWB com vy livre e PathAlign/GoalAlign que não exigem frente (F1).
+- H2. Giro real maior que o medido (mecanum escorrega) pode deslocar o costmap local durante rotações e confundir o DWB; depende de a IMU estar ativa e de quanto o EKF confia nela (F8).
+- H3. Em baixa velocidade (aproximação, curva fechada) o robô não executa o que o DWB/smoother pede por causa do piso por roda (F4), gerando parada/arranque e oscilação.
+- H4. Travar perto de obstáculo vem do custo alto da inflação + `min_speed` que exclui as trajetórias lentas, e a recovery de ré bate no ponto cego (F2, F3).
+
+**Lacunas**
+- Não verificado o que está instalado e rodando na Pi (branch, firmware do ESC, regra udev, IMU ativa, frequência real do LiDAR e do EKF).
+- Firmware do ESC fora do repo (PI de velocidade, comportamento ao perder pulso: o repo se contradiz).
+- Sem rosbag nem logs de navegação recentes analisados; `~/.ros/log` não foi lido para nav nesta etapa.
+- Relatos do tour de 31/10 (`arena_extendida/tour_*.md`) não lidos.
+- Não lido o código do `mecanum_drive_controller` (upstream) para confirmar o descarte por `reference_timeout`.
+
+**Relato do operador (2026-11-10, ~19h30) — prioridades**
+1. **Caranguejo** em trajetórias longas: só anda na diagonal/de lado e gira no próprio eixo até conseguir andar na diagonal de novo; quer holonômico por padrão (ajuste fino no docking) mas "andar como robô normal" nos trechos longos. Operador acha que começou na segunda 09/11, após as mudanças de sábado 07/11 (304fb09). Obs.: a queixa de "anda de lado em curva fechada" já aparece em 05/11.
+2. **Colide** com obstáculos que o LiDAR vê mal; manobras arriscadas; "ocupa mais espaço do que precisa".
+3. Quer usar **MPPI** (sonho) mas nos testes não deu certo; **DWBHolonomic** é o que melhor funcionou; **SmacLattice** o melhor planner; dúvida se o RotationShim é necessário.
+4. Pré-docking "dá para melhorar, on hold"; alinhamento do docking com câmera "melhorou MUITO", não mexer.
+5. Sem rosbag/log de missão: quer **rosbag por corrida** sem deixar o PC mais lento (vai para a lista de implementação).
+6. Restrição: ESC/driver/motores/Maxon NÃO serão mexidos antes da competição (dia 18–20/11). Piso prático relatado ~0,17 m/s (código: 0,1215 por roda).
+7. Alinhar tudo com https://docs.nav2.org/jazzy/ (docs, tutoriais, tuning).
+- Contexto do controlador: adaptado do youBot da KUKA (mesmas rodas mecanum e base de aço); o resto do robô é projeto próprio. Ligas alvo: RoboCup@Work e SLM.
+
+**Evidência nova (logs ~/.ros/log, 10/11 à noite)**
+- E1. `controller_server`: "Control loop missed its desired rate of 20 Hz" em TODAS as 10 sessões de 09 e 10/11 (robô navegou de verdade em 10/11 15:44–17:26): mediana 5–8 Hz, p10 ~5 Hz, mínimo 2,6 Hz. Laço real ≈ 1/3 do configurado.
+- E2. Muitos "No valid trajectories: ObstacleFootprint/Trajectory Hits Obstacle" (16 e 46 por sessão), "Failed to make progress", "Controller patience exceeded"; bt_navigator 7/31 goals falharam na sessão das 16:34.
+- E3. `planner_server`: "Start occupied" (4×), "no valid path found" (3×), "Costmap timed out waiting for update".
+- E4. Lattice (`caramelo_omni_2cm_16bins.json`, gerado 2026-07-06): 240 giros no lugar + 128 translações de heading FIXO: 16 frente (0,16 m), 16 ré (0,08), 32 laterais (0,10), 32 diagonais frente (0,141), 32 diagonais ré (0,10). Ou seja: o próprio plano é majoritariamente "caranguejo"; na bancada de 05/11, 77% do plano era lado/ré.
+- E5. 07/11 (304fb09) no DWB: samples 8×8×20 → 10×8×21 (+31% trajetórias), max_vel_x/max_speed_xy 0,40 → 0,60, ObstacleFootprint.scale 0,02 → 1,0 (+sum_scores false), min_speed_theta 0,34 → 0,35; inflação 0,55 → 0,75. `debug_trajectory_details: true`; flags `publish_*` do DWB não definidas (defaults). CPU governor em `powersave`.
+- E6. Stash do experimento "frente" (05/11): arg `lattice_set` frente|omni no launch + gerador com dois conjuntos; foi testado junto com cost_penalty 4, vy 0,15 e static_layer local, e "piorou" sem sintoma registrado.
+
+**Checkpoint 11/11 00h30 (Claude)**: pesquisa e análise concluídas (8/9 relatórios; auditoria de parâmetros e verificação adversarial religadas após o limite de API) e consolidadas em **`docs/plano_navegacao_2026-11-11.md`** (fatos F1–F18, hipóteses H1–H5, plano por fases, bancadas). Conclusões-chave: laço do controller a 7 Hz (era 12,7 antes de 07/11; carga do DWB dobrou), 702 "Start occupied" do planner (defeito mais frequente, causa aberta), caranguejo = lattice sem preferência direcional + reta analítica com yaw interpolado + smoother apaga heading + shim no limiar de 45°. Bancada 2: lattice "nariz" (frente; diag ×1,5; lat ×2; sem ré) + analítica 0,8 + rotation 3 → 90% do plano de frente (atual: 7%); `rotation_penalty` alto SOZINHO piora (87% lateral). Implementados e já mesclados na árvore principal (recompilados, testes passando): rosbag por corrida (`caramelo_bag_common.py`, `bag_resumo`, ligado por padrão no `run_mission`/`mission_server`, `--no-bag` para desligar; 23 testes + fumaça real OK) e `lattice_set:=nariz` (default `omni`). Bancada do controller concluída (`scripts/bench_controller_offline.py`, mesclado + CMake): laço CPU-bound numa thread, dominado por ObstacleFootprint × trajetórias; publish_* sem efeito; H (6/6/15 amostras) devolve 17–20 Hz; governor powersave segura o clock em 1,1–1,6 GHz. Plano fase 1 ajustado (amostras 8/6/15 + energia). Auditoria concluída (2 itens novos no plano: costmap_update_timeout, params inertes do smoother); verificação: 11/27 vereditos, nenhum refutou o núcleo, 16 pendentes por limite de API (religar após 5h). **PC pronto para corrida baseline com bag** (nada de movimento mudou). Já na árvore principal (não commitado) e **recompilado** (caramelo_navigation + caramelo_bringup, 11/11 00h50): `scripts/bench_lattice_offline.py` + CMake, `docs/plano_navegacao_2026-11-11.md` (com §4.1 "Como testar o lattice nariz"), `lattice_set:=omni|nariz` nos 3 launches (default omni = comportamento atual), `config/lattice/caramelo_nariz_2cm_16bins.json`, gerador com conjuntos nomeados (omni byte-idêntico), `planner_server.yaml` só com comentários e sem os 4 parâmetros inexistentes (valores inalterados).
+
+**Em andamento (10/11 noite)**: workflow de pesquisa (docs Nav2 jazzy: smac lattice, DWB, rotation shim, MPPI, tuning/costmaps, rosbag) + análise (forense dos logs 05–10/11, matemática do caranguejo, auditoria de parâmetros) + verificação adversarial. Resultado vai para `docs/` (plano) e para cá. Em paralelo (pedido do operador: dividir em vários agentes), dois agentes em worktrees constroem bancadas OFFLINE em ROS_DOMAIN_ID=99: `bench_lattice_offline.py` (planner + mapa, mede % frente/lateral/ré/giros por conjunto de primitivas) e `bench_controller_offline.py` (controller_server com odom/scan falsos, mede Hz do laço do DWB por variante de config). **Bancada do lattice concluída às 21h10 (ver `historico.md`, entrada "Bancada OFFLINE do SmacLattice")**; **Bancada do controller concluída (11/11 00h30)**: script em `src/caramelo_navigation/scripts/bench_controller_offline.py`, resultados em `/tmp/bench_controller/consolidado_2026-11-11.md` (+ JSONs `20261111_000851` e `20261111_001941`); resumo em `historico.md` (entrada 2026-11-11). Achado: laço CPU-bound numa thread (~97% de um núcleo); custo dominante = crítico `ObstacleFootprint` × nº de trajetórias (1890) × poses; costmap 5×5 e sim_time pesam de forma secundária; publish_*/debug/plugins extras não pesam; ciclo estica 1,5–2× quando o resto do PC está carregado (governor `powersave`). Nada mudado em produção.
+
+**Próximo passo**: receber o relato dos defeitos (onde, quando, perfil dwb/mppi, mapa, se há bag/log/vídeo); escolher 1 hipótese, definir como medir (bag de `/cmd_vel*`, `/mecanum_controller/reference`, `/odom`, `/odom/wheel`, `/imu/data_raw`, `/scan`, `/tf`, costmaps) e só então mudar UM parâmetro.
+
+## Verificação pós-atualização do sistema (2026-11-10 19h, Claude)
+
+- **Contexto**: PC do robô sem robô conectado (sem Raspberry, Dynamixel, LiDAR, IMU, RealSense). Atualizações do dia: libsoup (unattended 06h), `nodejs` 18.19.1, `linux-headers-7.0.0-42` + DKMS do driver NVIDIA 580. Nenhum pacote ROS. Atualizador de 1,1 GB do Ubuntu NÃO instalado.
+- **Resultado (verificado 19h20, HEAD 833c13d, sem robô)**: build incremental 20/20 OK; build do ZERO em pasta separada 20/20 OK em 3 min 46 s, sem warnings (a pasta foi apagada; `build/` e `install/` do workspace não foram tocados por ele). gtests: manip_task_execution 94/94, manip_bt 96 (23 skipped), caramelo_behaviors 10/10. pytest: caramelo_navigation 291, manip_bringup + manip_audio 98, task_planner formato2026 37, caramelo_web 4, todos passando. As 9 falhas que o `colcon test-result` mostra no manip_task_execution são do uncrustify gravado em 19/10 (README §9.13), não de hoje. 7 launches principais carregam com `--show-args` (rc 0). torch do venv da voz é `+cpu`: o driver NVIDIA novo não afeta a voz.
+- **Não verificado**: nada com hardware (Raspberry, Dynamixel, LiDAR, IMU, RealSense); launches não foram subidos de verdade; o driver NVIDIA só carrega após reboot.
+
+## Verificações feitas
+
+**Relatadas pela sessão de 2026-11-09 (não repetidas em 10/11):**
+- Build completo 20 pacotes OK após limpar caches do fastcdr.
+- `manip_task_execution`: 25 gtests passam (inclui 5 novos de `fuseSlotXy` / `TagHoleOffsetLearner`).
+- `test_pp_hole_detector.py`: 7 testes passam.
+- Logs do teste real: `~/.ros/log/mtc_place_action_node_228876_*.log` (linhas `[SLOT] fusao tag+buraco`, `[REF] cubo tag_N visto`).
+
+**Feitas em 2026-11-10 (só leitura, nada executado):**
+- `git status -sb`, `git branch -a`, `git stash list`, `git log` (194 commits, 2025-09 a 2026-11), `git show --stat` de 26d665c e 1b7b64c.
+- Caminhos citados em `.jarvis/` conferidos com `ls`/`git ls-files`.
+- Última rodada de pytest registrada em cache: `src/caramelo_navigation/.pytest_cache` (293 ids, 2026-10-27, `lastfailed` vazio) e `src/caramelo_web/.pytest_cache` (4). Depois disso `run_mission.py` mudou (07/11) sem rodada registrada.
+- Nenhum hook configurado em `~/.claude/settings.json` (só `modelSettings`); não há `.claude/settings*.json` no projeto.
+
+## Divergências e possíveis bugs (leitura de 2026-11-10; nada foi corrigido)
+
+Fonte: três agentes de leitura (nav, manipulação, GUI/docs) + conferências pontuais. "Consequência" é provável, não medida.
+
+| # | Onde | O que diverge | Consequência provável | Como verificar |
+|---|---|---|---|---|
+| D1 | `amt1_sort_action_node.cpp` linha 197 vs `mtc_place_action_node.cpp` linha 175 | **Confirmado em 10/11**: `declare_parameter("slot_cavity_depth_m", 0.0005)` no AMT1 (membro inicializado com 0.005, linha 580) contra 0.005 no place | No AMT1 o valor só entra no z da TF `tag_amt1_slot_k` (linha 1584: `best_t.z() - slot_cavity_depth_m_`), ou seja, o frame do slot fica 0,5 mm abaixo da tag em vez de 5 mm. Como o place recebe `stack_on = tag_10x` quando a tag casa, o efeito aparece só quando cai no frame `tag_amt1_slot_k` (tag não casada). Provável erro de digitação; não corrigido. | conferir se o goal do AMT1 ao place usa `tag_10x` ou o slot em todos os casos |
+| D2 | `mtc_place_action_node.cpp` (~183 e ~848) | `slot_center_offset_m` declarado −0,045, membro inicializado 0,04; doc §6 diz 0,04 | Só afeta o modo legado (`slot_use_stack_logic=false`); sinal invertido afastaria o alvo do robô | ler `declare_parameter` e o uso com `dir=(0,−1)` |
+| D3 | `docs/place_precisao_e_pilha.md` cabeçalho/§9, `README.md` §7 | "NÃO validado no robô" | Leitor acha que a PP nunca rodou; rodou em 04/11 e 09/11 | sessão 99a9f780 (04 e 09/11), logs em `~/.ros/log` |
+| D4 | `docs/place_precisao_e_pilha.md` §0/§3/§8 | Descreve espiral, re-pega e descida vertical como fluxo do slot; default atual é lógica de pilha (`slot_use_stack_logic=true`) e `stack_verify_correct=false` | Doc descreve o modo legado | §6 da mesma doc está certa |
+| D5 | `docs/guia_missoes.md` §3.6 e linha ~712 | `observe_poses [pegar_obj]`, `allow_partial false`, `refine_max_ops 3`, "não lê tags 101..107" | Código/launch: `[tag_direita, tag_esquerda]`, `allow_partial true`, `refine_max_ops 0`, `snapSlotToSlotTag` desde 04/11 | `manip_stack.launch.py` e `amt1_sort_action_node.cpp` |
+| D6 | `docs/guia_missoes.md` §3.2 | z-offset próprio do `at_tag` como pendência; tamanho 0,041 como "chute" | Já implementado (`stackTcpZOffset`); 0,041 é decisão (ver `decisoes.md`) | — |
+| D7 | `docs/containers_por_cor.md` §4 | `stack_pre_lift_m` 0.05 | Código 0.02 | grep |
+| D8 | `my_robot_msgs/action/Amt1Sort.action` | comentário "allow_partial false (default)" | código usa true | — |
+| D9 | `manip_moveit_config/config/joint_limits.yaml` | comentário 2.5/4.0, valores 3.0/8.0 | só confusão | — |
+| D10 | `docs/docking_alinhamento_holonomico.md` | orquestração via `DockRobot`; piso do ESC 0,19/0,49; `kp_theta`, `visivel_lidar`, marcador em `_refine_target_from_scan` inexistentes | Doc de arquitetura defasada; hoje Nav2→staging→`align_to_dock`, `DockRobot` é rollback; piso 0,1215/0,315 | `docking_server.launch.py`, `go_to_ws_bt.cpp` |
+| D11 | `README.md` §1 | `--use-lidar-refine` apresentada como opção | É no-op: `bt_yaml_executor` já tem `use_lidar_refine=true` e `run_mission` não desliga | `run_mission.py`, `bt_yaml_executor.cpp` |
+| D12 | `docs/status_itens_2026-10-26.md` | item 2.5 (borda da mesa pela D455) "não iniciado"; `object_still_grasped` "sem commit" | Já feitos: 0e76eee (câmera no docking) e 1b7b64c (`arm_settle.hpp`) | `git show --stat` |
+| D13 | `package.xml` de `caramelo_navigation` e `caramelo_mapping` | Usam `manip_bt`, `manip_bringup`, `cv2` e `caramelo_navigation` (mapping) sem declarar | Build por pacote pode falhar fora da ordem; mapping↔navigation seria circular | `grep exec_depend` |
+| D14 | `missions/tasks geradas/ATT1_seed706244_equipe.yaml` vs `src/manipulation/manip_bt/test/fixtures/formato2026/` | Fixture não acompanhou a edição do commit 76041b2 | Teste exercita YAML diferente do oficial | diff dos dois |
+| D15 | Launches | Mapa padrão `sala_520` em bringup/navigation/localization/slam, `arena3_520` em `robot_manipulation.launch.py`; `global_localization` lê mapa só do `install/`, navigation/docking leem de `src/` primeiro | Mapa novo sem rebuild: AMCL e docking podem usar pastas diferentes | ler os 4 launches |
+| D16 | `manip_stack.launch.py` | referencia `pick_telemetry_plotter`, que não existe em CMake/setup (arg default false) | Só falha se ligar o arg | — |
+| D17 | `src/caramelo_web/README.md` "Rotas" | faltam `/api/parar`, `/api/base`, `/api/arena_ativa`, `/api/mapeamento/*`, `/api/camera*`, keepout.png | doc atrasada | `server.py` |
+| D18 | `README.md` §9 | dois itens numerados "12"; item 8 (`health_monitor`) já feito no código | — | — |
+| D19 | `docs/historico/README.md` | "a voz hoje é Piper/espeak-ng" | default atual é Kokoro | `speech_node.py` |
+| D20 | `tags_36h11.yaml` comentário de 21/10 vs 04/11 | tags 101..107 "no fundo da cavidade" vs no tampo | Afeta o z de referência; o código de 04/11 assume tampo | medir na mesa |
+
+## Cobertura desta leitura (2026-11-10)
+
+- **Examinado por agentes de leitura** (relatórios na sessão 99a9f780, não salvos em arquivo): todos os pacotes de `src/` (nav, localização, mapeamento, cartographer, diagnósticos, utils, behaviors, bringup; manipulação completa; GUI, web, msgs), `missions/`, `scripts/`, `.vscode/*.json`, todos os `docs/*.md`, `docs/historico/README.md`, `README.md`, `git log` completo. Os nós grandes de manipulação foram lidos por função-chave (grep + trechos), não linha a linha.
+- **Examinado por mim**: `.jarvis/`, `CLAUDE.md`, git (branches, remotes, stash, 2 commits por stat), as 3 transcrições de sessão (só os turnos do usuário, 147 turnos), os 12 arquivos da memória pessoal do Claude, `~/.claude/settings.json` (chaves), `amcl.yaml`, `velocity_smoother.yaml`, `controller_server.yaml` (limites), `test_escape_scoring.cpp`.
+- **Não examinado / excluído**: `build/` 294M, `install/` 137M, `log/` 110M, `.claude/worktrees` 991M (4 worktrees de agentes, branches `worktree-agent-*` de 26/10), `.vscode/browse.vc*.db` 1,4G, `.pytest_cache`; conteúdo dos mapas (`src/caramelo_mapping/maps/*`) além dos nomes; os YAMLs individuais de `missions/tasks*`; `docs/historico/*.md` (jul–ago, marcados como históricos); `~/caramelo_hardware_ws` (repositório separado, não lido); os 2491 diretórios de `~/.ros/log` (só a existência); o conteúdo das respostas do assistente nas transcrições (só os pedidos do usuário). `tour_2026-10-31*.md` não lido.
+- **Históricos localizados**: 3 transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/`: `c4e8f5da` (2026-10-19 → 10-27, 44 turnos), `668df389` (2026-10-27, 5 turnos, erro de compilação do pick), `99a9f780` (2026-10-27 → 11-10, 101 turnos, várias compactações automáticas). Antes de 19/10 não há transcrição neste PC (o trabalho vinha do PC de desenvolvimento, commits de jun–set/2026).
+- **Limitações**: timestamps das transcrições em UTC (local = UTC−3); relatórios dos agentes são leitura de segunda mão, linhas citadas podem deslocar; nada foi executado, então "testes passam" vale só para o que a sessão de 09/11 relatou.
+- **Próximo ponto de leitura, se continuar**: (1) `tour_2026-10-31*.md` em `src/caramelo_mapping/maps/arena_extendida/` para fechar T6; (2) confirmar D1 e D2 lendo os trechos; (3) `docs/historico/*.md` só se alguém precisar do contexto de jul–ago.
+
+## Bloqueios e dúvidas
+
+- Falta a foto do resultado do último teste de PP (decide T1).
+- Não se sabe se as cores da PP na competição são as mesmas (motiva T5).
+- Hipótese não confirmada: giro ~3° em algum ponto da cadeia câmera–braço (T1/T4).

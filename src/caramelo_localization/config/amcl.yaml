@@ -29,6 +29,28 @@ amcl:
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
+    # 2026-11-11 (bags 21h08 e 21h15, caixa "obstaculo dinamico" junto da WS5):
+    # nas duas corridas, enquanto o robo girava parado na staging da WS5 com a
+    # caixa a vista, o AMCL "derrapou" 0,5-0,8 m para dentro da mesa (map->odom
+    # mudou 2,4 m / 31 graus em 12 s sem o robo sair do lugar, sigma 0,13 =
+    # convicto e errado). Dai': "Start occupied" em todo planner, escape
+    # "nenhuma direcao segura", 8 estacoes puladas em 90 s, docking apontando
+    # para o lado errado. Causa: modelo de sensor afiado (z_hit 0,8 / z_rand
+    # 0,1) encaixando as paredes da caixa nas bordas das mesas do mapa.
+    # Mudancas: (1) likelihood_field_prob + do_beamskip (unico modelo em que
+    # o beam skipping funciona: feixes que a maioria das particulas nao
+    # explica pelo mapa sao ignorados = obstaculos nao mapeados); (2) z_hit/
+    # z_rand 0,5/0,5 (default do Nav2: pesa menos cada feixe que "casa", nao
+    # colapsa em cima de um encaixe falso); (3) recovery_alpha 0/0 (default do
+    # Nav2: sem injecao de particulas aleatorias quando a verossimilhanca cai
+    # — e' exatamente o que uma caixa nova provoca). Reverter = likelihood_field,
+    # do_beamskip false, z_hit 0.80, z_rand 0.10, recovery 0.001/0.1.
+    # 2026-11-11 22h (bag 22h03, com o prob+beamskip ligados): a nuvem ficou 3x
+    # mais apertada (sigma 0,04 vs 0,12) e o AMCL atravessou a parede central
+    # em 5 s, perdendo 89 graus (giroscopio e EKF concordam entre si). Modelo
+    # volta a likelihood_field (sem beamskip, que so' existe no prob); z 0,5/0,5
+    # e recovery 0 ficam. Quem segura o AMCL agora e' o localization_watchdog
+    # (launch de localizacao), que o reinicia na pose da odometria quando foge.
 
     laser_model_type: "likelihood_field"
     beam_skip_distance: 0.5
@@ -48,21 +70,21 @@ amcl:
     pf_err: 0.05
     pf_z: 0.99
     sigma_hit: 0.2
-    z_hit: 0.80
+    z_hit: 0.5
     z_max: 0.05
-    z_rand: 0.10
+    z_rand: 0.5
     z_short: 0.05
 
 
     resample_interval: 1
     max_particles: 1000
     min_particles: 600
-    recovery_alpha_fast: 0.1
+    recovery_alpha_fast: 0.0
     # 2026-07-23: 0.1 -> 0.001. Com slow == fast a razao w_fast/w_slow fica ~1
     # e a injecao de recuperacao (1 - w_fast/w_slow) NUNCA dispara — o filtro
     # ficava preso em bacia errada sem mecanismo de escape (teoria: slow<<fast,
     # valores canonicos 0.001/0.1).
-    recovery_alpha_slow: 0.001
+    recovery_alpha_slow: 0.0
     # 0.2 -> 0.05 (2026-08-03): com 0.2 o AMCL CONGELAVA map->odom durante os
     # movimentos finos do docking (passos < 20cm/11deg nao disparavam update) e
     # o refino via LiDAR brigava com uma pose global defasada. 0.05 atualiza a

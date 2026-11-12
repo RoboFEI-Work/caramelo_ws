@@ -66,6 +66,12 @@ def generate_launch_description():
     # Keepout Filter (RK-04): paredes virtuais invisiveis ao LiDAR (fita zebrada).
     # Default desligado; ligar com use_keepout:=true depois de pintar a mascara
     # maps/<mapa>/keepout_mask.pgm (ver docs/keepout_paredes_virtuais.md).
+    use_loc_watchdog_arg = DeclareLaunchArgument(
+        "use_loc_watchdog",
+        default_value="true",
+        description="2026-11-11: vigia que reinicia o AMCL na pose da odometria quando ele foge "
+                    "dela (folga 0,10 m + 8% da distancia; 8 graus + 8% do giro). false = desliga.",
+    )
     use_keepout_arg = DeclareLaunchArgument(
         "use_keepout",
         default_value="false",
@@ -76,6 +82,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     amcl_config = LaunchConfiguration("amcl_config")
     use_keepout = LaunchConfiguration("use_keepout")
+    use_loc_watchdog = LaunchConfiguration("use_loc_watchdog")
 
     lifecycle_nodes = ["map_server", "amcl"]
 
@@ -106,6 +113,21 @@ def generate_launch_description():
             amcl_config,
             {"use_sim_time": use_sim_time},
         ],
+    )
+
+    # 2026-11-11: vigia de localizacao. Nos testes com obstaculo nao mapeado o
+    # AMCL atravessou a parede central e perdeu 89 graus enquanto odometria e
+    # giroscopio concordavam entre si; o vigia reinicia o AMCL (/initialpose)
+    # na pose propagada pela odometria quando a pose do AMCL foge dela.
+    loc_watchdog = Node(
+        package="caramelo_localization",
+        executable="localization_watchdog",
+        name="localization_watchdog",
+        output="screen",
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(use_loc_watchdog),
     )
 
     nav2_lifecycle_manager = Node(
@@ -176,6 +198,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        use_loc_watchdog_arg,
+        loc_watchdog,
         map_name_arg,
         use_sim_time_arg,
         amcl_config_arg,

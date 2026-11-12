@@ -45,6 +45,14 @@ GoToWSBT::GoToWSBT(const std::string & name, const BT::NodeConfiguration & confi
   // best-effort do publicador. O yaw vai junto so' para o log dizer quanto o
   // rumo mudou enquanto se esperava a parada (F14, 2026-10-26).
   odom_topic_ = stringParamOr("odom_topic", "/odom");
+  amcl_nomotion_client_ = node_->create_client<std_srvs::srv::Empty>("/request_nomotion_update");
+  amcl_sub_ = node_->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "/amcl_pose", rclcpp::QoS(10),
+    [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
+      amcl_x_ = msg->pose.pose.position.x;
+      amcl_y_ = msg->pose.pose.position.y;
+      amcl_ok_ = true;
+    });
   odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
     odom_topic_, rclcpp::SensorDataQoS(),
     [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -234,6 +242,7 @@ BT::NodeStatus GoToWSBT::onStart()
   stage_name_.clear();
   stage_times_.clear();
   dock_attempts_ = 0;
+  staging_nav_attempts_ = 0;
   last_align_ = AlignOutcome{};
   last_note_ = AlignNote{};
 
@@ -451,6 +460,25 @@ bool GoToWSBT::startStagingNav()
   goal.pose.pose.position.y = staging->y;
   goal.pose.pose.orientation.z = std::sin(staging->yaw / 2.0);
   goal.pose.pose.orientation.w = std::cos(staging->yaw / 2.0);
+  // 2026-11-11: PERNA CURTA. Se a staging destino esta a menos de
+  // staging_short_dist (0,30 m) da pose atual do AMCL (ex.: SH1 -> WS2,
+  // 0,25 m), manda a BT caramelo_lattice_dwb_curta.xml (goal checker com
+  // xy 0,30 m): o robo ja' conta como "na posicao" e o RotationShim so' gira
+  // para o yaw do goal. Com a BT normal (xy 0,10 m, ruido do AMCL ~0,16 m) o
+  // shim perseguia o ultimo ponto de um path de centimetros atras do robo e
+  // alternava +-170 graus por 32-76 s (bags de 11/11). Desliga com
+  // staging_short_dist <= 0 ou staging_short_bt_xml vazio.
+  const double curta_dist = paramOr("staging_short_dist", 0.30);
+  const std::string curta_xml = stringParamOr("staging_short_bt_xml", "");
+  if (curta_dist > 0.0 && !curta_xml.empty() && amcl_ok_) {
+    const double d = std::hypot(staging->x - amcl_x_, staging->y - amcl_y_);
+    if (d < curta_dist) {
+      goal.behavior_tree = curta_xml;
+      RCLCPP_INFO(logger(),
+        "[%s] staging a %.2f m da pose atual (< %.2f): BT curta, so' gira para o yaw.",
+        dock_id_.c_str(), d, curta_dist);
+    }
+  }
   RCLCPP_INFO(logger(), "[%s] navegando ate a staging (%.2f, %.2f, yaw %.1f graus)...",
     dock_id_.c_str(), staging->x, staging->y, staging->yaw * 180.0 / M_PI);
   nav_.reset();  // re-dock reusa a sessao: nunca herdar o result anterior
@@ -459,6 +487,27 @@ bool GoToWSBT::startStagingNav()
   stage_ = Stage::kStagingNav;
   markStage("nav_staging");
   armDeadline(paramOr("max_staging_time", 120.0) + 30.0);
+  return true;
+}
+
+// 2026-11-11: espera + atualizacao sem movimento do AMCL antes de mandar a
+// staging de novo (ver header). Devolve false se o cliente nao existe.
+bool GoToWSBT::startStagingNavRetry(const std::string & motivo)
+{
+  const double espera = paramOr("staging_nav_retry_wait_s", 4.0);
+  const int pedidos = intParamOr("staging_nav_retry_nomotion_calls", 3);
+  RCLCPP_WARN(logger(), "[%s] %s: espero %.1f s (com %d pedido(s) de "
+    "/request_nomotion_update ao AMCL) e mando a staging de novo.",
+    dock_id_.c_str(), motivo.c_str(), espera, pedidos);
+  speak("~Nao consegui chegar na estacao, vou tentar de novo");
+  nav_.reset();
+  const auto agora = std::chrono::steady_clock::now();
+  retry_until_ = agora + std::chrono::milliseconds(static_cast<int>(espera * 1000.0));
+  nomotion_calls_left_ = std::max(pedidos, 0);
+  next_nomotion_ = agora;
+  stage_ = Stage::kStagingNavRetry;
+  markStage("nav_staging_retry");
+  armDeadline(espera + 15.0);
   return true;
 }
 
@@ -799,7 +848,23 @@ BT::NodeStatus GoToWSBT::onRunning()
           return fail("goal de navegacao ate a staging rejeitado.");
         }
         if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-          return fail("navegacao ate a staging falhou.");
+          const int max_retries = intParamOr("staging_nav_retries", 2);
+          const unsigned int code = result.result ? result.result->error_code : 0u;
+          if (staging_nav_attempts_ < max_retries) {
+            ++staging_nav_attempts_;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+              "navegacao ate a staging falhou (error_code %u); tentativa %d/%d",
+              code, staging_nav_attempts_, max_retries);
+            if (startStagingNavRetry(buf)) {
+              return BT::NodeStatus::RUNNING;
+            }
+          }
+          char buf[120];
+          std::snprintf(buf, sizeof(buf),
+            "navegacao ate a staging falhou (error_code %u) apos %d tentativa(s).",
+            code, staging_nav_attempts_ + 1);
+          return fail(buf);
         }
         bool skip_align = false;
         config().blackboard->get("skip_align", skip_align);
@@ -813,6 +878,30 @@ BT::NodeStatus GoToWSBT::onRunning()
         // Nav2 sucedeu com a base ainda girando (F14): espera parar antes
         // do align, em vez de chamar startAlign() direto.
         return startStagingStop();
+      }
+    case Stage::kStagingNavRetry: {
+        const auto agora = std::chrono::steady_clock::now();
+        if (nomotion_calls_left_ > 0 && agora >= next_nomotion_) {
+          --nomotion_calls_left_;
+          next_nomotion_ = agora + std::chrono::milliseconds(800);
+          if (amcl_nomotion_client_ && amcl_nomotion_client_->service_is_ready()) {
+            // Sem esperar resposta: o AMCL so' refaz a atualizacao do filtro
+            // com o scan atual (util com o robo parado).
+            amcl_nomotion_client_->async_send_request(
+              std::make_shared<std_srvs::srv::Empty::Request>());
+          } else {
+            RCLCPP_WARN(logger(), "[%s] /request_nomotion_update indisponivel; so' espero.",
+              dock_id_.c_str());
+            nomotion_calls_left_ = 0;
+          }
+        }
+        if (agora < retry_until_) {
+          return BT::NodeStatus::RUNNING;
+        }
+        if (!startStagingNav()) {
+          return fail("re-tentativa da navegacao ate a staging nao pode ser enviada.");
+        }
+        return BT::NodeStatus::RUNNING;
       }
     case Stage::kAligning: {
         rclcpp_action::ClientGoalHandle<AlignToDock>::WrappedResult result;

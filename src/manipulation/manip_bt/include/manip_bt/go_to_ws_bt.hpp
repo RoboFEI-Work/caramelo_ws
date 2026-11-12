@@ -9,7 +9,9 @@
 #include <string>
 
 #include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/empty.hpp>
 
 #include "caramelo_msgs/action/align_to_dock.hpp"
 #include "manip_bt/mission_map_config.hpp"
@@ -61,7 +63,8 @@ private:
   // de liberar a manipulacao (este e' o gate duro).
   enum class Stage
   {
-    kIdle, kUndocking, kDocking, kStagingNav, kStagingStop, kAligning, kStopCheck, kNavigating
+    kIdle, kUndocking, kDocking, kStagingNav, kStagingNavRetry, kStagingStop, kAligning,
+    kStopCheck, kNavigating
   };
   enum class Poll { kPending, kRejected, kFinished };
 
@@ -126,6 +129,23 @@ private:
   std::shared_ptr<rclcpp::Node> node_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  // 2026-11-11: ultima pose do AMCL, so' para medir a distancia ate a staging
+  // destino e escolher a BT curta (perna < staging_short_dist).
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr amcl_sub_;
+  double amcl_x_{0.0};
+  double amcl_y_{0.0};
+  bool amcl_ok_{false};
+  // 2026-11-11: re-tentativa da navegacao ate a staging. Nos bags 21h08/21h15
+  // a 1a falha ("Start occupied" com o AMCL deslocado) pulava a estacao em
+  // 3 s e a seguinte falhava igual: 8 estacoes em 90 s. Agora: ate
+  // staging_nav_retries tentativas, com staging_nav_retry_wait_s de espera e
+  // pedidos de /request_nomotion_update ao AMCL (atualiza o filtro parado).
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr amcl_nomotion_client_;
+  int staging_nav_attempts_{0};
+  int nomotion_calls_left_{0};
+  std::chrono::steady_clock::time_point retry_until_;
+  std::chrono::steady_clock::time_point next_nomotion_;
+  bool startStagingNavRetry(const std::string & motivo);
   Session<UndockRobot> undock_;
   Session<DockRobot> dock_;
   Session<AlignToDock> align_;
