@@ -11,3 +11,6 @@ __pycache__/
 
 # worktrees temporarios dos agentes do Claude Code (2026-11-09)
 .claude/
+
+# corridas gravadas (video + bag + logs), ver caramelo_run_common.py (2026-11-13)
+runs/

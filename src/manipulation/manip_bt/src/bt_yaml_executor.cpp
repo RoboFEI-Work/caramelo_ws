@@ -299,7 +299,7 @@ struct MissionBuildContext
   // Prefixos SEM '_' (2026): cobrem WS_1 e tambem PP (formato 2026 nomeia a
   // mesa de precisao sem sufixo).
   bool reach_queue_enabled{true};
-  std::vector<std::string> reach_queue_ws_prefixes{"WS", "PP"};
+  std::vector<std::string> reach_queue_ws_prefixes{"WS", "PP", "SH"};  // SH: alinhamento da base na shelf (2026-11-12)
   int reach_queue_max_nudges{2};
   double reach_queue_max_shift_m{0.25};
   double reach_queue_min_shift_m{0.10};
@@ -1357,6 +1357,9 @@ int main(int argc, char ** argv)
     // Fila de alcance: timeout do goal nudge_base (a base anda
     // <= 0,25 m; o servidor tem o proprio nudge_default_timeout quando 0).
     blackboard->set("nudge_timeout", node->declare_parameter<double>("nudge_timeout", 20.0));
+    // 2026-11-12 (pedido do operador): o 1o GoToWS fala "START <task>" pouco
+    // antes de a base andar. Nome vem do run_mission (-p task_name:=BMT).
+    blackboard->set("task_name", node->declare_parameter<std::string>("task_name", ""));
     // Gate de pose do GoToWS (2026-10-26, runs de 22-23/10: o docking devolvia
     // sucesso com y +0,30 m / yaw +18 graus e a manipulacao comecava). Limites
     // DUROS justificados em include/manip_bt/pose_gate.hpp: |y| <= 0,20 m
@@ -1425,7 +1428,7 @@ int main(int argc, char ** argv)
     // identico ao de antes (folhas sem final_attempt => true).
     ctx.reach_queue_enabled = node->declare_parameter<bool>("reach_queue_enabled", true);
     ctx.reach_queue_ws_prefixes = node->declare_parameter<std::vector<std::string>>(
-      "reach_queue_ws_prefixes", std::vector<std::string>{"WS", "PP"});
+      "reach_queue_ws_prefixes", std::vector<std::string>{"WS", "PP", "SH"});
     ctx.reach_queue_max_nudges = static_cast<int>(
       node->declare_parameter<int64_t>("reach_queue_max_nudges", 2));
     ctx.reach_queue_max_shift_m =

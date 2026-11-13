@@ -17,7 +17,9 @@ default_acceleration_scaling_factor: 1.0
 # Teto fisico: XM540-W270 ~3,1 rad/s sem carga. Se aparecer "taking too long"
 # ou GOAL_TOLERANCE_VIOLATED (JTC: goal_time 5 s, goal 0.30 rad), voltar
 # para 1.2/1.0.
-# Garra (6/7): 1.0/1.0, movimentos curtos, nunca estourou o monitor.
+# Garra (6/7): 3.0/8.0 desde 2026-11-12 (pedido do operador: garra na
+# velocidade do resto do braco). Antes 1.0/1.0. Se a garra estourar o
+# monitor (GOAL_TOLERANCE_VIOLATED em joint6/7), voltar para 1.0/1.0.
 joint_limits:
   manip_joint1:
     has_velocity_limits: true
@@ -46,11 +48,11 @@ joint_limits:
     max_acceleration: 8.0
   manip_joint6:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0
   manip_joint7:
     has_velocity_limits: true
-    max_velocity: 1.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 1.0
+    max_acceleration: 8.0

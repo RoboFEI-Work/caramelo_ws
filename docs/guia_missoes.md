@@ -134,8 +134,8 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
   tem `dock_distances.yaml` (linha `Tempo estimado guloso: … ; otimizado: …` no log do
   planner); sem o arquivo, o planejador guloso de sempre. Ver `docs/planejador_por_tempo.md`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
-- Cada corrida grava um **rosbag** em `~/bags/<stamp>_<task>_<mapa>/` (§2.3): `--no-bag`
-  desliga; `--bag-extra` e `--bag-camera` gravam mais.
+- Cada corrida grava **vídeo do RViz + rosbag + logs + config + relatório** em
+  `runs/run_<stamp>/` (§2.3): `--no-bag` desliga; `--bag-extra` e `--bag-camera` gravam mais.
 
 ### 2.1 Conferir os docks antes da missão (`tour_docks`)
 
@@ -239,7 +239,30 @@ Desde 2026-11-11 toda missão — `run_mission` no terminal ou GUI/painel web vi
 ou falha). A lógica mora em `src/caramelo_navigation/scripts/caramelo_bag_common.py`
 (`iniciar_bag`/`parar_bag`); o desenho veio da pesquisa de 10/11 (rosbag2 0.26.11, mcap, zstd).
 
-- **Onde fica**: `~/bags/<stamp>_<task>_<mapa>/`, com o mesmo `stamp` do
+**Desde 2026-11-13 a corrida é gravada inteira** (`caramelo_run_common.py`,
+`iniciar_run`/`parar_run`), numa pasta `runs/run_YYYYMMDD_HHMMSS/` na raiz do workspace (fora do
+git; `CARAMELO_RUNS_DIR` muda; limpeza > 40 GB/40 corridas, `.keep` preserva):
+
+| Item | O que é |
+|---|---|
+| `rviz_video.mp4` | A janela do RViz que o `robot_manipulation.launch.py` abre com `use_rviz:=true` (título com `global_localization.rviz`; `CARAMELO_VIDEO_JANELA=<trecho>` escolhe outra), como o operador a vê. ffmpeg x11grab 10 fps, VAAPI da Intel (~10–15 % de 1 núcleo). Hora local `HH:MM:SS.mmm` carimbada em cada quadro. A janela pode ficar atrás de outras; **não minimizar nem redimensionar** durante a corrida. Sem esse RViz aberto, a corrida grava o resto e o `metadata.json` diz por quê. |
+| `rosbag/` | O mesmo bag de sempre (lista abaixo), mais `/diag/*`. |
+| `logs/` | Trecho de `~/.ros/log` escrito durante a corrida, `rosout.log` (com hora local e t_bag), `eventos.csv`, saídas do ffmpeg/nó de diagnóstico/análise. |
+| `config/` | YAMLs, BTs e launch da navegação, `amcl.yaml`, YAMLs do mapa, task e actions, `git_status.txt` + `git_diff.patch`, `params/` (`ros2 param dump` dos nós do Nav2 no início). |
+| `metadata.json` | Horário, task, mapa, perfil, git (rev + sujo), resultado do executor, epoch do 1º quadro do vídeo. |
+| `analysis.md` | Gerado 1–3 min depois do fim (`analisar_run`, nice 19): linha do tempo, pernas (giro %, lateral %, replans, desvio do plano, laço Hz), anomalias com hora local / t_bag / t_video, logs WARN+ agrupados, relógio, **hipóteses não confirmadas** e como confirmar. |
+
+Cores no RViz do robô: **azul** `/plan`, **verde** `/local_plan`, **amarelo** trajetória
+percorrida (`/diag/trilha_real`), **azul claro** plano anterior quando um replan muda a rota,
+**laranja** `/expansions` (só com `debug_visualizations` do SmacLattice, hoje desligado),
+**vermelho** eventos (`/diag/eventos`: WARN/ERROR dos nós de navegação e ações do collision
+monitor, esfera na pose do robô). `/diag/*` vem do `run_diag_viz`, que sobe e morre com a corrida.
+
+Corrida sem missão (goals pelo RViz, teste de docking): `ros2 run caramelo_navigation gravar_run
+--task manual --mapa arena_extendida` até o Ctrl-C (`gravar_bag_tour` faz o mesmo). Reanalisar:
+`ros2 run caramelo_navigation analisar_run runs/run_<stamp>` (também aceita bag antigo de `~/bags`).
+
+- **Onde fica** (até 12/11; hoje é `runs/run_<stamp>/rosbag/`): `~/bags/<stamp>_<task>_<mapa>/`, com o mesmo `stamp` do
   `~/.ros/caramelo_missions/<stamp>_actions.yaml`. Dentro: `metadata.yaml`, `<pasta>_N.mcap`
   (um arquivo novo a cada 500 MB), `corrida.yaml` (task, mapa, actions, git, `nav_profile`,
   hora, hostname, lista de tópicos) e `record.log` (saída do `ros2 bag record`, mostra quais

@@ -8,7 +8,7 @@ Panels:
         - /Status1
         - /Map1/Topic1
         - /ParticleCloud1/Topic1
-        - /Service Areas1/Marker Topic1
+        - /Service Areas1/Topic1
       Splitter Ratio: 0.5
     Tree Height: 719
   - Class: rviz_common/Selection
@@ -154,7 +154,7 @@ Visualization Manager:
       Value: true
     - Alpha: 1
       Class: nav2_rviz_plugins/ParticleCloud
-      Color: 0; 255; 0
+      Color: 0; 200; 200
       Enabled: true
       Max Arrow Length: 0.30000001192092896
       Min Arrow Length: 0.019999999552965164
@@ -211,7 +211,7 @@ Visualization Manager:
     #   ros2 run rqt_image_view rqt_image_view /camera/camera/color/image_raw
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Marker Topic:
+      Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
@@ -249,20 +249,20 @@ Visualization Manager:
         - Alpha: 1
           Buffer Length: 1
           Class: rviz_default_plugins/Path
-          Color: 255; 0; 0
+          Color: 0; 90; 255
           Enabled: true
           Head Diameter: 0.019999999552965164
           Head Length: 0.019999999552965164
           Length: 0.30000001192092896
-          Line Style: Lines
-          Line Width: 0.029999999329447746
-          Name: Global Path
+          Line Style: Billboards
+          Line Width: 0.05
+          Name: AZUL plano global (/plan)
           Offset:
             X: 0
             Y: 0
             Z: 0
           Pose Color: 255; 85; 255
-          Pose Style: Arrows
+          Pose Style: None
           Radius: 0.029999999329447746
           Shaft Diameter: 0.004999999888241291
           Shaft Length: 0.019999999552965164
@@ -276,7 +276,7 @@ Visualization Manager:
           Value: true
         - Alpha: 1
           Class: rviz_default_plugins/Polygon
-          Color: 25; 255; 0
+          Color: 255; 255; 255
           Enabled: true
           Name: Global Footprint
           Topic:
@@ -317,14 +317,14 @@ Visualization Manager:
         - Alpha: 1
           Buffer Length: 1
           Class: rviz_default_plugins/Path
-          Color: 0; 12; 255
+          Color: 0; 230; 0
           Enabled: true
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
-          Line Style: Lines
-          Line Width: 0.029999999329447746
-          Name: Local Plan
+          Line Style: Billboards
+          Line Width: 0.06
+          Name: VERDE trajetoria local (/local_plan)
           Offset:
             X: 0
             Y: 0
@@ -344,7 +344,7 @@ Visualization Manager:
           Value: true
         - Alpha: 1
           Class: rviz_default_plugins/Polygon
-          Color: 25; 255; 0
+          Color: 255; 255; 255
           Enabled: true
           Name: Local Footprint
           Topic:
@@ -357,6 +357,134 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: Controller
+    # Diagnostico da corrida (2026-11-13, pedido do operador): cores fixas, linhas
+    # continuas sem setas; /diag/* vem do run_diag_viz (sobe com cada corrida
+    # gravada). Esta e' a janela que o caramelo_run_common grava em rviz_video.mp4.
+    # MarkerArray usa a chave 'Topic': 'Marker Topic' e' ignorada no rviz2 Jazzy
+    # (testado 2026-11-13: sem assinatura). Laranja so' aparece com o
+    # debug_visualizations do SmacLattice ligado (hoje desligado).
+    # NUNCA adicionar /marker, /evaluation ou /trajectories: o DWB/MPPI so' montam
+    # essas mensagens com assinante, dentro do laco de 20 Hz.
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 255; 220; 0
+          Enabled: true
+          Head Diameter: 0.3
+          Head Length: 0.2
+          Length: 0.3
+          Line Style: Billboards
+          Line Width: 0.05
+          Name: AMARELO percorrido (/diag/trilha_real)
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0.01
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Radius: 0.03
+          Shaft Diameter: 0.1
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /diag/trilha_real
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 140; 170; 255
+          Enabled: true
+          Head Diameter: 0.3
+          Head Length: 0.2
+          Length: 0.3
+          Line Style: Billboards
+          Line Width: 0.035
+          Name: AZUL CLARO plano anterior (/diag/plano_anterior)
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0.01
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Radius: 0.03
+          Shaft Diameter: 0.1
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /diag/plano_anterior
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 0; 220; 255
+          Enabled: true
+          Head Diameter: 0.3
+          Head Length: 0.2
+          Length: 0.3
+          Line Style: Billboards
+          Line Width: 0.02
+          Name: CIANO docking (/docking_trajectory)
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0.01
+          Pose Color: 255; 85; 255
+          Pose Style: None
+          Radius: 0.03
+          Shaft Diameter: 0.1
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /docking_trajectory
+          Value: true
+        - Alpha: 1
+          Arrow Length: 0.04
+          Axes Length: 0.3
+          Axes Radius: 0.01
+          Class: rviz_default_plugins/PoseArray
+          Color: 255; 140; 0
+          Enabled: true
+          Head Length: 0.02
+          Head Radius: 0.02
+          Name: LARANJA expansoes do planner (/expansions)
+          Shaft Length: 0.02
+          Shaft Radius: 0.01
+          Shape: Arrow (Flat)
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /expansions
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: VERMELHO eventos (/diag/eventos)
+          Namespaces: {}
+          Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /diag/eventos
+          Value: true
+      Enabled: true
+      Name: Diagnostico da corrida
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

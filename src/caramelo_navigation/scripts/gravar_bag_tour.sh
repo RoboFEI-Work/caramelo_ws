@@ -21,7 +21,9 @@
 set -euo pipefail
 
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODULO="${AQUI}/caramelo_bag_common.py"   # instalado no mesmo lib/ (install(FILES))
+# 2026-11-13: grava a corrida completa (runs/run_<stamp>/: bag + video do RViz +
+# logs + config + relatorio) pelo CLI do caramelo_run_common; mesmas opcoes.
+MODULO="${AQUI}/caramelo_run_common.py"   # instalado no mesmo lib/ (install(FILES))
 if [ ! -f "${MODULO}" ]; then
   echo "[gravar_bag_tour] nao achei ${MODULO}; rebuild do caramelo_navigation?" >&2
   exit 1

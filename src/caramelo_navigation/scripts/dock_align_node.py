@@ -674,6 +674,10 @@ class DockAlignNode(Node):
         # RECUA em linha reta (mesmo movimento do undock) ate ter folga e
         # so' entao anda de lado. Sem folga nem recuando: recusa como antes.
         self.declare_parameter("nudge_backoff_enabled", True)
+        # 2026-11-12 (pedido do operador): na SHELF o nudge nao recua antes
+        # do lateral — so' anda de lado (a estante fica mais perto que
+        # lateral_min_front; o limite ali passa a ser hard_min_face_dist).
+        self.declare_parameter("nudge_lateral_only_dock_prefixes", ["SH"])
         self.declare_parameter("nudge_backoff_margin", 0.03)   # folga acima de lateral_min_front
         self.declare_parameter("nudge_backoff_max", 0.12)      # recuo maximo (m)
         self.declare_parameter("nudge_backoff_coast", 0.06)    # coast da re (ESC retem ~0,5 s)
@@ -984,6 +988,7 @@ class DockAlignNode(Node):
         self._cam_reject = ""
         self._cam_goal_enabled = False
         self._cam_dock_id = ""
+        self._last_dock_id = ""  # dock do ultimo align_to_dock (nudge so' lateral na shelf)
         # Modelo do giro em pulsos (c, k): aprendido e mantido entre goals
         # (a base e' a mesma); None = ainda os valores iniciais dos params.
         self._rot_model = None
@@ -3045,6 +3050,7 @@ class DockAlignNode(Node):
             return self._abort(goal_handle, result, f"falha ao carregar dock: {exc}")
         bank_target = (bx, by, byaw)
         self._dock_face_dist = face_dist
+        self._last_dock_id = str(g.dock_id).strip().upper()
         self._cam_setup_goal(g.dock_id, g.map_name, g.map_dir)
         # Janela lateral do refino por dock (R3, 2026-10-26); None = global.
         self._dock_refine_half_width = half_w
@@ -3281,6 +3287,11 @@ class DockAlignNode(Node):
         require_scan = bool(self.get_parameter("nudge_require_scan").value)
         lateral_min = float(self.get_parameter("lateral_min_front").value)
         hard_min = float(self.get_parameter("hard_min_face_dist").value)
+        lateral_only = any(
+            self._last_dock_id.startswith(str(p).upper())
+            for p in self.get_parameter("nudge_lateral_only_dock_prefixes").value if p)
+        if lateral_only:
+            lateral_min = hard_min  # shelf: sem recuo, so' o hard-stop manda
         wall_enabled = bool(self.get_parameter("wall_enabled").value)
         coast = float(self.get_parameter("center_coast_est").value)
         min_v = float(self.get_parameter("min_body_vel").value)
@@ -3341,7 +3352,9 @@ class DockAlignNode(Node):
                     "(nudge_require_scan=false) — assumo face perpendicular.")
                 face_yaw = 0.0
             front_proj = _front_after_lateral(front, mag, face_yaw)
-            if (front_proj < lateral_min - 1e-6
+            if lateral_only:
+                log(f"dock {self._last_dock_id}: so' lateral, sem recuo (limite front {hard_min:.2f})")
+            if (front_proj < lateral_min - 1e-6 and not lateral_only
                     and bool(self.get_parameter("nudge_backoff_enabled").value)):
                 margin = float(self.get_parameter("nudge_backoff_margin").value)
                 need = (lateral_min + margin) - front_proj

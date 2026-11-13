@@ -452,6 +452,14 @@ public:
         // folga ate a prateleira de cima.
         shelf_bottom_pre_lift_m_ = this->declare_parameter<double>(
             "shelf_bottom_pre_lift_m", 0.03);
+        // 2026-11-12 (pedido do operador): na shelf, alinhar o ROBO INTEIRO
+        // com a tag antes de pegar — com a tag muito de lado a j1 entra de
+        // vies no vao e a pega falha. Tag mais de X m de lado (x em
+        // manip_base_link) => o pick sai cedo como "fora de alcance" com a
+        // sugestao -x e a fila de alcance (ReachQueue, prefixo SH) desloca a
+        // base (passo minimo 0,10 m) e repete o pick. 0 = desligado.
+        shelf_align_max_lateral_m_ = this->declare_parameter<double>(
+            "shelf_align_max_lateral_m", 0.07);
         // 2026-08-24 (pedido do operador): FASE 3 da shelf — depois da fase 2,
         // J3 e J4 giram estes deltas (graus) num unico movimento e ai a garra
         // fecha. Independe da pose do bloco. Pedido final: J4 +15, J3 -15
@@ -689,6 +697,7 @@ private:
     double shelf_free_j2_max_{1.2};
     double shelf_grasp_tilt_deg_{45.0};
     double shelf_bottom_pre_lift_m_{0.03};
+    double shelf_align_max_lateral_m_{0.07};
     double shelf_phase3_j4_delta_deg_{0.0};
     double shelf_phase3_j3_delta_deg_{0.0};
     /// Juntas da pre-pega (acima do bloco) da pegada "bottom" do ciclo atual;
@@ -3140,6 +3149,40 @@ private:
         // PRATELEIRA: sequencia propria em espaco de juntas, com a IK custom.
         // MESA COMUM: caminho cartesiano de sempre, intocado.
         std::array<double, 5> shelf_q{};
+        if (is_shelf && shelf_align_max_lateral_m_ > 0.0 && unreachable_bailout_enabled_ &&
+            !goal_handle->get_goal()->final_attempt)
+        {
+            // 2026-11-12: ver shelf_align_max_lateral_m. Na passada final da
+            // fila de alcance pega como sempre, do jeito que estiver.
+            try {
+                const auto tf_arm = tf_buffer_->lookupTransform(
+                    shelf_ik_reference_frame_, tag_frame, tf2::TimePointZero,
+                    tf2::durationFromSec(0.5));
+                const double x = tf_arm.transform.translation.x;  // + = direita
+                if (std::abs(x) > shelf_align_max_lateral_m_) {
+                    last_unreachable_target_ = Eigen::Vector3d(
+                        x, tf_arm.transform.translation.y, tf_arm.transform.translation.z);
+                    last_failure_unreachable_ = true;
+                    last_suggested_shift_m_ = -x;  // base para a esquerda = x cresce
+                    last_pick_failure_reason_ = "shelf_desalinhada";
+                    retryable_failure = false;
+                    RCLCPP_WARN(
+                        this->get_logger(),
+                        "[%s] shelf: tag %+.0f mm de lado em %s (limite %.0f mm) — alinho "
+                        "a base antes de pegar (sugestao %+.2f m).",
+                        cycle_name.c_str(), x * 1000.0, shelf_ik_reference_frame_.c_str(),
+                        shelf_align_max_lateral_m_ * 1000.0, -x);
+                    speak("~Tag da prateleira de lado, vou alinhar o robo");
+                    return false;
+                }
+            } catch (const tf2::TransformException & ex) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "[%s] shelf: sem TF %s <- %s para conferir o alinhamento (%s) — sigo.",
+                    cycle_name.c_str(), shelf_ik_reference_frame_.c_str(), tag_frame.c_str(),
+                    ex.what());
+            }
+        }
         if (is_shelf) {
             if (!approachShelfTarget(arm, tag_frame, cycle_name, goal_handle, shelf_q)) {
                 retryable_failure = true;

@@ -16,6 +16,7 @@ install(
 install(FILES
   scripts/caramelo_docking_common.py
   scripts/caramelo_bag_common.py
+  scripts/caramelo_run_common.py
   scripts/caramelo_dock_camera.py
   scripts/caramelo_dock_camera_debug.py
   scripts/run_mission.py
@@ -182,6 +183,26 @@ install(PROGRAMS
   RENAME speed_limit_by_scan
 )
 
+# Gravacao completa por corrida (2026-11-13): runs/run_<stamp>/ com video da
+# janela do RViz do robo (global_localization.rviz), bag, logs, config,
+# metadata.json e analysis.md. gravar_run = corrida manual ate o Ctrl-C; run_diag_viz = trilha
+# real / plano anterior / eventos em /diag/*; analisar_run = relatorio do bag.
+install(PROGRAMS
+  scripts/caramelo_run_common.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME gravar_run
+)
+install(PROGRAMS
+  scripts/run_diag_viz.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME run_diag_viz
+)
+install(PROGRAMS
+  scripts/analisar_run.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME analisar_run
+)
+
 # Bancada OFFLINE do controller_server (2026-11-11): controller + costmap local
 # com odom/scan falsos em ROS_DOMAIN_ID=99 e mede Hz do laco do DWB por variante.
 install(PROGRAMS
@@ -223,6 +244,10 @@ if(BUILD_TESTING)
   # Fumaca real (publica um topico falso, grava 5 s, le com bag_resumo).
   # Pula sozinho a menos que CARAMELO_BAG_SMOKE=1; forca ROS_DOMAIN_ID=99.
   ament_add_pytest_test(test_bag_common_ros test/test_bag_common_ros.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  # Corrida completa (2026-11-13): vista do RViz, comando do ffmpeg, recorte dos
+  # logs, pasta/metadata com tudo desligado, e as regras do analisar_run.
+  ament_add_pytest_test(test_run_common test/test_run_common.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

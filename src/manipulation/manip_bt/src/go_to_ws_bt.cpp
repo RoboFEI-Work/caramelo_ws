@@ -295,6 +295,17 @@ BT::NodeStatus GoToWSBT::onStart()
     RCLCPP_INFO(logger(), "=== Estacao: %s (%s, mesa %s) ===",
       dock_id_.c_str(), ws_.c_str(), mesa_.c_str());
   }
+  // 2026-11-12 (pedido do operador): "START <task>" pouco ANTES de a base
+  // andar pela 1a vez (o prologo home ja' passou); 1,5 s para a voz sair.
+  bool start_announced = false;
+  config().blackboard->get("start_announced", start_announced);
+  if (!start_announced) {
+    config().blackboard->set("start_announced", true);
+    std::string task_name;
+    config().blackboard->get("task_name", task_name);
+    speak("!START" + (task_name.empty() ? std::string() : " " + task_name));
+    rclcpp::sleep_for(std::chrono::milliseconds(1500));
+  }
   if (use_docking_) {
     RCLCPP_INFO(logger(),
       "[%s] gate de pose %s: |x|<=%.2f m |y|<=%.2f m |yaw|<=%.2f rad (%.1f graus), "

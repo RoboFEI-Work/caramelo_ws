@@ -217,6 +217,8 @@ GoToNamedPoseBT::GoToNamedPoseBT(
   arm_->setNumPlanningAttempts(20);
   arm_->setMaxVelocityScalingFactor(1.0);
   arm_->setMaxAccelerationScalingFactor(1.0);
+  gripper_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(node_, "gripper");
+  gripper_->setPlanningTime(5.0);
 }
 
 BT::PortsList GoToNamedPoseBT::providedPorts()
@@ -288,6 +290,21 @@ BT::NodeStatus GoToNamedPoseBT::tick()
       rclcpp::get_logger("go_to_named_pose_bt"),
       "Reached named pose: %s",
       pose_name.c_str());
+    // 2026-11-12 (pedido do operador): em home a garra fica na pose LARGA
+    // (gripper_full_open) para os dedos nao entrarem na imagem da camera.
+    // Falha aqui nao derruba o home (melhor esforco).
+    if (pose_name == "home") {
+      gripper_->setStartStateToCurrentState();
+      moveit::planning_interface::MoveGroupInterface::Plan plan;
+      if (!gripper_->setNamedTarget("gripper_full_open") ||
+        gripper_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS ||
+        gripper_->execute(plan) != moveit::core::MoveItErrorCode::SUCCESS)
+      {
+        RCLCPP_WARN(
+          rclcpp::get_logger("go_to_named_pose_bt"),
+          "Garra nao foi para gripper_full_open em home — sigo assim mesmo.");
+      }
+    }
     return BT::NodeStatus::SUCCESS;
   }
 

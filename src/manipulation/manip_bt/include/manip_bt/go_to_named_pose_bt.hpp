@@ -28,6 +28,7 @@ public:
 private:
   std::shared_ptr<rclcpp::Node> node_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_;
+  std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_;  // so no home (2026-11-12)
 };
 
 }  // namespace manip_bt

@@ -354,18 +354,25 @@ def iniciar_bag(mission_id, task, mapa, actions_yaml, extra: bool = False,
                 bag_dir: Optional[Path] = None,
                 topicos: Optional[Sequence[str]] = None,
                 espera_descoberta_s: float = ESPERA_DESCOBERTA_S,
-                tudo: Optional[bool] = None) -> Optional[BagCorrida]:
+                tudo: Optional[bool] = None,
+                saida: Optional[Path] = None) -> Optional[BagCorrida]:
     """Sobe o `ros2 bag record` da corrida e devolve BagCorrida (ou None se a
     gravacao esta desligada / sem disco / falhou). NUNCA levanta: a missao
     anda com ou sem bag. O processo nasce em sessao propria (Ctrl-C do
-    terminal NAO chega nele): quem o para e' parar_bag()."""
+    terminal NAO chega nele): quem o para e' parar_bag().
+    saida (2026-11-13, caramelo_run_common): pasta exata do bag dentro de
+    runs/run_<stamp>/; a limpeza fica com quem chama (feita na raiz das corridas)."""
     if not bag_habilitado():
         print("[bag] CARAMELO_BAG=0: corrida sem rosbag.")
         return None
     try:
-        bag_dir = bag_dir_padrao() if bag_dir is None else Path(bag_dir)
+        if saida is not None:
+            bag_dir = Path(saida).parent
+        else:
+            bag_dir = bag_dir_padrao() if bag_dir is None else Path(bag_dir)
         bag_dir.mkdir(parents=True, exist_ok=True)
-        limpar_bags_antigas(bag_dir)
+        if saida is None:
+            limpar_bags_antigas(bag_dir)
         livre = espaco_livre_bytes(bag_dir)
         if livre < MIN_LIVRE_GB * 2**30:
             print(f"[bag] so {livre / 2**30:.1f} GB livres em {bag_dir} "
@@ -376,8 +383,11 @@ def iniciar_bag(mission_id, task, mapa, actions_yaml, extra: bool = False,
         lista = montar_topicos(extra=extra, camera=camera, topicos=topicos)
         if tudo:  # metadado legivel; o record recebe --all-topics + regex
             lista = ["--all-topics", f"exclude-regex: {EXCLUIR_REGEX}"]
-        nome = nome_corrida(mission_id, task, mapa)
-        saida = bag_dir / nome
+        if saida is not None:
+            saida, nome = Path(saida), Path(saida).name
+        else:
+            nome = nome_corrida(mission_id, task, mapa)
+            saida = bag_dir / nome
         if saida.exists():  # o record recusa pasta existente
             saida = bag_dir / f"{nome}_{int(time.time()) % 100000}"
         meta = metadados_corrida(mission_id, task, mapa, actions_yaml, nav_profile,

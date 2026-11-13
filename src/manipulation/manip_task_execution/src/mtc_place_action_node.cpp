@@ -127,7 +127,7 @@ public:
         stack_place_x_offset_m_ =
             this->declare_parameter<double>("stack_place_x_offset_m", 0.0);
         stack_place_y_offset_m_ =
-            this->declare_parameter<double>("stack_place_y_offset_m", -0.012);
+            this->declare_parameter<double>("stack_place_y_offset_m", -0.02);
         stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
@@ -213,8 +213,14 @@ public:
         // folga); 15 graus so' como ultimo recurso de alcance. A pre-pose
         // pode usar uma inclinacao maior da escada que a descida final
         // (solveDropLadder): o que importa e' o cubo vertical ao abrir.
+        // 2026-11-12 (operador: na PP o cubo desceu inclinado e tombou; log
+        // de 12/11 16h: tag_105 "ferramenta a 15 graus"): a PP NAO usa mais
+        // inclinacao nenhuma — so' 0 graus. Sem IK a 0 graus o alvo vira
+        // "fora de alcance" e a fila de alcance desloca a base, em vez de
+        // tentar encaixar torto numa folga de 2 mm. A escada inclinada fica
+        // so' para empilhar (stack_tilt_ladder_deg). Voltar = [0.0, 15.0].
         slot_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
-            "slot_tilt_ladder_deg", std::vector<double>{0.0, 15.0});
+            "slot_tilt_ladder_deg", std::vector<double>{0.0});
         // Verificacao apos soltar pela tag do PROPRIO cubo (decideSlotAction):
         // encaixado se o topo ficou em z_slot + cubo (+- slot_seat_tolerance_m)
         // - o xy NAO decide (duas leituras de poses diferentes do braco
@@ -394,6 +400,13 @@ public:
         // Container fora do quadro de pegar_obj (mesa de 80 cm, camera a ~0,33 m
         // ve so' +-20 cm): procura tambem de tag_direita/tag_esquerda antes de
         // desistir (campo 25/08: bins cortados na borda sao rejeitados).
+        // 2026-11-12 (operador: "identifique o container primeiro e depois
+        // pegue o bloco, como no empilhar e na PP"): de garra vazia, em
+        // pegar_obj, acha o container e resolve a IK ANTES de ir ao container
+        // de bordo. Fora de alcance => fila de alcance sem pegar/devolver o
+        // bloco (12/11: 2x 25 s pegando e devolvendo o bloco no WS_2).
+        container_observe_before_pick_ =
+            this->declare_parameter<bool>("container_observe_before_pick", true);
         container_search_lateral_ =
             this->declare_parameter<bool>("container_search_lateral", true);
         container_search_timeout_sec_ =
@@ -852,7 +865,7 @@ private:
     double slot_place_y_offset_m_{-0.052};
     double slot_drop_clearance_m_{0.004};
     double slot_pre_lift_m_{0.02};
-    std::vector<double> slot_tilt_ladder_deg_{0.0, 15.0};
+    std::vector<double> slot_tilt_ladder_deg_{0.0};
     double slot_seat_tolerance_m_{0.0025};
     double slot_xy_tolerance_m_{0.008};
     double slot_reobserve_extra_z_m_{0.04};
@@ -936,6 +949,9 @@ private:
     bool container_fallback_to_table_{true};
     std::string container_plane_topic_;
     bool container_search_lateral_{true};
+    bool container_observe_before_pick_{true};
+    /// Container visto de garra vazia (preObserve) — reusado sem reler com o bloco.
+    std::optional<PreseenStackBase> container_preseen_;
     double container_search_timeout_sec_{1.5};
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr container_plane_z_pub_;
     /// Cota da borda publicada para o goal atual (autoridade do Z do drop).
@@ -4107,7 +4123,12 @@ private:
                     target_out = target;
                     yaw_out = base_yaw;
                 }
-                for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
+                // 2026-11-12: slot da PP desce so' com a escada do slot (0 graus);
+                // a inclinada e' so' para empilhar (cubo tombou na PP em 12/11).
+                for (const double tilt : tiltLadderRad(
+                        isSlotLikeTarget(kind, base_frame) ? slot_tilt_ladder_deg_ :
+                        stack_tilt_ladder_deg_))
+                {
                     const double dz = comp_w > 0.0 ?
                         manip_task_execution::tiltDropZCompensation(tilt, comp_w, cube_height_m_) : 0.0;
                     const Eigen::Vector3d cmd = target_out + Eigen::Vector3d(0.0, 0.0, dz);
@@ -5276,7 +5297,7 @@ private:
                 std::hypot(actual.x() - cmd.x(), actual.y() - cmd.y()) * 1000.0);
         }
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
+        gripper->setNamedTarget("gripper_full_open");
         if (!planAndExecute(gripper, stage + " open gripper")) {
             return DropResult::kGripperFailed;
         }
@@ -6085,11 +6106,15 @@ private:
             container_plane_topic_.c_str());
     }
 
+    /// dry_run (2026-11-12): so' acha o container e resolve a IK (garra
+    /// vazia, antes de pegar o bloco); guarda a leitura em container_preseen_
+    /// e volta sem mover o braco para o alvo. Fora de alcance => kUnreachable.
     StackOutcome placeIntoContainer(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & color,
         const std::string & table_pose,
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        bool dry_run = false)
     {
         const std::string frame = containerFrameForColor(color);
         const std::string cor = containerColorPt(color);
@@ -6111,11 +6136,18 @@ private:
             return StackOutcome::kBaseNotSeen;
         }
 
+        geometry_msgs::msg::TransformStamped tf;
+        if (!dry_run && container_preseen_ && container_preseen_->frame == frame) {
+            // 2026-11-12: visto de garra vazia — nao releio com o bloco.
+            tf = container_preseen_->tf;
+            publishStage(goal_handle, "container_using_preseen");
+            RCLCPP_INFO(
+                get_logger(), "[CONTAINER] usando a leitura de garra vazia de %s.", frame.c_str());
+        } else {
         publishStage(goal_handle, "container_detecting");
         speak("~Procurando o container " + cor);
         waitForCameraStream("PLACE");
 
-        geometry_msgs::msg::TransformStamped tf;
         const auto detect_timeout = std::chrono::milliseconds(
             static_cast<int>(std::max(0.2, container_detect_timeout_sec_) * 1000.0));
         bool seen = waitForTagTransform(
@@ -6182,6 +6214,7 @@ private:
                 return StackOutcome::kBaseNotSeen;
             }
         }
+        }  // deteccao (nao preseen)
 
         if (tf.transform.translation.y < 0.10) {
             RCLCPP_WARN(
@@ -6281,6 +6314,15 @@ private:
             container_drop_clearance_m_, tilt_used * 180.0 / M_PI, frame_yaw,
             q[0], q[1], q[2], q[3], q[4]);
 
+        if (dry_run) {
+            container_preseen_ = PreseenStackBase{frame, tf};
+            RCLCPP_INFO(
+                get_logger(),
+                "[CONTAINER] %s visto de garra vazia em [%.3f %.3f %.3f] e com IK — agora pego o bloco.",
+                frame.c_str(), tf.transform.translation.x, tf.transform.translation.y,
+                tf.transform.translation.z);
+            return StackOutcome::kOk;
+        }
         publishStage(goal_handle, "container_approach");
         speak("~Levando o bloco para o container " + cor);
         container_arm_moved_ = true;
@@ -7305,7 +7347,7 @@ private:
 
         publishStage(goal_handle, "returning_cube_opening_gripper");
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
+        gripper->setNamedTarget("gripper_full_open");
         if (!planAndExecute(gripper, "return cube: open gripper")) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -7408,6 +7450,7 @@ private:
         // mesa de precisao, prateleira nem replay por juntas gravadas (AMT1).
         stack_preseen_base_.reset();
         stack_preseen_hole_.reset();
+        container_preseen_.reset();
         // 2026-11-09: a garra abre ANTES de olhar a base. Ela ia abrir logo
         // em seguida de qualquer jeito (nada muda quando ja' esta aberta), mas
         // se o goal comeca com a garra fechada (startup, goal anterior
@@ -7416,7 +7459,7 @@ private:
         // a cavidade justo na leitura de perto do TCP2.
         publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
+        gripper->setNamedTarget("gripper_full_open");
         if (!planAndExecute(gripper, "open gripper")) {
             return false;
         }
@@ -7435,6 +7478,57 @@ private:
             {
                 return false;  // cancelado
             }
+        }
+
+        // 2026-11-12: CONTAINER POR COR - acha o container e resolve a IK de
+        // garra vazia antes de pegar o bloco (mesma ideia do preObserveStackBase).
+        // Fora de alcance: sai pela fila de alcance SEM pegar nem devolver o bloco.
+        if (container_observe_before_pick_ && !goal->container_color.empty() &&
+            goal->stack_on.empty() &&
+            !containerFrameForColor(goal->container_color).empty() &&
+            !isShelfPlaceTarget(table_pose) && !isTfPlaceTarget(table_pose) &&
+            normalizedWs(goal->ws).rfind("WS", 0) == 0)
+        {
+            const std::string cor = containerColorPt(goal->container_color);
+            publishStage(goal_handle, "container_pre_observe");
+            speak("~Olhando o container " + cor + " antes de pegar o bloco");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pegar_obj");
+            if (planAndExecute(arm, "go pegar_obj (olhar o container)")) {
+                container_arm_moved_ = false;
+                const StackOutcome out = placeIntoContainer(
+                    arm, goal->container_color, table_pose, goal_handle, /*dry_run=*/true);
+                if (cancellationRequested()) {
+                    return false;
+                }
+                if (out == StackOutcome::kUnreachable &&
+                    tryUnreachableBailout(
+                        goal_handle, container_tilt_ladder_deg_, "CONTAINER",
+                        "O container " + cor + " esta fora do meu alcance"))
+                {
+                    return false;  // bloco continua no container de bordo
+                }
+                if (out != StackOutcome::kOk) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[CONTAINER] nao achei/resolvi o container de garra vazia — releio com o bloco.");
+                }
+            } else {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[CONTAINER] nao cheguei a pegar_obj para olhar o container — leio depois de pegar.");
+            }
+        }
+
+        // 2026-11-12 (pedido do operador): a garra larga (full_open) e' so'
+        // para enxergar; de garra vazia indo ao pre_container volta a
+        // gripper_open (dedos largos esbarram no container de bordo).
+        publishStage(goal_handle, "gripper_open_before_pre_container");
+        gripper->setStartStateToCurrentState();
+        gripper->setNamedTarget("gripper_open");
+        if (!planAndExecute(gripper, "gripper_open antes do pre_container")) {
+            RCLCPP_WARN(get_logger(), "[PLACE] garra nao voltou a gripper_open antes do pre_container — sigo.");
         }
 
         publishStage(goal_handle, "going_pre_container");
@@ -7563,7 +7657,7 @@ private:
         } else {
             publishStage(goal_handle, "opening_gripper_final");
             gripper->setStartStateToCurrentState();
-            gripper->setNamedTarget("gripper_open");
+            gripper->setNamedTarget("gripper_full_open");
             if (!planAndExecute(gripper, "open gripper final")) {
                 last_place_failure_reason_ = "garra_nao_abriu_no_destino";
                 return false;

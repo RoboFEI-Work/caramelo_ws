@@ -131,6 +131,12 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - **Limite**: não cobre sequestro nem patinagem longa; aí é "2D Pose Estimate" no RViz.
 - **Origem**: `docs/relatorio_testes_2026-11-11.md` §14–§16; `loc_watchdog_offline` sobre os bags. **Status**: aplicada, aguarda teste.
 
+## 2026-11-13 — Corrida gravada inteira: vídeo da janela do RViz do robô + bag + logs + relatório
+- **Decisão**: `run_mission`, `mission_server` e o CLI `gravar_run` gravam `runs/run_<stamp>/` (`caramelo_run_common.py`). Vídeo = a janela do RViz que o `robot_manipulation.launch.py` abre (`use_rviz:=true`), achada pelo título (`global_localization.rviz`) e gravada por id de janela com ffmpeg x11grab + VAAPI; o gravador nunca abre nem fecha RViz. Sincronização por relógio de parede: hora local carimbada no quadro + epoch do 1º quadro no `metadata.json`; bag e rosout no relógio do PC.
+- **Motivo**: o operador corrigiu no meio do trabalho ("não o rviz da bag, e sim a tela do rviz que inicia com o robot_manipulation"); a primeira versão abria um RViz próprio de diagnóstico, descartada. Gravar a janela do operador mostra o que ele viu e não duplica a carga de render.
+- **Também**: cores fixas no `global_localization.rviz` (azul `/plan`, verde `/local_plan`, amarelo trilha, azul claro plano anterior, laranja `/expansions`, vermelho eventos; linhas sem setas); nó `run_diag_viz` só publica o que o Nav2 não publica (`/diag/*`). Nada de `/marker`, `/evaluation` ou `/trajectories`, que pesam no laço de 20 Hz. Nenhum parâmetro de planner/controller mudou.
+- **Origem**: pedido do operador de 13/11 ("diagnóstico visual da navegação"); testes no domínio 99. **Status**: vigente, aguarda 1ª corrida real.
+
 ## Regras de trabalho (vigentes, do operador)
 - Commits só quando pedidos; push manual.
 - Uma mudança por vez; "falhar em melhorar nunca pode piorar".

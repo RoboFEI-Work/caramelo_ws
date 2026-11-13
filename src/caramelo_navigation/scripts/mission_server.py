@@ -27,10 +27,11 @@ painel web subidos juntos), este processo avisa e sai (single_instance:=true).
 Publica MissionStatus em /caramelo/mission/status (transient_local, depth 64:
 quem conecta no meio da missao recebe o historico recente).
 
-Rosbag por corrida (2026-11-11): o mesmo iniciar_bag/parar_bag do run_mission
-(caramelo_bag_common) em volta do executor; a action NAO mudou. Parametros do
-no': bag_enabled (default true; CARAMELO_BAG=0 tambem desliga), bag_extra,
-bag_camera e bag_nav_profile (so metadado).
+Gravacao por corrida (2026-11-11 bag; 2026-11-13 corrida completa): o mesmo
+iniciar_run/parar_run do run_mission (caramelo_run_common: runs/run_<stamp>/
+com bag, video do RViz, logs, config, metadata.json e analysis.md) em volta do
+executor; a action NAO mudou. Parametros do no': bag_enabled (default true;
+desliga a gravacao inteira), bag_extra, bag_camera e bag_nav_profile (metadado).
 
 Como roda: ros2 launch caramelo_navigation mission_server.launch.py
            (incluido pelos launches da GUI e do painel web)
@@ -65,7 +66,7 @@ for _pasta in (os.path.dirname(os.path.realpath(__file__)),
                os.path.dirname(os.path.abspath(__file__))):
     if _pasta not in sys.path:
         sys.path.insert(0, _pasta)
-import caramelo_bag_common as bag_common  # noqa: E402
+import caramelo_run_common as run_common  # noqa: E402
 import run_mission as rm  # noqa: E402
 
 ACTION_NAME = "/caramelo/run_mission"
@@ -373,6 +374,7 @@ class MissionServer(Node):
         self._iniciar_bag(actions_yaml, task_yaml, map_folder)
 
         # --- execucao ---
+        codigo = None
         cmd = executor_cmd(actions_yaml, map_folder, goal)
         self.get_logger().info(f"Executando: {' '.join(cmd)}")
         self._publish(MissionStatus.STATE_RUNNING, "Executor da missao iniciado.", stage="inicio")
@@ -387,7 +389,7 @@ class MissionServer(Node):
             codigo = proc.wait()
             leitor.join(timeout=2.0)
         finally:
-            self._parar_bag()
+            self._parar_bag(codigo)
 
         # Exit codes do bt_yaml_executor: 0 SUCCESS, 1 FAILURE, 130 SIGINT.
         if codigo == 0:
@@ -408,25 +410,28 @@ class MissionServer(Node):
     def _iniciar_bag(self, actions_yaml: Path, task_yaml: Path, map_folder: Path):
         if not self.get_parameter("bag_enabled").value:
             return
-        bag = bag_common.iniciar_bag(
+        # 2026-11-13: corrida completa (bag + video do RViz + logs + relatorio).
+        bag = run_common.iniciar_run(
             actions_yaml.stem, task_yaml.stem, map_folder.name, actions_yaml,
+            task_yaml=task_yaml, map_folder=map_folder,
             extra=bool(self.get_parameter("bag_extra").value),
             camera=bool(self.get_parameter("bag_camera").value),
             nav_profile=str(self.get_parameter("bag_nav_profile").value) or None)
         with self._lock:
             self._bag = bag
         if bag is not None:
-            self._publish(MissionStatus.STATE_RUNNING, f"Rosbag: {bag.saida}", stage="bag")
+            self._publish(MissionStatus.STATE_RUNNING, f"Corrida gravada em {bag.pasta}",
+                          stage="bag")
 
-    def _parar_bag(self):
-        """Fecha o bag (SIGINT, espera, SIGTERM; nunca SIGKILL). Idempotente."""
+    def _parar_bag(self, codigo=None):
+        """Fecha a corrida (video, RViz, bag: SIGINT, espera, SIGTERM; nunca
+        SIGKILL) e dispara o relatorio. Idempotente."""
         with self._lock:
             bag, self._bag = self._bag, None
         if bag is None:
             return
-        saida = bag_common.parar_bag(bag)
-        self.get_logger().info(f"Rosbag da corrida: {saida}")
-        bag_common.imprimir_info_bag(saida)
+        saida = run_common.parar_run(bag, resultado=codigo)
+        self.get_logger().info(f"Corrida gravada em: {saida}")
 
     def _cancelado(self, goal_handle, result):
         result.success = False
