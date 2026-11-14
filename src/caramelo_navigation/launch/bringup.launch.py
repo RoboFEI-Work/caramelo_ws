@@ -89,15 +89,23 @@ def generate_launch_description():
             default_value="dwb",
             description="Perfil de navegacao (BT + controlador): dwb ou mppi",
         ),
+        # 2026-11-13: default omni -> nariz. O robo so' enxerga a FRENTE; no omni
+        # 75 % do plano tinha rumo de lado/para tras e, com o shim seguindo o rumo
+        # planejado, ele viraria a traseira cega para o movimento em 2/3 das pernas.
+        # nariz: 93-95 % de frente, 0 falhas em 156 pares (bancada). Voltar: lattice_set:=omni.
         DeclareLaunchArgument(
             "lattice_set",
-            default_value="omni",
-            description="Primitivas do Smac lattice: omni (default) ou nariz (experimental; "
+            default_value="nariz",
+            description="Primitivas do Smac lattice: nariz (default desde 2026-11-13, sem re; frente + diagonais + lateral) ou omni (com re e lateral; o antigo default) "
                         "ver navigation.launch.py --show-args)",
         ),
+        # 2026-11-13 (operador): speed_limit_by_scan DESLIGADO por padrao. O % do
+        # /speed_limit tambem escala max_vel_theta (0,50 x 0,70 = 0,35 = min_speed_theta:
+        # o DWB so' tinha o giro +-0,35) e na arena ficava ligado 99 % do tempo.
+        # Religar: use_speed_limit:=true.
         DeclareLaunchArgument(
             "use_speed_limit",
-            default_value="true",
+            default_value="false",
             description="2026-11-11: limite de velocidade por proximidade do LiDAR (ver navigation.launch.py)",
         ),
         DeclareLaunchArgument(

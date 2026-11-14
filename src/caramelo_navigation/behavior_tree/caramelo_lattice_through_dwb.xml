@@ -1,3 +1,21 @@
+<!--
+  2026-11-13 (operador: navegacao "do jeito certo"; conferido no codigo do Nav2 1.3.13):
+  (1) SEM SmoothPath: o FollowPath recebe o {path} cru do SmacLattice, com o yaw
+      que o lattice planejou e checou com o footprint. Todo smoother do 1.3.13
+      (SavitzkyGolay, Simple e o interno do Smac) reescreve o yaw com a tangente
+      (+180 graus onde acha que e' re'): nos bags de 13/11 nenhum trecho lateral
+      chegava ao controlador como lateral. O path do lattice ja' e' feito de
+      primitivas continuas de 2 cm. Par desta mudanca: use_path_orientations
+      true no shim (controller_server.yaml), que so' funciona com o shim
+      corrigido do workspace (src/third_party/nav2_rotation_shim_controller).
+  (2) MEMORIA DE OBSTACULO: falha do planner limpa so' o quadrado do robo no
+      costmap global (ClearCostmapAroundRobot 1.0 = +-0,5 m, cobre o footprint em
+      qualquer yaw), nao o global inteiro. O resto fica ate' o LiDAR ver de novo
+      (raytrace). O global inteiro so' e' limpo como ULTIMO recurso, na 2a
+      recovery (EscapeFallback). O local preserva +-1,0 m (reset_distance 2.0 =
+      LADO do quadrado preservado).
+  Reverter: git checkout desta pasta + use_path_orientations false.
+-->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="3" name="NavigateRecovery">
@@ -14,7 +32,7 @@
                  (NO_VALID_PATH / TIMEOUT / UNKNOWN = obstaculo-fantasma). -->
             <Sequence name="ClearGlobalIfItHelps">
               <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
-              <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+              <ClearCostmapAroundRobot service_name="global_costmap/clear_around_global_costmap" reset_distance="1.0"/>
             </Sequence>
           </RecoveryNode>
         </RateController>
@@ -24,12 +42,12 @@
           <Sequence name="ClearLocalIfItHelps">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
             <!-- ClearEntire -> ClearCostmapExceptRegion (2026-11-07): limpa so' o
-                 que esta a mais de 1.0 m do robo. A memoria do LiDAR perto do
+                 que esta a mais de 1,0 m do robo (reset_distance 2.0 = lado). A memoria do LiDAR perto do
                  robo (inclusive atras/ao lado, fora da vista atual) e' o que o
                  escape_free_space e o BackUp usam para nao bater; apaga-la a
                  cada falha do controller era deixar a recovery cega. Fantasma
                  na frente ja' some pelo raytracing (inf_is_valid). -->
-            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="1.0"/>
+            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="2.0"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>

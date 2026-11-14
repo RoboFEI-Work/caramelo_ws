@@ -151,6 +151,30 @@ controller_server:
       # aceito: curva fechada no meio do path vira arco/caranguejo em vez de
       # parar e girar. Reverter = false + relancar.
       rotate_to_heading_once: true
+      # 2026-11-13 (operador: "do jeito certo"): use_path_orientations TRUE. O shim
+      # gira no inicio da perna para o yaw que o LATTICE planejou no ponto a 0,5 m
+      # (forward_sampling_distance), nao para a direcao do ponto. So' vale com 2
+      # coisas que entraram juntas:
+      # (a) shim CORRIGIDO do workspace (src/third_party/nav2_rotation_shim_controller,
+      #     ver CARAMELO_OVERLAY.md). O do apt 1.3.13 (e o 1.3.14/jazzy de 03/11)
+      #     compara o yaw do robo em odom com o do plano em map sem transformar:
+      #     com map->odom em 157-180 graus (bags de 13/11) giraria para o lado
+      #     errado. Conferir: o terminal do launch precisa do
+      #     "source ~/caramelo_ws/install/setup.bash" (ros2 pkg prefix
+      #     nav2_rotation_shim_controller -> caramelo_ws/install).
+      # (b) BTs do DWB sem SmoothPath: o FollowPath recebe o {path} cru do lattice
+      #     (o Savitzky-Golay reescrevia todo yaw com a tangente).
+      # Efeito: trecho que o lattice planejou de lado nao vira giro de 90 graus
+      # antes de andar; perna < 0,5 m gira direto para o yaw do goal. Com o
+      # lattice "nariz" (sem re') o yaw do plano ~ direcao do movimento, entao o
+      # LiDAR continua virado para onde o robo vai. Reverter = false (dinamico:
+      # ros2 param set /controller_server DWBHolonomic.use_path_orientations false).
+      use_path_orientations: true
+      # closed_loop true -> false (2026-11-13): com 1 s de atraso comando->/odom
+      # no giro, o modo fechado limita o comando a odom +- accel/20 Hz e gera
+      # giro abaixo do piso (0,315) no inicio e comandos quase nulos ao soltar.
+      # false = rampa a partir do ultimo comando. Reverter = true.
+      closed_loop: false
 
       # ---------------- DWB (dwb_core::DWBLocalPlanner) ----------------
       # Quando NENHUMA trajetoria e legal, o log diz "Could not find a legal
@@ -164,12 +188,33 @@ controller_server:
       # (true) SO durante o teste de tuning: 62.5k pontos por ciclo pesam no
       # Wi-Fi. Nome conferido em libdwb_core.so (2026-11-07).
       publish_cost_grid_pc: false
-      # Default explicitado (2026-11-07) porque muda a LEITURA dos criticos: o
-      # plano transformado vai do ponto mais proximo do robo ate 2.0 m a frente
-      # (< meia-janela do costmap local 5 m / 2 = 2.5 m); o "goal" que GoalDist
-      # e GoalAlign enxergam e a ULTIMA pose desse trecho (cenoura a 2 m), nao o
-      # goal real. So o RotateToGoal e o zero_scale do PathAlign usam o goal real.
-      forward_prune_distance: 2.0
+      # 2026-11-13 (noite): 2.0 -> 1.0, e prune_distance (do DWB) 1.0. CAUSA do
+      # travamento "sempre no mesmo ponto" (bag run_20261113_185701, t_bag 168,7):
+      # o DWB 1.3.13 (transformGlobalPlan) corta o plano no 1o ponto a mais de
+      # forward_prune_distance em LINHA RETA do robo. Na rota em U em volta da
+      # parede central (pernas a 1,0-1,3 m) o U inteiro cabia no raio de 2 m e o
+      # corte caia na perna de VOLTA, atras do robo e do outro lado da parede;
+      # GoalDist/GoalAlign medem Manhattan ate' esse ponto ignorando paredes ->
+      # o robo freava, dava re' e ficava girando +-0,35 (68 s). O "goal" que
+      # GoalDist e GoalAlign enxergam e' a ULTIMA pose do trecho (cenoura), agora
+      # a 1 m. Medido com o controller_server real: replay do bag (2.0 reproduz o
+      # robo; 1.0 comanda frente) e simulacao em malha fechada da rota em U nos
+      # dois sentidos (2.0 nao chega; 0.8/1.0/1.2 chegam; 1.5 chega raspando).
+      # Conferido nos 4 bags de 13/11: com 2.0 o salto acontece nos 4 (explica 8
+      # de 11 travamentos); com 1.0, 0 saltos em 14.649 ciclos.
+      # REGRAS: (1) tem que ser MENOR que a distancia entre as pernas de um U;
+      # NAO subir (1.1 ja' cai atras em planos reais; 1.5 salta). (2) os DOIS
+      # valores sempre iguais: forward 1.0 com prune 2.0 da' "Resulting plan has
+      # 0 poses" depois de 1 m andado. (3) nao usar bt_replan:=invalid com 1.0
+      # (plano de ate' 15 s: robo a > 1 m do inicio -> plano vazio).
+      # PLANO B se hesitar na curva do U: 0.8 nos dois (passou na simulacao;
+      # cruzeiro cai de ~0,53 para ~0,45 m/s). Mesmo par 1.0/1.0 dos system
+      # tests do Nav2 (keepout_params.yaml). Upstream so' corrigiu na serie 1.5
+      # (path handler central, PR #5446, corte por distancia integrada); depois
+      # da competicao: overlay do dwb_core com esse corte.
+      # Reverter: 2.0 nos dois (exige relancar; nao e' dinamico).
+      forward_prune_distance: 1.0
+      prune_distance: 1.0
       # Default explicitado (2026-11-07), ESSENCIAL para o piso do ESC: o
       # comando publicado e a AMOSTRA crua da grade (>= 0.131 m/s); quem rampa
       # e o velocity_smoother (OPEN_LOOP, mesmos 0.70/-0.90/2.0). Com true o
@@ -183,7 +228,26 @@ controller_server:
       # PreferForwardCritic para dosar; o PreferForwardCritic do DWB tambem
       # castiga andar DE LADO (vx < 0.1 e |wz| < 0.2 = penalty), hostil ao
       # mecanum - nao usar. Se o DWB precisar de re, reavaliar com cuidado.
-      min_vel_x: 0.0 # Velocidade minima em x (sem re). Mantem a amostra vx=0 p/ girar no lugar e lateral puro.
+      # 2026-11-13 (operador): RE LIBERADA, CAUTELOSA. Sem re o robo nao saia de
+      # bolso/corredor (giro +-0,35 alternado ate "Failed to make progress") e o
+      # lattice planeja trechos de re que o DWB nao executava. Cautela porque
+      # nao ha sensor atras: (1) so' a re mais lenta executavel, -0,133 m/s
+      # (roda 2,67 >= piso 2,43; com vx_samples 12 a grade para frente fica
+      # IDENTICA a de antes: -0,133, -0,067, 0, 0,067 ... 0,60); (2) critico
+      # PreferForward pune toda amostra com vx < 0 (abaixo), entao a re so'
+      # ganha quando frente/lado/giro sao ilegais ou claramente piores; (3) o
+      # costmap local guarda o que o LiDAR viu ao passar (memoria da janela
+      # 5x5); obstaculo nunca visto atras NAO e' protegido (nem pelo
+      # collision_monitor, que so' le o /scan da frente). Reverter: 0.0 e
+      # vx_samples 10, e tirar "PreferForward" da lista de criticos.
+      # 2026-11-13 (noite): RE' DO DWB DESLIGADA de novo (0.0, vx_samples 10, sem PreferForward).
+      # A re' foi liberada a tarde por um diagnostico errado ("beco sem re'"). A causa real era o
+      # corte do plano (ver forward_prune_distance). No bag das 18h57 a UNICA re' do DWB foi o erro:
+      # goal local atras do robo -> -0,25 as cegas. Simulacao da rota em U: passa igual com e sem
+      # re' (0 s de re' usada). Sem LiDAR atras, se o goal local cair atras de novo o robo so' gira
+      # e a recovery (escape/BackUp, que checam colisao) assume. Religar: -0.25, vx_samples 12 e
+      # "PreferForward" no fim da lista de criticos (bloco acima explica os valores).
+      min_vel_x: 0.0
       # 0.20 -> 0.40 (operador, 2026-09-14; 0.70 foi testado e ficou rapido
       # demais). Fundo de escala do ESC = 20.06 rad/s de roda = 1.003 m/s de
       # corpo em eixo puro. A 0.40 o pior caso fica FOLGADO: eixo puro 8.0 rad/s
@@ -262,7 +326,8 @@ controller_server:
       # exatamente nos niveis em que toda curva sai inteira no ESC. NAO usar
       # 7 (passo 0.10): com min_speed_xy 0.131 a reta mais lenta viraria 0.20
       # (d* 0.226, PIOR que hoje). NAO dinamico: exige relancar a navegacao.
-      vx_samples: 10 # Amostras de velocidade em x.
+      # 10 -> 12 (2026-11-13): com min_vel_x -0,25 a grade fica -0,25 -0,173 -0,095 -0,018 0 0,059 0,136 0,214 0,291 0,368 0,445 0,523 0,60 (2186 validas; reta mais lenta p/ frente 0,136).
+      vx_samples: 10 # Amostras de velocidade em x (grade validada 0, 0.067 ... 0.60; 12 era so' para a re').
       vy_samples: 8 # Amostras de velocidade lateral (+ zero extra do iterador = 9: 0, +-0.057, +-0.171, +-0.286, +-0.40). Mantido: nenhuma grade lateral elimina combos sub-piso.
       # 20 -> 21 (estudo DWB 2026-11-07, PASSO 2): passo 1.0/20 = 0.05 inclui
       # EXATAMENTE 0.35 = min_speed_theta = giro validado do shim (roda 2.7
@@ -330,6 +395,16 @@ controller_server:
       # ORDEM: criticos baratos/filtro primeiro (RotateToGoal, Oscillation,
       # ObstacleFootprint rejeitam cedo) e os MapGrid depois (short_circuit).
       critics: ["RotateToGoal", "Oscillation", "ObstacleFootprint", "GoalAlign", "PathAlign", "PathDist", "GoalDist", "Twirling"] # Criticos usados para pontuar trajetorias.
+      # PreferForward (2026-11-13): so' como PENALIDADE DE RE. Formula do
+      # dwb_critics 1.3.13: vx < 0 -> penalty; vx < strafe_x e |wz| < strafe_theta
+      # -> penalty (puniria andar de lado: desligado com strafe_x -1, nunca
+      # verdadeiro); senao theta_scale*|wz| (desligado com 0, nao pune giro).
+      # Escala 5: a re custa ~0,4 m de desvio do PathDist (24 -> 12 pontos/m).
+      PreferForward.penalty: 1.0
+      PreferForward.strafe_x: -1.0
+      PreferForward.strafe_theta: 0.2
+      PreferForward.theta_scale: 0.0
+      PreferForward.scale: 3.0 # 2026-11-13: 3 (replica do DWB 1.3.13): lateral/desvio de caixa nunca vira re'; path p/ tras, canto e bolso -> re' ganha. 5 empatava no bolso diagonal (0,27 pt) e alternava giro/re'.
       # 0.02 -> 1.0 (estudo DWB 2026-11-07, PASSO 1 do A/B; queixas 1 e 2).
       # FORMULA (obstacle_footprint.hpp l.75): getScale() = resolution * scale
       # = 0.02 * scale por unidade de custo (0..253) do perimetro na ULTIMA
@@ -390,10 +465,10 @@ controller_server:
       # 12.5 cm alem do real que castiga toda trajetoria apontada para mesa/
       # bancada a < 0.52 m (staging, passagens apertadas).
       PathAlign.forward_point_distance: 0.2 # 0.1->0.2: antecipa a curva olhando um pouco mais a frente.
-      GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal (4 pts/m no ponto 0.1 m a frente; o "goal" aqui e a cenoura a 2 m).
+      GoalAlign.scale: 8.0 # Reduz alinhamento translacional agressivo perto do goal (4 pts/m no ponto 0.1 m a frente; o "goal" aqui e a cenoura a 1 m, forward_prune_distance).
       GoalAlign.forward_point_distance: 0.1 # Ponto a frente usado no goal.
       PathDist.scale: 24.0 # Peso para manter proximo ao path (12 pts/m de desvio Manhattan da ULTIMA pose; critico dominante).
-      GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal (9 pts/m ate a cenoura a 2 m; e' o UNICO incentivo de velocidade: 0.50 vs 0.60 por 1.7 s = 1.5 pt).
+      GoalDist.scale: 18.0 # Peso para reduzir distancia ate o goal (9 pts/m ate a cenoura a 1 m; e' o UNICO incentivo de velocidade: 0.50 vs 0.60 por 1.7 s = 1.5 pt).
       # RotateToGoal: scale*|erro de yaw| (32 pts/rad) SO dentro de
       # xy_goal_tolerance 0.03; fora da janela devolve 0. INERTE por construcao
       # (o checker fecha a 0.10 antes; o yaw final e do shim). Fica como guarda

@@ -40,7 +40,7 @@ Visualization Manager:
       Cell Size: 1
       Class: rviz_default_plugins/Grid
       Color: 160; 160; 164
-      Enabled: true
+      Enabled: false
       Line Style:
         Line Width: 0.029999999329447746
         Value: Lines
@@ -53,7 +53,7 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
@@ -102,7 +102,7 @@ Visualization Manager:
       Use Timestamp: false
       Value: true
     - Class: rviz_default_plugins/TF
-      Enabled: true
+      Enabled: false
       Frame Timeout: 15
       Frames:
         All Enabled: true
@@ -151,11 +151,11 @@ Visualization Manager:
                 wheel_right_link:
                   {}
       Update Interval: 0
-      Value: true
+      Value: false
     - Alpha: 1
       Class: nav2_rviz_plugins/ParticleCloud
       Color: 0; 200; 200
-      Enabled: true
+      Enabled: false
       Max Arrow Length: 0.30000001192092896
       Min Arrow Length: 0.019999999552965164
       Name: ParticleCloud
@@ -167,7 +167,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /particle_cloud
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -210,7 +210,7 @@ Visualization Manager:
     # Para ver a camera, use uma janela separada:
     #   ros2 run rqt_image_view rqt_image_view /camera/camera/color/image_raw
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -220,7 +220,7 @@ Visualization Manager:
       Name: Service Areas
       Namespaces: {}
       Queue Size: 100
-      Value: true
+      Value: false
     - Class: rviz_common/Group
       Displays:
         - Alpha: 0.3499999940395355
@@ -229,7 +229,7 @@ Visualization Manager:
           Class: rviz_default_plugins/Map
           Color Scheme: costmap
           Draw Behind: false
-          Enabled: true
+          Enabled: false
           Name: Global Costmap
           Topic:
             Depth: 1
@@ -245,7 +245,7 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /global_costmap/costmap_updates
           Use Timestamp: false
-          Value: true
+          Value: false
         - Alpha: 1
           Buffer Length: 1
           Class: rviz_default_plugins/Path
@@ -277,7 +277,7 @@ Visualization Manager:
         - Alpha: 1
           Class: rviz_default_plugins/Polygon
           Color: 255; 255; 255
-          Enabled: true
+          Enabled: false
           Name: Global Footprint
           Topic:
             Depth: 5
@@ -286,7 +286,7 @@ Visualization Manager:
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /global_costmap/published_footprint
-          Value: true
+          Value: false
       Enabled: true
       Name: Global Planner
     - Class: rviz_common/Group
@@ -297,7 +297,7 @@ Visualization Manager:
           Class: rviz_default_plugins/Map
           Color Scheme: costmap
           Draw Behind: false
-          Enabled: true
+          Enabled: false
           Name: Local Costmap
           Topic:
             Depth: 1
@@ -313,12 +313,12 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /local_costmap/costmap_updates
           Use Timestamp: false
-          Value: true
+          Value: false
         - Alpha: 1
           Buffer Length: 1
           Class: rviz_default_plugins/Path
           Color: 0; 230; 0
-          Enabled: true
+          Enabled: false
           Head Diameter: 0.30000001192092896
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
@@ -341,7 +341,7 @@ Visualization Manager:
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /local_plan
-          Value: true
+          Value: false
         - Alpha: 1
           Class: rviz_default_plugins/Polygon
           Color: 255; 255; 255
@@ -358,8 +358,10 @@ Visualization Manager:
       Enabled: true
       Name: Controller
     # Diagnostico da corrida (2026-11-13, pedido do operador): cores fixas, linhas
-    # continuas sem setas; /diag/* vem do run_diag_viz (sobe com cada corrida
-    # gravada). Esta e' a janela que o caramelo_run_common grava em rviz_video.mp4.
+    # continuas sem setas; /diag/* vem do run_diag_viz. DESLIGADO aqui de proposito:
+    # a tela do operador fica limpa (mapa, robo, LiDAR, plano global, footprint);
+    # a analise completa vem das vistas escondidas gravadas em runs/<run>/videos/
+    # (caramelo_navigation/rviz/diag_*.rviz). Marque o grupo para ver ao vivo.
     # MarkerArray usa a chave 'Topic': 'Marker Topic' e' ignorada no rviz2 Jazzy
     # (testado 2026-11-13: sem assinatura). Laranja so' aparece com o
     # debug_visualizations do SmacLattice ligado (hoje desligado).
@@ -483,7 +485,7 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /diag/eventos
           Value: true
-      Enabled: true
+      Enabled: false
       Name: Diagnostico da corrida
   Enabled: true
   Global Options:

@@ -24,11 +24,27 @@ amcl:
       yaw: 0.0
 
     robot_model_type: "nav2_amcl::OmniMotionModel"
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # 2026-11-13 (noite, bag ATT1 21h31, beco com barreira NAO mapeada): o AMCL
+    # girou 20-25 graus e andou ~0,5 m em 6 s para encaixar a barreira numa
+    # estrutura diagonal do mapa (encaixe falso) e ficou 100 s perdido. Causa:
+    # alphas 0.2 = 45% de ruido em TODA a odometria (desvio = raiz(alpha) x
+    # movimento); com alpha4 0.2 a nuvem podia andar 0,7 m a cada giro de 90
+    # graus. A odometria do Caramelo (rodas + giroscopio no EKF) e' boa e o robo
+    # nunca e' teleportado: rotacao 0.005 (7%), translacao 0.03 (17%; o mecanum
+    # erra ate' ~13% em trecho rapido), translacao por giro 0.005.
+    # Medido reproduzindo o bag no AMCL real (dominio 99): no beco o pior desvio
+    # da odometria cai de 0,8 m / 16-18 graus para 0,30 m / 4-6 graus e a barreira
+    # fica no lugar; FINAL boa de 17 min: mesma trajetoria do robo (p95 0,08 m /
+    # 4,5 graus), 0 resets do vigia. Mais particulas PIOROU (5000: 30 graus).
+    # Custo: se as rodas patinarem empurrando algo, a pose demora alguns segundos
+    # a mais para voltar. Reverter: 0.2 nos cinco.
+    # OmniMotionModel: rot = raiz(a1 rot^2 + a2 trans^2); trans = raiz(a3 trans^2
+    # + a4 rot^2); lateral = raiz(a4 rot^2 + a5 trans^2).
+    alpha1: 0.005
+    alpha2: 0.005
+    alpha3: 0.03
+    alpha4: 0.005
+    alpha5: 0.03
     # 2026-11-11 (bags 21h08 e 21h15, caixa "obstaculo dinamico" junto da WS5):
     # nas duas corridas, enquanto o robo girava parado na staging da WS5 com a
     # caixa a vista, o AMCL "derrapou" 0,5-0,8 m para dentro da mesa (map->odom

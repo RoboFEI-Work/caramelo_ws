@@ -1,7 +1,7 @@
 <!--
   2026-11-11 (rodada 2, OPCAO desligada por default; liga com bt_replan:=invalid):
   igual a caramelo_lattice_dwb.xml, mas o planner so' e' chamado de novo quando
-  (a) o goal mudou, (b) o path suavizado ficou invalido (footprint sobre celula
+  (a) o goal mudou, (b) o path ficou invalido (footprint sobre celula
   LETAL do costmap global, servico is_path_valid do planner_server) ou (c) o path
   tem mais de 15 s. Motivo (bags de 11/11 18h58 e 19h16): com replanejamento a
   1 Hz o plano trocava de rota a cada limpeza do costmap global (rota direta
@@ -11,46 +11,61 @@
   nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml.
   Reverter = bt_replan:=rate (ou omitir).
 -->
+<!--
+  2026-11-13 (operador: navegacao "do jeito certo"; conferido no codigo do Nav2 1.3.13):
+  (1) SEM SmoothPath: o FollowPath recebe o {path} cru do SmacLattice, com o yaw
+      que o lattice planejou e checou com o footprint. Todo smoother do 1.3.13
+      (SavitzkyGolay, Simple e o interno do Smac) reescreve o yaw com a tangente
+      (+180 graus onde acha que e' re'): nos bags de 13/11 nenhum trecho lateral
+      chegava ao controlador como lateral. O path do lattice ja' e' feito de
+      primitivas continuas de 2 cm. Par desta mudanca: use_path_orientations
+      true no shim (controller_server.yaml), que so' funciona com o shim
+      corrigido do workspace (src/third_party/nav2_rotation_shim_controller).
+  (2) MEMORIA DE OBSTACULO: falha do planner limpa so' o quadrado do robo no
+      costmap global (ClearCostmapAroundRobot 1.0 = +-0,5 m, cobre o footprint em
+      qualquer yaw), nao o global inteiro. O resto fica ate' o LiDAR ver de novo
+      (raytrace). O global inteiro so' e' limpo como ULTIMO recurso, na 2a
+      recovery (EscapeFallback). O local preserva +-1,0 m (reset_distance 2.0 =
+      LADO do quadrado preservado).
+  Reverter: git checkout desta pasta + use_path_orientations false.
+-->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="3" name="NavigateRecovery">
-      <PipelineSequence name="SmacLatticeSavitzkyDWB">
+      <PipelineSequence name="SmacLatticeDWB">
         <RateController hz="1.0">
-          <RecoveryNode number_of_retries="1" name="ComputeAndSmoothRecovery">
+          <RecoveryNode number_of_retries="1" name="ComputePathRecovery">
             <Fallback name="ReplanOnlyIfNeeded">
               <!-- Mantem o path atual enquanto: nao expirou (15 s), o goal nao
-                   mudou e o footprint ao longo do path suavizado nao toca
+                   mudou e o footprint ao longo do path nao toca
                    celula letal. Qualquer uma falhando -> replaneja. -->
               <ReactiveSequence name="PathStillGood">
                 <Inverter>
-                  <PathExpiringTimer seconds="15" path="{smoothed_path}"/>
+                  <PathExpiringTimer seconds="15" path="{path}"/>
                 </Inverter>
                 <Inverter>
                   <GlobalUpdatedGoal/>
                 </Inverter>
-                <IsPathValid path="{smoothed_path}"/>
+                <IsPathValid path="{path}"/>
               </ReactiveSequence>
-              <Sequence name="ComputeAndSmoothPath">
+              <Sequence name="ComputePath">
                 <ComputePathToPose goal="{goal}" path="{path}" planner_id="SmacLattice" error_code_id="{compute_path_error_code}"/>
-                <!-- check_for_collisions=false: mesmo motivo da BT base (corredor
-                     apertado raspa celula inflada e abortava o pipeline). -->
-                <SmoothPath unsmoothed_path="{path}" smoothed_path="{smoothed_path}" smoother_id="savitzky_golay_smoother" max_smoothing_duration="0.2" check_for_collisions="false"/>
               </Sequence>
             </Fallback>
             <!-- Recovery de contexto (igual a BT base): limpa o global so' se o
                  erro do planner e' do tipo que limpar resolve. -->
             <Sequence name="ClearGlobalIfItHelps">
               <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
-              <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
+              <ClearCostmapAroundRobot service_name="global_costmap/clear_around_global_costmap" reset_distance="1.0"/>
             </Sequence>
           </RecoveryNode>
         </RateController>
 
         <RecoveryNode number_of_retries="1" name="FollowPathRecovery">
-          <FollowPath path="{smoothed_path}" controller_id="DWBHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{path}" controller_id="DWBHolonomic" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
           <Sequence name="ClearLocalIfItHelps">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
-            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="1.0"/>
+            <ClearCostmapExceptRegion service_name="local_costmap/clear_except_local_costmap" reset_distance="2.0"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>

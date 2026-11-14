@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
@@ -87,7 +87,9 @@ LATTICE_SETS = {
     "nariz": {
         "arquivo": "caramelo_nariz_2cm_16bins.json",
         "smac_overrides": {
-            "analytic_expansion_max_length": 0.8,
+            # 0.8 -> 0.4 (2026-11-13, bancada 156 pares): frente 89,9 -> 95,4 %,
+            # analitica 12,5 -> 4,8 %, t_max 0,34 -> 0,22 s; 0,2 dobraria o tempo.
+            "analytic_expansion_max_length": 0.4,
             "rotation_penalty": 3.0,
         },
     },
@@ -189,6 +191,12 @@ def _bt_xml_for_profile(context, package_share):
     bt_replan = LaunchConfiguration("bt_replan").perform(context).strip().lower()
     if bt_replan not in ("rate", "invalid"):
         raise RuntimeError("bt_replan precisa ser 'rate' ou 'invalid'.")
+    if bt_replan == "invalid":
+        # 2026-11-13: com DWB forward_prune_distance/prune_distance 1.0 esta BT
+        # (plano de ate' 15 s) pode dar "Resulting plan has 0 poses" (robo a mais
+        # de 1 m do inicio do plano). Usar so' depois de rever o corte do plano.
+        print("[navigation.launch] AVISO: bt_replan:=invalid nao e' recomendado com "
+              "forward_prune_distance 1.0 (ver controller_server.yaml).")
     if bt_replan == "invalid" and profile != "dwb":
         raise RuntimeError("bt_replan:=invalid so' existe para nav_profile:=dwb.")
     sufixo = "_replan_if_invalid" if bt_replan == "invalid" else ""
@@ -261,6 +269,21 @@ def _create_navigation_stack(context, *args, **kwargs):
         smac_overrides=lattice_set["smac_overrides"],
     )
 
+    # 2026-11-13: use_path_orientations true so' e' seguro com o RotationShim
+    # corrigido do workspace (src/third_party). O do apt (1.3.13) compara yaw em
+    # odom com yaw em map e gira o robo para o lado errado. Se o pacote resolvido
+    # for o de /opt/ros (overlay nao compilado), forca false e avisa.
+    # 2a condicao (2026-11-13, medido nos bags): o yaw do plano so' serve de
+    # referencia se o lattice planeja de FRENTE. "nariz": 3% do plano de lado
+    # (maior trecho 0,36 m), 0% de re'. "omni": 51% de lado (ate' 4,9 m
+    # seguidos) e 10% de re' -> com true o robo seguia de re'/de lado as cegas
+    # (LiDAR so' na frente) e batia na simulacao. Fora do "nariz", forca false.
+    shim_prefix = get_package_prefix("nav2_rotation_shim_controller")
+    shim_corrigido = not shim_prefix.startswith("/opt/ros")
+    yaw_do_plano_ok = shim_corrigido and lattice_set_value == "nariz"
+    shim_guard_params = [] if yaw_do_plano_ok else [
+        {"DWBHolonomic.use_path_orientations": False}]
+
     nav2_controller_server = Node(
         package="nav2_controller",
         executable="controller_server",
@@ -271,6 +294,7 @@ def _create_navigation_stack(context, *args, **kwargs):
             os.path.join(caramelo_navigation_pkg, "config", "controller_server.yaml"),
             navigation_override_params,
             {"use_sim_time": use_sim_time},
+            *shim_guard_params,
         ],
         remappings=[
             ("cmd_vel", "/cmd_vel_nav"),
@@ -507,6 +531,11 @@ def _create_navigation_stack(context, *args, **kwargs):
         speed_limit_node,
         LogInfo(msg=f"Resolucao dos costmaps: {costmap_resolution:.3f} m/celula"),
         LogInfo(msg=f"Perfil Nav2: {nav_profile_value} (BT to_pose: {os.path.basename(bt_xml)})"),
+        LogInfo(msg=(f"RotationShim: {shim_prefix}, lattice {lattice_set_value}: use_path_orientations do YAML"
+                     if yaw_do_plano_ok else
+                     f"AVISO RotationShim: use_path_orientations FORCADO false "
+                     f"(shim corrigido: {shim_corrigido}; lattice_set: {lattice_set_value}; so' vale com o shim "
+                     "do workspace E lattice_set:=nariz)")),
         LogInfo(msg=f"Primitivas do Smac lattice ({lattice_set_value}): {lattice_filepath}"),
         LogInfo(msg=f"Overrides do SmacLattice pelo lattice_set: {lattice_set['smac_overrides'] or 'nenhum'}"),
         LogInfo(msg=f"Grafo de rotas: {route_graph_filepath} ({route_graph_nodes} nos, {route_graph_edges} arestas)"),
@@ -554,9 +583,13 @@ def generate_launch_description():
             default_value="dwb",
             description="Perfil de navegacao (BT + controlador): dwb ou mppi",
         ),
+        # 2026-11-13 (operador): speed_limit_by_scan DESLIGADO por padrao. O % do
+        # /speed_limit tambem escala max_vel_theta (0,50 x 0,70 = 0,35 = min_speed_theta:
+        # o DWB so' tinha o giro +-0,35) e na arena ficava ligado 99 % do tempo.
+        # Religar: use_speed_limit:=true.
         DeclareLaunchArgument(
             "use_speed_limit",
-            default_value="true",
+            default_value="false",
             description="2026-11-11: sobe speed_limit_by_scan (reduz a velocidade maxima do DWB "
                         "para 70% quando o LiDAR ve algo a menos de 0,70 m; 100% acima de 0,85 m). "
                         "Desligar = use_speed_limit:=false.",
@@ -570,15 +603,17 @@ def generate_launch_description():
                         "limpeza do costmap e os 'Start occupied' na staging). "
                         "Voltar = bt_replan:=rate.",
         ),
+        # 2026-11-13: default omni -> nariz. O robo so' enxerga a FRENTE; no omni
+        # 75 % do plano tinha rumo de lado/para tras e, com o shim seguindo o rumo
+        # planejado, ele viraria a traseira cega para o movimento em 2/3 das pernas.
+        # nariz: 93-95 % de frente, 0 falhas em 156 pares (bancada). Voltar: lattice_set:=omni.
         DeclareLaunchArgument(
             "lattice_set",
-            default_value="omni",
-            description="Primitivas do Smac lattice: omni (default, conjunto atual: frente, "
-                        "re', lateral e diagonais com o mesmo custo por metro) ou nariz "
-                        "(experimental 2026-11-11: sem re', diagonal custo x1.5, lateral x2.0; "
-                        "o launch tambem impoe SmacLattice.analytic_expansion_max_length 0.8 e "
-                        "SmacLattice.rotation_penalty 3.0, medidos juntos na bancada offline: "
-                        "90% do plano de frente contra 7% do omni). Voltar = lattice_set:=omni.",
+            default_value="nariz",
+            description="Primitivas do Smac lattice: nariz (default desde 2026-11-13: sem re, diagonal "
+                        "custo x1.5, lateral x2.0; o launch impoe analytic_expansion_max_length 0.4 e "
+                        "rotation_penalty 3.0; bancada: 95% do plano de frente) ou omni (antigo default: "
+                        "re, lateral e diagonais com o mesmo custo). Voltar = lattice_set:=omni.",
         ),
         DeclareLaunchArgument(
             "use_route_server",

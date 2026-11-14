@@ -9,7 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY behavior_tree config launch
+  DIRECTORY behavior_tree config launch rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -183,8 +183,8 @@ install(PROGRAMS
   RENAME speed_limit_by_scan
 )
 
-# Gravacao completa por corrida (2026-11-13): runs/run_<stamp>/ com video da
-# janela do RViz do robo (global_localization.rviz), bag, logs, config,
+# Gravacao completa por corrida (2026-11-13): runs/run_<stamp>/ com um video
+# por RViz escondido (rviz/diag_*.rviz num Xvfb), bag, logs, config,
 # metadata.json e analysis.md. gravar_run = corrida manual ate o Ctrl-C; run_diag_viz = trilha
 # real / plano anterior / eventos em /diag/*; analisar_run = relatorio do bag.
 install(PROGRAMS
@@ -248,6 +248,8 @@ if(BUILD_TESTING)
   # Corrida completa (2026-11-13): vista do RViz, comando do ffmpeg, recorte dos
   # logs, pasta/metadata com tudo desligado, e as regras do analisar_run.
   ament_add_pytest_test(test_run_common test/test_run_common.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  ament_add_pytest_test(test_behavior_trees test/test_behavior_trees.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

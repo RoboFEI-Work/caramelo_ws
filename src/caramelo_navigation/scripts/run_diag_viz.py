@@ -153,6 +153,8 @@ class RunDiagViz(Node):
     def on_rosout(self, m: Log):
         if m.level < Log.WARN or not m.name.split(".")[0].startswith(NOS_NAV):
             return
+        if "missed its desired rate" in m.msg:  # repete a corrida toda; o relatorio ja' conta
+            return
         self.evento(f"{m.name.split('.')[0]}: {m.msg}", chave=(m.name, m.msg[:40]))
 
     def on_cm(self, m):

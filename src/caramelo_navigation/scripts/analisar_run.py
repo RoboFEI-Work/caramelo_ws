@@ -540,6 +540,53 @@ def _md_tab(cab, linhas):
     return "\n".join(out)
 
 
+# Frequencia esperada (configs de 2026-11-13) dos topicos que o laco de navegacao usa.
+TAXAS_ESPERADAS = {
+    "/scan": 10, "/scan_raw": 10, "/odom": 40, "/odom/wheel": 100, "/imu/data_raw": 10,
+    "/local_costmap/costmap": 5, "/global_costmap/costmap": 1,
+    # comandos e /local_plan so' existem com o FollowPath ativo: ver "laco" por perna (secao 2)
+    "/joint_states": None, "/tf": None, "/amcl_pose": None, "/particle_cloud": None,
+}
+
+
+def secao_processamento(pasta: Path, d: dict, r: dict) -> list:
+    """Frequencia real dos topicos (metadata do bag) e CPU por processo nas pernas."""
+    import yaml
+    L = ["## 4b. Frequencias e processamento", ""]
+    try:
+        info = yaml.safe_load((achar_bag(pasta) / "metadata.yaml").read_text())[
+            "rosbag2_bagfile_information"]
+        dur = info["duration"]["nanoseconds"] / 1e9
+        cont = {t["topic_metadata"]["name"]: t["message_count"] for t in info["topics_with_message_count"]}
+        linhas = []
+        for top, esp in TAXAS_ESPERADAS.items():
+            if top in cont:
+                hz = cont[top] / max(dur, 1e-3)
+                alerta = "ABAIXO" if esp and hz < 0.8 * esp else ""
+                linhas.append((top, f"{hz:.1f}", esp if esp else "-", alerta))
+        L += ["Media da corrida inteira (mensagens / duracao do bag).", "",
+              _md_tab(["topico", "Hz medido", "Hz esperado", ""], linhas), ""]
+    except (OSError, KeyError, TypeError, FileNotFoundError):
+        L += ["Sem metadata.yaml do bag.", ""]
+    csv_p = pasta / "logs" / "cpu.csv"
+    if not csv_p.exists():
+        return L + ["Sem logs/cpu.csv (corrida gravada antes do amostrador de CPU).", ""]
+    pernas = [(p["ini"], p["fim"]) for p in r["pernas"]]
+    soma, amostras = defaultdict(float), set()
+    with open(csv_p, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            t = float(row["epoch"])
+            if any(a <= t <= b for a, b in pernas):
+                soma[row["nome"]] += float(row["cpu_pct"])
+                amostras.add(round(t, 1))
+    n = max(len(amostras), 1)
+    top = sorted(soma.items(), key=lambda kv: -kv[1])[:15]
+    L += [f"CPU media por processo DURANTE as pernas de navegacao ({len(amostras)} amostras de 2 s; "
+          f"100 % = 1 nucleo; total dos listados {sum(v for _, v in top) / n:.0f} %).", "",
+          _md_tab(["processo", "CPU % media"], [(k, f"{v / n:.0f}") for k, v in top]), ""]
+    return L
+
+
 def escrever(pasta: Path, d: dict, r: dict, meta: dict) -> Path:
     rel = Relogio(r["t0"], (meta.get("video") or {}).get("inicio_epoch"))
     L = [f"# Analise da corrida {meta.get('run_id', pasta.name)}", "",
@@ -554,8 +601,9 @@ def escrever(pasta: Path, d: dict, r: dict, meta: dict) -> Path:
         ("Inicio / fim do bag", f"{hora(r['t0'])} / {hora(r['t1'])} ({r['t1'] - r['t0']:.0f} s)"),
         ("Codigo", f"{git.get('rev', '-')} ({'com alteracoes nao commitadas' if git.get('sujo') else 'limpo'})"),
         ("Perfil nav", meta.get("nav_profile", "-")),
-        ("Video", f"rviz_video.mp4, 1o quadro {hora(vid['inicio_epoch'])}" if vid.get("inicio_epoch")
-         else f"sem video ({vid.get('motivo', 'nao gravado')})"),
+        ("Videos", (", ".join(f"videos/{n}.mp4" for n, i in (vid.get("vistas") or {}).items() if i.get("ok"))
+                    or "rviz_video.mp4") + f", 1o quadro {hora(vid['inicio_epoch'])}"
+         if vid.get("inicio_epoch") else f"sem video ({vid.get('motivo', 'nao gravado')})"),
     ]), "",
         "Como achar um momento: a **hora local** e' o carimbo amarelo do video e o relogio do log; "
         "**t_bag** e' o segundo desde o inicio do bag (`ros2 bag play rosbag --start-offset <t_bag>`); "
@@ -610,6 +658,7 @@ def escrever(pasta: Path, d: dict, r: dict, meta: dict) -> Path:
     if len(gs) > 60:
         L += [f"... mais {len(gs) - 60} grupos.", ""]
 
+    L += secao_processamento(pasta, d, r)
     L += ["## 5. Relogio e TF", "",
           "atraso = recebimento no PC - header.stamp (relogio da Pi). Negativo = relogio da Pi "
           "adiantado; p99 alto = TF/odom chegando tarde (o costmap usa transform_tolerance 0,6 s).", ""]

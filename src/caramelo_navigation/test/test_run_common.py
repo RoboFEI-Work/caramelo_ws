@@ -35,20 +35,73 @@ def _mapa(tmp_path, w=100, h=50, conhecido=(10, 60, 5, 45)):
     return tmp_path
 
 
-def test_achar_janela_do_rviz_do_robo():
-    moldura = ('     0x6014bd "/s/global_localization.rviz - RViz": ("mutter-x11-frames" '
-               '"mutter-x11-frames")  10x10+0+0  +0+0\n')
-    nav = ('        0x1000106 "/s/global_localization.rviz - RViz": ("rviz2" "rviz2")  '
-           '1850x1016+0+0  +70+69\n')
-    manip = ('        0x2000106 "/s/manip_moveit_rasp.rviz - RViz": ("rviz2" "rviz2")  '
-             '1850x1016+0+0  +0+0\n')
-    # com dois RViz, so' o da navegacao (pelo titulo); nunca a moldura do mutter
-    assert rc.achar_janela("global_localization.rviz", moldura + nav + manip) == "0x1000106"
-    # titulo diferente e um unico RViz aberto: grava esse
-    assert rc.achar_janela("global_localization.rviz", moldura + manip) == "0x2000106"
-    # titulo diferente e dois RViz: nao chuta
-    assert rc.achar_janela("outro.rviz", nav + manip) is None
-    assert rc.achar_janela("global_localization.rviz", "") is None
+def test_achar_janela_pega_a_vista_pelo_titulo():
+    saida = ('     0x400001 "/r/config/rviz/diag_geral.rviz - RViz": ("rviz2" "rviz2")  '
+             '960x540+0+0  +0+0\n'
+             '     0x600001 "/r/config/rviz/diag_colisao.rviz* - RViz": ("rviz2" "rviz2")  '
+             '960x540+960+0  +960+0\n')
+    assert rc.achar_janela("diag_geral.rviz", saida) == "0x400001"
+    assert rc.achar_janela("diag_colisao.rviz", saida) == "0x600001"  # titulo com '*'
+    assert rc.achar_janela("diag_custos.rviz", saida) is None
+
+
+def test_vistas_escondidas_existem_nao_se_sobrepoem_e_nada_pesado(tmp_path):
+    vistos = set()
+    for slot, nome in enumerate(rc.VISTAS):
+        cfg = rc.escrever_vista(nome, tmp_path / f"{nome}.rviz", slot, (1.5, -0.5, 80.0))
+        txt = cfg.read_text()
+        corpo = "\n".join(l for l in txt.splitlines() if not l.startswith("#"))
+        assert "@" not in corpo, nome
+        for proibido in ("Value: /marker\n", "/evaluation", "/trajectories", "/cost_cloud"):
+            assert proibido not in corpo, (nome, proibido)
+        x = int(corpo.split("\n  X: ")[1].split("\n")[0])
+        y = int(corpo.split("\n  Y: ")[1].split("\n")[0])
+        assert (x, y) not in vistos and x + rc.VISTA_W <= rc.XVFB_TELA[0] and y + rc.VISTA_H <= rc.XVFB_TELA[1]
+        vistos.add((x, y))
+    assert "Target Frame: base_footprint" in (tmp_path / "colisao.rviz").read_text()  # segue o robo
+    assert "Scale: 80.0" in (tmp_path / "global.rviz").read_text()  # mapa inteiro
+
+
+def test_vistas_escolhidas_por_env():
+    assert rc.vistas_escolhidas({}) == list(rc.VISTAS)
+    assert rc.vistas_escolhidas({"CARAMELO_VIDEO_VISTAS": "colisao, xyz,geral"}) == ["colisao", "geral"]
+    assert rc.vistas_escolhidas({"CARAMELO_VIDEO_VISTAS": "xyz"}) == list(rc.VISTAS)
+
+
+def test_vista_enquadra_a_parte_conhecida(tmp_path):
+    x, y, esc = rc.vista_do_mapa(_mapa(tmp_path), largura=1000, altura=560)
+    # colunas 10..60 -> x 0..5 (centro 2.5); linhas 5..45 de cima -> y -1.5..2.5 (centro 0.5)
+    assert math.isclose(x, 2.5, abs_tol=1e-6) and math.isclose(y, 0.5, abs_tol=1e-6)
+    assert math.isclose(esc, round(0.94 * min(1000 / 5, 500 / 4), 1), abs_tol=0.05)
+    assert rc.vista_do_mapa(tmp_path / "nao_existe") == (0.0, 0.0, 60.0)
+
+
+def test_sem_xvfb_a_corrida_segue_e_diz_por_que(tmp_path, monkeypatch):
+    monkeypatch.setattr(rc.shutil, "which", lambda nome: None)
+    run = rc.Run(pasta=tmp_path, inicio_epoch=time.time(), meta={"video": {"vistas": {}}})
+    assert rc._subir_xvfb(run) is None and "apt install xvfb" in run.meta["video"]["motivo"]
+
+
+def test_cpu_s_do_proprio_processo():
+    sum(i * i for i in range(200000))
+    assert rc.cpu_s(os.getpid()) > 0 and rc.cpu_s(999999999) == 0.0
+
+
+def test_operador_ve_pouco():
+    import yaml
+    cfg = (SCRIPTS.parents[1] / "caramelo_localization" / "rviz" / "global_localization.rviz")
+    ligados = []
+
+    def walk(ds, pai=True):
+        for d in ds:
+            on = pai and d.get("Enabled", True) and d.get("Value", True)
+            if "Displays" in d:
+                walk(d["Displays"], on)
+            elif on:
+                ligados.append(d["Name"])
+    walk(yaml.safe_load(cfg.read_text())["Visualization Manager"]["Displays"])
+    assert sorted(ligados) == sorted(["RobotModel", "Map", "LaserScan", "AZUL plano global (/plan)",
+                                      "Local Footprint"])
 
 
 def test_config_do_rviz_do_robo_tem_as_cores_e_nada_pesado():
@@ -79,13 +132,13 @@ def test_config_do_rviz_do_robo_tem_as_cores_e_nada_pesado():
 
 
 def test_comando_ffmpeg_vaapi_e_x264(tmp_path):
-    v = rc.comando_ffmpeg("0x1", tmp_path / "v.mp4", ":1", "run_x", 1000, vaapi=True)
+    v = rc.comando_ffmpeg("0x1", tmp_path / "v.mp4", ":1", "run_x", -1000, vaapi=True)
     assert v[v.index("-window_id") + 1] == "0x1" and "-copyts" in v and "-nostdin" in v
     assert "h264_vaapi" in v and rc.VAAPI_DEV in v
     filtro = v[v.index("-vf") + 1]
     assert "pts\\:hms\\:-1000" in filtro and filtro.index("drawtext") < filtro.index("setpts")
     assert "+frag_keyframe+empty_moov+default_base_moof" in v
-    x = rc.comando_ffmpeg("0x1", tmp_path / "v.mp4", ":1", "run_x", 1000, vaapi=False)
+    x = rc.comando_ffmpeg("0x1", tmp_path / "v.mp4", ":1", "run_x", -1000, vaapi=False)
     assert "libx264" in x and "h264_vaapi" not in x and "-vaapi_device" not in x
 
 
@@ -117,10 +170,10 @@ def test_logs_copia_so_o_que_a_corrida_escreveu(tmp_path):
 def test_iniciar_e_parar_run_com_tudo_desligado(tmp_path, monkeypatch):
     monkeypatch.setenv("CARAMELO_VIDEO", "0")
     monkeypatch.setenv("CARAMELO_ANALISE", "0")
+    monkeypatch.setenv("CARAMELO_PARAMS", "0")
     monkeypatch.setattr(rc.bagc, "iniciar_bag", lambda *a, **k: None)
     monkeypatch.setattr(rc, "_executavel", lambda nome: [sys.executable, "-c",
                                                           "import time; time.sleep(30)"])
-    monkeypatch.setattr(rc, "_dump_params", lambda destino: None)
     monkeypatch.setattr(rc, "tamanhos_logs", lambda d: {})
     monkeypatch.setattr(rc, "copiar_logs_da_corrida", lambda *a, **k: [])
     task = tmp_path / "task_BTT1.yaml"

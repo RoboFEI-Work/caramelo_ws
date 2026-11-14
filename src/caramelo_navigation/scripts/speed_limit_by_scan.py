@@ -13,7 +13,8 @@ Por que 70 % e nao menos: max_vel_theta 0,50 x 0,70 = 0,35 = min_speed_theta;
 abaixo disso o DWB nao teria NENHUMA amostra de giro valida. O RotationShim
 gira a 0,35 por conta propria e nao e' afetado. O piso do ESC (0,1215 m/s)
 tambem nao muda: 70 % de 0,60 = 0,42 m/s, bem acima.
-Roda no launch de navegacao (use_speed_limit, default true). Desligar =
+Roda no launch de navegacao so' com use_speed_limit:=true (default false desde
+2026-11-13: na arena ficava ligado 99 % do tempo e travava o giro em 0,35). Desligar =
 use_speed_limit:=false; o controller volta a 100 % sozinho (publicamos 0.0 ao
 encerrar e ele tambem ignora limites antigos a cada nova mensagem).
 """
