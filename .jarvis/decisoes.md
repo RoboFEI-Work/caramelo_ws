@@ -166,3 +166,9 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - alpha1/2 0.005 (rotacao: giroscopio), alpha3/5 0.03 (translacao: mecanum erra ate' ~13%), alpha4 0.005 (translacao por giro).
 - Porque: com 0.2 a nuvem tinha liberdade para girar/andar atras de encaixe falso em obstaculo nao mapeado; operador: "a odometria tem boa confianca, o robo nunca e' teleportado". Validado por replay do bag ruim e do bom.
 - Rejeitado: mais particulas (piora), mapa de voxels 3D (nao ataca a localizacao 2D), likelihood_field_prob+beamskip (ja' piorou em 11/11).
+
+## 2026-11-14 — Precision Table: arquitetura aprovada pelo operador
+- Aprovado: olhar-mover-olhar com o cubo na garra, medindo aresta do cubo x borda do furo na mesma imagem (tags vizinhas de apoio), referencia ensinada, passos pequenos, correcao tambem na descida, verificacao que manda repetir.
+- Criterio de sucesso (operador): cubo PERFEITAMENTE encaixado no slot, sem sobrepor nada e sem jogo. Em cima do tile/da tag nao vale.
+- Protocolo de movimento: para mexer o robo (navegar, localizar, pegar cubo, mover o braco) perguntar pela caixa de resposta (AskUserQuestion) e so' seguir com a aprovacao; enquanto nao aprovar, continuar com programacao e analise offline.
+- Pendente do operador: distancia centro a centro entre tags vizinhas da PP (110 ou 140 mm).
