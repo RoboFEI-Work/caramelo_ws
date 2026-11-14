@@ -135,7 +135,13 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - **Decisão**: `run_mission`, `mission_server` e o CLI `gravar_run` gravam `runs/run_<stamp>/` (`caramelo_run_common.py`). Vídeo = a janela do RViz que o `robot_manipulation.launch.py` abre (`use_rviz:=true`), achada pelo título (`global_localization.rviz`) e gravada por id de janela com ffmpeg x11grab + VAAPI; o gravador nunca abre nem fecha RViz. Sincronização por relógio de parede: hora local carimbada no quadro + epoch do 1º quadro no `metadata.json`; bag e rosout no relógio do PC.
 - **Motivo**: o operador corrigiu no meio do trabalho ("não o rviz da bag, e sim a tela do rviz que inicia com o robot_manipulation"); a primeira versão abria um RViz próprio de diagnóstico, descartada. Gravar a janela do operador mostra o que ele viu e não duplica a carga de render.
 - **Também**: cores fixas no `global_localization.rviz` (azul `/plan`, verde `/local_plan`, amarelo trilha, azul claro plano anterior, laranja `/expansions`, vermelho eventos; linhas sem setas); nó `run_diag_viz` só publica o que o Nav2 não publica (`/diag/*`). Nada de `/marker`, `/evaluation` ou `/trajectories`, que pesam no laço de 20 Hz. Nenhum parâmetro de planner/controller mudou.
-- **Origem**: pedido do operador de 13/11 ("diagnóstico visual da navegação"); testes no domínio 99. **Status**: vigente, aguarda 1ª corrida real.
+- **Origem**: pedido do operador de 13/11 ("diagnóstico visual da navegação"); testes no domínio 99. **Status**: substituída em 13/11 16h50 (abaixo): o vídeo deixou de ser a janela do operador.
+
+## 2026-11-13 (16h50) — Tela do operador limpa; vídeos de RViz escondidos por corrida
+- **Decisão**: o RViz do `robot_manipulation` (`global_localization.rviz`) mostra só mapa, robô, LiDAR, plano global e footprint (o resto fica no arquivo, desligado). A gravação sobe um X virtual (Xvfb) com cinco RViz escondidos (`caramelo_navigation/rviz/diag_{geral,colisao,controlador,global,custos}.rviz`: colisão e controlador seguem o robô; os outros enquadram o mapa) e grava um vídeo por vista em `runs/<run>/videos/`. `ros2 param dump` passou para depois da corrida.
+- **Motivo**: operador: "a tela tem que ter poucas informações, senão não vê nada"; quer várias análises separadas, escondidas, gravadas na pasta da corrida. O gerenciador de janelas (mutter) não deixa janela fora da tela, então só um X virtual esconde. O dump no início coincidiu com o laço do controller a 6–8 Hz na perna 1 das duas corridas de 13/11 (12/11: 17 Hz).
+- **Custo/limite**: Xvfb renderiza por software (llvmpipe, 1 thread, nice 15, 10 fps); `metadata.json` grava `video.cpu_nucleos` para decidir quantas vistas cabem (`CARAMELO_VIDEO_VISTAS`). Requer `sudo apt install xvfb`; sem ele a corrida grava o resto e diz por quê.
+- **Status**: implementada e testada sem Xvfb (vistas renderizadas na tela real no domínio 99); falta a 1ª corrida com Xvfb instalado.
 
 ## Regras de trabalho (vigentes, do operador)
 - Commits só quando pedidos; push manual.
@@ -144,3 +150,19 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - Comentários de código em pt-BR ASCII, datados, com o porquê.
 - Valores de calibração só no YAML/launch que os declara, com data e motivo (README §8).
 - Não rodar o robô por conta própria; o operador avisa quando o robô está ligado ("vc tem acesso ao robo completo", 26/10) e isso vale só para aquele momento.
+
+## 2026-11-13 — Plano do lattice vai cru ao controlador; shim usa o yaw do plano
+- Decisao: BTs do DWB sem SmoothPath + RotationShim use_path_orientations true, com o shim corrigido no workspace (backport de frame; upstream 1.3.14/jazzy HEAD de 03/11 ainda nao corrige).
+- Porque: operador pediu "do jeito certo", nao remendo; smoothers do 1.3.13 destroem o yaw planejado; shim do apt compara frames diferentes.
+- Memoria de obstaculo: falha do planner limpa so' +-0,5 m em volta do robo no global; total so' como ultimo recurso.
+- Guarda no launch impede o true com o shim do apt.
+
+## 2026-11-13 (noite) — DWB: corte do plano 1,0 m; sem re' no DWB; yaw do plano so' com lattice nariz
+- forward_prune_distance = prune_distance = 1.0 (DWB). Porque: DWB 1.3.13 corta por distancia em linha reta; em rota em U o goal local caia na perna de volta (atras do robo). Medido no bag 18h57 e reproduzido em replay e simulacao. Regra: o corte tem que ser menor que a distancia entre as pernas do U.
+- Re' do DWB desligada (min_vel_x 0.0): o diagnostico "beco sem re'" estava errado; sem LiDAR atras, re' longa e' cega. Recoveries (escape/BackUp) continuam.
+- use_path_orientations true so' com shim corrigido E lattice nariz (trava no launch).
+
+## 2026-11-13 (noite) — AMCL confia na odometria (alphas baixos)
+- alpha1/2 0.005 (rotacao: giroscopio), alpha3/5 0.03 (translacao: mecanum erra ate' ~13%), alpha4 0.005 (translacao por giro).
+- Porque: com 0.2 a nuvem tinha liberdade para girar/andar atras de encaixe falso em obstaculo nao mapeado; operador: "a odometria tem boa confianca, o robo nunca e' teleportado". Validado por replay do bag ruim e do bom.
+- Rejeitado: mais particulas (piora), mapa de voxels 3D (nao ataca a localizacao 2D), likelihood_field_prob+beamskip (ja' piorou em 11/11).
