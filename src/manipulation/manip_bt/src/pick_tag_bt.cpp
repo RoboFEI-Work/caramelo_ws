@@ -63,6 +63,11 @@ BT::NodeStatus PickTagBT::onStart()
     return BT::NodeStatus::FAILURE;
   }
   tag_frame_ = tag_frame;
+  // 2026-11-16: o executor le esta chave quando a arvore cai, para saber
+  // qual objeto deixar para depois no replanejamento (bt_yaml_executor).
+  if (config().blackboard) {
+    config().blackboard->set("ultima_manip_tag", tag_frame_);
+  }
 
   std::string table_pose;
   getInput("table_pose", table_pose);   // opcional: ausente = mesa comum

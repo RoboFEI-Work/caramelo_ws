@@ -23,6 +23,11 @@
 //   reach_queue_enabled, reach_queue_ws_prefixes, reach_queue_max_nudges,
 //   reach_queue_max_shift_m, reach_queue_min_shift_m
 //   amt1_timeout, amt1_stage_timeout
+//   retry_unfinished_at_end    (true) a arvore caiu ou deixou coisa por fazer
+//                              => replaneja o que falta e segue; o epilogo
+//                              (home + FINISH) roda sempre. false = arvore
+//                              unica: falhou, acabou.
+//   replan_max_rounds          (6) teto de rodadas de replanejamento
 // Saida: 0 ok, 1 falha, 2 argumentos errados, 130 interrompido (Ctrl-C).
 
 #include <algorithm>
@@ -1086,10 +1091,18 @@ std::string buildTreeXmlFromActions(
 // fora de alcance) vira um plano novo pelo MESMO planejador
 // (task_plan_search: capacidade 3, pilha, menos trocas de estacao), partindo
 // do que ja esta feito e do que esta a bordo. As acoes emitidas sao COPIAS
-// das originais (mesma mesa, slot, container, pilha). Uma passada so: o que
-// falhar de novo fica para tras. amt1_sort nao e' re-tentado.
+// das originais (mesma mesa, slot, container, pilha). amt1_sort nao e'
+// re-tentado.
+// 2026-11-16 (replanejamento no meio da missao): `actions_root` e' sempre o
+// plano MESTRE (o original) e `done` os indices dele ja concluidos; cada acao
+// emitida leva `_orig` = indice na mestra. `hold_tags` = objetos fora desta
+// rodada (o que acabou de falhar, ou de que ja desistimos): se estao a bordo
+// entram como PASSAGEIROS (ocupam um pote, sem acao), e quem empilha em cima
+// deles fica fora junto. `start_ws` = estacao onde o robo esta ("" = ultimo
+// goto do plano, o caso do fim da missao).
 std::optional<YAML::Node> buildRetryActions(
-  const YAML::Node & actions_root, const BT::Blackboard::Ptr & blackboard,
+  const YAML::Node & actions_root, const std::set<std::size_t> & done,
+  const std::set<std::string> & hold_tags, const std::string & start_ws,
   std::vector<std::string> & report)
 {
   namespace tp = manip_bt::task_plan;
@@ -1109,15 +1122,7 @@ std::optional<YAML::Node> buildRetryActions(
   std::map<std::string, YAML::Node> goto_of_ws;
   std::string cur_ws;
   int next_synthetic = 100000;
-  const auto completed = [&](const std::size_t i) {
-      bool done = false;
-      try {
-        blackboard->get(actionBlackboardKey(i, "completed"), done);
-      } catch (const std::exception &) {
-        done = false;
-      }
-      return done;
-    };
+  const auto completed = [&](const std::size_t i) {return done.count(i) > 0;};
   const auto obj_for = [&](const std::string & tag) -> Obj & {
       Obj & o = objs[tag];
       if (o.id < 0) {
@@ -1156,9 +1161,23 @@ std::optional<YAML::Node> buildRetryActions(
     }
   }
 
+  // Fora desta rodada: os de hold_tags e quem empilha em cima deles (a base
+  // nao vai estar na mesa).
+  std::set<std::string> hold = hold_tags;
+  for (bool grew = true; grew; ) {
+    grew = false;
+    for (const auto & [tag, o] : objs) {
+      if (hold.count(tag) == 0 && !o.stack_on.empty() && hold.count(o.stack_on) > 0) {
+        hold.insert(tag);
+        grew = true;
+      }
+    }
+  }
+
   std::vector<tp::TransferItem> transfers;
   tp::PlannerState state;
   std::map<int, const Obj *> by_id;
+  std::string held;   // para o log
   for (const auto & [tag, o] : objs) {
     const bool needs_pick = o.pick_idx >= 0 && !o.pick_done;
     const bool needs_place = o.place_idx >= 0 && !o.place_done;
@@ -1166,6 +1185,20 @@ std::optional<YAML::Node> buildRetryActions(
       continue;
     }
     if (needs_place && o.to_ws.empty()) {
+      continue;
+    }
+    if (hold.count(tag) > 0) {
+      held += (held.empty() ? "" : ", ") + tag;
+      if (!needs_pick) {
+        // Passageiro: a bordo, sem pick nem place nesta rodada. O planejador
+        // so' o enxerga na capacidade (inventario).
+        tp::TransferItem p;
+        p.obj_id = o.id;
+        p.tag_frame = tag;
+        state.picked.insert(o.id);
+        state.inventory.push_back(o.id);
+        transfers.push_back(p);
+      }
       continue;
     }
     tp::TransferItem t;
@@ -1184,12 +1217,17 @@ std::optional<YAML::Node> buildRetryActions(
     transfers.push_back(t);
     by_id[o.id] = &o;
   }
-  if (transfers.empty()) {
-    report.push_back("[re-tentativa] nada pendente.");
+  if (by_id.empty()) {
+    report.push_back(
+      held.empty() ? "[re-tentativa] nada pendente." :
+      "[re-tentativa] so' resta o que ficou de fora: " + held);
     return std::nullopt;
   }
   // Pilha: topo pendente sobre base que tambem esta pendente.
   for (auto & t : transfers) {
+    if (by_id.count(t.obj_id) == 0) {
+      continue;   // passageiro
+    }
     const Obj & o = *by_id.at(t.obj_id);
     if (!o.stack_on.empty() && objs.count(o.stack_on) > 0) {
       const int base_id = objs.at(o.stack_on).id;
@@ -1210,7 +1248,7 @@ std::optional<YAML::Node> buildRetryActions(
     visits = tp::planGreedy(transfers, rng, state);
     // Distancia uniforme: minimiza trocas de estacao a partir de onde o robo esta.
     tp::CostModel model;
-    model.start_ws = cur_ws.empty() ? "START" : cur_ws;
+    model.start_ws = !start_ws.empty() ? start_ws : cur_ws.empty() ? "START" : cur_ws;
     std::set<std::string> names = tp::candidateStations(transfers);
     names.insert(model.start_ws);
     names.insert(model.finish_ws);
@@ -1242,13 +1280,17 @@ std::optional<YAML::Node> buildRetryActions(
       last_ws = v.ws;
       summary += (summary.empty() ? "" : " | ") + v.ws + ":";
     }
+    const auto emit = [&](const int idx, const std::string & verb, const int id) {
+        YAML::Node a = YAML::Clone(actions[static_cast<std::size_t>(idx)]);
+        a["_orig"] = idx;   // harvestCompleted devolve o resultado ao plano mestre
+        seq.push_back(a);
+        summary += " " + verb + " " + tp::findTransferById(transfers, id).tag_frame;
+      };
     for (const int id : v.places) {
-      seq.push_back(YAML::Clone(actions[static_cast<std::size_t>(by_id.at(id)->place_idx)]));
-      summary += " place " + tp::findTransferById(transfers, id).tag_frame;
+      emit(by_id.at(id)->place_idx, "place", id);
     }
     for (const int id : v.picks) {
-      seq.push_back(YAML::Clone(actions[static_cast<std::size_t>(by_id.at(id)->pick_idx)]));
-      summary += " pick " + tp::findTransferById(transfers, id).tag_frame;
+      emit(by_id.at(id)->pick_idx, "pick", id);
     }
   }
   if (seq.size() == 0) {
@@ -1257,12 +1299,65 @@ std::optional<YAML::Node> buildRetryActions(
   out["actions"] = seq;
   std::string pending;
   for (const auto & t : transfers) {
+    if (by_id.count(t.obj_id) == 0) {
+      continue;   // passageiro
+    }
     pending += (pending.empty() ? "" : ", ") + t.tag_frame +
       (t.needs_pick ? " (pick" : " (a bordo") + (t.needs_place ? " + place)" : ")");
   }
   report.push_back("[re-tentativa] pendente: " + pending);
+  if (!held.empty()) {
+    report.push_back("[re-tentativa] fora desta rodada: " + held);
+  }
   report.push_back("[re-tentativa] plano: " + summary);
   return out;
+}
+
+// Soma a `done` (indices do plano mestre) os picks/places que a arvore que
+// acabou de rodar concluiu; devolve quantos sao novos. Acoes copiadas pelo
+// replanejamento levam `_orig`; sem ele a lista e' o proprio plano mestre.
+std::size_t harvestCompleted(
+  const YAML::Node & ran_root, const BT::Blackboard::Ptr & blackboard,
+  std::set<std::size_t> & done)
+{
+  const YAML::Node actions = ran_root["actions"];
+  std::size_t novos = 0;
+  for (std::size_t j = 0; j < actions.size(); ++j) {
+    const std::string kind = actions[j]["kind"].as<std::string>("");
+    if (kind != "pick" && kind != "place") {
+      continue;
+    }
+    bool completed = false;
+    try {
+      blackboard->get(actionBlackboardKey(j, "completed"), completed);
+    } catch (const std::exception &) {
+      completed = false;
+    }
+    if (completed && done.insert(actions[j]["_orig"].as<std::size_t>(j)).second) {
+      ++novos;
+    }
+  }
+  return novos;
+}
+
+// Estacao da primeira acao ainda pendente (pick ou place) do objeto `tag` no
+// plano mestre; nullopt se ele nao tem mais nada a fazer.
+std::optional<std::string> pendingWsOfTag(
+  const YAML::Node & actions_root, const std::set<std::size_t> & done, const std::string & tag)
+{
+  const YAML::Node actions = actions_root["actions"];
+  std::string cur_ws;
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    const std::string kind = actions[i]["kind"].as<std::string>("");
+    if (kind == "goto") {
+      cur_ws = actions[i]["ws"].as<std::string>("");
+    } else if ((kind == "pick" || kind == "place") && done.count(i) == 0 &&
+      actions[i]["tag_frame"].as<std::string>("") == tag)
+    {
+      return cur_ws;
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -1476,6 +1571,10 @@ int main(int argc, char ** argv)
     // do FINISH (buildRetryActions). false = arvore unica de sempre.
     const bool retry_unfinished =
       node->declare_parameter<bool>("retry_unfinished_at_end", true);
+    // 2026-11-16: teto de rodadas de replanejamento (arvore caiu ou deixou
+    // coisa por fazer). So' vale com retry_unfinished_at_end=true.
+    const int replan_max_rounds =
+      static_cast<int>(node->declare_parameter<int64_t>("replan_max_rounds", 6));
     ctx.include_epilogue = !retry_unfinished;
     const std::string tree_xml = buildTreeXmlFromActions(actions_root, blackboard, ctx);
 
@@ -1503,7 +1602,8 @@ int main(int argc, char ** argv)
         std::cout << "  " << row << "\n";
       }
       if (retry_unfinished) {
-        std::cout << "  [fim] re-tentativa do que nao foi concluido (uma passada), depois home + "
+        std::cout << "  [fim] replanejamento do que falhar ou faltar (ate " << replan_max_rounds
+                  << " rodadas), depois home + "
                   << "goto " << ctx.finish_dock_id << "\n";
       }
       std::cout << "=== XML gerado ===\n" << tree_xml << std::flush;
@@ -1514,6 +1614,8 @@ int main(int argc, char ** argv)
       "Instanciando os nos da arvore (conectando ao /move_group — o MoveIt "
       "pode levar um tempo para terminar de subir; acompanhe os logs)...");
     const auto build_start = std::chrono::steady_clock::now();
+    // Escrita pelas folhas PickTag/PlaceTag ao comecar (tipo travado aqui).
+    blackboard->set("ultima_manip_tag", std::string());
     auto tree = factory.createTreeFromText(tree_xml, blackboard);
     RCLCPP_INFO(
       rclcpp::get_logger("bt_yaml_executor"),
@@ -1563,38 +1665,109 @@ int main(int argc, char ** argv)
       };
 
     BT::NodeStatus status = run_tree(tree, "Arvore");
-    if (status == BT::NodeStatus::SUCCESS && retry_unfinished) {
-      std::vector<std::string> report;
-      const std::optional<YAML::Node> retry = buildRetryActions(actions_root, blackboard, report);
-      for (const auto & row : report) {
-        RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "%s", row.c_str());
-      }
-      if (retry) {
+    if (retry_unfinished && status != BT::NodeStatus::IDLE) {
+      // 2026-11-16 (operador: "ele nao pode falhar a missao, faca ele ajustar
+      // o task planner em uma situacao dessa e tentar o place mais tarde"):
+      // a arvore caiu ou deixou coisa por fazer => replaneja o que falta pelo
+      // mesmo planejador, a partir do que ja foi feito e do que esta a bordo,
+      // e segue. O objeto em que a arvore caiu fica FORA da rodada seguinte
+      // (a bordo, ocupando um pote) e volta na outra; caiu 2 vezes no mesmo
+      // objeto => desiste dele e segue com o resto. Para quando: nada
+      // pendente; rodada inteira sem concluir nada novo; 2 quedas seguidas
+      // sem objeto e sem progresso; replan_max_rounds.
+      tree = BT::Tree();  // solta os nos da principal (mesmos nomes de no ROS)
+      const auto log = rclcpp::get_logger("bt_yaml_executor");
+      std::set<std::size_t> done;
+      std::size_t novos = harvestCompleted(actions_root, blackboard, done);
+      std::map<std::string, int> quedas;      // por objeto
+      std::set<std::string> abandonados;
+      int quedas_sem_objeto = 0;
+      bool rodada_com_adiado = false;
+      for (int round = 1; round <= replan_max_rounds && rclcpp::ok() && !g_interrupted; ++round) {
+        std::set<std::string> hold = abandonados;
+        std::string adiado;
+        std::string start_ws;
+        if (status == BT::NodeStatus::FAILURE) {
+          std::string tag;
+          try {
+            blackboard->get("ultima_manip_tag", tag);
+          } catch (const std::exception &) {
+            tag.clear();
+          }
+          const std::optional<std::string> ws =
+            tag.empty() ? std::nullopt : pendingWsOfTag(actions_root, done, tag);
+          if (ws) {
+            start_ws = *ws;
+            quedas_sem_objeto = 0;
+            if (++quedas[tag] >= 2) {
+              abandonados.insert(tag);
+              RCLCPP_ERROR(
+                log, "[replano] %s falhou de novo em %s: desisto desse objeto e sigo com o resto.",
+                tag.c_str(), ws->c_str());
+            } else {
+              adiado = tag;
+              RCLCPP_WARN(
+                log, "[replano] %s falhou em %s: fica para depois; replanejando o resto.",
+                tag.c_str(), ws->c_str());
+            }
+            hold.insert(tag);
+          } else if (novos == 0 && ++quedas_sem_objeto >= 2) {
+            RCLCPP_ERROR(
+              log, "[replano] a arvore caiu 2 vezes seguidas sem concluir nada: paro de replanejar.");
+            break;
+          }
+        } else if (round > 1 && novos == 0 && !rodada_com_adiado) {
+          break;  // rodada inteira sem nada novo: o que sobrou nao sai
+        }
+
+        std::vector<std::string> report;
+        std::optional<YAML::Node> plan =
+          buildRetryActions(actions_root, done, hold, start_ws, report);
+        if (!plan && !adiado.empty()) {
+          // So' sobrou o adiado: tenta agora mesmo (o goto refaz o docking).
+          hold.erase(adiado);
+          adiado.clear();
+          report.clear();
+          plan = buildRetryActions(actions_root, done, hold, start_ws, report);
+        }
+        if (!plan) {
+          break;  // o resumo final (abaixo) diz o que ficou
+        }
+        for (const auto & row : report) {
+          RCLCPP_INFO(log, "%s", row.c_str());
+        }
         MissionBuildContext rctx = ctx;
         rctx.include_prologue = false;
         rctx.include_epilogue = false;
         rctx.plan_rows.clear();
-        const std::string retry_xml = buildTreeXmlFromActions(*retry, blackboard, rctx);
+        const std::string round_xml = buildTreeXmlFromActions(*plan, blackboard, rctx);
         for (const auto & row : rctx.plan_rows) {
-          RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "  [re-tentativa] %s", row.c_str());
+          RCLCPP_INFO(log, "  [re-tentativa] %s", row.c_str());
         }
-        tree = BT::Tree();  // solta os nos da principal (mesmos nomes de no ROS)
-        auto retry_tree = factory.createTreeFromText(retry_xml, blackboard);
-        status = run_tree(retry_tree, "Re-tentativa");
-        if (status == BT::NodeStatus::SUCCESS) {
-          // O que ainda faltar fica no log (sem segunda re-tentativa).
-          std::vector<std::string> left;
-          (void)buildRetryActions(*retry, blackboard, left);
-          for (const auto & row : left) {
-            if (row.find("plano:") == std::string::npos) {
-              RCLCPP_INFO(rclcpp::get_logger("bt_yaml_executor"), "apos a re-tentativa: %s",
-                row.c_str());
-            }
+        blackboard->set("ultima_manip_tag", std::string());
+        auto round_tree = factory.createTreeFromText(round_xml, blackboard);
+        status = run_tree(
+          round_tree, round == 1 ? "Re-tentativa" : "Re-tentativa " + std::to_string(round));
+        if (status == BT::NodeStatus::IDLE) {
+          break;
+        }
+        novos = harvestCompleted(*plan, blackboard, done);
+        rodada_com_adiado = !adiado.empty();
+      }
+      if (status != BT::NodeStatus::IDLE) {
+        // O que ficou para tras, no log (mesmo formato de antes).
+        std::vector<std::string> left;
+        (void)buildRetryActions(actions_root, done, {}, "", left);
+        for (const auto & row : left) {
+          if (row.find("plano:") == std::string::npos) {
+            RCLCPP_INFO(log, "apos a re-tentativa: %s", row.c_str());
           }
         }
       }
     }
-    if (status == BT::NodeStatus::SUCCESS && retry_unfinished && !ctx.finish_dock_id.empty()) {
+    // Epilogo SEMPRE que nao foi Ctrl-C (2026-11-16): antes uma re-tentativa
+    // que falhava cancelava o home + FINISH.
+    if (status != BT::NodeStatus::IDLE && retry_unfinished && !ctx.finish_dock_id.empty()) {
       MissionBuildContext ectx = ctx;
       ectx.include_prologue = false;
       ectx.include_epilogue = true;

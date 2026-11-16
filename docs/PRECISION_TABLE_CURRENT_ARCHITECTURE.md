@@ -1084,3 +1084,39 @@ As evidências da auditoria foram copiadas para
 `pp_pesquisa_percepcao`, `pp_tf`, `pp_verificador` e `pp_teste` (YAML e scripts do teste de
 14/11). Isso fecha a lacuna dos diretórios temporários apontada pelo verificador.
 `/tmp/pp_hole_debug` (643 MB) **não** foi copiado, por decisão do operador.
+
+## 19. Adendo de 14/11 (tarde): metrologia com a regua, 3 places e primeira medida do alinhamento
+
+**19.1 Tamanho da tag: disputa encerrada (FATO).** Com o passo entre furos medido pelo operador (~109 mm,
+regua) e as razoes medidas por homografia nos quadros de perto (duas corridas, `runs/pp_auditoria_20261114/metrologia2/medir.py`):
+
+| Grandeza | Em lados de tag (imagem) | Em mm (passo 109) |
+|---|---|---|
+| Passo entre tags vizinhas | 3,39 a 3,50 | 109 (regua) |
+| Lado do quadrado preto da tag do slot | 1 | ~31,8 (31,2 a 32,2) |
+| Lado do furo | 1,330 +- 0,03 | ~42,3 |
+| Centro da tag -> centro do furo | 1,446 +- 0,03, sem desvio lateral | ~46,0 |
+
+O `size: 0.041` do YAML das tags esta' errado para as tags dos slots por um fator 1,28. Prova cruzada: o
+"offset tag->buraco medido" do log (60,3 mm) e' o valor real (~46 mm) x 1,28; o nominal de 52 mm do codigo
+tambem nao corresponde a' mesa. Continua valendo NAO trocar o tamanho isoladamente (o z do alvo fecha hoje por
+cancelamento de erros).
+
+**19.2 Tres places seguidos (run_20261114_120744; tag_1->103, tag_2->104, tag_3->105).** Os tres terminaram
+"Entreguei" e nenhum cubo entrou: os dois azuis ficaram sobre as tags 104 e 105 e o vermelho torto entre o furo
+e a tag do 103. O erro e' sistematico. Ha' cubos vermelhos E azuis.
+
+**19.3 Medida do alinhamento (codigo novo, sem ROS).** `src/manipulation/manip_bringup/scripts/pp_align_vision.py`
++ `test/test_pp_align_vision.py` (6 testes com quadros reais) + `config/pp_table.yaml` (geometria da mesa,
+feita para editar na competicao). A medida usa a aresta de baixo do cubo e os FUROS VIZINHOS inteiros como
+regua (o furo-alvo fica tapado quando o cubo esta' perto dele). Na pre-pose (cubo 2 cm acima do tampo):
+
+| Place | erro lateral | erro de avanco | repetibilidade |
+|---|---|---|---|
+| 14/11 11h30, cubo vermelho, slot 104 | -7 mm | +18 mm | ~+-1 mm entre quadros |
+| 14/11 12h10, cubo azul, slot 104 | -14 mm | +18 mm | ~+-1 mm entre quadros |
+
+Os +18 mm batem com a verificacao do proprio no' (18-19 mm) e com a lasca visivel do furo (17-19,5 mm).
+LIMITES medidos: so' funciona na pre-pose (mais baixo os vizinhos saem do campo de visao); falhou em 2 de 4
+places (vizinho tapado por cubo ja' solto, cubo fora lateralmente); nao corrige a paralaxe da altura do cubo
+(a aresta sai com 46-48 mm em vez de 42), que fica para a referencia ensinada.

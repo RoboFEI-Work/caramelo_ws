@@ -1711,7 +1711,12 @@ private:
                 // Transform existir nao basta: precisa ser deteccao RECENTE.
                 const double age_sec =
                     (this->get_clock()->now() - rclcpp::Time(out_tf.header.stamp)).seconds();
-                if (age_sec <= max_tag_age_sec_) {
+                // 2026-11-16 (run_20261116_180232): com o carimbo da camera
+                // ADIANTADO (ate' 2,6 s) a idade fica negativa, passava aqui e
+                // a tag era cruzada com a pose do braco de outro instante
+                // (tag "5 cm mais baixa e girada 36 graus": o braco afundou na
+                // mesa). Idade valida = de -0,15 s ate' o maximo.
+                if (age_sec <= max_tag_age_sec_ && age_sec >= kMinTagAgeSec) {
                     return true;
                 }
                 stale_age_sec = age_sec;
@@ -1730,7 +1735,10 @@ private:
                 "[" << cycle_name << "] Tag " << tag_frame
                     << " vista pela ultima vez ha " << stale_age_sec
                     << " s (max " << max_tag_age_sec_
-                    << " s) — a camera NAO esta vendo a tag agora.");
+                    << " s) — a camera NAO esta vendo a tag agora"
+                    << (stale_age_sec < 0.0 ?
+                    " (idade NEGATIVA: o carimbo da camera esta' adiantado em relacao ao relogio)." :
+                    "."));
         } else {
             RCLCPP_ERROR_STREAM(
                 get_logger(),
@@ -1743,6 +1751,8 @@ private:
     }
 
     double max_tag_age_sec_{1.0};
+    /// Carimbo no futuro alem disto = relogio da camera fora de sincronia: leitura recusada.
+    static constexpr double kMinTagAgeSec = -0.15;
     manip_task_execution::ArmSettleParams settle_params_;
 
     /// Leitura da tag por MEDIANA de varias deteccoes (2026-09-14).
@@ -1799,7 +1809,7 @@ private:
                 const rclcpp::Time stamp(tf.header.stamp);
                 const double age = (this->get_clock()->now() - stamp).seconds();
                 const bool nova = samples.empty() || stamp > last_stamp;
-                const bool recente = age <= max_tag_age_sec_;
+                const bool recente = age <= max_tag_age_sec_ && age >= kMinTagAgeSec;
                 const bool pos_parada = !not_before || stamp >= *not_before;
                 if (nova && recente && pos_parada) {
                     samples.push_back(tf);
@@ -2452,7 +2462,7 @@ private:
                 }
                 const rclcpp::Time stamp(tf.header.stamp);
                 const double age = (now - stamp).seconds();
-                if (age > max_tag_age_sec_) {
+                if (age > max_tag_age_sec_ || age < kMinTagAgeSec) {
                     continue;  // tag velha no buffer = fantasma
                 }
                 if (not_before &&
@@ -6506,9 +6516,17 @@ private:
                     }
                     // Fila de alcance (2026-08-28): base VISTA, sem IK antes
                     // de mover — sai cedo, sem fallback de mesa e sem soltar.
+                    // 2026-11-16: o calculo de alcance usa a MESMA escada da
+                    // IK. Com a escada da pilha (15/30 graus) o slot da PP,
+                    // que so' desce a 0 grau, saia "alcancavel agora" e a
+                    // sugestao ia 0: a fila nao deslocava a base e a tentativa
+                    // final derrubava a missao (run_20261116_110428, tag_101).
                     if (out == StackOutcome::kUnreachable &&
                         tryUnreachableBailout(
-                            goal_handle, stack_tilt_ladder_deg_, "STACK",
+                            goal_handle,
+                            isSlotLikeTarget(kind, goal->stack_on) ?
+                            slot_tilt_ladder_deg_ : stack_tilt_ladder_deg_,
+                            "STACK",
                             "O bloco base esta fora do meu alcance"))
                     {
                         return false;
@@ -7347,7 +7365,10 @@ private:
 
         publishStage(goal_handle, "returning_cube_opening_gripper");
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_full_open");
+        // 2026-11-16 (pedido do operador): garra larga so' no home, ao
+        // empilhar, na PP e ao olhar o container da mesa. No pote de bordo
+        // os dedos largos esbarram nos vizinhos: volta a gripper_open.
+        gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "return cube: open gripper")) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -7459,7 +7480,11 @@ private:
         // a cavidade justo na leitura de perto do TCP2.
         publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_full_open");
+        // 2026-11-16 (pedido do operador): garra larga so' quando vai olhar a
+        // base da pilha, o slot da PP (ambos stack_on) ou o container da
+        // mesa; place comum abre em gripper_open.
+        const bool garra_larga = !goal->stack_on.empty() || !goal->container_color.empty();
+        gripper->setNamedTarget(garra_larga ? "gripper_full_open" : "gripper_open");
         if (!planAndExecute(gripper, "open gripper")) {
             return false;
         }
@@ -7657,7 +7682,11 @@ private:
         } else {
             publishStage(goal_handle, "opening_gripper_final");
             gripper->setStartStateToCurrentState();
-            gripper->setNamedTarget("gripper_full_open");
+            // 2026-11-16 (pedido do operador): solta largo so' ao empilhar
+            // (stack_on); mesa comum, prateleira e container da mesa soltam
+            // em gripper_open.
+            gripper->setNamedTarget(
+                goal->stack_on.empty() ? "gripper_open" : "gripper_full_open");
             if (!planAndExecute(gripper, "open gripper final")) {
                 last_place_failure_reason_ = "garra_nao_abriu_no_destino";
                 return false;

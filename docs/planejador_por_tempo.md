@@ -133,6 +133,26 @@ cópias das originais. `amt1_sort` não é re-tentado. Desligar:
 `-p retry_unfinished_at_end:=false`. Teste de bancada:
 `manip_bt/test/run_retry_scenario.sh`.
 
+**Replanejamento no meio da missão (16/11).** A missão não cai mais quando um
+pick ou place falha de vez (caso da `run_20261116_110428`: slot da PP fora de
+alcance, bloco guardado de volta, árvore em FALHA na ação 10 de 43). Agora:
+
+- A árvore caiu → o executor replaneja **tudo o que falta** pelo mesmo
+  planejador, a partir do que já foi feito e do que está a bordo, e segue.
+- O objeto em que a árvore caiu fica **fora da rodada seguinte**: continua a
+  bordo como passageiro (ocupa um dos 3 potes, e o plano respeita isso) e é
+  tentado de novo na rodada posterior. Quem empilha em cima dele espera junto.
+- Caiu **2 vezes** no mesmo objeto → o executor desiste só dele e entrega o resto.
+- Para quando não há mais nada pendente, quando uma rodada inteira não conclui
+  nada novo, ou em `replan_max_rounds` (padrão 6).
+- O epílogo (home + FINISH) roda **sempre**, menos em Ctrl-C.
+
+No log: `[replano] tag_X falhou em <estação>: fica para depois`,
+`[re-tentativa] fora desta rodada: ...` e, no fim, `apos a re-tentativa: ...`
+com o que ficou pendente. Código de saída: o da última árvore (com FINISH
+configurado, o do epílogo). Teste de bancada:
+`manip_bt/test/run_replan_scenario.sh [1|9]`.
+
 ## 3. Busca
 
 Implementação em `src/manipulation/manip_bt/src/task_plan_search.cpp`

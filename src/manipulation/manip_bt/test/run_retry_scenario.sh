@@ -6,7 +6,8 @@
 # o bt_yaml_executor com navegacao REAL (GoToWS falando com os fakes) sobre
 # retry_actions.yaml e confere por grep. Codigo de saida 0 so se tudo bater.
 #
-# Uso: run_retry_scenario.sh [FAIL_N]   (default 2 = aligns da 1a ida a WS2)
+# Uso: run_retry_scenario.sh [FAIL_N]   (default 1 = o align da 1a ida a WS2;
+# 2026-11-16: era 2, de quando o GoToWS tentava o align 2 vezes por ida)
 # Logs: $RETRY_LOG_DIR (default /tmp/retry_scenario).
 export ROS_DOMAIN_ID=99
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +22,7 @@ MAPS="$WS_ROOT/src/caramelo_mapping/maps"
 MAP="$MAPS/arena_extendida"   # WS1..WS3 com pose gravada
 LOG_DIR="${RETRY_LOG_DIR:-/tmp/retry_scenario}"
 mkdir -p "$LOG_DIR"
-FAIL_N="${1:-2}"
+FAIL_N="${1:-1}"
 
 PIDS=()
 cleanup() {

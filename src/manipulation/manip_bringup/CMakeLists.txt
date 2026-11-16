@@ -39,6 +39,8 @@ if(BUILD_TESTING)
   # Buraco da mesa de precisao: marrom sobre tampo branco, anel, projecao, rastreio.
   ament_add_pytest_test(test_pp_hole_detector test/test_pp_hole_detector.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  ament_add_pytest_test(test_pp_align_vision test/test_pp_align_vision.py
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 
 ament_package()

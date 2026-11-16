@@ -102,6 +102,7 @@ run_case() {
   # shellcheck disable=SC2086
   timeout 240 ros2 run manip_bt bt_yaml_executor "$ACTIONS" --ros-args \
     -p map_folder:="$MAP" -p simulate_navigation:=false -p startup_home:=false \
+    -p home_before_dock:=false -p retry_unfinished_at_end:=false \
     -p finish_dock_id:="''" -p server_wait_timeout:=20.0 $exec_params \
     > "$log" 2>&1
   local rc=$?

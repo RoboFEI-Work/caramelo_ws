@@ -50,6 +50,10 @@ class AlignParams:
     # Cubo/garra: vermelho pelo canal a* do Lab (8 bits, 128 = neutro). Medido em
     # 14/11: vermelho p5 >= 149, marrom do furo p95 <= 141, tampo <= 132.
     red_a_min: int = 146
+    # 2026-11-14 (corrida 12h07): ha' cubos AZUIS; so' com o vermelho o modulo
+    # dizia "sem_cubo" (2 de 3 places). Azul = b* baixo: medido b* 106-115 na face
+    # do cubo azul contra 138-143 no marrom do furo e 130-132 no tampo.
+    blue_b_max: int = 118
     # Onde a aresta de baixo do cubo pode estar (x0, y0, x1, y1 normalizados).
     # Camera e garra sao rigidas: nas duas pegas de 14/11 a aresta ficou em
     # x = 214..343, y = 178..184 px (640x480). A janela separa "cubo na garra" de
@@ -179,9 +183,13 @@ def aresta_do_cubo(bgr: np.ndarray, p: AlignParams):
     inferior, para montar a exclusao do furo.
     """
     h, w = bgr.shape[:2]
-    lab_a = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)[..., 1]
-    red = cv2.morphologyEx((lab_a >= p.red_a_min).astype(np.uint8), cv2.MORPH_OPEN,
-                           np.ones((3, 3), np.uint8))
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.int16)
+    # "cor de cubo" = vermelho (a* alto) OU azul (b* baixo); o marrom do furo e o
+    # tampo branco nao passam em nenhum dos dois. lab_a vira o canal do degrau
+    # para as duas cores: a*-128 no vermelho, 128-b* no azul.
+    red = cv2.morphologyEx(((lab[..., 1] >= p.red_a_min) | (lab[..., 2] <= p.blue_b_max)).astype(np.uint8),
+                           cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    lab_a = np.clip(np.maximum(lab[..., 1] - 128, 128 - lab[..., 2]) + 128, 0, 255).astype(np.uint8)
     x0, y0, x1, y1 = (int(round(v)) for v in (p.edge_roi[0] * w, p.edge_roi[1] * h,
                                                p.edge_roi[2] * w, p.edge_roi[3] * h))
     sub = red[y0:y1, x0:x1]
@@ -465,6 +473,115 @@ def desenhar(bgr: np.ndarray, res: AlignResult) -> np.ndarray:
     for i, linha in enumerate(linhas):
         cv2.putText(out, linha, (6, out.shape[0] - 26 + 16 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
         cv2.putText(out, linha, (6, out.shape[0] - 26 + 16 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    return out
+
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-14: medida PELOS FUROS VIZINHOS. Com o cubo quase em cima do furo-alvo
+# sobra so' uma lasca do furo (rejeitada por solidez em 2 de 4 places de 14/11),
+# justamente o regime do ajuste fino. Os furos vizinhos (a um passo, ~109 mm)
+# aparecem INTEIROS dos lados: eles dao a regua e a perspectiva do tampo, e o
+# centro do furo-alvo sai da geometria da mesa (config/pp_table.yaml), mesmo
+# com ele tapado. Tudo na mesma imagem: nao usa tag, TF nem calibracao.
+# ---------------------------------------------------------------------------
+def carregar_mesa(caminho: str) -> dict:
+    """Le o pp_table.yaml (arquivo de calibracao da mesa, editavel na competicao)."""
+    import yaml
+    with open(caminho, "r", encoding="utf-8") as fh:
+        mesa = yaml.safe_load(fh)["pp_table"]
+    for chave in ("pitch_mm", "hole_side_mm", "cube_side_mm"):
+        if not float(mesa[chave]) > 0.0:
+            raise ValueError(f"pp_table.{chave} tem que ser > 0")
+    return mesa
+
+
+def erro_cubo_no_plano(vizinhos, A, B, mesa: dict) -> Optional[dict]:
+    """Geometria pura. vizinhos = [(k, quad 4x2 px)]: furo a k passos do alvo
+    (k != 0), cantos em qualquer ordem. A, B = aresta de baixo do cubo (px).
+    Frame "mesa" (mm): origem no centro do FURO-ALVO, x ao longo da fileira no
+    sentido A->B, y no sentido do avanco (do cubo para fora, para baixo na imagem).
+    Devolve quanto o cubo tem de andar para ficar centrado no furo: erro_x_mm,
+    erro_y_mm, yaw_deg (giro da aresta em relacao a' fileira), e o residuo da
+    homografia. NAO corrige paralaxe: com o cubo acima do tampo a aresta aparece
+    deslocada (proporcional a' altura); o laco subtrai a referencia ensinada."""
+    A, B = np.asarray(A, float), np.asarray(B, float)
+    t = (B - A) / np.linalg.norm(B - A)
+    n = _normal(t)
+    passo, lado = float(mesa["pitch_mm"]), float(mesa["hole_side_mm"])
+    modelo, imagem = [], []
+    for k, quad in vizinhos:
+        quad = np.asarray(quad, float)
+        c = quad.mean(axis=0)
+        for canto in quad:
+            u, v = np.dot(canto - c, t), np.dot(canto - c, n)
+            modelo.append((k * passo + math.copysign(lado / 2.0, u), math.copysign(lado / 2.0, v)))
+            imagem.append(canto)
+    if len(modelo) < 4:
+        return None
+    modelo, imagem = np.array(modelo, np.float64), np.array(imagem, np.float64)
+    H, _ = cv2.findHomography(modelo, imagem, 0)          # mesa (mm) -> imagem (px)
+    if H is None:
+        return None
+    reproj = cv2.perspectiveTransform(modelo.reshape(-1, 1, 2), H)[:, 0]
+    residuo = float(np.sqrt(np.mean(np.sum((reproj - imagem) ** 2, axis=1))))
+    Am, Bm = cv2.perspectiveTransform(np.array([[A], [B]], np.float64), np.linalg.inv(H))[:, 0]
+    e = (Bm - Am) / np.linalg.norm(Bm - Am)
+    nm = np.array([-e[1], e[0]])
+    if nm[1] < 0:
+        nm = -nm                                          # normal para o lado do avanco (+y)
+    centro = (Am + Bm) / 2.0 - nm * float(mesa["cube_side_mm"]) / 2.0   # cubo fica do lado -y da aresta
+    return {"erro_x_mm": float(-centro[0]), "erro_y_mm": float(-centro[1]),
+            "yaw_deg": float(math.degrees(math.atan2(e[1], e[0]))),
+            "aresta_mm": float(np.linalg.norm(Bm - Am)), "residuo_px": residuo,
+            "n_vizinhos": len(vizinhos)}
+
+
+def medir_por_vizinhos(bgr: np.ndarray, mesa: dict, p: Optional[AlignParams] = None,
+                       aresta: Optional[np.ndarray] = None) -> dict:
+    """Erro cubo -> furo-alvo num quadro BGR usando os furos vizinhos inteiros.
+    Devolve {"ok": bool, "motivos": [...], + campos de erro_cubo_no_plano}."""
+    p = p or AlignParams()
+    out = {"ok": False, "motivos": []}
+    ar = aresta_do_cubo(bgr, p)
+    if ar is None:
+        out["motivos"].append("sem_cubo")
+        return out
+    A, B, _fr, perfil = ar
+    if aresta is not None:
+        A, B = (np.asarray(v, dtype=float) for v in aresta)
+    t = (B - A) / np.linalg.norm(B - A)
+    Mc = (A + B) / 2.0
+    blobs, _hsv, _masks = segment_holes(bgr, _cfg_furo(p, perfil, bgr.shape[:2]), holding=True)
+    cinza = cv2.GaussianBlur(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    passo, lado = float(mesa["pitch_mm"]), float(mesa["hole_side_mm"])
+    vizinhos = []
+    for b in blobs:
+        if b.reason is not None or b.partial:
+            continue                                      # so' furo inteiro serve de regua
+        quad, fr = _quad_do_furo(cinza, b.box, p)
+        if min(fr) < p.min_frac_borda:
+            continue
+        lados = [np.linalg.norm(quad[k] - quad[(k + 1) % 4]) for k in range(4)]
+        if max(lados) > 1.35 * min(lados):
+            continue                                      # nao e' um quadrado: cubo/sombra em cima
+        mm_px = lado / float(np.mean(lados))              # escala local so' para contar os passos
+        k = int(round(float(np.dot(quad.mean(axis=0) - Mc, t)) * mm_px / passo))
+        if k != 0 and abs(k) <= 2:
+            vizinhos.append((k, quad))
+    if not vizinhos:
+        out["motivos"].append("sem_vizinho")
+        return out
+    res = erro_cubo_no_plano(vizinhos, A, B, mesa)
+    if res is None:
+        out["motivos"].append("homografia")
+        return out
+    out.update(res)
+    # A aresta medida no plano tem de ter o tamanho do cubo: confere regua + aresta.
+    if abs(res["aresta_mm"] - float(mesa["cube_side_mm"])) > 0.25 * float(mesa["cube_side_mm"]):
+        out["motivos"].append(f"aresta_{res['aresta_mm']:.0f}mm")
+        return out
+    out["ok"] = True
     return out
 
 

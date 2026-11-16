@@ -172,3 +172,28 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - Criterio de sucesso (operador): cubo PERFEITAMENTE encaixado no slot, sem sobrepor nada e sem jogo. Em cima do tile/da tag nao vale.
 - Protocolo de movimento: para mexer o robo (navegar, localizar, pegar cubo, mover o braco) perguntar pela caixa de resposta (AskUserQuestion) e so' seguir com a aprovacao; enquanto nao aprovar, continuar com programacao e analise offline.
 - Pendente do operador: distancia centro a centro entre tags vizinhas da PP (110 ou 140 mm).
+
+## 2026-11-16 — Garra larga (gripper_full_open) so' em quatro casos
+- Decisao do operador: gripper_open em tudo; gripper_full_open so' no HOME, ao empilhar, ao por na PP e ao olhar o container da mesa (ct) de garra vazia.
+- No place a escolha sai do goal: stack_on (pilha e PP) ou container_color. A soltura dentro do ct e a devolucao ao pote de bordo sao em gripper_open.
+- No pick a garra larga em pegar_obj (pedido de 29/08) fica desligada por padrao; religa com pick_gripper_pose_at_pegar_obj:=gripper_full_open.
+
+## 2026-11-16 — A missao nao cai por falha de pick/place: replaneja e tenta depois
+- Decisao do operador: "ele nao pode falhar a missao"; em falha, ajustar o plano e tentar o place mais tarde.
+- Regra implementada no bt_yaml_executor: objeto que falhou fica a bordo e fora da rodada seguinte; o resto e' replanejado contando o pote ocupado; ele volta na rodada posterior; 2 quedas no mesmo objeto = desiste so' dele. FINISH sempre (menos Ctrl-C).
+- Desligar tudo (arvore unica como antes de 05/11): `retry_unfinished_at_end:=false`. Teto de rodadas: `replan_max_rounds` (6).
+
+## 2026-11-16 — PP: alinhamento por visao direta, com referencia ensinada (pp_servo_node)
+- Operador pediu a PP "de modo interativo" no estilo do codigo de referencia galera33/manip. Implementado como a arquitetura olhar-mover-olhar ja' aprovada (14/11): erro em PIXELS contra a referencia ensinada com o cubo no furo; ganho medido por balanco; garra sempre na vertical.
+- Entra no place por parametro (`pp_align_mode`, off por padrao) e so' no slot da PP. O no' Python mexe o braco direto pelo arm_controller, em passos de milimetros.
+- Nada de trocar tag_size, TF da camera ou offsets antes da competicao: a referencia ensinada dispensa.
+
+## 2026-11-16 (18h55) — PP: malha com ganho por MODELO e movimento unico (substitui balanco + passinhos)
+- Motivo (medido no robo, places das 18h26 e 18h30): balanco de +-3 mm some na folga da j1 (~1 grau) e na flecha de j2/j3 -> ganho lixo -> a malha piorou os dois places. Cada trajetoria curta da' um tranco no braco (arm_controller recomeca do medido).
+- Decisao: ganho por modelo (tag como regua + angulo do punho), constantes ajustadas a movimentos reais gravados; erro inteiro num movimento lento, depois retoques (max 5); ganho <= 1 para chegar por um lado so' (nao inverter a j1); altura fechada pelo lado da tag; se a vista piorar, volta ao inicio e o place segue como antes.
+- Alvo continua sendo a vista da tag na pre-pose de um place bom (por slot). Pedido do operador de alinhar "com o buraco" e de empurrar o cubo se cair fora: ainda nao atendidos (so' depois de ver a malha nova no robo).
+- Nao mexer antes de 20/11: parametros do arm_controller (interpolate_from_desired_state) e ganhos dos Dynamixel, embora sejam a causa de fundo do tranco e da flecha.
+
+## 2026-11-16 (19h10) — PP: malha de visao (pp_servo_node) descartada
+- Decisao do operador, depois de um dia de testes sem nenhum encaixe atribuivel a' malha. As duas decisoes de 16/11 acima sobre a malha (referencia ensinada; ganho por modelo) ficam SEM EFEITO: o codigo foi removido.
+- Nao reintroduzir malha/alinhamento por visao na PP sem pedido explicito do operador. Ultima ideia dele, em aberto: empurrar o cubo com a garra fechada quando cair fora do furo.

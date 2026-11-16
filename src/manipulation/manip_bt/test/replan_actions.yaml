@@ -1,0 +1,30 @@
+# Cenario de bancada do REPLANEJAMENTO NO MEIO DA MISSAO (2026-11-16) - usado
+# pelo run_replan_scenario.sh com os fakes em ROS_DOMAIN_ID=99. Reproduz a
+# queda da run_20261116_110428: um place falha de vez com o bloco de volta a
+# bordo. Sem `home` (sem MoveIt na bancada) e sem epilogo.
+#
+# fake_pick_place: fail_places ['tag_1:N'] -> os N primeiros places da tag_1
+# falham (success=false) e ela continua a bordo.
+#   WS_1: pick tag_1, tag_2, tag_3 ........ ok (3 a bordo)
+#   WS_2: place tag_1 ..................... FALHA -> a arvore cai
+#   replano 1 (tag_1 de fora, ocupando um pote): place tag_2 na WS_2,
+#     place tag_3 na WS_3 e so' DOIS dos tres picks de la' por vez
+#     (capacidade 3 com a tag_1 a bordo), entregas na WS_1
+#   replano 2: place tag_1 na WS_2 (N=1: agora da' certo)
+actions:
+  - {kind: goto, ws: WS_1, mesa: Mesa0}
+  - {kind: pick, tag_frame: tag_1, table_pose: Mesa0}
+  - {kind: pick, tag_frame: tag_2, table_pose: Mesa0}
+  - {kind: pick, tag_frame: tag_3, table_pose: Mesa0}
+  - {kind: goto, ws: WS_2, mesa: Mesa5}
+  - {kind: place, tag_frame: tag_1, table_pose: Mesa5, ws: WS_2}
+  - {kind: place, tag_frame: tag_2, table_pose: Mesa5, ws: WS_2}
+  - {kind: goto, ws: WS_3, mesa: Mesa10}
+  - {kind: place, tag_frame: tag_3, table_pose: Mesa10, ws: WS_3}
+  - {kind: pick, tag_frame: tag_4, table_pose: Mesa10}
+  - {kind: pick, tag_frame: tag_5, table_pose: Mesa10}
+  - {kind: pick, tag_frame: tag_6, table_pose: Mesa10}
+  - {kind: goto, ws: WS_1, mesa: Mesa0}
+  - {kind: place, tag_frame: tag_4, table_pose: Mesa0, ws: WS_1}
+  - {kind: place, tag_frame: tag_5, table_pose: Mesa0, ws: WS_1}
+  - {kind: place, tag_frame: tag_6, table_pose: Mesa0, ws: WS_1}

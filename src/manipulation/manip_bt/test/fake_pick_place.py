@@ -25,6 +25,9 @@ Fila de alcance (2026-08-28):
   track_onboard (bool, default false; 2026-11-05): place de tag que nao foi
       pega por este fake -> skipped=true (fail_reason tag_nao_a_bordo), como
       o skip_missing_place_tag do no real.
+  fail_places (lista "tag_1:2"; 2026-11-16): os N primeiros places da tag
+      terminam com success=false e o bloco continua a bordo — o slot da PP
+      fora de alcance na tentativa final (run_20261116_110428).
   Avaliacao depois de latency_sec. Com final_attempt=false: success=true,
   skipped=true, unreachable=true, suggested_base_shift_m = quantize(restante)
   (sinal * clamp(round(|r|/0.05)*0.05, 0.10, 0.25); 0 se |r| < 0.05). Com
@@ -90,7 +93,10 @@ class FakePickPlace(Node):
         self.declare_parameter("unseen_tags", Parameter.Type.STRING_ARRAY)
         self.declare_parameter("reach_tolerance_m", 0.06)
         self.declare_parameter("track_onboard", False)
+        self.declare_parameter("fail_places", Parameter.Type.STRING_ARRAY)
         self._onboard = set()
+        self._fail_places = {
+            tag: int(n) for tag, n in parse_reach_specs(self._list_param("fail_places")).items()}
 
         self._lock = threading.Lock()
         self._base_shift_total = 0.0
@@ -209,6 +215,15 @@ class FakePickPlace(Node):
             self._set_if_has(result, "unreachable", False)
             self._set_if_has(result, "suggested_base_shift_m", 0.0)
             self.get_logger().warn(f"'place' PULADO: {tag} nao esta a bordo (fake).{extra}")
+            return result
+
+        if stage == "place" and self._fail_places.get(tag, 0) > 0:
+            self._fail_places[tag] -= 1
+            goal_handle.succeed()
+            result.success = False
+            result.fail_reason = "alvo_fora_de_alcance"
+            result.message = f"fake: Place failed ({tag} fora de alcance, bloco devolvido)"
+            self.get_logger().error(f"'place' FALHOU: {tag} continua a bordo (fail_places).{extra}")
             return result
 
         # Tag nunca vista: pula sem unreachable (como hoje).

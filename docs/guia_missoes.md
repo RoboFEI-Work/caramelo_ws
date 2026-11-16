@@ -991,10 +991,15 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   gira **j1 primeiro** (log `mesa custom down [so j1]`) e só depois desce o resto
   (`[resto]`); na volta a `pegar_obj` com o bloco, recolhe j2..j5 (`[j1 parado]`) e gira
   **j1 por último** (`[j1 por ultimo]`) — o braço estendido nunca varre a mesa girando.
-- **Garra larga ao chegar em `pegar_obj`** (29/08): em mesa comum, assim que o braço chega
+- **Onde a garra fica larga** (16/11, pedido do operador): `gripper_full_open` só no `home`, ao
+  empilhar, ao pôr na PP e ao olhar o container da mesa (`ct_*`) de garra vazia. No resto é
+  `gripper_open`: pick, soltura em mesa comum, prateleira e container da mesa, e devolução ao
+  pote de bordo. No place a escolha sai do goal: `stack_on` (pilha e PP) ou `container_color`.
+- **Garra larga ao chegar em `pegar_obj`** (29/08; **desligada por padrão desde 16/11**): com o
+  parâmetro preenchido, em mesa comum, assim que o braço chega
   em `pegar_obj` a garra vai para `gripper_full_open` (estágio `gripper_full_open_at_pegar_obj`)
   antes do ciclo de pega; na prateleira não (dedos esbarrariam nas tábuas). Parâmetro
-  `pick_gripper_pose_at_pegar_obj` (default `gripper_full_open`; vazio desliga). Se a pose não
+  `pick_gripper_pose_at_pegar_obj` (default vazio = desligado; `gripper_full_open` religa). Se a pose não
   existir no SRDF vira WARN e o pick segue com a abertura normal. A pose larga serve **só para
   enxergar as tags** (dedos fora da imagem na detecção e na re-detecção pós-j1): antes da
   descida (`[resto]`) a garra volta a `gripper_open` (estágio `gripper_open_before_descent`);

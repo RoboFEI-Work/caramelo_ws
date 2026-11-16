@@ -395,8 +395,10 @@ public:
         // 2026-08-29 (pedido do operador): ao CHEGAR em pegar_obj na sequencia
         // de pick a garra vai para a pose larga do SRDF (gripper_full_open).
         // Vazio = desliga (fica so' o gripper_open de antes do movimento).
+        // 2026-11-16 (pedido do operador): desligado por padrao: garra larga
+        // so' no home, ao empilhar, na PP e ao olhar o container da mesa.
         start_gripper_pose_ = this->declare_parameter<std::string>(
-            "pick_gripper_pose_at_pegar_obj", "gripper_full_open");
+            "pick_gripper_pose_at_pegar_obj", "");
         // 2026-08-29 (pedido do operador): com o bloco preso, subir na
         // VERTICAL (mesmo x,y) antes de recolher para pegar_obj. 0 = desliga.
         lift_after_grasp_m_ = this->declare_parameter<double>("pick_lift_after_grasp_m", 0.05);
@@ -1384,7 +1386,9 @@ private:
                 // (robo movel + camera no braco => TF velha = alvo fantasma).
                 const double age_sec =
                     (this->get_clock()->now() - rclcpp::Time(out_tf.header.stamp)).seconds();
-                if (age_sec <= max_tag_age_sec_) {
+                // 2026-11-16: carimbo da camera adiantado = idade negativa; ver
+                // o mesmo teste no mtc_place_action_node (run_20261116_180232).
+                if (age_sec <= max_tag_age_sec_ && age_sec >= -0.15) {
                     return true;
                 }
                 stale_age_sec = age_sec;
