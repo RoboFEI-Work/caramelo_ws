@@ -272,26 +272,6 @@ TEST(ReachShift, UnsortedCandidatesStillPickSmallest)
   EXPECT_NEAR(r.shift_m, -0.15, kTol);
 }
 
-// 2026-11-16 (run_20261116_110428): alvo do log para o slot 101 da PP. O slot
-// so' desce a 0 grau; com a escada da pilha o calculo dizia "alcancavel
-// agora", a sugestao saia 0, a fila nao deslocava a base e a missao caia.
-TEST(ReachShift, PpSlotNeedsSlotLadderNotStackLadder)
-{
-  const Eigen::Vector3d target(-0.245, 0.354, -0.016);
-
-  ReachShiftOptions escada_da_pilha;  // padrao: 0, 15 e 30 graus
-  escada_da_pilha.lift_m = 0.02;
-  EXPECT_TRUE(findBaseShiftForReach(target, escada_da_pilha).reachable_now);
-
-  ReachShiftOptions escada_do_slot;
-  escada_do_slot.tilts_rad = {0.0};
-  escada_do_slot.lift_m = 0.02;
-  const ReachShiftResult r = findBaseShiftForReach(target, escada_do_slot);
-  EXPECT_FALSE(r.reachable_now);
-  EXPECT_NEAR(r.shift_m, 0.15, kTol);  // base para a esquerda
-  expectSolutionReachesTarget(r, escada_do_slot);
-}
-
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

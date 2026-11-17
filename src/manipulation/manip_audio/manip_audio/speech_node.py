@@ -108,6 +108,7 @@ PRONUNCIA = {
     'navegacao': 'navegação', 'manipulacao': 'manipulação', 'calibracao': 'calibração',
     'automatico': 'automático', 'inicio': 'início', 'distancia': 'distância',
     'obstaculo': 'obstáculo', 'obstaculos': 'obstáculos', 'dificil': 'difícil',
+    'precisao': 'precisão', 'centimetros': 'centímetros',
 }
 
 
@@ -143,11 +144,14 @@ class SpeechQueue:
     - alta: nunca descartada, sempre antes das normais/baixas;
     - normal: descartada se esperar mais que max_age_s, ou se houver mais que
       max_pending_normal normais pendentes (ficam as mais novas);
-    - baixa: descartada assim que chegar qualquer frase mais nova;
+    - baixa: descartada assim que chegar qualquer frase mais nova, ou se
+      esperar mais que max_age_low_s (2026-11-17: narracao de passo saia 2 a
+      4 s depois, com o robo ja' no passo seguinte);
     - texto igual ao ultimo dito/pendente dentro de dedupe_s: descartado
       (salvo alta).
     """
     max_age_s: float = 4.0
+    max_age_low_s: float = 1.5
     max_pending_normal: int = 2
     dedupe_s: float = 8.0
     _items: List[Utterance] = field(default_factory=list)
@@ -194,7 +198,8 @@ class SpeechQueue:
             utt = highs[0] if highs else self._items[0]
             self._items.remove(utt)
             age = now - utt.t_recv
-            if utt.priority == PRIORITY_NORMAL and age > self.max_age_s:
+            if (utt.priority == PRIORITY_NORMAL and age > self.max_age_s) or (
+                    utt.priority == PRIORITY_LOW and age > self.max_age_low_s):
                 dropped.append(Dropped(utt, f'atrasada {age:.1f} s'))
                 continue
             return utt, dropped

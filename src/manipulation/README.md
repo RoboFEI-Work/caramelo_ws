@@ -6,7 +6,7 @@ bancada standalone de 2026-07 (braço sozinho), mantidos só como referência.
 | Pacote | Papel |
 |---|---|
 | **`manip_bt`** | Cérebro da missão (BehaviorTree.CPP v3). `task_planner` traduz o YAML da competição (formato oficial 2026 do @Work Commander — `missions/tasks geradas/`, `docs/guia_missoes.md` §3.2 — e os dois anteriores) em ações; `bt_yaml_executor` monta e tica a árvore (folhas `GoToWS`, `PickTag`, `PlaceTag`, `ReachQueue` + `NudgeBase`, `Amt1Sort`, `GoToNamedPose`). `MissionMapConfig` lê `docking.yaml`, `service_areas.yaml` e `ws_table_mapping.yaml` da pasta do mapa. Teste do planner sobre os arquivos oficiais: `colcon test --packages-select manip_bt --ctest-args -R formato2026`. |
-| **`manip_task_execution`** | Nós C++ que movem o braço (MoveIt `MoveGroupInterface` + IK própria): `mtc_pick_action_node` → nó `pick_action_server` → action `/pick_tag`; `mtc_place_action_node` → `place_action_server` → `/place_tag` (slot nomeado, pilha `stack_on`, container por cor, superfície livre, memória de slots); `amt1_sort_action_node` → `amt1_sort_action_server` → `/amt1_sort`. Apesar do prefixo `mtc`, nenhum usa MoveIt Task Constructor. Libs puras com gtest: `custom_ik`, `reach_shift`, `amt1_sort_planner`, `surface_place_planner`, `container_state_store`. Ferramenta: `ros2 run manip_task_execution custom_ik_check`. |
+| **`manip_task_execution`** | Nós C++ que movem o braço (MoveIt `MoveGroupInterface` + IK própria): `mtc_pick_action_node` → nó `pick_action_server` → action `/pick_tag`; `mtc_place_action_node` → `place_action_server` → `/place_tag` (slot nomeado, pilha `stack_on`, container por cor, superfície livre, memória de slots, slot da mesa de precisão com a câmera medindo o furo). A AMT (`/amt1_sort`) é servida desde 2026-11-16 pelo `amt_sort_node.py` do `manip_bringup`. Apesar do prefixo `mtc`, nenhum usa MoveIt Task Constructor. Libs puras com gtest: `custom_ik`, `reach_shift`, `surface_place_planner`, `container_state_store`. Ferramenta: `ros2 run manip_task_execution custom_ik_check`. |
 | **`my_robot_msgs`** | Interfaces de manipulação (nome genérico herdado do template; não renomear sem coordenar com o `caramelo_hardware_ws`, que também as usa): actions `PickTag`, `PlaceTag`, `Amt1Sort`. |
 | **`manip_bringup`** | `launch/manip_stack.launch.py` (incluído por `caramelo_bringup/robot_manipulation.launch.py`): `move_group`, `commander`, reset dos containers de bordo, os 3 action nodes, RealSense, `apriltag_node` (`config/tags_36h11.yaml`), `container_detector_node.py` (containers por cor → TF `ct_vermelho`/`ct_azul`), `workstation_surface_node.py` (mapa top-down da mesa), `vision_debug_node.py` (câmera anotada com tags/containers/mapa em `/manip/vision_debug/image`, só processa com espectador), `perception_gate_node.py` (opt-in), `speech_node`; braço mock no PC com `use_mock_hardware:=true`. Configs em `config/`; pytest sem ROS em `test/`. |
 | **`manip_moveit_config`** | Configuração MoveIt do braço. Vivo: `launch/move_group_caramelo.launch.py` + `config/caramelo.srdf` (poses nomeadas `home`, `pegar_obj`, `Mesa*`, `tag_*`, `container*`), `kinematics.yaml` (pick_ik). `move_group.launch.py` e `config/manip.*` são a bancada standalone do Setup Assistant. |
@@ -27,7 +27,7 @@ missions/task_X.yaml
              ├─ PickTag     → /pick_tag   (pick_action_server)
              ├─ PlaceTag    → /place_tag  (place_action_server)
              ├─ ReachQueue  → adia o que está fora de alcance; NudgeBase → nudge_base (dock_align_node)
-             ├─ Amt1Sort    → /amt1_sort  (amt1_sort_action_server; cliente de pick/place/nudge)
+             ├─ Amt1Sort    → /amt1_sort  (amt_sort_node.py do manip_bringup; cliente de pick/place/nudge)
              └─ GoToNamedPose → MoveIt direto (home)
 ```
 
@@ -47,8 +47,7 @@ map_name:=<mapa>` e depois o `run_mission` acima. Guia do operador: `docs/guia_m
   src/manipulation/manip_audio/test -q`.
 - Fakes em `manip_bt/test/` (`ROS_DOMAIN_ID=99`, nunca encostam no robô):
   `run_reach_queue_scenario.sh` (fila de alcance com `fake_nav_actions.py` +
-  `fake_pick_place.py`) e `run_amt1_scenario.sh all` (AMT1 com `fake_amt1_table.py` /
-  `fake_amt1_sort.py`); fixtures de YAML em `manip_bt/test/fixtures/`.
+  `fake_pick_place.py`) e `run_amt_scenario.sh` (AMT com a mesa falsa `fake_amt_mesa.py`); fixtures de YAML em `manip_bt/test/fixtures/`.
 - Detectores offline numa foto: `ros2 run manip_bringup container_detector_node.py --image
   foto.png --out overlay.png` e `ros2 run manip_bringup workstation_surface_node.py --image
   foto.png ...` (`docs/containers_por_cor.md`, `docs/place_superficie_livre.md`).

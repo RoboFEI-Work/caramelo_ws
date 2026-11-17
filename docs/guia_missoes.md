@@ -7,7 +7,7 @@ daquela integração está em `docs/historico/relatorio_integracao_manip_2026-07
 (histórico). Datas das mudanças: §7.
 
 Sumário: 1 Subir · 2 Rodar · 3 Formato do YAML (competição, novo, empilhar, container,
-superfície, AMT1, nível baixo) · 4 Arquivos por mapa · 5 Executor (parâmetros, fila de
+superfície, AMT, nível baixo) · 4 Arquivos por mapa · 5 Executor (parâmetros, fila de
 alcance, memória de slots) · 6 Problemas comuns · 7 Histórico.
 
 ---
@@ -316,7 +316,7 @@ Corrida sem missão (goals pelo RViz, teste de docking): `ros2 run caramelo_navi
 Crie/edite arquivos em `~/caramelo_ws/missions/` (fonte única; `missions/README.md`
 lista os prontos). Subseções: 3.1 competição (antigo) · 3.2 **YAML 2026 do @Work Commander
 (formato oficial, o principal)** · 3.3 empilhar · 3.4 container por cor · 3.5 superfície
-livre · 3.6 AMT1 · 3.7 nível baixo. O `task_planner` detecta o formato sozinho; os três
+livre · 3.6 AMT · 3.7 nível baixo. O `task_planner` detecta o formato sozinho; os três
 convivem.
 
 ### 3.1 YAML da competição (formato antigo)
@@ -398,7 +398,7 @@ avisa se diferir). O que o robô faz com cada sub-bloco:
 | `table: [ids]` | soltos sobre a mesa, esquerda → direita | `pick`/`place` normais (a ordem esquerda→direita **não** gera ação) |
 | `containers: {RED: [ids]}` | dentro do container daquela cor | `place` com `container_color: RED\|BLUE` na estação (§3.4); objeto que **começa** dentro de container vira pick normal pela tag (aviso) |
 | `levels: {BOTTOM: [], TOP: []}` | prateleira `SH_*` | `pick`/`place` normais com `table_pose: MesaSh` + campo informativo `shelf_level: BOTTOM\|TOP` |
-| `slots: {101: id, 102: null}` | mesa de precisão `PP` (tag de referência do slot → objeto) | PP como **destino**: `place` com `at_tag: tag_<slot>` (soltar centrado na tag do slot); PP como **origem**: pick normal pela tag do objeto; `slots: null` no start = arranjo não informado (AMT) |
+| `slots: {101: id, 102: null}` | mesa de precisão `PP` | PP como **destino** (vindo de outra estação): `place` com `at_tag: tag_<slot>` — chegada em paradas com a câmera medindo o furo ([pp_furo.md](pp_furo.md), refeita em 2026-11-16); PP como **origem**: pick normal pela tag do objeto. Trocar de slot dentro da própria PP fica fora do plano (aviso) |
 | `stack: [base, …, topo]` | pilha sobre a tag de `stacking_areas.<ST>.reference_tag` | base: `place` com `stack_on: tag_200`; cada seguinte: `stack_on: tag_<anterior>` (§3.3), na mesma visita. Pilha que **já existe** no `start_state` é desfeita antes: quem está em cima sai primeiro e o `place` na tag/base espera o ocupante ser pego (o planner reserva lugar a bordo para isso) |
 
 Mais regras do formato:
@@ -413,16 +413,13 @@ Mais regras do formato:
   por cor do objeto — o objeto não tem cor). Cor precisa ser RED/BLUE (detector).
 - **Tags**: ids 1..30 (`tag_<id>`), 101..107 (`tag_101..tag_107`, slots) e 200 (`tag_200`,
   referência da pilha) estão em `tags_36h11.yaml`; id sem frame é **erro** do planner.
-- **AMT**: `task_id: AMT` / `name: Advanced Manipulation Test` (com ou sem o 1) → rotina
-  `amt1_sort` com `target_order` derivado de `finish_state.PP.slots` (§3.6).
-- Mesmo objeto em outro nível da prateleira ou em outro slot da PP (mesma estação) também
-  é pick + place. Objeto só no `start_state` vira aviso (não é pego); só no `finish_state`
+- **AMT**: `task_id: AMT` / `name: Advanced Manipulation Test` → `goto PP` + `amt1_sort` com os ids do
+  arquivo (`expected_tags`) e a ordem pedida (`target_order`, de `finish_state.PP.slots`; nos
+  arquivos da competição é a ordem crescente). Ver §3.6.
+- Mesmo objeto em outro nível da prateleira (mesma estação) também é pick + place. Objeto só no `start_state` vira aviso (não é pego); só no `finish_state`
   é erro.
 
-**Limitações (ainda sem validação no robô)**: `at_tag` reaproveita o caminho do `stack_on`
-no nó de place (XY da tag, z da tag + `stack_place_z_offset`) — esse offset assume um cubo
-embaixo, então **soltar sobre uma tag na mesa precisa de um z-offset próprio** (pendência
-no `place_action_server`); `shelf_level` é só informativo (o pick/place da prateleira ainda
+**Limitações (ainda sem validação no robô)**: `shelf_level` é só informativo (o pick/place da prateleira ainda
 não escolhe o nível — aviso `nivel da prateleira ainda nao e' usado` no executor); o
 **tamanho das tags 101..107/200** em `tags_36h11.yaml` (0,041) é chute: conferir com o
 rulebook/mesa real; a pose do dock **ST1** ainda não existe no `docking.yaml`/`service_areas.yaml`
@@ -518,15 +515,12 @@ de volta. Parâmetros: `stack_place_z_offset`, `stack_pre_lift_m`,
 `stack_arrival_tolerance_m` (0,03), `stack_fallback_to_table` (true),
 `stack_tilt_ladder_deg` ([15, 30]).
 
-#### Formato 2026: pilha sobre a tag 200 e encaixe na mesa de precisão
+#### Formato 2026: pilha sobre a tag 200
 
 No YAML 2026 a pilha começa sobre o adesivo `tag_200` da área de empilhamento
-(`stack_on: tag_200` no primeiro cubo, depois `stack_on: tag_<anterior>`) e o
-place na mesa de precisão vai para a cavidade do slot (`at_tag: tag_101..107`,
-que o executor repassa como `stack_on`). O nó de place reconhece esses ids e
-muda de modo: encaixe com busca em espiral e verificação de assentamento, e
-pilha de até 4 com verificação após cada cubo. Tudo isso, com parâmetros,
-calibração e limitações, está em
+(`stack_on: tag_200` no primeiro cubo, depois `stack_on: tag_<anterior>`): pilha
+de até 4 com verificação após cada cubo. A mesa de precisão (`at_tag`) foi
+refeita em 2026-11-16: ver [pp_furo.md](pp_furo.md). Parâmetros e limitações da pilha em
 [place_precisao_e_pilha.md](place_precisao_e_pilha.md) — **ainda sem validação
 no robô**.
 
@@ -602,262 +596,44 @@ em vez das 3 poses fixas `MesaX/.1/.2` — que continuam como fallback. Paredes 
 Kill-switch: `place_surface_planner:=false`. Detalhes, parâmetros e roteiro de validação:
 [docs/place_superficie_livre.md](place_superficie_livre.md). **Ainda sem teste no robô.**
 
-### 3.6 AMT1 — Advanced Manipulation Task 1 (ordenar a mesa de precisão)
+### 3.6 AMT — ordenar os blocos da mesa de precisão (refeita em 2026-11-16, rodadas em 11-17)
 
-**O que é**: na mesa de precision placement (`PP_1` → pose `Mesa10`, dock `PP1`) há 6 cubos com
-tag em ordem aleatória; o robô deve deixá-los em **ordem crescente de id, da esquerda para a
-direita** (vista do robô docado). As 6 posições são onde as tags estão no início. O robô usa
-os containers de bordo como buffer (precisa de **2 livres** no mínimo: pega A, pega B, solta B
-onde estava A…).
+Os blocos começam nos slots da PP em ordem desconhecida (`start_state.PP.slots: null`) e têm de
+terminar com os ids do arquivo em **ordem crescente da esquerda para a direita** (slots 101, 102,
+…). O `task_planner` reconhece a task pelo `task_id`/`name` e emite `goto PP` + uma ação
+`amt1_sort`. O executor roda **rodadas** (parâmetro `amt1_rounds`, 4): em cada uma o braço passa
+por `tag_esquerda`, `tag_direita` e `pegar_obj` (`amt1_look_poses`), chamando o servidor
+`/amt1_sort` em cada pose — nas duas primeiras só para olhar (`observe_only`), na última para
+ordenar. A rodada só termina bem quando o servidor **vê a mesa em ordem sem ter nada a fazer**;
+depois de mexer em bloco ele responde `falta_conferir` e a rodada seguinte confere e arruma o que
+faltou. Esgotadas as rodadas a missão segue para o FINISH. O servidor é o `amt_sort_node.py`
+(`manip_bringup`, conta em `amt_sort_core.py`):
 
-**Como o planner reconhece**: `name` contendo "advanced manipulation task/test" (com ou sem
-o " 1", sem distinguir maiúsculas; "task 2"/"task 10" não casam) OU `task_id` `AMT`/`AMT1`
-(`AMT-1`, `AMT_1`; `AMT2`/`AMT10` não). Aí ele ignora o planejamento de transferências e
-emite só `goto PP_1` + `amt1_sort` (a rotina inteira roda no nó `/amt1_sort`). Exemplo
-completo em [missions/task_AMT1_pp1.yaml](../missions/task_AMT1_pp1.yaml): `active_service_areas: [PP_1]`
-(obrigatório — estação fora da lista é descartada), 6 objetos em `start_state.PP_1`,
-`finish_state` igual ao `start_state`.
+1. descobre **quem está em qual slot** só por ids de tag. Nas poses laterais (mais altas) a tag
+   do slot ocupado aparece **colada no bloco**: o bloco está nesse slot. De `pegar_obj` o bloco
+   tapa a tag do slot e vale a **ordem dos blocos na fila** (vizinhos a ~3,45 lados de tag),
+   emendada com as outras olhadas pelos blocos em comum. Tag de slot sozinha, longe da borda da
+   imagem = slot vazio. Sem nenhuma tag de slot para dizer onde a fila começa, ou com leitura
+   contraditória, **não mexe em bloco**: a rodada falha e olha de novo;
+2. planeja as trocas usando os potes de bordo como espera (só mexe em quem está fora do lugar;
+   bloco que já estava num pote, pelo `container_states.yaml`, entra no plano);
+3. executa com `/pick_tag` e `/place_tag` (`stack_on` = tag do slot: o place da PP, com a câmera
+   medindo o furo — [pp_furo.md](pp_furo.md)). A base fica onde está e só anda de lado
+   (`/nudge_base`) quando a operação pede: bloco fora de alcance no pick, **slot fora do eixo do
+   robô no place** (`pp_alinhar_base_m`, 8 cm), ou alvo não visto com a base longe dele. No fim
+   de cada rodada a base volta ao centro, de onde as olhadas cobrem a fileira;
+4. se uma operação falhar, devolve à mesa o que estiver a bordo;
+5. antes de cada operação confere se o `/joint_states` está chegando; se o braço sumiu (rede da
+   Raspberry), espera até `braco_espera_s` (10 min), avisando a cada 30 s, e retoma na mesma
+   operação quando ele voltar; se não voltar, para e avisa.
 
-**Alvo explícito por slot (`target_order`, formato 2026)**: o arquivo oficial da AMT
-(`missions/tasks geradas/AMT_*.yaml`, §3.2) nomeia a estação `PP` (→ `PP_1`), traz
-`start_state.PP.slots: null` (arranjo inicial não informado) e `finish_state.PP.slots:
-{101: 1, 102: 2, …, 106: 6, 107: null}` com `precision_tables.PP.slot_tags: [101..107]`. O
-planner lê os slots **na ordem dos `slot_tags`** (esquerda → direita), pula os `null` e emite
-`target_order: [1, 2, 3, 4, 5, 6]` na ação `amt1_sort` (além de `expected_tags`); o executor
-repassa ao goal (`Amt1Sort.target_order`) e `amt1_sort_planner::assignSlots` usa essa ordem
-em vez da crescente — tags esperadas mas não vistas são puladas mantendo a ordem relativa;
-id repetido, não esperado ou faltando é rejeitado (goal `REJECT` no executor/nó, ou
-`fail_reason: alvo_invalido` sem mover nada). `target_order` vazio/ausente = ordem crescente
-de id (missões antigas, `task_AMT1_pp1.yaml`). O robô fala "Vou deixar na ordem …" quando a
-ordem é explícita. **Limitação**: o nó continua definindo as 6 posições como as posições
-iniciais dos cubos (não lê as tags 101..107 dos slots) — se o alvo deixar um slot vazio no
-meio (ex.: `101: null, 102: 1, …`), o resultado físico é "os 6 cubos nas 6 posições iniciais,
-na ordem pedida", não "cada cubo sobre a tag do seu slot".
-
-**O que o robô faz** (nó `amt1_sort_action_node`, `manip_task_execution`): prólogo `home` →
-dock na PP1 → observa a mesa de `pegar_obj`, `tag_esquerda` e `tag_direita` (TF das tags) →
-**faltou tag esperada → busca lateral obrigatória** (28/08, ver abaixo) → ordena as posições por x
-→ fala "Ordem atual: 5, 2, 3, 1, 4, 6. Vou ordenar de 1 a 6" → publica os frames `tag_amt1_slot_k`
-(no `odom`, sob cada cubo) → executa a ordenação por ciclos com os picks/places normais
-(`/pick_tag`, `/place_tag` com `stack_on: tag_amt1_slot_k`) → se um alvo ficar fora do alcance,
-desloca a base (`nudge_base`), re-registra os slots e repete → volta a `pegar_obj` → `home` → FINISH.
-
-**Pré-requisito no robô — calibrar `nudge_odom_lateral_gain` com trena ANTES de confiar na
-busca**: a régua de tudo o que segue (posições da busca, volta ao centro, "indo para onde vi a
-tag") é o `/manip/base_shift_total` do `dock_align_node`, que soma o lateral medido pelo `/odom`
-do EKF — e o EKF só integra as rodas, **não vê o escorregamento lateral** (~18 % no campo: pedir
-0,20 m anda ~0,165 m real). Com o ganho em 1,0 (default) o erro se acumula a cada passo e o robô
-"volta ao centro" num lugar que não é o centro. Procedimento (docado na PP1, braço em
-`pegar_obj`): marcar a posição da base com fita, `ros2 action send_goal /nudge_base
-caramelo_msgs/action/NudgeBase "{dy: 0.20, timeout: 20.0}"`, medir com trena o deslocamento real,
-ganho = real / odom bruto (o `dock_align_node` loga `fim (...): lateral ... (odom bruto ... x
-ganho ...)`), esperado ~0,82; gravar ao vivo com `ros2 param set /dock_align_node
-nudge_odom_lateral_gain 0.82` e deixar permanente em
-`src/caramelo_navigation/launch/docking_server.launch.py` (lista `parameters` do `dock_align_node`,
-como o `refine_desired_face_dist` do §1.1); repetir com `dy: -0.20` e conferir que o
-`/manip/base_shift_total` volta a ~0 depois de ida e volta. Só então a busca lateral vale alguma
-coisa (a bancada não cobre isto: a mesa falsa não escorrega).
-
-**Observação de `tag_direita` → `tag_esquerda`** (31/08, pedido do operador, validado em teste):
-`observe_poses`/`reobserve_poses` = `[tag_direita, tag_esquerda]`, com **j2 = 0** nessas duas poses
-no SRDF — assim as duas vistas cobrem todas as 6 tags. O que ainda faltar é procurado girando
-**só a j1** (abaixo). No pick, se a tag não está na imagem, o nó de
-pick usa o fluxo **validado ao vivo em 29/08**: varredura j1 (±0,3/±0,6 rad) quando a tag não está
-na imagem e pré-alinhamento pelas poses `tag_esquerda/direita/cima` (31/08: após os picks falharem
-no robô, `pick_point_j1_at_stale_tag` e `pick_align_j1_only` voltaram a **false** por default —
-religáveis por parâmetro; o buffer TF segue com `tf_cache_sec` 120 s). A sequência normal do pick
-continua j1 primeiro → re-detecção → IK recalculada → `gripper_open` → pega → subida vertical.
-- **Sem verificação de pega no container do place** (31/08, pedido do operador): ao buscar o cubo no
-  container de bordo durante o place, a checagem de esforço ("garra_vazia_no_container" — reprovava
-  pega válida com um dedo só) está **desligada** por default; religa com
-  `place_verify_container_grasp:=true`. A checagem da devolução (RETURN-CUBE) continua.
-- **Pose inicial como reserva do pick** (31/08): o goal do PickTag leva `fallback_frame` =
-  `tag_amt1_slot_k` do slot de origem (o nó AMT1 difunde a pose da observação a 10 Hz). Se a tag
-  não for vista (detecção + varredura falham), as tentativas seguintes pegam por esse frame
-  (log "usando a POSE INICIAL gravada"; fala "Não vejo a tag. Vou usar a posição inicial guardada");
-  a verificação de esforço na garra segue valendo. `pick_fallback_slot_frame` (true) no nó AMT1.
-- **Place por juntas gravadas** (31/08): quando a garra **fecha** num slot (pick de mesa comum), as
-  juntas do braço são gravadas no resultado (`grasp_joints`) e o nó AMT1 as guarda por slot com o
-  base shift do momento. O place **naquele slot** manda `place_joints` no goal e o nó de place vai
-  **direto para essas juntas** (pré-pose `stack_pre_lift_m` acima via IK; estágios
-  `stack_joints_pre_pose` → `stack_joints_final`; sem IK do ponto, sem câmera, sem checagem de
-  chegada — juntas são exatas). Só se a base não se moveu desde a pega
-  (`place_joints_shift_tol_m` 0.01) e fora do passe de ajuste; senão, IK do ponto como antes
-  (`place_joints_enabled` desliga). O re-registro local é pulado quando as juntas serão usadas.
-- **Yaw de cubo normalizado** (31/08, pedido do operador): pegar/soltar a 0/90/180/270° é
-  equivalente — `computeWristForCubeYaw` escolhe a linha de dedos (yaw ou yaw+90°) de **menor giro
-  do punho**. Vale no pick (3 pontos), no place de mesa e no empilhamento; o place em **container**
-  segue o eixo longo (não normaliza).
-- **Empilhar com a pré-aproximação do pick** (31/08): antes da descida do `stack_on` (caminho por
-  IK), fase TCP2 — IK com o frame `tcp2` como ferramenta (garra ~13 cm antes do alvo, estágios
-  `stack_pre_ik_tcp2` → `stack_re_detecting_at_tcp2`), re-detecção da base dali e alvo/yaw
-  recalculados da TF fresca. Params `place_pre_ik_tcp2` (true) / `place_pre_ik_tcp2_z` (0.30);
-  sem IK/TF fresca → WARN e segue como antes. (O caminho por **juntas gravadas** não passa por aqui.)
-- **Pré-ponto TCP2 antes da pega** (31/08): a IK é resolvida primeiro com o **frame `tcp2`**
-  (URDF: `link5` + 0,30 m no eixo da ferramenta) como ponta — o braço para com a garra ~13 cm antes
-  do alvo (estágios `pre_ik_tcp2` → `re_detecting_at_tcp2`), a câmera re-detecta a tag de perto, e a
-  escada normal (com o `tcp`, 0,17) desce e pega da TF fresca. Params `pick_pre_ik_tcp2` (true) e
-  `pick_pre_ik_tcp2_z` (0.30). Sem solução/movimento do pré-ponto → WARN e a pega segue como antes.
-  Só mesa comum.
-
-**Precisão do place** (29/08, pedido do operador "maior precisão possível"), três camadas:
-1. **Mediana das leituras**: em cada parada de observação todas as leituras frescas de cada tag
-   são acumuladas e a melhor (eixo óptico) vira a mediana, eixo a eixo, das leituras a ≤
-   `sample_merge_radius_m` (2 cm) dela, com ≥ `sample_merge_min` (3) leituras — log
-   `tag_N em <pose>: mediana de K leitura(s)`.
-2. **Re-registro local antes de cada place** (`place_local_reregister`, estágio
-   `place_local_reregister_slot_k`): aponta só a j1 para o slot alvo, lê `place_local_dwell_s` (1 s),
-   e corrige **só o slot alvo** pelo delta médio das âncoras originais intactas a ≤
-   `place_local_anchor_radius_m` (0,30) — 1 âncora já vale, espalhamento ≤ `reregister_max_spread_m`,
-   |delta| ≤ `place_local_max_shift_m` (3 cm). A correção fica num campo separado do slot
-   (`local_dx/dy`), **sobrescrita** a cada medida (nunca acumula), entra só no frame difundido e é
-   zerada no re-registro global. Corrige deriva do odom e o viés câmera→braço perto do alvo.
-3. **Verificação/ajuste** (`verify_after_sort`): terminado o plano, observa de novo (pegar_obj +
-   varredura silenciosa só pelas tags que deveriam estar na mesa), mede o erro 2D de cada tag
-   contra o slot base **relativo às âncoras intactas vistas na mesma observação** (o delta médio
-   delas é subtraído — deriva do odom/viés do ponto de vista não viram "erro"; log
-   `verify: referência = K âncora(s), delta (...)` e `verify: tag_N no slot j: erro X mm`); só cubos
-   que o **robô pousou**
-   com erro > `verify_tol_m` (15 mm) são pegos e recolocados (até `refine_max_ops` = 3, ops
-   `ajuste_i/N_...`, com o re-registro local); tags intactas fora da tolerância são só informativas.
-   Falha no ajuste **não rebaixa** o sort (vira nota "ajuste falhou (...)") **só** se nenhum cubo ficou a
-   bordo, o filho não abortou/estourou prazo e o braço está em estado conhecido; verificação
-   incompleta (tag pousada não vista) não fala "tudo no lugar" — WARN e nota. A correção local é
-   re-medida quando um place é repetido após re-registro global, e zerada quando a medida é rejeitada. Depois, relatório final (`verify_final: ... pior erro X mm`). Fala "Conferi a mesa: tudo
-   no lugar" ou "Vou ajustar N tags". Custo: ~10 s de medida + ~60 s por tag ajustada.
-
-**Varredura só com a j1** (29/08, pedido do operador — modo padrão `search_mode: j1`): se depois
-das poses de observação faltar alguma tag de `expected_tags`, o robô fala "Vi as tags 1, 2, 3.
-Faltou a 4. Vou girar a câmera para procurar" e, da `transport_pose` (`pegar_obj`), gira **apenas a
-junta 1** pelas paradas de `search_j1_offsets_deg` (default `[-30, 30, -60, 60]`, + = esquerda,
-|offset| ≤ `search_j1_max_abs_deg` 75), lendo as tags `search_j1_dwell_s` (1 s) em cada parada e
-**acumulando**; primeiro a menor amplitude e, em cada par, o lado onde viu **menos** tags; para ao
-ver todas; volta a j1 de transporte. A base **não anda** (T0 e slots não mudam). Se o movimento
-de uma parada falha, a varredura é encerrada (WARN) e o braço volta à j1 de transporte; só essa
-volta falhar derruba a observação (`observacao_falhou`). Sem estado atual do braço a varredura é
-pulada (nota no resultado). Amostra fora do nível da mesa não conta como "vista".
-Se ainda faltar tag, segue para a ordenação parcial (`allow_partial`) — sem falar "não consigo me
-mover". Modos: `j1` (só varredura), `base` (só a busca lateral abaixo, comportamento de 28/08),
-`j1_then_base` (varredura e, se ainda faltar, a base). Estágios `search_j1_±NN`, `search_j1_return`.
-A bancada (`run_amt1_scenario.sh`) roda com `search_mode:=base` (sem braço não há varredura).
-
-**Busca lateral com a base** (28/08; só nos modos `base`/`j1_then_base`): se depois
-das poses de observação faltar alguma tag de `expected_tags` (e pelo menos `min_seen_tags` tags
-esperadas foram vistas — senão a base nem anda), o robô fala "Vi as tags … Faltou a … Vou me mover
-para procurar" e leva a base (sequência de `nudge_base`) até cada posição de `search_offsets_m`
-(default `[0.20, -0.20]` m, + = esquerda, **relativos ao `/manip/base_shift_total` do início do
-goal**), re-observando das `search_observe_poses` e **acumulando** as tags (o que já foi visto
-fica; a amostra vista do centro ganha da vista com a base deslocada; TF de antes do fim do
-último nudge é descartada). Para assim que vê todas ("Encontrei todas as tags") e, com
-`return_to_center_after_search`, volta ao shift inicial e **re-registra os slots** pelas tags
-intactas visíveis de lá. As posições das tags são guardadas num frame de referência fixo T0 (pose
-de `manip_base_link` em `odom` no início do goal), então tags vistas com a base deslocada ficam
-comparáveis com as vistas do centro (sem T0 o nó re-captura; se ainda não houver, não busca).
-**Orçamentos**: a busca tem contador **próprio**, `search_max_nudges` (8: ida, volta ao centro e
-os "indo para onde vi a tag"), separado do `max_nudges` (6) das operações; `max_total_shift_m`
-(0,35) é o curso físico e vale para os dois; `result.nudges` soma tudo e a `message` termina com
-`nudges N (busca a, ops b)`. Orçamento esgotado = fica onde deu (a busca para, a volta ao centro
-pode não acontecer e as ops rodam de onde a base ficou; o nó avisa). Se ainda faltar tag:
-`allow_partial` **false (default)** → `fail_reason: tag_nao_encontrada`, `missing_tags`
-preenchido, `partial: true`, **nenhum cubo movido**; `allow_partial: true` → ordena só o que viu
-(`partial: true`, `fail_reason: ''`). `observe_only: true` **não move a base** (28/08): a busca
-só roda com `search_in_observe_only: true` (o nó avisa "a base VAI ANDAR").
-
-**"Indo para onde vi a tag"** (28/08): cada tag guarda o shift da base em que a melhor amostra
-foi vista (atualizado a cada re-registro). Antes de cada pick, se a base está a mais de
-`search_arrive_tol_m + 0,04` m (0,12 m) desse shift, o nó leva a base até lá (estágio
-`pick_goto_seen_<tag>`, log `indo para onde vi a tag_N: base em ... m, tag vista em ... m`,
-conta no orçamento da busca) e re-registra os slots. Se mesmo assim o pick responder
-`tag_nao_encontrada`, o nó vai para onde a viu (1x por op) e repete; já estando lá, re-observa só
-com o braço (`retry_not_seen`) e depois desiste (`tag_nao_encontrada`, cubos a bordo devolvidos).
-Um pick "fora de alcance" (viu a tag, não alcançou) atualiza esse shift para a posição atual, e o
-goto só acontece na 1ª tentativa da op (depois do nudge de alcance o pick é a autoridade — sem
-pingue-pongue). Sem orçamento da busca o nó tenta o pick de onde está ("tento daqui") e o pick
-fora de alcance ainda tem o `max_nudges` das ops. Uma tag vista **só** na posição deslocada
-continua dependendo desse goto (ou da varredura do pick real) para ser pega — por isso o
-orçamento da busca é maior que o das ops.
-
-**Passo parcial** (28/08): `nudge_base` que aborta com `curso_incompleto` (ou falha não física
-que andou > 2 cm — o `dock_align_node` sempre devolve `travelled`) conta como nudge **parcial**:
-o nó soma o `travelled` da odometria (slots e `total_shift_m`), continua a sequência (busca) ou
-re-registra e repete a op; só as falhas físicas (`muro`, `obstaculo_lateral`, `timeout`,
-`sem_odometria`, `sem_scan`, `muito_perto_da_mesa`, `cancelado`...) viram `nudge_falhou`.
-
-**Rodar** (da raiz `~/caramelo_ws`): `ros2 run caramelo_navigation run_mission --map-name
-arenalegal_2026 --task missions/task_AMT1_pp1.yaml [--dry-run]` (o preflight passa a exigir
-`/amt1_sort`). Só observar e falar o plano sem mover cubo:
-`ros2 action send_goal /amt1_sort my_robot_msgs/action/Amt1Sort "{ws: PP_1, table_pose: Mesa10,
-expected_tags: [1,2,3,4,5,6], max_onboard: 3, observe_only: true}" --feedback`.
-
-**Parâmetros** (nó): `observe_poses`, `observe_dwell_s` 1.5, `min_seen_tags` 2 (parâmetro do nó;
-`max_onboard` vem do YAML da ação: 3; 0 = todos os containers vazios; abaixo disto a busca nem
-roda), `allow_partial` **false** (28/08; true = ordena o que viu quando falta tag), busca lateral:
-`observe_poses` **[pegar_obj]** (29/08), `reobserve_poses` [pegar_obj], precisão: `sample_merge_min` 3,
-`sample_merge_radius_m` 0.02, `place_local_reregister` true, `place_local_dwell_s` 1.0,
-`place_local_anchor_radius_m` 0.30, `place_local_max_shift_m` 0.03, `verify_after_sort` true,
-`verify_tol_m` 0.015, `refine_max_ops` 3, `verify_final_report` true;
-`search_mode` **j1** (29/08; `base` | `j1_then_base`), `search_j1_offsets_deg` [-30, 30, -60, 60],
-`search_j1_max_abs_deg` 75, `search_j1_dwell_s` 1.0 (varredura só com a j1);
-`search_enabled` true, `search_offsets_m` [0.20, -0.20], `search_observe_poses` (= `observe_poses`),
-`search_arrive_tol_m` 0.08 (|alvo − posição| abaixo disto = chegou; o nudge real recusa passos <
-0.08; o nó nunca deixa ficar abaixo de `min_shift_m`/2), `return_to_center_after_search` true,
-`search_max_nudges` 8 (orçamento **próprio** da busca + "indo para onde vi a tag"),
-`search_in_observe_only` false (true = `observe_only` também anda de lado); `nudge_enabled` true,
-`max_nudges` 6 (só as ops), `min_shift_m` 0.10, `max_shift_m` 0.25, `max_total_shift_m` 0.35 (curso
-físico, compartilhado com a busca), `reregister_after_nudge` true (vale também para a volta da
-busca e para o goto antes do pick), `retry_not_seen` 1, `op_timeout_s` 300 (prazo de cada
-pick/place filho), `cube_height_m` 0.042,
-`observe_move_enabled` (false = bancada sem MoveIt). Executor: `amt1_timeout` 1800 s (prazo total da rotina; estourar só
-gera **um WARN** e a rotina segue) e `amt1_stage_timeout` 300 s (watchdog por feedback — o **único**
-que cancela o goal; 6 picks + 6 places levam 12–18 min).
-
-**Resultado** (`/amt1_sort`): `success` = tudo na ordem; `partial` = mesa consistente (nada a bordo)
-mas não totalmente ordenada; `fail_reason` ∈ buffer_insuficiente | poucas_tags_vistas |
-tag_nao_encontrada | fora_de_alcance | pick_falhou | place_falhou | nudge_falhou |
-container_inconsistente | observacao_falhou | cancelado. `tag_nao_encontrada` antes de qualquer
-pick = faltou tag mesmo após a busca lateral com `allow_partial=false` (`missing_tags` diz quais,
-`picks: 0`, mesa intacta, `nudges` conta os da busca). Falha "limpa" (alvo fora de alcance, tag
-não vista no pick — garra vazia): o nó devolve os cubos a bordo aos slots livres (`recover_onboard`)
-e responde `partial=true`. Abort ou prazo estourado de um pick/place (`pick_falhou`/`place_falhou`): o
-cubo pode estar na garra, então o nó **não solta nada** — os cubos ficam nos containers (yaml
-preservado), `partial=false`, só o braço volta a `pegar_obj`; o operador resolve à mão antes de
-outro goal.
-
-**Bancada sem robô** (`ROS_DOMAIN_ID=99`): `src/manipulation/manip_bt/test/run_amt1_scenario.sh all`
-(planner + variantes AMT-1/"Test 1"/PP inativa, regressão AMT2/AMT10, dry-run + validação de
-`max_onboard`/`expected_tags`, main 5,2,3,1,4,6, dois ciclos, nudge, buffer 1, **busca lateral**
-(`search`: mesa falsa com campo de visão `view_x_max` 0.25 e pontas em ±0.35 → vê 4, anda até +0.20 e
-−0.20, acha as duas, volta ao centro, re-registra e, antes do pick_5 e do pick_4, vai para onde viu
-cada tag → ordena tudo com 6 nudges: busca 6, ops 0), **orçamentos separados** (`search_budget`:
-`search_max_nudges` 4 esgotado na busca, "tento daqui" e as ops ainda usam 2 dos 6 nudges de alcance
-delas → success), **pick que respeita o campo de visão** (`search_pick_view`: mesa falsa com
-`pick_respects_view` → o pick da tag_5 só passa porque o nó foi antes para onde a viu; variante
-`_nobudget` → sem orçamento da busca o nó repete 1x com o braço e falha limpo, 0 picks), **passo
-parcial** (`short_course`: `fake_nav_actions.py -p nudge_short_course:=1` → 1º nudge aborta com
-`curso_incompleto` e `travelled` = 80 % → o nó conta o passo, re-registra e repete; variante
-`_search` com o passo parcial na busca), tag nunca vista (`unseen`: busca sem achar →
-`tag_nao_encontrada`, 0 picks; `unseen_partial` com `allow_partial:=true` → ordena o que viu), place
-fora de alcance com recuperação, place abortado sem recuperação, pick que estoura o prazo, cancel,
-missão completa, executor com fake: ok/abort/result/reject/watchdog/prazo total). A mesa falsa
-(`fake_amt1_table.py`) aceita `view_x_max` (tag só entra no TF enquanto |x0 + shift| ≤
-`view_x_max`; shift + = esquerda faz o x das tags crescer) e `pick_respects_view` (o `/pick_tag`
-também responde `tag_nao_encontrada` fora do campo de visão); o `fake_nav_actions.py` aceita
-`nudge_short_course` (N primeiros nudges abortam com `curso_incompleto`, `travelled` = dy×0,8 e o
-total publicado com o parcial, como o `dock_align_node`). gtest da biblioteca:
-`colcon test --packages-select manip_task_execution --ctest-args -R test_amt1` (inclui as 720
-permutações de 6).
-
-**Sem `nudge_base` no ar** (29/08, visto em campo): a busca lateral precisa do `dock_align_node`
-(sobe com a navegação). Com `--simulate-nav`, ou com o `docking_server` desligado, o nó loga
-`nudge_base indisponivel` e, em vez de desistir, **ordena as tags que viu** (fala "Não consigo
-me mover para procurar. Vou ordenar as tags que vi"). Para testar a busca de verdade a
-navegação precisa estar no ar (o `nudge_base` aparece em `ros2 action list`).
-
-**Perto demais da mesa** (29/08, visto em campo): o docking para com o bico a ~0,35–0,39 m e o
-`nudge_base` recusava (`muito_perto_da_mesa`). Agora o `nudge_base` **recua em linha reta**
-(`nudge_backoff_*`: até 12 cm, fala "Vou recuar um pouco antes de me mover de lado") e só então
-anda de lado; se nem recuando houver folga, recusa. Na AMT1 uma recusa de segurança do nudge
-durante a busca vira "busca impossível" → ordena o que viu; `nudge_falhou` só para muro/timeout.
+O nó não move o braço. Parâmetros: `observar_s` 2.5, `min_quadros` 4, `max_nudges` 2,
+`desvio_max_m` 0.45, `busca_passo_m` 0 (a busca andando a base só é usada na bancada, que tem uma
+vista só). Resultado no log: `[AMT] ordem final [...]`; fala "Conferi, a mesa de precisão está em
+ordem" só com a mesa vista em ordem.
+Bancada sem robô: `src/manipulation/manip_bt/test/run_amt_scenario.sh` (arquivo da competição →
+planner → executor → nó de verdade → mesa falsa). Só observar, sem mover bloco:
+`ros2 action send_goal /amt1_sort my_robot_msgs/action/Amt1Sort "{ws: PP, table_pose: Mesa10, expected_tags: [1,2,3,4,5,6], observe_only: true}"`.
 
 ### 3.7 Nível baixo (YAML de ações, sem planejador)
 
@@ -942,10 +718,6 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   há menos de 1 s — protege contra alvo fantasma (TF velha com robô movido).
   Se o pick reclamar "a camera NAO esta vendo a tag agora", a tag está fora do
   campo de visão (não é erro de IK).
-- AMT1 (28/08, ver §3.6): kind `amt1_sort` (`ws`, `table_pose`, `expected_tags: [ids]`,
-  `direction`, `max_onboard`) — exige um `goto` anterior, fecha a fila de alcance e roda a rotina
-  inteira no nó `/amt1_sort`; params do executor `amt1_timeout` (1800 s, prazo total — estourar só
-  avisa) e `amt1_stage_timeout` (300 s, watchdog por feedback — o único que cancela o goal).
 - Fila de alcance (28/08, ver §5.2): `reach_queue_enabled` (true),
   `reach_queue_ws_prefixes` (`["WS","PP"]`, sem `_` desde o formato 2026: cobre `WS_1` e `PP`), `reach_queue_max_nudges` (2),
   `reach_queue_max_shift_m` (0.25), `reach_queue_min_shift_m` (0.10),
@@ -992,9 +764,9 @@ Config das tags (ids→frames→tamanhos): `src/manipulation/manip_bringup/confi
   (`[resto]`); na volta a `pegar_obj` com o bloco, recolhe j2..j5 (`[j1 parado]`) e gira
   **j1 por último** (`[j1 por ultimo]`) — o braço estendido nunca varre a mesa girando.
 - **Onde a garra fica larga** (16/11, pedido do operador): `gripper_full_open` só no `home`, ao
-  empilhar, ao pôr na PP e ao olhar o container da mesa (`ct_*`) de garra vazia. No resto é
+  empilhar e ao olhar o container da mesa (`ct_*`) de garra vazia. No resto é
   `gripper_open`: pick, soltura em mesa comum, prateleira e container da mesa, e devolução ao
-  pote de bordo. No place a escolha sai do goal: `stack_on` (pilha e PP) ou `container_color`.
+  pote de bordo. No place a escolha sai do goal: `stack_on` (pilha) ou `container_color`.
 - **Garra larga ao chegar em `pegar_obj`** (29/08; **desligada por padrão desde 16/11**): com o
   parâmetro preenchido, em mesa comum, assim que o braço chega
   em `pegar_obj` a garra vai para `gripper_full_open` (estágio `gripper_full_open_at_pegar_obj`)
@@ -1040,9 +812,7 @@ comum, o executor embrulha os picks/places numa `<ReachQueue>`:
 **Uma fila por estação**: um `home` no meio da estação fecha a fila (o
 `NudgeBase` entra antes do `home`) e os picks/places seguintes da **mesma**
 estação ficam fora dela (XML antigo, `final_attempt=true`) — o orçamento de
-`reach_queue_max_nudges` (2) vale por estação, não por fila. O kind `amt1_sort` (§3.6) também
-fecha a fila de alcance da estação (o `NudgeBase` entra antes dele) e roda fora dela — o nó
-`/amt1_sort` faz os próprios ajustes de base.
+`reach_queue_max_nudges` (2) vale por estação, não por fila.
 
 O acumulado dos ajustes vai em `/manip/base_shift_total` (Float64,
 transient_local; só o dock_align_node publica; zera a cada `align_to_dock`) e o

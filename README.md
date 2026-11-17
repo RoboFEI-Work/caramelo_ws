@@ -79,7 +79,7 @@ Runbook completo, formato do YAML da tarefa e calibrações: [docs/guia_missoes.
 | Pacote | O que é |
 |---|---|
 | `manip_bt` | Cérebro da missão (BehaviorTree.CPP): `task_planner` (YAML da competição → lista de ações) e `bt_yaml_executor` (folhas `GoToWS`, `PickTag`, `PlaceTag`, `ReachQueue` + `NudgeBase`, `Amt1Sort`, `GoToNamedPose`). Bancada sem robô em `test/` (fakes). |
-| `manip_task_execution` | Nós que movem o braço: `mtc_pick_action_node` → nó `pick_action_server` → action `/pick_tag`; `mtc_place_action_node` → `place_action_server` → `/place_tag`; `amt1_sort_action_node` → `amt1_sort_action_server` → `/amt1_sort`. Libs puras (gtest): `custom_ik`, `reach_shift`, `amt1_sort_planner`, `surface_place_planner`, `container_state_store`. Ferramenta `custom_ik_check`. |
+| `manip_task_execution` | Nós que movem o braço: `mtc_pick_action_node` → nó `pick_action_server` → action `/pick_tag`; `mtc_place_action_node` → `place_action_server` → `/place_tag` (a AMT, `/amt1_sort`, é servida desde 2026-11-16 pelo `amt_sort_node.py` do `manip_bringup`). Libs puras (gtest): `custom_ik`, `reach_shift`, `surface_place_planner`, `container_state_store`. Ferramenta `custom_ik_check`. |
 | `manip_bringup` | `manip_stack.launch.py`: move_group, commander, os 3 action nodes, RealSense, AprilTag (`config/tags_36h11.yaml`), `container_detector_node.py`, `workstation_surface_node.py`, `perception_gate_node.py`, `speech_node`; braço mock no PC. |
 | `manip_moveit_config` | MoveIt do braço: `move_group_caramelo.launch.py` + `config/caramelo.srdf` (poses nomeadas). `move_group.launch.py` é a bancada standalone. |
 | `manip_audio` | `speech_node`: fala o que chega em `/manip/speech` com fila por prioridade (`!` alta, `~` baixa), cache e motores Kokoro → Piper → espeak-ng; nunca bloqueia um nó nem corta frase. [docs/voz_do_robo.md](docs/voz_do_robo.md). |
@@ -166,7 +166,7 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | `scripts/limpar_stack.sh` | Mata processos ROS órfãos no PC (nav2, move_group, manip_*, realsense, apriltag, rviz) e reinicia o daemon. Rodar após todo Ctrl-C. |
 | `scripts/pulse_test.py` — **MOVE O ROBÔ** | Calibração do coast/piso do ESC usada pelo `dock_align_node`: `python3 scripts/pulse_test.py x 4` (rodas suspensas ou área livre). Valores vão para `docking_server.launch.py`. [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md). |
 | `ros2 run manip_task_execution custom_ik_check [x y z [modo] [free] \| shift x y z [lift]]` | Confere a IK própria e a tabela da fila de alcance sem robô. |
-| `src/manipulation/manip_bt/test/run_reach_queue_scenario.sh`, `run_amt1_scenario.sh` | Bancada sem robô (`ROS_DOMAIN_ID=99`) com os fakes `fake_nav_actions.py`, `fake_pick_place.py`, `fake_amt1_table.py`, `fake_amt1_sort.py`. |
+| `src/manipulation/manip_bt/test/run_reach_queue_scenario.sh`, `run_replan_scenario.sh`, `run_amt_scenario.sh` | Bancada sem robô (`ROS_DOMAIN_ID=99`) com os fakes `fake_nav_actions.py`, `fake_pick_place.py`, `fake_amt_mesa.py`. |
 | `ros2 run manip_bringup container_detector_node.py --image foto.png --out overlay.png` | Detector de containers offline (idem `workstation_surface_node.py --image`). Fotos em `docs/imagens/containers/`. |
 | `ros2 run rqt_image_view rqt_image_view /manip/vision_debug/image` | Câmera do punho **anotada** ao vivo (tags, containers por cor, mapa da mesa, estado pick/place, fala) — nó `vision_debug` do `manip_stack`, custo zero sem espectador; `use_vision_viewer:=true` no launch abre direto. [docs/guia_missoes.md §6.1](docs/guia_missoes.md). |
 | `ros2 run caramelo_navigation generate_caramelo_omni_lattice` | Regenera as primitivas do SmacLattice (`config/lattice/`). |
@@ -180,7 +180,8 @@ uniq -c | awk '$1>1'` tem que sair vazio).
 | [docs/guia_missoes.md](docs/guia_missoes.md) | **Runbook de competição**: subir, rodar, formato do YAML (empilhar, container por cor, superfície livre, AMT1, nível baixo), arquivos por mapa, executor, problemas comuns. |
 | [docs/containers_por_cor.md](docs/containers_por_cor.md) | Manutenção do place em container sem tag: o que ajustar quando o pote, a cor, a garra ou a câmera mudam. |
 | [docs/place_superficie_livre.md](docs/place_superficie_livre.md) | Place em superfície livre: a câmera do punho escolhe onde soltar (rulebook 4.4); ainda sem teste no robô. |
-| [docs/place_precisao_e_pilha.md](docs/place_precisao_e_pilha.md) | Formato 2026: encaixe na cavidade da mesa de precisão (tags 101–107) e pilha de até 4 sobre a tag 200, com verificação após soltar; ainda sem teste no robô. |
+| [docs/pp_furo.md](docs/pp_furo.md) | Mesa de precisão e AMT refeitas em 2026-11-16: furo e bloco medidos pela câmera, chegada em paradas, descida reta; ordenação dos blocos por ids. |
+| [docs/place_precisao_e_pilha.md](docs/place_precisao_e_pilha.md) | Pilha de até 4 sobre a tag 200, com verificação após soltar. As partes de slot/PP são históricas (ver pp_furo.md). |
 | [docs/docking_alinhamento_holonomico.md](docs/docking_alinhamento_holonomico.md) | `dock_align_node`: alinhamento fino com rodas mecanum, `nudge_base`, guardas, calibração. |
 | [docs/investigacao_incidente_2026-10.md](docs/investigacao_incidente_2026-10.md) | Runs de 22–23/10 na arena: reconstrução por logs, diagnóstico, gate de pose + parada no `GoToWS` (`pose_gate_*`, `stop_check_*`), validação e pendências (vídeo/rosbag). |
 | [docs/analise_run_2026-10-21.md](docs/analise_run_2026-10-21.md) | Run de 21/10: profundidade da D455 abaixo de 0,45 m e docking torto na WS1 (correções em `8214d30`). |

@@ -90,7 +90,17 @@ def test_queue_low_priority_is_superseded_by_any_newer_phrase():
 def test_queue_low_priority_is_spoken_when_nothing_newer_arrives():
     q = SpeechQueue()
     q.push('procurando a tag', PRIORITY_LOW, now=0.0)
-    assert q.pop(now=30.0)[0].text == 'procurando a tag'
+    assert q.pop(now=1.0)[0].text == 'procurando a tag'
+
+
+def test_queue_drops_low_priority_that_waited_too_long():
+    # 2026-11-17: narracao de passo esperava a frase anterior e saia com o robo ja' em outro passo.
+    q = SpeechQueue(max_age_low_s=1.5)
+    q.push('procurando a tag', PRIORITY_LOW, now=0.0)
+    utt, dropped = q.pop(now=2.0)
+    assert utt is None and [(d.utterance.text, d.reason.split()[0]) for d in dropped] == [
+        ('procurando a tag', 'atrasada')]
+    assert pronounce('mesa de precisao') == 'mesa de precisão'
 
 
 def test_queue_dedupes_repeated_text_except_high_priority():

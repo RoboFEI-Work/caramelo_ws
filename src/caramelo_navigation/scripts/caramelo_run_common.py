@@ -606,18 +606,66 @@ def amostrar_cpu(saida: Path, periodo: float = 2.0) -> None:
             time.sleep(periodo)
 
 
+# 2026-11-17 (run_20261117_174849: nenhum pick): a missao seguinte comecou com os
+# videos da anterior ainda renderizando (5 RViz + ffmpeg + replay, ~8 min); mesmo em
+# nice 19 o PC foi a 1023% de 1200%, a leitura da tag pulou 10-25 cm entre quadros e
+# o braco foi mandado 20 cm abaixo do tampo. Agora a corrida nova manda o pos-corrida
+# da anterior largar os videos (a analise, leve, termina). Refazer depois:
+#   caramelo_run_common.py --renderizar <pasta da corrida>
+_ESTADO_POS = {"renderizando": False, "sem_video": False}
+
+
+def _arquivo_pid_pos(raiz: Path) -> Path:
+    return Path(raiz) / ".pos_corrida.pid"
+
+
+def _largar_videos(*_args) -> None:
+    _ESTADO_POS["sem_video"] = True
+    if _ESTADO_POS["renderizando"]:
+        raise SystemExit(0)  # o finally do renderizar_offline fecha RViz/ffmpeg/replay
+
+
+def parar_videos_da_corrida_anterior(raiz: Path) -> None:
+    """Chamada no inicio de cada corrida. So' pelo PID gravado e so' se ainda for o pos-corrida."""
+    try:
+        pid = int(_arquivo_pid_pos(raiz).read_text())
+        if b"--pos-corrida" in Path(f"/proc/{pid}/cmdline").read_bytes():
+            os.kill(pid, signal.SIGTERM)
+            print(f"[run] corrida nova: mandei o pos-corrida anterior (pid {pid}) largar os videos; "
+                  f"refazer com --renderizar <pasta>")
+    except (OSError, ValueError):
+        pass
+
+
 def pos_corrida(pasta: Path) -> None:
     """Depois do fim, num processo so' (nice 19): params -> analise -> videos -> analise."""
     pasta = Path(pasta)
-    if _ligado("CARAMELO_PARAMS"):
-        _dump_params(pasta / "config" / "params")
-    analise = _executavel("analisar_run") + [str(pasta)]
-    if _ligado("CARAMELO_ANALISE"):
-        subprocess.run(analise, check=False)
-    if _ligado("CARAMELO_VIDEO") and not _ligado("CARAMELO_VIDEO_AO_VIVO", padrao="0"):
-        renderizar_offline(pasta)
+    arq = _arquivo_pid_pos(pasta.parent)
+    signal.signal(signal.SIGTERM, _largar_videos)
+    arq.write_text(str(os.getpid()))
+    try:
+        if _ligado("CARAMELO_PARAMS"):
+            _dump_params(pasta / "config" / "params")
+        analise = _executavel("analisar_run") + [str(pasta)]
         if _ligado("CARAMELO_ANALISE"):
-            subprocess.run(analise, check=False)  # agora com t_video
+            subprocess.run(analise, check=False)
+        if (_ligado("CARAMELO_VIDEO") and not _ligado("CARAMELO_VIDEO_AO_VIVO", padrao="0")
+                and not _ESTADO_POS["sem_video"]):
+            _ESTADO_POS["renderizando"] = True
+            try:
+                renderizar_offline(pasta)
+            finally:
+                _ESTADO_POS["renderizando"] = False
+            if _ligado("CARAMELO_ANALISE"):
+                subprocess.run(analise, check=False)  # agora com t_video
+        elif _ESTADO_POS["sem_video"]:
+            print("[pos_corrida] outra corrida comecou: videos nao renderizados (usar --renderizar)")
+    finally:
+        try:
+            if arq.read_text() == str(os.getpid()):
+                arq.unlink()
+        except OSError:
+            pass
 
 
 def iniciar_run(mission_id: str, task: str, mapa: str, actions_yaml=None, task_yaml=None,
@@ -628,6 +676,7 @@ def iniciar_run(mission_id: str, task: str, mapa: str, actions_yaml=None, task_y
     try:
         raiz = Path(runs_dir) if runs_dir else runs_dir_padrao()
         raiz.mkdir(parents=True, exist_ok=True)
+        parar_videos_da_corrida_anterior(raiz)
         (raiz / "COLCON_IGNORE").touch()  # colcon nao varre os bags
         bagc.limpar_bags_antigas(raiz)
         agora = datetime.datetime.now()

@@ -27,7 +27,7 @@ Serve duas actions (caramelo_msgs) no mesmo no', nunca as duas ao mesmo tempo:
   - nudge_base: deslocamento LATERAL puro (+ = esquerda) em malha fechada por
     ODOMETRIA, com as mesmas guardas (muro, faixa lateral, scan velho,
     watchdog de progresso). Clientes: NudgeBase BT (manip_bt nudge_base_bt,
-    via reach_queue/bt_yaml_executor) e amt1_sort_action_node.
+    via reach_queue/bt_yaml_executor).
 Publica TwistStamped em reference_topic, /manip/speech (aviso antes de mover) e
 /manip/base_shift_total (latched: total lateral desde o ultimo align); assina
 scan_topic e odom_topic. Parametros-chave: min_body_vel/omega (piso do ESC),
@@ -109,6 +109,13 @@ def _nudge_request_valid(dy, timeout):
     return math.isfinite(dy) and math.isfinite(timeout)
 
 
+def _side_nearest(points, limit_y):
+    """Menor px entre os pontos (|py|, px) da faixa lateral com |py| <= limit_y
+    (None se nao ha' nenhum). Ver _side_clear."""
+    xs = [px for apy, px in points if apy <= limit_y]
+    return min(xs) if xs else None
+
+
 def _front_after_lateral(front, dy, face_yaw):
     """Pior caso do front DEPOIS de andar |dy| de lado ao longo de uma face
     cuja normal faz face_yaw com o eixo x do robo: o bico avanca
@@ -160,6 +167,18 @@ def _nudge_no_progress(elapsed_s, travelled_m, min_s, min_m):
     sub-piso, outro publicador na referencia, reference_timeout do
     controller por relogio PC x Pi). Pura, testavel."""
     return elapsed_s >= min_s and abs(travelled_m) < min_m
+
+
+
+class _PedidoAnterior:
+    """Goal handle do align_to_dock com o pedido trocado pelo do ultimo docking (dock_id vazio =
+    refazer). O resto (cancel, feedback, succeed/abort) vai para o goal handle de verdade."""
+
+    def __init__(self, goal_handle, request):
+        self._gh, self.request = goal_handle, request
+
+    def __getattr__(self, nome):
+        return getattr(self._gh, nome)
 
 
 class _OdomSettle:
@@ -706,6 +725,17 @@ class DockAlignNode(Node):
         self.declare_parameter("center_max_travel", 0.15)
         # Faixa lateral (alem do corredor) vigiada antes de cada curso vy.
         self.declare_parameter("side_clear_half_width", 0.50)
+        # 2026-11-16 (operador: "as vezes anda de lado e as vezes nao", em
+        # varias mesas). Nas 17 gravacoes de nudge, 8 pararam no meio e 2 nem
+        # sairam, todas por "obstaculo_lateral": a perna da mesa fica 6-7 cm
+        # MAIS PERTO que a face (x ~0,32 com a face a 0,39) e a 0,54-0,68 m de
+        # lado; a faixa fixa de 0,50 m anda junto com o robo, entao depois de
+        # 10-15 cm de curso a perna "entrava" nela e o curso era cortado, com o
+        # robo ainda a mais de 20 cm dela. Agora a faixa vai so' ate' onde o
+        # robo CHEGA neste curso: corredor + curso que falta + este extra
+        # (deslize apos o corte, medido 4-6 cm, + 5 cm de folga).
+        # <= 0 volta a' faixa fixa de antes.
+        self.declare_parameter("side_clear_reach_extra", 0.11)
         # Recuo final (apos esgotar tentativas/timeout) com orcamento proprio.
         self.declare_parameter("final_retreat_grace_s", 15.0)
         # Sanidade do pre-docking (campo 22/08, WS5): o align so comeca se o
@@ -751,6 +781,13 @@ class DockAlignNode(Node):
         # real / odom bruto do log de fim (esperado ~0.82). 1.0 = sem
         # correcao (o aceite entao conta com a folga nudge_accept_slack).
         self.declare_parameter("nudge_odom_lateral_gain", 1.0)
+        # 2026-11-17: deslize do LATERAL depois do corte. O nudge usava o
+        # center_coast_est (0,03) e passava ~5 cm do pedido em TODOS os 8
+        # passos gravados (10->14,9  15->20,1  17->21,7  21->26,1): do corte ao
+        # fim o robo ainda anda 8,1 a 9,6 cm. Com 0,06 o excesso esperado cai
+        # para ~2,5 cm; nao fui a 0,085 porque nao ha' medida de corte antes
+        # dos 6 cm de curso. 0.03 = como era.
+        self.declare_parameter("nudge_coast_est", 0.06)
         # Achado 3: assentamento por ODOMETRIA (o front nao muda num lateral
         # puro): lateral dentro de eps por min_s (>= retencao do ESC ~0,5 s),
         # teto max_s; so depois mede o curso e decide.
@@ -952,6 +989,7 @@ class DockAlignNode(Node):
         # Menor x fora do corredor, por lado (esq py>0, dir py<0): checagem
         # lateral antes de cada curso vy.
         self._side_min = (None, None)
+        self._side_pts = ([], [])
         self._wall_age = None
         self._center_reject = ""
         # Largura da face medida no refino do staging (coerencia do estimador
@@ -989,6 +1027,9 @@ class DockAlignNode(Node):
         self._cam_goal_enabled = False
         self._cam_dock_id = ""
         self._last_dock_id = ""  # dock do ultimo align_to_dock (nudge so' lateral na shelf)
+        # 2026-11-17 (pedido do operador): pedido do ultimo docking, para REFAZE-LO quando um
+        # nudge recua e a base fica longe da mesa (align_to_dock com dock_id vazio = repetir).
+        self._last_align_req = None
         # Modelo do giro em pulsos (c, k): aprendido e mantido entre goals
         # (a base e' a mesma); None = ainda os valores iniciais dos params.
         self._rot_model = None
@@ -1408,6 +1449,7 @@ class DockAlignNode(Node):
         """
         scan = self._last_scan
         self._side_min = (None, None)
+        self._side_pts = ([], [])
         # 2026-10-26 (I6): os retornos antecipados tambem registram o motivo,
         # senao _measure_face_yaw agregava o motivo do fit ANTERIOR (ex.
         # 'residuo x3' quando a causa era 'scan velho').
@@ -1443,6 +1485,7 @@ class DockAlignNode(Node):
 
         pts = []
         left_min = right_min = None
+        left_pts, right_pts = [], []
         angle = scan.angle_min
         for r in scan.ranges:
             a = angle
@@ -1464,9 +1507,12 @@ class DockAlignNode(Node):
                 # bico (px >= 0.32 e' o que o LiDAR consegue ver).
                 if py > 0.0:
                     left_min = px if left_min is None else min(left_min, px)
+                    left_pts.append((apy, px))
                 else:
                     right_min = px if right_min is None else min(right_min, px)
+                    right_pts.append((apy, px))
         self._side_min = (left_min, right_min)
+        self._side_pts = (left_pts, right_pts)
 
         n = len(pts)
         if n < int(self.get_parameter("wall_min_points").value):
@@ -1514,12 +1560,24 @@ class DockAlignNode(Node):
                 f"[inst] fit leve rejeitado: {reject} (front {front:.3f}, n {n})")
         return front, n, scan_age, face_yaw
 
-    def _side_clear(self, direction, front, margin=0.05):
+    def _side_clear(self, direction, front, margin=0.05, travel=None):
         """True se nada na faixa lateral do lado do movimento esta mais perto
         que a face (caixa/objeto protruso junto ao bico). Cego para o que
         esta AO LADO do chassi (px < 0.32) e abaixo do plano do LiDAR — por
-        isso os cursos laterais sao curtos e vigiados a cada ciclo."""
-        side = self._side_min[0] if direction > 0.0 else self._side_min[1]
+        isso os cursos laterais sao curtos e vigiados a cada ciclo.
+
+        travel = quanto ainda falta andar de lado (m): com ele a faixa vai so'
+        ate' corredor + travel + side_clear_reach_extra (ver o parametro); sem
+        ele (ou extra <= 0), a faixa inteira. O valor usado fica em
+        _side_seen para o log."""
+        i = 0 if direction > 0.0 else 1
+        side = self._side_min[i]
+        extra = float(self.get_parameter("side_clear_reach_extra").value)
+        if travel is not None and extra > 0.0:
+            side = _side_nearest(
+                self._side_pts[i],
+                self.get_parameter("wall_corridor_half_width").value + abs(travel) + extra)
+        self._side_seen = side
         return side is None or front is None or side > front - margin
 
     def _face_center_from_scan(self, front, foot=False):
@@ -2440,7 +2498,7 @@ class DockAlignNode(Node):
                 log(f"lateral({where}): centrado ({c*100:+.1f} cm)")
             elif abs(c) > center_max_travel + center_coast:
                 log(f"lateral({where}): desvio {c*100:+.1f} cm maior que o curso — nao mexo")
-            elif not self._side_clear(1.0 if c > 0 else -1.0, front):
+            elif not self._side_clear(1.0 if c > 0 else -1.0, front, travel=abs(c)):
                 log(f"lateral({where}): obstaculo na faixa lateral — nao mexo")
             else:
                 c_hist = []
@@ -2783,7 +2841,7 @@ class DockAlignNode(Node):
                         f"{'?' if front is None else '%.3f' % front} < lateral_min_front — "
                         "nao mexo de lado")
                     break
-                if not self._side_clear(1.0 if c > 0 else -1.0, front):
+                if not self._side_clear(1.0 if c > 0 else -1.0, front, travel=abs(c)):
                     log(f"camera({where}): obstaculo na faixa lateral — nao mexo")
                     break
                 log(f"camera({where}): lateral {c * 100:+.1f} cm por odometria")
@@ -3010,6 +3068,13 @@ class DockAlignNode(Node):
             return self._abort(goal_handle, AlignToDock.Result(),
                                "ocupado: outro movimento (nudge_base) em curso")
         try:
+            if not str(goal_handle.request.dock_id).strip():
+                if self._last_align_req is None:
+                    return self._abort(goal_handle, AlignToDock.Result(),
+                                       "dock_id vazio e nenhum docking anterior para repetir")
+                self.get_logger().info(
+                    f"align_to_dock sem dock_id: refazendo o docking de {self._last_align_req.dock_id}")
+                goal_handle = _PedidoAnterior(goal_handle, self._last_align_req)
             self._set_shift_total(0.0)
             return self._execute_align(goal_handle)
         finally:
@@ -3051,6 +3116,7 @@ class DockAlignNode(Node):
         bank_target = (bx, by, byaw)
         self._dock_face_dist = face_dist
         self._last_dock_id = str(g.dock_id).strip().upper()
+        self._last_align_req = g
         self._cam_setup_goal(g.dock_id, g.map_name, g.map_dir)
         # Janela lateral do refino por dock (R3, 2026-10-26); None = global.
         self._dock_refine_half_width = half_w
@@ -3071,6 +3137,18 @@ class DockAlignNode(Node):
         deadline = self.get_clock().now().nanoseconds * 1e-9 + timeout
         attempt_budget = max(40.0, timeout / attempts)
         grace = float(self.get_parameter("final_retreat_grace_s").value)
+
+        if isinstance(goal_handle, _PedidoAnterior):
+            # Refazer o docking parte de PERTO da mesa, e a aproximacao so' sabe chegar vindo do
+            # staging (1o uso no robo, 17/11 18:44:47: "parou longe demais (front 0.491 > 0.465)",
+            # nao andou). Entao recua primeiro ate' a folga de pre-docking, como entre tentativas.
+            self.get_logger().info(f"[{g.dock_id}] refazendo o docking: recuo ate' o staging antes.")
+            self._feedback(goal_handle, "recuando", 0.0, 0.0, 0.0)
+            if self._retreat(goal_handle, staging_offset, rate, deadline, period) == "canceled":
+                goal_handle.canceled()
+                result.success = False
+                result.message = "cancelado durante o recuo"
+                return result
 
         last_reason = "sem tentativa"
         for attempt in range(1, attempts + 1):
@@ -3250,9 +3328,15 @@ class DockAlignNode(Node):
         result.success = False
         result.travelled = 0.0
 
+        # 2026-11-17 18h30 (operador: "foi ajustar para tras e acabou indo para tras; quando for
+        # assim precisa fazer o docking de novo"): recuo pedido 7 cm, andou 12,5 e girou 7 graus;
+        # com o lateral a base terminou a ~0,53 m da mesa. Quem pediu o nudge fica sabendo pelo
+        # motivo ("recuou", tambem no sucesso) e refaz o docking (align_to_dock sem dock_id).
+        self._nudge_recuou = False
+
         def fail(reason, travelled=0.0, canceled=False):
             result.success = False
-            result.reason = reason
+            result.reason = reason + (";recuou" if self._nudge_recuou else "")
             result.travelled = float(travelled)
             self.get_logger().warn(
                 f"nudge_base: {reason} (dy={g.dy:+.3f} m, andou {travelled:+.3f} m)")
@@ -3293,7 +3377,7 @@ class DockAlignNode(Node):
         if lateral_only:
             lateral_min = hard_min  # shelf: sem recuo, so' o hard-stop manda
         wall_enabled = bool(self.get_parameter("wall_enabled").value)
-        coast = float(self.get_parameter("center_coast_est").value)
+        coast = float(self.get_parameter("nudge_coast_est").value)
         min_v = float(self.get_parameter("min_body_vel").value)
         period = 1.0 / float(self.get_parameter("control_frequency").value)
         gain = float(self.get_parameter("nudge_odom_lateral_gain").value)
@@ -3387,6 +3471,7 @@ class DockAlignNode(Node):
                             ab.outcome, "muro")
                         log(f"recuo abortado: {ab.outcome} ({ab.info})")
                         return fail(reason)
+                    self._nudge_recuou = True
                     front, npts, scan_age, face_yaw = self._front_wall_distance()
                     if front is None:
                         log("sem medicao do muro apos o recuo")
@@ -3414,8 +3499,8 @@ class DockAlignNode(Node):
                     f"{mag:.2f} m a {math.degrees(face_yaw):+.1f} graus) "
                     f"< lateral_min_front {lateral_min:.2f}")
                 return fail("muito_perto_da_mesa")
-            if not self._side_clear(sign, front):
-                side = self._side_min[0] if sign > 0 else self._side_min[1]
+            if not self._side_clear(sign, front, travel=mag):
+                side = self._side_seen
                 log(f"faixa lateral {'esq' if sign > 0 else 'dir'} ocupada a "
                     f"{side:.3f} m (face a {front:.3f})")
                 return fail("obstaculo_lateral")
@@ -3505,7 +3590,7 @@ class DockAlignNode(Node):
             return fail("sem_progresso", travelled)
         if _nudge_accepts(dy, travelled, slack):
             result.success = True
-            result.reason = ""
+            result.reason = "recuou" if self._nudge_recuou else ""
             result.travelled = float(travelled)
             goal_handle.succeed()
             return result
@@ -3556,6 +3641,7 @@ class DockAlignNode(Node):
         start_s = self.get_clock().now().nanoseconds * 1e-9
         x0, y0, yaw0 = origin
         exit_reason = "shutdown"
+        travelled = 0.0     # o do ciclo anterior alimenta a faixa lateral (curso que falta)
         while rclpy.ok():
             front, _npts, _fy = self._check_guards(goal_handle, deadline, deadline)
             now_s = self.get_clock().now().nanoseconds * 1e-9
@@ -3578,10 +3664,12 @@ class DockAlignNode(Node):
                         f"muro: bico avancou {(front0 - front) * 100:.1f} cm no "
                         f"lateral (front {front:.3f} < {front0:.3f} - "
                         f"{drift_max:.3f}; face inclinada?)")
-            if not self._side_clear(sign, front):
+            if not self._side_clear(sign, front, travel=max(0.0, mag - abs(travelled))):
                 self._publish_cmd(0.0, 0.0, 0.0)
                 raise self._AttemptAbort(
-                    "side_blocked", "obstaculo entrou na faixa lateral durante o curso")
+                    "side_blocked",
+                    f"obstaculo a {self._side_seen:.3f} m na faixa lateral durante o curso "
+                    f"(face a {front:.3f}, faltavam {max(0.0, mag - abs(travelled)) * 100:.0f} cm)")
             sample = self._odom_sample(odom_max_age)
             if sample is None:
                 self.get_logger().warn("nudge_base: odometria velha no meio do curso — corto")

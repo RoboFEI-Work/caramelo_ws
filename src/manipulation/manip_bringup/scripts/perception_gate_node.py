@@ -98,6 +98,12 @@ class PerceptionGate(Node):
             Bool, "/manip/pick_active", self._on_pick, latched)
         self.create_subscription(
             Bool, "/manip/place_active", self._on_place, latched)
+        # 2026-11-17: a AMT olha a mesa sem pick/place ativo. Antes ela ligava
+        # a camera assinando a imagem crua (o "espectador"), criando e
+        # destruindo a assinatura a cada chamada; agora pede por aqui.
+        self.observe_active = False
+        self.create_subscription(
+            Bool, "/manip/observe_active", self._on_observe, latched)
 
         self.client = self.create_client(
             SetParameters, f"{self.camera_node}/set_parameters")
@@ -118,6 +124,9 @@ class PerceptionGate(Node):
 
     def _on_place(self, msg):
         self.place_active = bool(msg.data)
+
+    def _on_observe(self, msg):
+        self.observe_active = bool(msg.data)
 
     def _reconcile(self):
         if not self.enabled:
@@ -146,7 +155,7 @@ class PerceptionGate(Node):
             self.get_logger().info(
                 "espectador abriu a imagem (RViz?) — mantendo a camera ligada"
                 if viewer else "espectador fechou a imagem — gate volta a mandar")
-        want_on = self.pick_active or self.place_active or viewer
+        want_on = self.pick_active or self.place_active or self.observe_active or viewer
 
         if want_on:
             self.off_deadline = None

@@ -396,7 +396,7 @@ public:
         // de pick a garra vai para a pose larga do SRDF (gripper_full_open).
         // Vazio = desliga (fica so' o gripper_open de antes do movimento).
         // 2026-11-16 (pedido do operador): desligado por padrao: garra larga
-        // so' no home, ao empilhar, na PP e ao olhar o container da mesa.
+        // so' no home, ao empilhar e ao olhar o container da mesa.
         start_gripper_pose_ = this->declare_parameter<std::string>(
             "pick_gripper_pose_at_pegar_obj", "");
         // 2026-08-29 (pedido do operador): com o bloco preso, subir na
@@ -1015,12 +1015,37 @@ private:
         }
     }
 
+    // 2026-11-17: pick e place criavam DUAS MoveGroupInterface novas a cada goal
+    // (as do goal anterior ficavam vivas ate' a troca) e essa criacao travou
+    // para sempre 2 vezes no robo, sempre na do gripper logo depois do "Ready
+    // ... group arm" (15:48:32 e 17:19:44; juntas, laser e move_group vivos;
+    // a 2a com 1 s de respiro entre os pedidos, entao nao era pedido colado).
+    // Sem a pilha do processo nao sei em que chamada. Agora as interfaces sao
+    // criadas no 1o goal e reaproveitadas: nada que elas guardam entre goals
+    // faz falta (alvos e start state zerados aqui; frame, prazos e escalas
+    // sao reaplicados no inicio de cada goal; a ferramenta e' sempre pedida
+    // antes de usar).
+    std::shared_ptr<MoveGroupInterface> interfaceFor(const std::string & group)
+    {
+        std::shared_ptr<MoveGroupInterface> mgi;
+        {
+            std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
+            mgi = group == "arm" ? active_arm_ : active_gripper_;
+        }
+        if (!mgi) {
+            return makeInterfaceWithTimeout(group);
+        }
+        mgi->clearPoseTargets();
+        mgi->setStartStateToCurrentState();
+        return mgi;
+    }
+
     std::shared_ptr<MoveGroupInterface> createArmInterface(bool fallback_profile)
     {
         applyIkProfile(
             fallback_profile ? fallback_ik_profile_ : primary_ik_profile_,
             fallback_profile ? "fallback" : "primary");
-        auto arm = makeInterfaceWithTimeout("arm");
+        auto arm = interfaceFor("arm");
         if (arm) {
             configureArmInterface(arm);
         }
@@ -2035,6 +2060,7 @@ private:
     bool pre_ik_tcp2_{true};
     double pre_ik_tcp2_z_{0.30};
     std::vector<double> last_grasp_joints_;  ///< juntas no fechamento da garra (31/08)
+    std::mutex execute_scope_mutex_;         ///< ver execute()
     double j1_point_max_abs_rad_{75.0 * M_PI / 180.0};
     // Pega de mesa da tentativa atual (para a subida vertical pos-pega).
     std::optional<Eigen::Vector3d> last_table_grasp_target_;
@@ -2327,6 +2353,33 @@ private:
         publishStage(goal_handle, "final_approach_custom_down");
         last_table_grasp_target_.reset();
 
+        // 2026-11-17 (run_20261117_174849: nenhum pick, braco mandado 20 cm
+        // ABAIXO do tampo): com o PC saturado (video da corrida anterior
+        // renderizando, 1023% de 1200% de CPU) a tag "pulava" entre leituras
+        // seguidas: z -0,03 -> -0,25 -> -0,27 -> -0,16 m, e o codigo seguia a
+        // ultima. O bloco nao anda: leitura que discorda da anterior alem do
+        // normal e' leitura ruim -> a tentativa falha como "tag perdida"
+        // (retentavel) em vez de descer num ponto errado. Limites pelas
+        // corridas gravadas: longe x perto ate' 7,2 cm (limite 12); perto x
+        // perto, 50 releituras, ate' 4,6 cm (limite 7); o salto ruim foi de 11 a 22.
+        const auto leitura_coerente = [&](
+            const Eigen::Vector3d & antes, const Eigen::Vector3d & agora, const double limite_m,
+            const char * quando) {
+                const Eigen::Vector3d d = agora - antes;
+                if (std::abs(d.z()) <= limite_m && std::hypot(d.x(), d.y()) <= limite_m) {
+                    return true;
+                }
+                RCLCPP_ERROR(
+                    this->get_logger(),
+                    "[%s] leitura da %s INCOERENTE (%s): alvo pulou dx=%+.1f dy=%+.1f dz=%+.1f cm "
+                    "(limite %.0f cm) - nao deso; tentativa falha como tag perdida.",
+                    cycle_name.c_str(), tag_frame.c_str(), quando, d.x() * 100.0, d.y() * 100.0,
+                    d.z() * 100.0, limite_m * 100.0);
+                speak("!A leitura da tag pulou, nao vou descer");
+                return false;
+            };
+        std::optional<Eigen::Vector3d> alvo_de_longe;
+
         // Fase 0 (2026-08-31, pedido do operador): IK com o TCP2 como
         // ferramenta (tcp_z = pick_pre_ik_tcp2_z) — a garra para ~13 cm antes
         // do alvo, a camera re-detecta a tag de perto e a escada normal (tcp)
@@ -2340,12 +2393,14 @@ private:
                 CustomIkOutcome::kNoSolution;
             double tilt_pre = 0.0;
             for (const double tilt : tableDownTiltsRad()) {
+                Eigen::Vector3d alvo;
                 out_pre = solveCustomIkForTag(
                     tag_frame, tilt, 0.0, "pre_tcp2", cycle_name, q_pre, &yaw_pre,
-                    manip_task_execution::IkOptions{}, tcp2_model);
+                    manip_task_execution::IkOptions{}, tcp2_model, 0.0, &alvo);
                 if (out_pre == CustomIkOutcome::kNoTransform) {
                     break;
                 }
+                alvo_de_longe = alvo;
                 if (out_pre == CustomIkOutcome::kOk) {
                     tilt_pre = tilt;
                     break;
@@ -2423,6 +2478,11 @@ private:
             speak("!Perdi a tag na aproximacao");
             return TableApproachResult::kNoTransform;
         }
+        if (alvo_de_longe && target_seen &&
+            !leitura_coerente(*alvo_de_longe, *target_seen, 0.12, "de longe x de perto"))
+        {
+            return TableApproachResult::kNoTransform;
+        }
         if (outcome == CustomIkOutcome::kNoSolution) {
             // Quem fala e decide (sair cedo x escada completa) e o chamador
             // (handleTableUnreachable).
@@ -2486,6 +2546,11 @@ private:
                 double tilt2 = 0.0;
                 std::optional<Eigen::Vector3d> seen2;
                 const CustomIkOutcome out2 = solve_ladder(q2, yaw2, tilt2, seen2);
+                if (seen2 && target_seen &&
+                    !leitura_coerente(*target_seen, *seen2, 0.07, "depois de girar a j1"))
+                {
+                    return TableApproachResult::kNoTransform;
+                }
                 if (out2 == CustomIkOutcome::kOk) {
                     Eigen::Vector3d d = Eigen::Vector3d::Zero();
                     if (seen2 && target_seen) {
@@ -3376,6 +3441,12 @@ private:
 
     void execute(const std::shared_ptr<GoalHandlePickTag> goal_handle)
     {
+        // 2026-11-17 (AMT travou no robo, 15h48): o ExecutionGuard e' solto ANTES de o
+        // resultado sair, entao o pedido seguinte pode chegar (33 ms depois) com este
+        // execute ainda destruindo as MoveGroupInterface; o novo ficou preso para sempre
+        // criando a do gripper. Este lock e' o 1o local: so' e' solto depois de TUDO
+        // deste execute ser destruido. (Hipotese: nao deu para tirar a pilha do processo.)
+        std::lock_guard<std::mutex> escopo_do_execute(execute_scope_mutex_);
         ExecutionGuard execution_guard(*this);
         publishPickActive(true);
         const auto goal = goal_handle->get_goal();
@@ -3435,7 +3506,7 @@ private:
         }
 
         auto arm = createArmInterface(false);
-        auto gripper = makeInterfaceWithTimeout("gripper");
+        auto gripper = interfaceFor("gripper");
         if (!arm || !gripper) {
             finish_failure(
                 "Pick failed: move_group indisponivel (MoveGroupInterface nao "

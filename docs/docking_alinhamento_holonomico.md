@@ -118,7 +118,8 @@ esquerda. A base andar `dy` para a esquerda ⇒ o `x_manip` de um alvo fixo na m
 
 - Curso contínuo no **piso do ESC** (`min_body_vel`, eixo y puro — o `assert` de eixo puro
   de `_publish_cmd` continua valendo) cortado quando o que falta já cabe no
-  `center_coast_est` (o lateral não tem coast medido; 0,03 m) **mais o atraso da medida**
+  `nudge_coast_est` (0,06 desde 2026-11-17; com 0,03 os 8 passos gravados passaram ~5 cm do
+  pedido: do corte ao fim o robô ainda anda 8 a 9,6 cm) **mais o atraso da medida**
   (achado 5, mesma conta da reta do align): corta quando
   `|dy| − travelled·sinal ≤ coast + min_body_vel·(idade_odom + período)`; por isso
   `nudge_odom_max_age` caiu para 0,2 s (mais velha que isso a conta não vale — corta).
@@ -208,7 +209,7 @@ está em curso, e o `execute` ainda tenta `acquire(blocking=False)` — se perde
 - Protocolo no robô (plano §8.1): braço em `home`, `ros2 action send_goal /nudge_base
   caramelo_msgs/action/NudgeBase "{dy: 0.10}"`, medir com trena 0,10/0,15/0,20/0,25/−0,10,
   calibrar `nudge_odom_lateral_gain` (acima) e ajustar `nudge_accept_slack`/
-  `center_coast_est`. Conferir no log `assentou=sim` (senão subir `nudge_settle_max_s`) e
+  `nudge_coast_est`. Conferir no log `assentou=sim` (senão subir `nudge_settle_max_s`) e
   que `muro` por `nudge_front_drift_max` não dispara com a mesa perpendicular.
 
 ### Recuo antes do lateral (29/08)

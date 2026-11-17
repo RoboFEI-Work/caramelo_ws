@@ -1,14 +1,13 @@
-// Helpers PUROS do place de precisao (2026-10-21): encaixe do cubo num slot
-// da mesa de precisao (tags 101..107: desde 2026-11-04 no TAMPO, ~4 cm alem
-// de cada cavidade - slotCenterOffset; antes, coladas no FUNDO) e
-// pilha sobre a tag de referencia da zona de empilhamento (tag 200 colada no
-// tampo) ou sobre outro cubo. Tudo aqui e' geometria/decisao sem ROS, para
-// o mtc_place_action_node reusar e o gtest cobrir (test_place_precision).
+// Helpers PUROS do empilhamento (2026-10-21): pilha sobre a tag de referencia
+// da zona de empilhamento (tag 200 colada no tampo) ou sobre outro cubo. Tudo
+// aqui e' geometria/decisao sem ROS, para o mtc_place_action_node reusar e o
+// gtest cobrir (test_place_precision).
+// 2026-11-16 (branch mudanca_pp, decisao do operador): tudo o que era da mesa
+// de precisao (slot, cavidade, furo) foi removido daqui.
 //
 // FRAME: posicoes em manip_base_link (+X = direita do robo, +Y = frente,
 // +Z = cima); yaw em rad no plano XY. Alturas: a tag de um cubo fica na
-// face de CIMA dele. 'z_slot_tag' abaixo = FUNDO da cavidade (o no' ja'
-// desconta a profundidade quando a tag esta no tampo).
+// face de CIMA dele.
 #pragma once
 
 #include <cstdint>
@@ -24,7 +23,6 @@ namespace manip_task_execution
 enum class StackTargetKind
 {
   kCube,       ///< tag de um cubo ja na mesa (empilhar em cima, comportamento classico)
-  kSlot,       ///< tag no fundo de uma cavidade da mesa de precisao (encaixar)
   kReference,  ///< tag colada no tampo da zona de empilhamento (1o cubo da pilha)
 };
 
@@ -32,12 +30,11 @@ enum class StackTargetKind
 /// (vazio, 'ct_vermelho', 'tag_x', 'tag_'...).
 std::optional<int> tagIdFromFrame(const std::string & frame);
 
-/// Classifica o frame pelo id: em slot_ids -> kSlot; em reference_ids ->
-/// kReference; qualquer outro (inclusive frame que nao casa 'tag_<n>') ->
-/// kCube, que e' o comportamento de sempre.
+/// Classifica o frame pelo id: em reference_ids -> kReference; qualquer outro
+/// (inclusive frame que nao casa 'tag_<n>') -> kCube, que e' o comportamento
+/// de sempre.
 StackTargetKind classifyStackTarget(
   const std::string & frame,
-  const std::vector<std::int64_t> & slot_ids,
   const std::vector<std::int64_t> & reference_ids);
 
 /// Giro (rad) em [-pi/4, +pi/4] que leva `yaw_current` ao multiplo de 90
@@ -47,74 +44,6 @@ StackTargetKind classifyStackTarget(
 /// +-45 graus devolve um dos dois lados (|delta| <= pi/4 sempre).
 double nearestQuarterTurn(double yaw_tag, double yaw_current);
 
-/// Deslocamento no plano (m) de uma posicao da busca em espiral.
-struct PlanarOffset
-{
-  double dx{0.0};
-  double dy{0.0};
-  double radius() const;
-};
-
-/// Posicoes da busca em espiral quadrada: a grade (i*step, j*step) com raio
-/// <= max_radius, ordenada por raio crescente e, no mesmo raio, pelo angulo
-/// a partir de +X no sentido anti-horario: (0,0), (+s,0), (0,+s), (-s,0),
-/// (0,-s), (+s,+s), (-s,+s), ... Sem repeticao. step <= 0 ou max_radius < 0
-/// devolve so (0,0).
-std::vector<PlanarOffset> spiralOffsets(double step_m, double max_radius_m);
-
-/// Mesa de precisao com a tag de referencia no TAMPO, fora da cavidade
-/// (2026-11-04, operador: centro da tag ~4 cm ALEM do centro do slot,
-/// olhando do robo). Deslocamento tag -> centro do slot: `offset_m` ao longo
-/// da borda da tag (yaw_tag + k*90 graus) mais alinhada com a direcao
-/// (dir_x, dir_y) — segue o giro da mesa em vez do eixo do braco, e nao
-/// depende de como a tag foi colada (multiplos de 90). offset 0 ou direcao
-/// nula = (0, 0).
-PlanarOffset slotCenterOffset(double yaw_tag, double offset_m, double dir_x, double dir_y);
-
-/// Onde o cubo ficou em relacao ao slot, pela altura da tag dele.
-enum class SeatState
-{
-  kSeated,        ///< dentro da cavidade: topo ~ fundo + altura do cubo
-  kUnseated,      ///< apoiado por cima (ou meio dentro): topo mais alto que isso
-  kInconsistent,  ///< topo abaixo do fundo da cavidade + cubo: leitura ruim
-};
-
-/// z esperado da tag do cubo ENCAIXADO: fundo da cavidade + altura do cubo.
-double seatedCubeTagZ(double z_slot_tag, double cube_height_m);
-
-/// Tolerancia de assentamento que de fato vale: nunca mais que METADE da
-/// cavidade, senao as faixas "encaixado" (fundo + cubo +- tol) e "apoiado na
-/// borda" (fundo + cavidade + cubo -+ tol) se sobrepoem. Com a cavidade rasa
-/// da mesa de precisao (3-6 mm, informado pelo operador em 2026-10-21) isso
-/// da ~2,5 mm, no limite da leitura da tag: por isso a borda so' e' decidida
-/// com DUAS leituras (decideSlotAction).
-double effectiveSeatTolerance(double tol_m, double cavity_depth_m);
-
-/// Compara a tag do cubo (depois de soltar) com a tag do slot (fundo), com
-/// tol = effectiveSeatTolerance(tol_m, cavity_depth_m):
-///   seated       se z_cube_tag <= z_slot_tag + cube_h + tol
-///                   e z_cube_tag >= z_slot_tag + cube_h - cavity_depth;
-///   inconsistent se ficou abaixo disso (cubo nao pode estar abaixo do fundo);
-///   unseated     se ficou acima (apoiado na borda: ~cavity_depth mais alto).
-SeatState slotSeatState(
-  double z_cube_tag, double z_slot_tag, double cube_height_m,
-  double cavity_depth_m, double tol_m);
-
-/// true so' quando slotSeatState == kSeated.
-bool isSeatedInSlot(
-  double z_cube_tag, double z_slot_tag, double cube_height_m,
-  double cavity_depth_m, double tol_m);
-
-/// z da tag de um cubo APOIADO POR CIMA da cavidade (na borda): fundo +
-/// cavidade + altura do cubo. E' tambem a cota do TCP para re-pega-lo
-/// (TCP no plano da tag): os dedos chegam ao tampo, nunca abaixo.
-double slotRimCubeTagZ(double z_slot_tag, double cube_height_m, double cavity_depth_m);
-
-/// z do TCP para re-pegar um cubo apoiado na borda: o que a camera viu,
-/// mas NUNCA abaixo da borda (leitura baixa mandaria os dedos para dentro
-/// do tampo). max(z_cube_seen, z_rim).
-double slotRegraspTcpZ(double z_cube_seen, double z_rim);
-
 /// Compensacao em z da soltura com a ferramenta inclinada `tilt_rad` a
 /// partir da vertical: com o TCP no centro da face de cima, a quina mais
 /// baixa de um cubo (largura w, altura h) fica h*cos(t) + (w/2)*sin(t)
@@ -123,54 +52,6 @@ double slotRegraspTcpZ(double z_cube_seen, double z_rim);
 /// ao z do TCP mantem a folga nominal ate' o tampo/marca. 0 em t = 0;
 /// nunca negativo.
 double tiltDropZCompensation(double tilt_rad, double cube_width_m, double cube_height_m);
-
-/// O que a camera viu do cubo depois de soltar no SLOT.
-struct SlotObservation
-{
-  bool seen{false};        ///< tag do cubo lida (mediana) apos soltar
-  double z_cube_tag{0.0};  ///< z da tag do cubo (so vale se seen)
-  double err_xy_m{0.0};    ///< |xy_cubo - xy_slot| (so vale se seen; diagnostico)
-};
-
-/// Geometria do slot e orcamento (solturas e leituras) da decisao.
-struct SlotLimits
-{
-  double z_slot_tag{0.0};
-  double cube_height_m{0.042};
-  double cavity_depth_m{0.041};
-  double seat_tol_m{0.008};
-  int attempts_done{1};       ///< solturas ja feitas (>= 1)
-  int max_attempts{1};        ///< solturas permitidas no total
-  int observations_done{1};   ///< leituras ja feitas desta soltura (>= 1)
-  int max_observations{2};    ///< leituras permitidas por soltura
-};
-
-/// O que fazer com o cubo solto no slot.
-enum class SlotAction
-{
-  kAccept,     ///< encaixado (z assentado); xy NAO decide
-  kRegrasp,    ///< apoiado na BORDA (z >= borda - tol) CONFIRMADO em 2 leituras: re-pegar
-  kReobserve,  ///< nao visto / borda na 1a leitura / z intermediario / inconsistente: olhar de novo
-  kLeave,      ///< sem como agir com seguranca ou sem orcamento: fica onde esta
-};
-
-/// Decisao do slot (pura). Regras:
-///   nao visto            -> kReobserve se ha' leituras; senao kLeave
-///                           (quem chama responde 'slot_nao_verificado':
-///                           nunca sucesso sem ver, nunca re-pega as cegas);
-///   assentado (kSeated)  -> kAccept, qualquer xy (duas leituras de poses
-///                           diferentes do braco divergem 1-2 cm por FK; um
-///                           cubo com z assentado nao pode estar fora da
-///                           cavidade);
-///   na borda             -> z >= fundo + cavidade + cubo - tol: kRegrasp se
-///                           ha' solturas; senao kLeave;
-///   intermediario        -> entre assentado e borda (meio dentro, tombado) ou
-///   / inconsistente         abaixo do fundo: kReobserve se ha' leituras,
-///                           senao kLeave. NUNCA re-pega: os dedos iriam
-///                           abaixo do tampo.
-SlotAction decideSlotAction(const SlotObservation & obs, const SlotLimits & lim);
-
-const char * slotActionName(SlotAction a);
 
 /// z do TOPO da pilha (tag do cubo mais alto) com `cubes_above` cubos
 /// empilhados sobre uma superficie cuja tag/marca esta em z_base_tag:
@@ -257,68 +138,11 @@ enum class PlacementDecision
   kGiveUp,            ///< fora e sem orcamento (ou nao vista sem como tentar)
 };
 
-/// Decisao da PILHA / tag de referencia (1 correcao). O slot usa
-/// decideSlotAction. Regras na implementacao; casos no gtest.
+/// Decisao da PILHA / tag de referencia (1 correcao). Regras na implementacao;
+/// casos no gtest.
 PlacementDecision decidePlacement(
   const PlacementObservation & obs, const PlacementLimits & lim);
 
 const char * placementDecisionName(PlacementDecision d);
-
-/// Centro de cavidade VISTO pela camera (pp_hole_detector: mancha marrom no
-/// tampo branco da PP), xy em manip_base_link.
-struct HoleCandidate
-{
-  double x{0.0};
-  double y{0.0};
-};
-
-/// Buraco visto mais proximo de (x, y) dentro de max_dist_m: a correcao do
-/// alvo do slot troca o centro ESTIMADO pela tag (+offsets) pelo centro
-/// VISTO. nullopt quando nenhum candidato esta no raio — a correcao e'
-/// oportunista, o alvo da tag segue valendo (regra do empilhar: falhar em
-/// melhorar nunca pode piorar). max_dist_m <= 0 nunca corrige.
-std::optional<HoleCandidate> nearestHole(
-  const std::vector<HoleCandidate> & holes, double x, double y, double max_dist_m);
-
-/// Fusao do alvo xy do slot (2026-11-09): media ponderada entre o centro
-/// ESTIMADO pela tag (+offsets) e o centro VISTO do buraco. hole_weight em
-/// [0, 1] (fora disso e' saturado): 1 = so' o buraco, 0 = so' a tag. Nem a
-/// tag nem o detector sao perfeitos (a tag soma offset nominal + erro de
-/// escala; o buraco soma segmentacao + plano do tampo), entao um peso
-/// intermediario reduz o pior caso em vez de trocar um erro pelo outro.
-HoleCandidate fuseSlotXy(
-  double tag_x, double tag_y, const HoleCandidate & hole, double hole_weight);
-
-/// Aprende o vetor tag -> buraco (2026-11-09). Cada amostra e' a diferenca
-/// (buraco_xy - tag_xy) medida com a tag e o buraco na MESMA imagem, de
-/// garra vazia: o erro de escala/posicao da camera entra igual nos dois e
-/// se cancela, por isso o vetor e' quase imune ao erro da camera e e' um
-/// substituto melhor que o offset nominal (slot_place_x/y_offset_m) para os
-/// slots cujo buraco a garra tapou na hora de soltar (todos os slots da PP
-/// tem a tag colada na mesma posicao relativa a cavidade). Mediana por
-/// componente para um outlier (buraco de OUTRO slot, mancha) nao puxar a
-/// estimativa; amostras a mais de max_dev_m do nominal sao rejeitadas.
-class TagHoleOffsetLearner
-{
-public:
-  TagHoleOffsetLearner() = default;
-  TagHoleOffsetLearner(
-    std::size_t min_samples, double nominal_dx, double nominal_dy, double max_dev_m);
-
-  /// Aceita a amostra se |(dx,dy) - nominal| <= max_dev_m; devolve se aceitou.
-  bool push(double dx, double dy);
-  /// Mediana (dx, dy) quando size() >= min_samples; senao nullopt.
-  std::optional<std::pair<double, double>> estimate() const;
-  void reset();
-  std::size_t size() const;
-
-private:
-  std::size_t min_samples_{2};
-  double nominal_dx_{0.0};
-  double nominal_dy_{0.0};
-  double max_dev_m_{0.03};
-  std::vector<double> dx_;
-  std::vector<double> dy_;
-};
 
 }  // namespace manip_task_execution

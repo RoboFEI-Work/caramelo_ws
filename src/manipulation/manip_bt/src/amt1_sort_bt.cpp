@@ -57,6 +57,11 @@ BT::PortsList Amt1SortBT::providedPorts()
       "prazo total do goal (s) — estourar so AVISA; o cancel e do stage_timeout"),
     BT::InputPort<double>(
       "stage_timeout", 300.0, "silencio maximo de feedback (s) — unico gatilho de cancel"),
+    // 2026-11-16: uma OLHADA (o servidor so' acumula o que a camera ve nesta pose do braco).
+    BT::InputPort<bool>("observe_only", false, "true = so olha e acumula; nao move bloco"),
+    // 2026-11-17: a arvore dizia SUCESSO com result.success=false. Com confirm a folha
+    // falha enquanto o servidor nao VIR a mesa em ordem, e o executor roda outra rodada.
+    BT::InputPort<bool>("confirm", false, "true = FAILURE enquanto result.success for false"),
   };
 }
 
@@ -278,7 +283,9 @@ BT::NodeStatus Amt1SortBT::onStart()
   goal.target_order = target_order;
   goal.direction = direction;
   goal.max_onboard = max_onboard;
-  goal.observe_only = false;
+  bool observe_only = false;
+  getInput("observe_only", observe_only);
+  goal.observe_only = observe_only;
 
   RCLCPP_INFO(
     logger(), "%s ordenar %zu tag(s) [%s] na mesa %s, %s, alvo %s, max %d a bordo; prazo "
@@ -388,7 +395,9 @@ BT::NodeStatus Amt1SortBT::onRunning()
       res->message.c_str(), res->message.empty() ? "" : " — ", summary.c_str());
   }
   session_.reset();
-  return BT::NodeStatus::SUCCESS;
+  bool confirm = false;
+  getInput("confirm", confirm);
+  return confirm && !res->success ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
 }
 
 void Amt1SortBT::onHalted()

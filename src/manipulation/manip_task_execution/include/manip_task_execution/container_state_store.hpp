@@ -2,7 +2,7 @@
 // Yaml em ~/.config/caramelo/container_states.yaml (parametro
 // container_state_file dos nos): 'containers:' (container1..3 ocupado/tag)
 // e 'table_slots:' por WS. Escrita atomica (tmp + fsync + rename). Usado
-// pelo pick, place e amt1; o manip_stack.launch.py reseta uma vez por
+// pelo pick e pelo place; o manip_stack.launch.py reseta uma vez por
 // rodada. Sem ROS: testado por test_container_state_store.
 #pragma once
 

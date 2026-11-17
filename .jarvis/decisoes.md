@@ -197,3 +197,21 @@ Formato: data · decisão · motivo · consequências · origem · status.
 ## 2026-11-16 (19h10) — PP: malha de visao (pp_servo_node) descartada
 - Decisao do operador, depois de um dia de testes sem nenhum encaixe atribuivel a' malha. As duas decisoes de 16/11 acima sobre a malha (referencia ensinada; ganho por modelo) ficam SEM EFEITO: o codigo foi removido.
 - Nao reintroduzir malha/alinhamento por visao na PP sem pedido explicito do operador. Ultima ideia dele, em aberto: empurrar o cubo com a garra fechada quando cair fora do furo.
+
+## 2026-11-16 (19h20) — branch `mudanca_pp`: mesa de precisao removida do codigo
+- Decisao do operador: remover TUDO da PP nessa branch. Escolhas dele: missao com entrega na PP pula o objeto (planner, com aviso) e a missao segue; a AMT1 sai junto.
+- Consequencia: nessa branch o robo nao pontua em precision placement nem na AMT; em troca nao gasta tempo nem derruba missao por causa da PP.
+- Ponto de entrada para refazer a PP do zero, se o operador pedir: o planner (isPpStation em buildTransfers) e o `stack_on` do place; o executor recusa `at_tag`.
+
+## 2026-11-16 (21h30) — PP nova: medir na imagem pela tag do slot, mover so' pelo place
+- Decisoes do operador: verificar o furo e o centro; aproximar aos poucos recalculando; cubo em cima do furo durante a descida; punho com a camera vendo o furo; furo sumiu -> desce reto.
+- Decisoes minhas (dizer se mudarem): (1) regua = tag do slot (homografia), sem TF/hand-eye; (2) ponto de controle = FUNDO DO CUBO no frame da camera, calibrado por places bons; (3) quando o cubo tapa o furo, usa tag + vetor tag->furo medido antes, em vez de descer cego de 5 cm; (4) o no' de visao nunca move o braco; (5) alvo novo = TCP comandado + erro medido; (6) 3 paradas de centimetros, no maximo 2 correcoes finas.
+
+## 2026-11-16 (noite) — AMT por ids + faixa lateral que acompanha o curso
+- AMT: o servidor so' guarda IDS de tag (nunca coordenada), entao a base pode andar de lado no meio da rotina; quem move o braco para olhar e' o executor (GoToNamedPose), nao o servidor. Alvo = target_order do arquivo, senao ordem crescente.
+- Guarda lateral do dock_align_node: obstaculo so' conta se estiver dentro do que o robo vai alcancar NESTE curso (corredor + falta + 0,11 m). Motivo e numeros no historico. Volta ao antigo com `side_clear_reach_extra:=0`.
+
+## 2026-11-17 (17h) — AMT so' diz que terminou com a mesa VISTA em ordem; base alinhada no place
+- Pedidos do operador: conferencia no fim (olhar a mesa, arrumar o que faltar); no place a base anda de lado para ficar alinhada com o slot ("isso precisa funcionar"); sem vai e volta no pick.
+- Decisoes minhas (dizer se mudarem): (1) `success` do /amt1_sort = mesa vista em ordem SEM nenhuma operacao na chamada; quem repete e' o executor (`amt1_rounds` 4), e esgotadas as rodadas a missao segue para o FINISH; (2) sem tag de slot para ancorar a fila o no' nao mexe em bloco (antes chutava "comeca no 101"); (3) alinhamento do place pelo protocolo de alcance que ja' existia (unreachable + passo), limite 8 cm, de garra vazia; (4) a base volta ao centro uma vez no fim de cada rodada, porque as olhadas so' cobrem a fileira a partir do centro; (5) `nudge_coast_est` 0,06 e nao 0,085 (o medido), por falta de medida com corte antes dos 6 cm.
+- Nao mexi: pose `pegar_obj` (j4 2,199 contra o limite de 1,913; T9) e a causa fisica da queda do adaptador de rede (T35).

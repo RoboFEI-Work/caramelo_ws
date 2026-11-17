@@ -245,8 +245,8 @@
         <joint name="manip_joint7" value="0.170"/>
     </group_state>
     <group_state name="gripper_open" group="gripper">
-        <joint name="manip_joint6" value="-0.2265"/>
-        <joint name="manip_joint7" value="-0.2265"/>
+        <joint name="manip_joint6" value="-0.0"/>
+        <joint name="manip_joint7" value="-0.0"/>
     </group_state>
     <group_state name="gripper_full_open" group="gripper">
         <joint name="manip_joint6" value="-0.994838"/>

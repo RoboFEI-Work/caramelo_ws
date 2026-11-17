@@ -3,9 +3,9 @@
 // solta no destino: slot nomeado (MesaX.N, memoria de slots usados por WS),
 // pilha sobre outra tag (stack_on), container por cor (ct_vermelho/ct_azul),
 // superficie livre (grade do workstation_surface_node + surface_place_planner),
-// encaixe num slot da mesa de precisao (stack_on = tag 101..107, no fundo da
-// cavidade) ou pilha sobre a tag de referencia (stack_on = tag 200), com
-// verificacao pela tag do cubo apos soltar (place_precision, 2026-10-21).
+// ou pilha sobre a tag de referencia (stack_on = tag 200), com verificacao
+// pela tag do cubo apos soltar (place_precision, 2026-10-21). O encaixe na
+// mesa de precisao foi removido em 2026-11-16 (branch mudanca_pp).
 // Alvo fora de alcance => devolve o bloco ao container e responde
 // unreachable + suggested_base_shift_m (quem move a base e o manip_bt).
 // Apesar do prefixo 'mtc', nao usa MoveIt Task Constructor: move o braco pelo
@@ -24,6 +24,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -157,157 +158,48 @@ public:
             this->declare_parameter<bool>("stack_observe_before_pick", true);
         stack_pre_observe_tcp2_ =
             this->declare_parameter<bool>("stack_pre_observe_tcp2", true);
-        // 2026-10-21 - PLACE DE PRECISAO (formato 2026 da competicao). O
-        // executor manda stack_on = "tag_101".."tag_107" para ENCAIXAR o cubo
-        // num slot da mesa de precisao (tag adesiva de 41 mm colada no FUNDO
-        // da cavidade; cavidade com a forma do cubo e ~2 mm de folga) e
-        // stack_on = "tag_200" para o PRIMEIRO cubo da pilha (tag adesiva no
-        // tampo da zona de empilhamento); os seguintes vem com stack_on = tag
-        // do cubo anterior, como sempre. O no reconhece o tipo pelo id
-        // (place_precision.hpp) - nao ha campo novo na action. Ver
-        // docs/place_precisao_e_pilha.md.
-        slot_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
-            "slot_tag_ids", std::vector<int64_t>{101, 102, 103, 104, 105, 106, 107});
+        // 2026-10-21 - PILHA (formato 2026 da competicao): stack_on =
+        // "tag_200" para o PRIMEIRO cubo da pilha (tag adesiva no tampo da
+        // zona de empilhamento); os seguintes vem com stack_on = tag do cubo
+        // anterior, como sempre. O no reconhece o tipo pelo id
+        // (place_precision.hpp).
+        // 2026-11-16 (branch mudanca_pp, decisao do operador): o encaixe na
+        // mesa de precisao (slots 101..107, cavidade, furo) foi removido.
         stack_reference_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
             "stack_reference_tag_ids", std::vector<int64_t>{200});
-        // Profundidade da cavidade: fundo (plano da tag do slot) ate o tampo.
-        // Calibrar no robo (medir com paquimetro).
-        slot_cavity_depth_m_ = this->declare_parameter<double>("slot_cavity_depth_m", 0.005);
-        // 2026-11-04 (operador): na PP a tag 101..107 fica no TAMPO, fora da
-        // cavidade, com o centro ~4 cm ALEM do centro do slot (olhando do
-        // robo). Centro do slot = tag + slot_center_offset_m na direcao do
-        // robo (-y de manip_base_link), seguindo a borda da tag
-        // (slotCenterOffset). 0 = tag centrada sobre o slot. Com
-        // slot_tag_on_tabletop o fundo da cavidade fica slot_cavity_depth_m
-        // ABAIXO da tag; false = layout antigo (tag colada no fundo).
-        slot_center_offset_m_ = this->declare_parameter<double>("slot_center_offset_m", -0.045);
-        slot_tag_on_tabletop_ = this->declare_parameter<bool>("slot_tag_on_tabletop", true);
-        // 2026-11-04 (operador): slot da PP com a MESMA logica do empilhar
-        // (olha a tag de garra vazia antes de pegar, j1, descida, soltura na
-        // cota da tag de referencia = tag no tampo + folga + cubo, verificacao
-        // so' olhando), com o alvo deslocado de slot_place_*_offset_m em
-        // manip_base_link (+x direita, +y frente). Era -0,04 em y (4 cm mais
-        // perto do robo que a tag) MAIS a escadinha de -0,012: total -0,052.
-        // 2026-11-09: 27 leituras da AMT1 (cubos ja' encaixados, vetor
-        // tag->cubo medido na MESMA imagem) deram mediana -52 mm em y e
-        // -3 mm em x. O total estava certo, mas repartido errado: a escadinha
-        // e' correcao de empilhar (cubo sobre cubo) e NAO entra mais no slot;
-        // o -0,052 fica inteiro aqui. Importa porque a fusao com o buraco
-        // visto (fuseSlotTarget) e o offset aprendido substituem ESTE valor —
-        // se a escadinha continuasse por fora, o cubo passaria 12 mm do
-        // centro do buraco (folga da cavidade ~3,5 mm por lado).
-        // false = encaixe antigo (placeIntoPrecisionSlot, espiral/re-pega;
-        // usa slot_center_offset_m / slot_tag_on_tabletop).
-        slot_use_stack_logic_ = this->declare_parameter<bool>("slot_use_stack_logic", true);
-        slot_place_x_offset_m_ = this->declare_parameter<double>("slot_place_x_offset_m", 0.0);
-        slot_place_y_offset_m_ = this->declare_parameter<double>("slot_place_y_offset_m", -0.052);
-        // Folga entre o fundo do cubo e o TAMPO na hora de soltar: o cubo cai
-        // dentro se estiver alinhado. Calibrar no robo.
-        slot_drop_clearance_m_ = this->declare_parameter<double>("slot_drop_clearance_m", 0.003);
-        // Pre-pose acima da soltura. 0,02 (igual ao stack_pre_lift_m real):
-        // na distancia de docking de hoje (~0,36 m) a pre-pose a 0 graus so'
-        // resolve com lift <= 2 cm (custom_ik_check) - com 5 cm a escada caia
-        // sempre em 15 graus e o cubo descia inclinado numa folga de 2 mm.
-        slot_pre_lift_m_ = this->declare_parameter<double>("slot_pre_lift_m", 0.02);
-        // Descida VERTICAL preferida (cubo inclinado nao entra em 2 mm de
-        // folga); 15 graus so' como ultimo recurso de alcance. A pre-pose
-        // pode usar uma inclinacao maior da escada que a descida final
-        // (solveDropLadder): o que importa e' o cubo vertical ao abrir.
-        // 2026-11-12 (operador: na PP o cubo desceu inclinado e tombou; log
-        // de 12/11 16h: tag_105 "ferramenta a 15 graus"): a PP NAO usa mais
-        // inclinacao nenhuma — so' 0 graus. Sem IK a 0 graus o alvo vira
-        // "fora de alcance" e a fila de alcance desloca a base, em vez de
-        // tentar encaixar torto numa folga de 2 mm. A escada inclinada fica
-        // so' para empilhar (stack_tilt_ladder_deg). Voltar = [0.0, 15.0].
-        slot_tilt_ladder_deg_ = this->declare_parameter<std::vector<double>>(
-            "slot_tilt_ladder_deg", std::vector<double>{0.0});
-        // Verificacao apos soltar pela tag do PROPRIO cubo (decideSlotAction):
-        // encaixado se o topo ficou em z_slot + cubo (+- slot_seat_tolerance_m)
-        // - o xy NAO decide (duas leituras de poses diferentes do braco
-        // divergem 1-2 cm por FK; um cubo assentado nao pode estar fora da
-        // cavidade) e so' entra no log como diagnostico quando passa de
-        // slot_xy_tolerance_m. Calibrar no robo.
-        slot_seat_tolerance_m_ = this->declare_parameter<double>("slot_seat_tolerance_m", 0.0025);
-        slot_xy_tolerance_m_ = this->declare_parameter<double>("slot_xy_tolerance_m", 0.008);
-        // Tag do cubo nao vista / leitura intermediaria: segunda leitura de
-        // mais alto (camera mais longe dos dedos abertos). Calibrar no robo.
-        slot_reobserve_extra_z_m_ =
-            this->declare_parameter<double>("slot_reobserve_extra_z_m", 0.04);
-        // 2026-11-06 (pedido do operador): o tampo da PP e' BRANCO e a
-        // cavidade aparece MARROM — o pp_hole_detector_node (manip_bringup)
-        // publica os centros VISTOS em /manip/pp_hole_detector/holes
-        // (PoseArray em manip_base_link) e o alvo xy do slot e' trocado pelo
-        // buraco mais proximo, desde que a <= slot_hole_max_correction_m do
-        // alvo da tag (mais longe e' buraco de OUTRO slot) e fresco
-        // (<= slot_hole_max_age_sec). Vale para o place normal da PP (tags
-        // 101..107, kSlot) E para a AMT1 (frames slot_hole_frame_prefix*).
-        // z e yaw seguem da tag. Correcao OPORTUNISTA (regra do empilhar):
-        // sem buraco visto, o alvo tag+offset fica como esta.
-        // 2026-11-09: raio 0,035 -> 0,05 m. O erro que se quer corrigir e'
-        // de 3-5 cm, e com 0,035 o buraco certo era descartado como "outro
-        // slot" justamente nos casos ruins. A cavidade tem 5 cm de lado e o
-        // slot vizinho fica a >= 10 cm, entao 5 cm ainda nao alcanca o buraco
-        // do vizinho. O WARN de "sem buraco" imprime a distancia do mais
-        // proximo para calibrar isto com dado real.
-        slot_hole_correction_enable_ =
-            this->declare_parameter<bool>("slot_hole_correction_enable", true);
-        slot_hole_topic_ = this->declare_parameter<std::string>(
-            "slot_hole_topic", "/manip/pp_hole_detector/holes");
-        slot_hole_max_correction_m_ =
-            this->declare_parameter<double>("slot_hole_max_correction_m", 0.05);
-        slot_hole_max_age_sec_ =
-            this->declare_parameter<double>("slot_hole_max_age_sec", 2.0);
-        slot_hole_frame_prefix_ = this->declare_parameter<std::string>(
-            "slot_hole_frame_prefix", "tag_amt1_slot_");
-        // 2026-11-09: BUG DE SEQUENCIA no log real — o buraco so' aparece na
-        // camera na leitura de GARRA VAZIA (preObserveStackBase, pre-ponto
-        // TCP2 a ~13 cm), mas o plano do tampo so' era publicado em
-        // placeStackedOnFrame, DEPOIS de pegar o cubo, com a camera ja'
-        // tapada; e a correcao exigia deteccao de <= 2 s. Resultado: o
-        // detector nunca corrigiu nada. Agora o plano sai na leitura de
-        // PERTO de garra vazia (TCP2), o no' espera ate' slot_hole_wait_sec
-        // ali pelo buraco e guarda a deteccao (stack_preseen_hole_) para a
-        // soltura. O plano NAO sai na leitura de longe: ela erra 4-5 cm em z
-        // (log real), e publicar longe+perto fazia o detector zerar o rastreio
-        // (muda > 5 mm) bem antes da espera, jogando fora as amostras colhidas
-        // enquanto a tag era lida de perto. Espera 2,5 s: 2 amostras a 3 Hz
-        // sao ~0,7 s no melhor caso, e qualquer frame rejeitado (TF, camera
-        // em movimento) come o resto; com buraco ja' visto sai na hora.
-        // Peso da fusao tag+buraco: 1 = so' buraco (comportamento de 11-06),
-        // 0 = so' tag; 0,7 porque o detector tambem erra (plano, segmentacao).
-        slot_hole_weight_ = this->declare_parameter<double>("slot_hole_weight", 0.7);
-        slot_hole_wait_sec_ = this->declare_parameter<double>("slot_hole_wait_sec", 2.5);
-        // Offset tag->buraco APRENDIDO (mediana das deteccoes de garra vazia,
-        // tag e buraco na MESMA imagem): substitui slot_place_x/y_offset_m
-        // nos slots cujo buraco nao foi visto. Amostras a mais de
-        // slot_hole_learn_max_dev_m do nominal sao buraco de OUTRO slot.
-        // Mesmo valor do raio de aceitacao: um buraco aceito a d <= raio do
-        // alvo nominal e' uma amostra a d do nominal, e nao faria sentido
-        // aceitar o buraco e rejeitar a amostra.
-        slot_hole_learn_offset_ =
-            this->declare_parameter<bool>("slot_hole_learn_offset", true);
-        slot_hole_learn_min_samples_ =
-            this->declare_parameter<int>("slot_hole_learn_min_samples", 2);
-        slot_hole_learn_max_dev_m_ =
-            this->declare_parameter<double>("slot_hole_learn_max_dev_m", 0.05);
-        slot_hole_learner_ = manip_task_execution::TagHoleOffsetLearner(
-            static_cast<std::size_t>(std::max(1, slot_hole_learn_min_samples_)),
-            slot_place_x_offset_m_, slot_place_y_offset_m_, slot_hole_learn_max_dev_m_);
-        // Cota do TAMPO da PP (manip_base_link) para o ray-cast do detector,
-        // publicada latched quando um place de slot comeca.
-        pp_plane_topic_ = this->declare_parameter<std::string>(
-            "pp_plane_topic", "/manip/pp_plane_z");
-        // Busca em espiral quando nao encaixa (passo/raio) e numero maximo
-        // de solturas. Calibrar no robo.
-        slot_search_step_m_ = this->declare_parameter<double>("slot_search_step_m", 0.003);
-        slot_search_radius_m_ = this->declare_parameter<double>("slot_search_radius_m", 0.009);
-        slot_max_attempts_ = this->declare_parameter<int>("slot_max_attempts", 6);
-        // Correcao pelo erro MEDIDO (onde a camera viu o cubo cair x onde o
-        // TCP foi mandado), somada a espiral; limitada a slot_correction_max_m.
-        // Calibrar no robo (false = so' a espiral).
-        slot_use_measured_correction_ =
-            this->declare_parameter<bool>("slot_use_measured_correction", true);
-        slot_correction_max_m_ = this->declare_parameter<double>("slot_correction_max_m", 0.02);
+        // 2026-11-16 (branch mudanca_pp) - MESA DE PRECISAO REFEITA DO ZERO
+        // (pedido do operador). stack_on = tag de um slot (pp_slot_tag_ids)
+        // vai para placeOnPpSlot: o braco chega POR TRAS e POR CIMA do furo em
+        // paradas (pp_recuo_m antes do furo, pp_altura_m acima da soltura), em
+        // cada uma o pp_furo_node mede pela camera quanto o cubo esta' fora do
+        // centro do furo e o alvo e' recalculado; na ultima parada (em cima do
+        // furo) corrige ate' pp_tolerancia_m e desce reto em z. Sem medida
+        // (furo e tag fora da vista), desce reto de onde esta'.
+        pp_slot_tag_ids_ = this->declare_parameter<std::vector<int64_t>>(
+            "pp_slot_tag_ids", std::vector<int64_t>{101, 102, 103, 104, 105, 106, 107});
+        // So' para apontar a 1a parada (o furo fica ~46 mm antes da tag): o
+        // valor de verdade e' medido pela camera logo em seguida.
+        pp_tag_ate_o_furo_m_ = this->declare_parameter<double>("pp_tag_ate_o_furo_m", 0.046);
+        // Paradas. Com o cubo a >= 5,5 cm antes do furo a camera ve o furo
+        // inteiro; em cima dele o cubo o tapa e vale a tag do slot + o vetor
+        // tag->furo medido antes (quadros de 16/11).
+        pp_recuo_m_ = this->declare_parameter<std::vector<double>>(
+            "pp_recuo_m", std::vector<double>{0.060, 0.025, 0.0});
+        pp_altura_m_ = this->declare_parameter<std::vector<double>>(
+            "pp_altura_m", std::vector<double>{0.060, 0.040, 0.020});
+        // Folga do furo: ~1,3 mm por lado (furo 45,0 x 44,2 mm, cubo 42).
+        pp_tolerancia_m_ = this->declare_parameter<double>("pp_tolerancia_m", 0.001);
+        pp_correcoes_max_ = this->declare_parameter<int>("pp_correcoes_max", 2);
+        // A descida final vai da altura VISTA do fundo do cubo ate' isto abaixo
+        // do tampo (o cubo entra no furo; fora dele, apoia e o braco cede).
+        pp_entra_no_furo_m_ = this->declare_parameter<double>("pp_entra_no_furo_m", 0.005);
+        // 2026-11-17 (pedido do operador): tag do slot a mais disto do eixo do
+        // robo => a base anda de lado ANTES de pegar o bloco, para o place sair
+        // alinhado com o slot (ver preObserveStackBase). 0 = desligado.
+        pp_alinhar_base_m_ = this->declare_parameter<double>("pp_alinhar_base_m", 0.08);
+        pp_medir_client_ = this->create_client<std_srvs::srv::Trigger>("/manip/pp_furo/medir");
+        pp_slot_pub_ = this->create_publisher<std_msgs::msg::String>(
+            "/manip/pp_furo/slot", rclcpp::QoS(1).transient_local().reliable());
         // Tag de referencia (tag 200): fundo do cubo = tag + folga. Calibrar no robo.
         ref_drop_clearance_m_ = this->declare_parameter<double>("ref_drop_clearance_m", 0.005);
         // Verificacao apos soltar na pilha/referencia (tag do cubo solto, lida
@@ -401,7 +293,7 @@ public:
         // ve so' +-20 cm): procura tambem de tag_direita/tag_esquerda antes de
         // desistir (campo 25/08: bins cortados na borda sao rejeitados).
         // 2026-11-12 (operador: "identifique o container primeiro e depois
-        // pegue o bloco, como no empilhar e na PP"): de garra vazia, em
+        // pegue o bloco, como no empilhar"): de garra vazia, em
         // pegar_obj, acha o container e resolve a IK ANTES de ir ao container
         // de bordo. Fora de alcance => fila de alcance sem pegar/devolver o
         // bloco (12/11: 2x 25 s pegando e devolvendo o bloco no WS_2).
@@ -473,19 +365,6 @@ public:
         // destino, para o container_detector fazer o ray-cast no plano certo.
         container_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             container_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
-        // Cota do TAMPO da PP para o pp_hole_detector (mesma receita acima).
-        pp_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
-            pp_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
-        // Buracos (cavidades) da PP vistos pela camera, em manip_base_link.
-        // So' guarda a ultima mensagem; quem valida idade/distancia e'
-        // nearestLiveHole / fuseSlotTarget na hora de usar.
-        pp_holes_subscription_ =
-            this->create_subscription<geometry_msgs::msg::PoseArray>(
-                slot_hole_topic_, 10,
-                [this](geometry_msgs::msg::PoseArray::ConstSharedPtr msg) {
-                    std::lock_guard<std::mutex> lock(pp_holes_mutex_);
-                    pp_holes_ = std::move(msg);
-                });
         // 2026-08-28 (fila de alcance): deslocamento lateral ACUMULADO da base
         // desde o ultimo align_to_dock (+ = esquerda, base_footprint), que so
         // o dock_align_node publica (latched; zera a cada align_to_dock). A
@@ -853,61 +732,25 @@ private:
     /// Juntas da pre-pose acima da pilha do ciclo atual (subida apos soltar).
     std::optional<std::array<double, 5>> stack_lift_q_;
 
-    // ---- Place de precisao (2026-10-21), ver placeIntoPrecisionSlot e
+    // ---- Pilha sobre a tag de referencia (2026-10-21), ver
     // verifyAndCorrectStackedCube. Defaults = os do declare_parameter.
-    std::vector<int64_t> slot_tag_ids_;
     std::vector<int64_t> stack_reference_tag_ids_;
-    double slot_cavity_depth_m_{0.005};
-    double slot_center_offset_m_{0.04};
-    bool slot_tag_on_tabletop_{true};
-    bool slot_use_stack_logic_{true};
-    double slot_place_x_offset_m_{0.0};
-    double slot_place_y_offset_m_{-0.052};
-    double slot_drop_clearance_m_{0.004};
-    double slot_pre_lift_m_{0.02};
-    std::vector<double> slot_tilt_ladder_deg_{0.0};
-    double slot_seat_tolerance_m_{0.0025};
-    double slot_xy_tolerance_m_{0.008};
-    double slot_reobserve_extra_z_m_{0.04};
-    // Correcao do alvo do slot pelo BURACO visto (pp_hole_detector, 2026-11-06).
-    bool slot_hole_correction_enable_{true};
-    std::string slot_hole_topic_;
-    double slot_hole_max_correction_m_{0.05};
-    double slot_hole_max_age_sec_{2.0};
-    std::string slot_hole_frame_prefix_;
-    // Fusao tag+buraco e offset aprendido (2026-11-09), ver fuseSlotTarget.
-    double slot_hole_weight_{0.7};
-    double slot_hole_wait_sec_{2.5};
-    bool slot_hole_learn_offset_{true};
-    int slot_hole_learn_min_samples_{2};
-    double slot_hole_learn_max_dev_m_{0.05};
-    manip_task_execution::TagHoleOffsetLearner slot_hole_learner_;
-    /// Buraco visto de garra vazia (preObserveStackBase) para a base
-    /// `frame`; vale qualquer idade porque a base do robo nao anda ate' soltar.
-    struct PreseenHole
-    {
-        std::string frame;
-        double x;
-        double y;
-    };
-    std::optional<PreseenHole> stack_preseen_hole_;
-    std::string pp_plane_topic_;
-    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pp_plane_z_pub_;
-    /// Ultimo plano publicado e o instante em que ele MUDOU de verdade
-    /// (> 5 mm, mesmo criterio com que o detector zera o rastreio): buracos
-    /// com stamp anterior foram projetados no plano antigo e nao valem.
-    std::optional<double> pp_plane_last_z_;
-    rclcpp::Time pp_plane_reset_time_{0, 0, RCL_ROS_TIME};
-    rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr pp_holes_subscription_;
-    std::mutex pp_holes_mutex_;
-    geometry_msgs::msg::PoseArray::ConstSharedPtr pp_holes_;
-    /// Leituras da tag do cubo por soltura no slot (1 + uma re-observacao).
-    static constexpr int kSlotMaxObservations = 2;
-    double slot_search_step_m_{0.003};
-    double slot_search_radius_m_{0.009};
-    int slot_max_attempts_{6};
-    bool slot_use_measured_correction_{true};
-    double slot_correction_max_m_{0.02};
+    // ---- Mesa de precisao refeita (2026-11-16), ver placeOnPpSlot.
+    std::vector<int64_t> pp_slot_tag_ids_;
+    double pp_tag_ate_o_furo_m_{0.046};
+    std::vector<double> pp_recuo_m_{0.060, 0.025, 0.0};
+    std::vector<double> pp_altura_m_{0.060, 0.040, 0.020};
+    double pp_tolerancia_m_{0.001};
+    int pp_correcoes_max_{2};
+    double pp_entra_no_furo_m_{0.005};
+    double pp_alinhar_base_m_{0.08};
+    std::mutex execute_scope_mutex_;   ///< ver execute()
+    /// Bloco visto DENTRO do slot na olhada de garra vazia (frame do slot): nao solta ali.
+    std::string pp_slot_ocupado_;
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pp_medir_client_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pp_slot_pub_;
+    /// Teto da correcao xy ao re-soltar um cubo da pilha (stack_verify_correct).
+    static constexpr double kPileCorrectionMaxM = 0.02;
     double ref_drop_clearance_m_{0.005};
     bool stack_verify_after_release_{true};
     bool stack_verify_correct_{false};
@@ -917,12 +760,9 @@ private:
     bool stack_memory_fallback_{true};
     int stack_max_level_{4};
     int precision_verify_timeout_ms_{2500};
-    /// Soltura feita DENTRO do modo de precisao (garra ja aberta): o
-    /// runPlaceCycle pula a abertura final.
-    bool release_done_in_place_{false};
-    /// O cubo saiu da garra e ficou na mesa sem encaixar (slot_nao_encaixou):
-    /// o goal falha, mas o container de bordo e' marcado vazio e a posicao
-    /// vai para a memoria de slots.
+    /// A correcao da pilha (stack_verify_correct) re-soltou o cubo e ele ficou
+    /// na mesa sem confirmacao: se o goal falhar, o container de bordo e'
+    /// marcado vazio.
     bool cube_left_on_table_{false};
     /// Verificacao pendente apos soltar na pilha/referencia (runPlaceCycle).
     struct PostReleaseCheck
@@ -1437,6 +1277,31 @@ private:
                     << e.what());
             return nullptr;
         }
+    }
+
+    // 2026-11-17: pick e place criavam DUAS MoveGroupInterface novas a cada goal
+    // (as do goal anterior ficavam vivas ate' a troca) e essa criacao travou
+    // para sempre 2 vezes no robo, sempre na do gripper logo depois do "Ready
+    // ... group arm" (15:48:32 e 17:19:44; juntas, laser e move_group vivos;
+    // a 2a com 1 s de respiro entre os pedidos, entao nao era pedido colado).
+    // Sem a pilha do processo nao sei em que chamada. Agora as interfaces sao
+    // criadas no 1o goal e reaproveitadas: nada que elas guardam entre goals
+    // faz falta (alvos e start state zerados aqui; frame, prazos e escalas
+    // sao reaplicados no inicio de cada goal; a ferramenta e' sempre pedida
+    // antes de usar).
+    std::shared_ptr<MoveGroupInterface> interfaceFor(const std::string & group)
+    {
+        std::shared_ptr<MoveGroupInterface> mgi;
+        {
+            std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
+            mgi = group == "arm" ? active_arm_ : active_gripper_;
+        }
+        if (!mgi) {
+            return makeInterfaceWithTimeout(group);
+        }
+        mgi->clearPoseTargets();
+        mgi->setStartStateToCurrentState();
+        return mgi;
     }
 
     // ---- Deadlines client-side (auditoria 2026-08-07, item 1.1) ----
@@ -2036,7 +1901,7 @@ private:
     }
 
     /// A escolha de slot so vale para mesa comum de uma WS_*: nunca para
-    /// container/tag (TF), prateleira, precision placement (PP_*) nem para
+    /// container/tag (TF), prateleira nem para
     /// um goal que ja pede um slot explicito ("Mesa15.2").
     bool slotSelectionApplies(
         const std::string & table_pose,
@@ -2084,31 +1949,6 @@ private:
     /// ULTIMO a se mover — primeiro j1/j3/j4/j5 com o ombro parado (o braco se
     /// arruma por cima da mesa), depois so o j2 desce ate o alvo. Sem estado
     /// atual, cai no movimento unico.
-    /// Espelho do moveToJointTargetJoint1First do pick: a base do braco gira
-    /// ate o azimute do alvo com o resto parado, e so depois o resto segue.
-    bool moveToJointTargetJoint1First(
-        const std::shared_ptr<MoveGroupInterface> & arm,
-        const std::array<double, 5> & q,
-        const std::string & label)
-    {
-        if (!arm->getCurrentState(2.0)) {
-            RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico.", label.c_str());
-            return moveToJointTarget(arm, q, label);
-        }
-        const std::vector<double> cur = arm->getCurrentJointValues();
-        if (cur.size() < 5) {
-            return moveToJointTarget(arm, q, label);
-        }
-        std::array<double, 5> first{cur[0], cur[1], cur[2], cur[3], cur[4]};
-        first[0] = q[0];
-        if (std::abs(first[0] - cur[0]) > 1e-3) {
-            if (!moveToJointTarget(arm, first, label + " [so j1]")) {
-                return false;
-            }
-        }
-        return moveToJointTarget(arm, q, label + " [resto]");
-    }
-
     /// Sequencia de recolhimento para pegar_obj:
     /// posiciona j2..j5 com a base (j1) parada e gira j1 somente no fim.
     /// Assim, depois que o bloco ja esta na garra, o braco nao o varre pela
@@ -3777,7 +3617,6 @@ private:
         const std::string & base_frame,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
-        const std::vector<double> & place_joints = {},
         const manip_task_execution::StackTargetKind kind =
             manip_task_execution::StackTargetKind::kCube,
         const std::string & ws = "")
@@ -3788,57 +3627,6 @@ private:
         // atual dos dedos alimenta o alinhamento de 90 graus (stack_align_yaw).
         const double z_offset = stackTcpZOffset(kind);
         const std::optional<double> finger_yaw_now = currentFingerYaw(arm);
-        // 2026-08-31 (pedido do operador): JUNTAS GRAVADAS na pega deste slot
-        // — vai direto para elas (mesma configuracao em que a garra fechou),
-        // sem IK do ponto e sem depender da camera. Pre-pose = mesmo ponto
-        // stack_pre_lift_m acima (IK; sem solucao = descida direta). Chegada
-        // por FK dispensada: juntas sao exatas.
-        if (place_joints.size() >= 5 && kind == StackTargetKind::kCube) {
-            std::array<double, 5> qj{
-                place_joints[0], place_joints[1], place_joints[2], place_joints[3], place_joints[4]};
-            Eigen::Vector3d fk_pos;
-            Eigen::Matrix3d fk_rot;
-            manip_task_execution::forwardKinematics(
-                qj, manip_task_execution::ArmModel{}, fk_pos, fk_rot);
-            const double tilt = std::acos(std::max(-1.0, std::min(1.0, -fk_rot.col(2).z())));
-            std::array<double, 5> q_lift2{};
-            bool lift_ok = manip_task_execution::solveIk(
-                fk_pos + Eigen::Vector3d(0.0, 0.0, stack_pre_lift_m_), tilt, 0.0, q_lift2);
-            if (lift_ok) {
-                q_lift2[4] = qj[4];
-            } else {
-                RCLCPP_WARN(
-                    get_logger(), "[STACK] juntas gravadas: sem IK para a pre-pose %.0f mm acima — descida direta.",
-                    stack_pre_lift_m_ * 1000.0);
-                q_lift2 = qj;
-            }
-            RCLCPP_INFO(
-                get_logger(),
-                "[STACK] place por JUNTAS gravadas em %s: alvo FK [%.3f %.3f %.3f] (%.0f graus) j "
-                "[%.3f %.3f %.3f %.3f %.3f]",
-                base_frame.c_str(), fk_pos.x(), fk_pos.y(), fk_pos.z(), tilt * 180.0 / M_PI,
-                qj[0], qj[1], qj[2], qj[3], qj[4]);
-            publishStage(goal_handle, "stack_joints_pre_pose");
-            speak("~Colocando o bloco na posicao gravada");
-            stack_arm_moved_ = true;
-            // place_joints e' o caminho exclusivo do AMT1. Como no pick,
-            // aponta-se j1 primeiro e so entao movem-se as demais juntas.
-            // A pre-pose e o alvo diferem so em Z, portanto mantem-se a
-            // mesma j1 tambem na descida final.
-            q_lift2[0] = qj[0];
-            if (!moveToJointTargetJoint1First(
-                    arm, q_lift2, "stack joints pre-pose " + base_frame)) {
-                return StackOutcome::kMoveFailed;
-            }
-            stack_lift_q_ = q_lift2;  // subida apos soltar
-            publishStage(goal_handle, "stack_joints_final");
-            if (!moveToJointTarget(arm, qj, "stack joints replay " + base_frame)) {
-                return StackOutcome::kMoveFailed;
-            }
-            last_slot_decision_ = SlotDecision{"stack:" + base_frame, table_pose, fk_pos, 0.0, std::nullopt};
-            return StackOutcome::kOk;
-        }
-
         // 2026-11-03: base ja lida de garra vazia (preObserveStackBase) — usa
         // essa leitura e NAO rele com o bloco na garra (lateral, TCP2 e j1
         // abaixo sao pulados: existiam para reler de perto).
@@ -3855,7 +3643,6 @@ private:
         } else {
             publishStage(goal_handle, "stack_detecting_base");
             speak(
-                kind == StackTargetKind::kSlot ? "Procurando o encaixe " + spokenTargetName(base_frame) :
                 isReferenceKind(kind) ? "Procurando a marca da pilha" :
                 "Procurando o bloco de baixo " + spokenTargetName(base_frame));
             waitForCameraStream("PLACE");
@@ -3933,56 +3720,21 @@ private:
             return StackOutcome::kBaseNotSeen;
         }
 
-        // TCP = centro da base + correcao fixa da escadinha (stack_place_*_offset_m).
-        // So' em tag real (tag_<n>) de EMPILHAR (cubo ou tag 200): os slots da
-        // AMT1 (tag_amt1_slot_k) ja' sao o centro da cavidade, e o slot da PP
-        // (kSlot) tem o total (-0,052) em slot_place_y_offset_m desde
-        // 2026-11-09 — a escadinha aqui dobraria a correcao e, com o buraco
-        // visto, passaria 12 mm do centro da cavidade.
+        // TCP = centro da base + correcao fixa da escadinha
+        // (stack_place_*_offset_m), so' em tag real (tag_<n>).
         const Eigen::Vector3d xy_corr =
-            (manip_task_execution::tagIdFromFrame(base_frame) && kind != StackTargetKind::kSlot) ?
+            manip_task_execution::tagIdFromFrame(base_frame) ?
             Eigen::Vector3d(stack_place_x_offset_m_, stack_place_y_offset_m_, 0.0) :
             Eigen::Vector3d::Zero();
         // Retorno EXPLICITO: com auto o lambda devolvia a expressao do Eigen
         // apontando para o temporario ja destruido (alvo lixo, "fora de alcance").
-        // Slot da PP: a cavidade fica slot_place_*_offset_m da tag (entra
-        // tambem na memoria/verificacao; a escadinha nao).
-        const Eigen::Vector3d slot_off =
-            kind == StackTargetKind::kSlot ?
-            Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0) :
-            Eigen::Vector3d::Zero();
-        // Cavidade da PP: liga o detector de buracos no plano do tampo (a
-        // tag do slot vive no tampo; a da AMT1 ja' e' o centro da cavidade).
-        if (isSlotLikeTarget(kind, base_frame)) {
-            publishPpPlaneZ(base_tf.transform.translation.z);
-        }
         auto target_from = [&](const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
-                Eigen::Vector3d t = Eigen::Vector3d(
+                return Eigen::Vector3d(
                     tf.transform.translation.x,
                     tf.transform.translation.y,
-                    tf.transform.translation.z + z_offset) + slot_off + xy_corr;
-                // Buraco da PP VISTO (marrom no tampo branco): fusao com o
-                // centro real da cavidade (2026-11-09; antes trocava xy
-                // inteiro por uma deteccao fresca que nunca existia com o
-                // cubo na garra), ou o offset tag->buraco aprendido.
-                if (isSlotLikeTarget(kind, base_frame)) {
-                    fuseSlotTarget(t, base_frame, kind, framePosition(tf), slot_off, xy_corr);
-                }
-                return t;
+                    tf.transform.translation.z + z_offset) + xy_corr;
             };
         Eigen::Vector3d target = target_from(base_tf);
-        if (kind == StackTargetKind::kSlot) {
-            // Alvo FINAL (ja' com fusao/offset aprendido/escadinha) e o quanto
-            // ele saiu do nominal tag + slot_place_*_offset_m + escadinha.
-            const Eigen::Vector3d nominal = framePosition(base_tf) + slot_off + xy_corr;
-            RCLCPP_INFO(
-                get_logger(),
-                "[STACK] %s e' slot da PP: nominal = tag %+.0f mm em x, %+.0f mm em y; alvo final "
-                "xy [%.4f %.4f], %+.1f/%+.1f mm do nominal (manip_base_link).",
-                base_frame.c_str(), slot_off.x() * 1000.0, slot_off.y() * 1000.0,
-                target.x(), target.y(),
-                (target.x() - nominal.x()) * 1000.0, (target.y() - nominal.y()) * 1000.0);
-        }
         if (xy_corr.norm() > 1e-6) {
             RCLCPP_INFO(
                 get_logger(),
@@ -4133,12 +3885,7 @@ private:
                     target_out = target;
                     yaw_out = base_yaw;
                 }
-                // 2026-11-12: slot da PP desce so' com a escada do slot (0 graus);
-                // a inclinada e' so' para empilhar (cubo tombou na PP em 12/11).
-                for (const double tilt : tiltLadderRad(
-                        isSlotLikeTarget(kind, base_frame) ? slot_tilt_ladder_deg_ :
-                        stack_tilt_ladder_deg_))
-                {
+                for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
                     const double dz = comp_w > 0.0 ?
                         manip_task_execution::tiltDropZCompensation(tilt, comp_w, cube_height_m_) : 0.0;
                     const Eigen::Vector3d cmd = target_out + Eigen::Vector3d(0.0, 0.0, dz);
@@ -4340,15 +4087,15 @@ private:
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::string & base_frame,
         const manip_task_execution::StackTargetKind kind,
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
+        const bool pp_slot = false)
     {
         using manip_task_execution::StackTargetKind;
         stack_preseen_base_.reset();
-        stack_preseen_hole_.reset();
+        pp_slot_ocupado_.clear();
         publishStage(goal_handle, "stack_pre_observe");
         speak(
-            kind == StackTargetKind::kSlot ?
-            "Olhando o encaixe " + spokenTargetName(base_frame) + " antes de pegar o bloco" :
+            pp_slot ? "Olhando o encaixe " + spokenTargetName(base_frame) + " antes de pegar o bloco" :
             isReferenceKind(kind) ? "Olhando a marca da pilha antes de pegar o bloco" :
             "Olhando o bloco de baixo " + spokenTargetName(base_frame) + " antes de pegar o bloco");
         arm->setStartStateToCurrentState();
@@ -4375,15 +4122,27 @@ private:
         if (cancellationRequested()) {
             return false;
         }
-        // 2026-11-09: slot da PP. O plano do tampo para o detector de
-        // buracos sai so' na leitura de PERTO (TCP2, abaixo): a de longe erra
-        // 4-5 cm em z (log real: dz=+41..+55 mm entre as duas) e publicar as
-        // duas fazia o detector zerar o rastreio (> 5 mm) logo antes da
-        // espera. Sem TCP2 nao ha' o que corrigir (a camera nao ve a cavidade
-        // de pegar_obj), e placeStackedOnFrame publica o plano como antes.
-        const bool slot_like = isSlotLikeTarget(kind, base_frame);
-        bool close_read_ok = false;  // tf veio da leitura de perto (TCP2)
-
+        // 2026-11-17 (pedido do operador: "no place o robo nunca vai holonomico
+        // para ajudar"): slot da PP fora do eixo do robo => sai pela fila de
+        // alcance (unreachable + passo sugerido) de garra vazia, com o bloco
+        // ainda no pote; quem chamou anda a base de lado e pede o place de
+        // novo, ja' alinhado. Na tentativa final segue como esta'.
+        const double pp_x = tf.transform.translation.x;
+        if (pp_slot && seen && pp_alinhar_base_m_ > 0.0 && std::abs(pp_x) > pp_alinhar_base_m_ &&
+            unreachable_bailout_enabled_ && !goal_handle->get_goal()->final_attempt)
+        {
+            // + = esquerda; x > 0 = slot a' direita. Curso do nudge: 0,10 a 0,25 m.
+            last_suggested_shift_m_ = -std::copysign(std::clamp(std::abs(pp_x), 0.10, 0.25), pp_x);
+            last_failure_unreachable_ = true;
+            last_place_failure_reason_ = "alvo_fora_de_alcance";
+            RCLCPP_WARN(
+                get_logger(),
+                "[PP] %s a %+.3f m do eixo do robo (limite %.2f): peco a base %+.2f m de lado "
+                "antes de pegar o bloco.",
+                base_frame.c_str(), pp_x, pp_alinhar_base_m_, last_suggested_shift_m_);
+            speak("~Vou me alinhar com o encaixe");
+            return true;
+        }
         // Mesmo pre-alinhamento lateral do placeStackedOnFrame.
         constexpr double kTagXNearZero = 0.1;
         if (seen && !moved && std::abs(tf.transform.translation.x) > kTagXNearZero) {
@@ -4415,12 +4174,14 @@ private:
 
         // De perto, ainda de garra vazia: o pre-ponto TCP2 do empilhamento.
         if (seen && stack_pre_observe_tcp2_ && stack_pre_ik_tcp2_z_ > 0.0) {
-            // Slot da PP: olha por cima da CAVIDADE (tag + slot_place_*_offset_m).
+            // Slot da PP: olha por cima do FURO (antes da tag), nao da tag, para
+            // ele caber inteiro na imagem.
+            const Eigen::Vector3d recuo_furo = pp_slot ?
+                Eigen::Vector3d(
+                pp_tag_ate_o_furo_m_ * ppEixoParaFora(framePosition(tf), frameYaw(tf))) :
+                Eigen::Vector3d(0.0, 0.0, 0.0);
             const Eigen::Vector3d target =
-                framePosition(tf) + Eigen::Vector3d(0.0, 0.0, stackTcpZOffset(kind)) +
-                (kind == StackTargetKind::kSlot ?
-                Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0) :
-                Eigen::Vector3d::Zero());
+                framePosition(tf) + Eigen::Vector3d(0.0, 0.0, stackTcpZOffset(kind)) - recuo_furo;
             manip_task_execution::ArmModel tcp2_model{};
             tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
             std::array<double, 5> q_pre{};
@@ -4434,7 +4195,13 @@ private:
                 }
             }
             if (pre_ok) {
-                q_pre[4] = wristForCubeYaw(frameYaw(tf), q_pre[0], tilt_pre, currentFingerYaw(arm));
+                // Slot da PP: camera virada para a frente (ppYawCameraParaFrente).
+                q_pre[4] = pp_slot ?
+                    std::remainder(
+                    q_pre[0] + M_PI -
+                    ppYawCameraParaFrente(ppEixoParaFora(framePosition(tf), frameYaw(tf))),
+                    2.0 * M_PI) :
+                    wristForCubeYaw(frameYaw(tf), q_pre[0], tilt_pre, currentFingerYaw(arm));
                 publishStage(goal_handle, "stack_pre_observe_tcp2");
                 moved = true;
                 if (moveToJointTarget(arm, q_pre, "stack pre_observe tcp2 " + base_frame)) {
@@ -4453,20 +4220,28 @@ private:
                             "dz=%+.1f mm em relacao a de longe.",
                             d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0);
                         tf = fresh;
-                        close_read_ok = true;
-                        // Plano do tampo pela leitura de perto. Do 2o slot em
-                        // diante fica a < 5 mm do anterior (mesmo tampo), o
-                        // detector NAO zera o rastreio e as amostras colhidas
-                        // durante a leitura da tag ja' servem: a espera
-                        // abaixo sai em 0 s.
-                        if (slot_like) {
-                            publishPpPlaneZ(tf.transform.translation.z);
-                        }
                     } else {
                         RCLCPP_WARN(
                             get_logger(),
                             "[STACK] pre-ponto TCP2 (garra vazia): sem TF fresca de %s — fico com a de longe.",
                             base_frame.c_str());
+                    }
+                    // PP: de garra vazia e de perto o furo aparece INTEIRO. O
+                    // pp_furo_node mede o centro dele em relacao a' tag e guarda.
+                    if (pp_slot) {
+                        const PpMedida m = ppMedir(base_frame);
+                        // Com a garra vazia, tag de bloco em cima do slot = slot ocupado
+                        // (AMT: plano errado ou bloco que nao saiu). Nao soltar em cima.
+                        if (m.texto.find("ocupado=") != std::string::npos) {
+                            pp_slot_ocupado_ = base_frame;
+                            RCLCPP_WARN(
+                                get_logger(), "[PP] %s esta' OCUPADO (%s) - nao vou soltar ali.",
+                                base_frame.c_str(), m.texto.c_str());
+                        }
+                        RCLCPP_INFO(
+                            get_logger(), "[PP] furo de %s visto de garra vazia: %s (%s)",
+                            base_frame.c_str(), m.furo_visto ? "INTEIRO, centro medido" : "NAO medido",
+                            m.texto.c_str());
                     }
                 }
             } else {
@@ -4476,88 +4251,6 @@ private:
         }
         if (cancellationRequested()) {
             return false;
-        }
-
-        // 2026-11-09: ainda com a camera sobre a cavidade (garra vazia, antes
-        // de voltar a pegar_obj), espera o detector de buracos (3 Hz, 2
-        // amostras) e guarda o buraco mais proximo do alvo nominal para a
-        // soltura (fuseSlotTarget). O vetor tag->buraco desta MESMA imagem
-        // alimenta o offset aprendido para os slots sem buraco visto. So' com
-        // a leitura de PERTO: de longe a propria tag sai 3-5 cm deslocada
-        // (log real) e o buraco visto de la' seria comparado a um alvo errado.
-        if (seen && slot_like && slot_hole_correction_enable_ && !close_read_ok) {
-            RCLCPP_INFO(
-                get_logger(),
-                "[SLOT] sem leitura de perto (TCP2) de %s: nao espero o detector de buracos — "
-                "alvo pela tag%s.",
-                base_frame.c_str(),
-                slot_hole_learn_offset_ && slot_hole_learner_.estimate() ?
-                " + offset aprendido" : "");
-        }
-        if (seen && slot_like && slot_hole_correction_enable_ && close_read_ok) {
-            const Eigen::Vector3d tag_xy = framePosition(tf);
-            const Eigen::Vector3d expected =
-                tag_xy +
-                (kind == StackTargetKind::kSlot ?
-                Eigen::Vector3d(slot_place_x_offset_m_, slot_place_y_offset_m_, 0.0) :
-                Eigen::Vector3d::Zero());
-            const rclcpp::Time wait_start = this->get_clock()->now();
-            const double wait_max = std::max(0.0, slot_hole_wait_sec_);
-            std::optional<manip_task_execution::HoleCandidate> hole;
-            double age = -1.0;
-            std::size_t n_holes = 0;
-            double nearest_any = -1.0;
-            double waited = 0.0;
-            while (true) {
-                hole = nearestLiveHole(expected.x(), expected.y(), &age, &n_holes, &nearest_any);
-                waited = (this->get_clock()->now() - wait_start).seconds();
-                if (hole || waited >= wait_max) {
-                    break;
-                }
-                if (!sleepInterruptibly(std::chrono::milliseconds(100))) {
-                    return false;
-                }
-            }
-            if (hole) {
-                stack_preseen_hole_ = PreseenHole{base_frame, hole->x, hole->y};
-                RCLCPP_INFO(
-                    get_logger(),
-                    "[SLOT] buraco visto de garra vazia: dx=%+.1f dy=%+.1f mm do alvo nominal "
-                    "de %s (esperei %.1f s)",
-                    (hole->x - expected.x()) * 1000.0, (hole->y - expected.y()) * 1000.0,
-                    base_frame.c_str(), waited);
-                if (kind == StackTargetKind::kSlot && slot_hole_learn_offset_) {
-                    const double dx = hole->x - tag_xy.x();
-                    const double dy = hole->y - tag_xy.y();
-                    const bool accepted = slot_hole_learner_.push(dx, dy);
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "[SLOT] offset tag->buraco medido dx=%+.1f dy=%+.1f mm (%s; %zu amostra(s)).",
-                        dx * 1000.0, dy * 1000.0, accepted ? "aceito" : "rejeitado, longe do nominal",
-                        slot_hole_learner_.size());
-                }
-            } else if (age < 0.0) {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: NENHUMA mensagem "
-                    "do detector (esta' no ar? topico %s) — alvo pela tag",
-                    base_frame.c_str(), waited, slot_hole_topic_.c_str());
-            } else if (n_holes == 0) {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: detector vivo mas "
-                    "a ultima msg (idade %.1f s) nao segmentou nada — alvo pela tag",
-                    base_frame.c_str(), waited, age);
-            } else {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[SLOT] sem buraco visto de garra vazia para %s em %.1f s: %zu buraco(s) na "
-                    "ultima msg (idade %.1f s), o mais proximo a %.1f mm do alvo nominal, acima "
-                    "do raio de %.1f mm (slot_hole_max_correction_m) ou de antes da mudanca do "
-                    "plano — alvo pela tag",
-                    base_frame.c_str(), waited, n_holes, age, nearest_any * 1000.0,
-                    slot_hole_max_correction_m_ * 1000.0);
-            }
         }
 
         if (seen) {
@@ -4597,21 +4290,15 @@ private:
     }
 
     // =====================================================================
-    // PLACE DE PRECISAO (2026-10-21, formato 2026 da competicao).
+    // PILHA (2026-10-21, formato 2026 da competicao).
     //
-    // Tres alvos possiveis em goal.stack_on, reconhecidos pelo id da tag
-    // (place_precision.hpp; parametros slot_tag_ids / stack_reference_tag_ids):
-    //   kSlot      tag 101..107 colada no FUNDO de uma cavidade da mesa de
-    //              precisao (cavidade com a forma do cubo, ~2 mm de folga):
-    //              ENCAIXAR - placeIntoPrecisionSlot (solta, confere pela tag
-    //              do proprio cubo, re-pega e busca em espiral se nao entrou);
+    // Dois alvos possiveis em goal.stack_on, reconhecidos pelo id da tag
+    // (place_precision.hpp; parametro stack_reference_tag_ids):
     //   kReference tag 200 colada no tampo da zona de empilhamento: 1o cubo
     //              da pilha - placeStackedOnFrame com z = tag + folga + cubo;
     //   kCube      tag de um cubo ja na mesa - placeStackedOnFrame de sempre
     //              (+ memoria quando a base nao e' vista, + verificacao).
     // A profundidade da RealSense nao serve a < 0,4 m: tudo e' TAG + FK.
-    // Helpers abaixo sao compartilhados pelo slot e pela verificacao da
-    // pilha (verifyAndCorrectStackedCube). Ver docs/place_precisao_e_pilha.md.
     // =====================================================================
 
     /// Cota do TCP acima da tag alvo na soltura, por tipo de alvo (o TCP fica
@@ -4622,210 +4309,295 @@ private:
         switch (kind) {
             case StackTargetKind::kReference:
                 return cube_height_m_ + ref_drop_clearance_m_;
-            case StackTargetKind::kSlot:
-                // Logica do empilhar: tag no tampo, como a de referencia.
-                return slot_use_stack_logic_ ?
-                       cube_height_m_ + ref_drop_clearance_m_ :
-                       cube_height_m_ + slot_cavity_depth_m_ + slot_drop_clearance_m_;
             default:
                 return stack_place_z_offset_;
         }
     }
 
-    /// Tag no TAMPO (sem cubo embaixo): a de referencia da pilha e, com
-    /// slot_use_stack_logic, a do slot da PP.
+    /// Tag no TAMPO (sem cubo embaixo): a de referencia da pilha.
     bool isReferenceKind(manip_task_execution::StackTargetKind kind) const
     {
-        return kind == manip_task_execution::StackTargetKind::kReference ||
-               (kind == manip_task_execution::StackTargetKind::kSlot && slot_use_stack_logic_);
+        return kind == manip_task_execution::StackTargetKind::kReference;
     }
 
-    /// Alvo e' uma cavidade da PP: slot por tag (101..107, kSlot) ou slot
-    /// inferido da AMT1 (frame com slot_hole_frame_prefix). So' esses podem
-    /// ser corrigidos pelo buraco visto (2026-11-06).
-    bool isSlotLikeTarget(
-        manip_task_execution::StackTargetKind kind, const std::string & frame) const
+    // =====================================================================
+    // MESA DE PRECISAO, refeita do zero (2026-11-16, branch mudanca_pp, pedido
+    // do operador): "verificar o furo e o seu centro" e, em vez de ir direto
+    // ao ponto, "ir aproximando aos poucos e recalculando esse ponto"; "a
+    // descida tem que ser pensada em colocar a tag (o cubo) em cima do furo";
+    // "assim que a camera nao detectar mais o furo, descer reto em z".
+    //
+    // Quem mede e' o pp_furo_node (manip_bringup), dentro da propria imagem:
+    // centro do furo pela tag do slot e pe' do fundo do cubo no tampo. Aqui so'
+    // se move o braco. Fatos de 16/11 que moldam o fluxo:
+    //   - a camera olha para ALEM do cubo: com o cubo em cima do furo ela nao
+    //     ve o furo em altura nenhuma; ve inteiro com o cubo >= 5,5 cm antes.
+    //     Por isso a chegada e' por tras/por cima, e a ultima conferencia usa a
+    //     tag do slot (que continua a' vista) + o vetor tag->furo medido antes;
+    //   - punho com yaw(dedos) = yaw(tag): e' a orientacao em que a camera fica
+    //     virada para a frente (a 180 graus disso ela nao ve tag nem furo);
+    //   - o alvo novo sai do TCP COMANDADO + erro medido (o braco cede com o
+    //     cubo: "medido + passo" desce em catraca);
+    //   - poucas paradas de centimetros, nada de passinhos: a j1 perde ~1 grau
+    //     ao inverter e cada trajetoria nova da' um tranco.
+    // =====================================================================
+
+    bool isPpSlot(const std::string & frame) const
     {
-        return kind == manip_task_execution::StackTargetKind::kSlot ||
-               (!slot_hole_frame_prefix_.empty() &&
-               frame.rfind(slot_hole_frame_prefix_, 0) == 0);
+        const std::optional<int> id = manip_task_execution::tagIdFromFrame(frame);
+        return id && std::find(
+            pp_slot_tag_ids_.begin(), pp_slot_tag_ids_.end(),
+            static_cast<int64_t>(*id)) != pp_slot_tag_ids_.end();
     }
 
-    /// Cota do TAMPO da PP (manip_base_link) para o pp_hole_detector fazer o
-    /// ray-cast no plano certo (latched; o detector reseta o rastreio quando
-    /// o valor muda > 5 mm).
-    void publishPpPlaneZ(double tabletop_z)
+    /// Direcao no tampo, a partir da tag do slot, para LONGE do robo: o eixo
+    /// da tag (multiplo de 90 graus) mais alinhado com o raio do braco. O furo
+    /// fica do outro lado (entre o robo e a tag).
+    static Eigen::Vector3d ppEixoParaFora(const Eigen::Vector3d & tag_p, double tag_yaw)
     {
-        // Espelha o reset do detector (pp_hole_detector_node._on_plane_z):
-        // plano novo ou > 5 mm do anterior => as deteccoes anteriores a este
-        // instante estao no plano errado (nearestLiveHole as descarta).
-        constexpr double kDetectorResetThresholdM = 0.005;
-        const bool changed =
-            !pp_plane_last_z_ || std::abs(tabletop_z - *pp_plane_last_z_) > kDetectorResetThresholdM;
-        if (changed) {
-            pp_plane_reset_time_ = this->get_clock()->now();
-        }
-        pp_plane_last_z_ = tabletop_z;
-        std_msgs::msg::Float64 msg;
-        msg.data = tabletop_z;
-        pp_plane_z_pub_->publish(msg);
-        RCLCPP_INFO(
-            get_logger(), "[SLOT] tampo da PP para o detector de buracos: z=%.3f%s.", tabletop_z,
-            changed ? " (plano mudou: rastreio do detector recomeca)" : "");
+        const double raio = std::atan2(tag_p.y(), tag_p.x());
+        const double a = tag_yaw + std::round((raio - tag_yaw) / (M_PI / 2.0)) * (M_PI / 2.0);
+        return Eigen::Vector3d(std::cos(a), std::sin(a), 0.0);
     }
 
-    /// Buraco VISTO mais proximo de (x, y) (mancha marrom no tampo branco),
-    /// se a ultima mensagem do detector e' fresca (<= slot_hole_max_age_sec),
-    /// posterior a ultima mudanca de plano (pp_plane_reset_time_) e o
-    /// candidato esta a <= slot_hole_max_correction_m (mais longe e' buraco
-    /// de OUTRO slot). Nao altera alvo nenhum. Saidas de diagnostico, sempre
-    /// preenchidas (mesmo com PoseArray vazia, para o log distinguir "detector
-    /// desligado" de "detector vivo sem segmentar nada"): age_out = idade da
-    /// mensagem (-1 sem mensagem); n_out = buracos nela; nearest_any_out =
-    /// distancia ao buraco mais proximo SEM o raio (-1 sem buraco), para o
-    /// operador ver se o raio esta curto.
-    /// pp_holes_ so' e' tocado sob o mutex, e o mutex nao segura log nem sono.
-    std::optional<manip_task_execution::HoleCandidate> nearestLiveHole(
-        double x, double y, double * age_out = nullptr, std::size_t * n_out = nullptr,
-        double * nearest_any_out = nullptr)
+    /// Yaw dos dedos que deixa a camera olhando para alem do cubo (para o furo e a tag).
+    static double ppYawCameraParaFrente(const Eigen::Vector3d & fora)
     {
-        if (age_out) {
-            *age_out = -1.0;
+        return std::atan2(fora.y(), fora.x()) - M_PI / 2.0;
+    }
+
+    struct PpMedida
+    {
+        bool ok{false};
+        bool furo_visto{false};   ///< furo inteiro na imagem (senao: pela tag + vetor guardado)
+        double lat{0.0};          ///< m, + = j1 crescendo
+        double rad{0.0};          ///< m, + = para longe da base
+        double giro{0.0};         ///< rad, quanto a garra tem de girar
+        double alt{0.0};          ///< m, fundo do cubo acima do tampo
+        std::string texto;
+    };
+
+    static double ppCampo(const std::string & msg, const std::string & chave, double padrao)
+    {
+        const auto pos = msg.find(chave + "=");
+        if (pos == std::string::npos) {
+            return padrao;
         }
-        if (n_out) {
-            *n_out = 0;
+        try {
+            return std::stod(msg.substr(pos + chave.size() + 1));
+        } catch (const std::exception &) {
+            return padrao;
         }
-        if (nearest_any_out) {
-            *nearest_any_out = -1.0;
+    }
+
+    /// Pede uma medida ao pp_furo_node. Chamar com o braco PARADO.
+    PpMedida ppMedir(const std::string & slot_frame)
+    {
+        PpMedida m;
+        std_msgs::msg::String slot;
+        slot.data = slot_frame;
+        pp_slot_pub_->publish(slot);
+        if (!pp_medir_client_->wait_for_service(std::chrono::seconds(1))) {
+            m.texto = "pp_furo_node fora do ar";
+            return m;
         }
-        if (!slot_hole_correction_enable_) {
-            return std::nullopt;
-        }
-        geometry_msgs::msg::PoseArray::ConstSharedPtr holes;
-        {
-            std::lock_guard<std::mutex> lock(pp_holes_mutex_);
-            holes = pp_holes_;
-        }
-        if (!holes) {
-            return std::nullopt;
-        }
-        const rclcpp::Time stamp(holes->header.stamp);
-        const double age = (this->get_clock()->now() - stamp).seconds();
-        if (age_out) {
-            *age_out = age;
-        }
-        if (n_out) {
-            *n_out = holes->poses.size();
-        }
-        if (holes->poses.empty()) {
-            return std::nullopt;
-        }
-        std::vector<manip_task_execution::HoleCandidate> candidates;
-        candidates.reserve(holes->poses.size());
-        for (const auto & pose : holes->poses) {
-            candidates.push_back({pose.position.x, pose.position.y});
-        }
-        if (nearest_any_out) {
-            const auto any = manip_task_execution::nearestHole(
-                candidates, x, y, std::numeric_limits<double>::infinity());
-            if (any) {
-                *nearest_any_out = std::hypot(any->x - x, any->y - y);
+        auto fut = pp_medir_client_->async_send_request(
+            std::make_shared<std_srvs::srv::Trigger::Request>());
+        const auto inicio = std::chrono::steady_clock::now();
+        while (fut.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+            if (cancellationRequested() || !rclcpp::ok() ||
+                std::chrono::steady_clock::now() - inicio > std::chrono::seconds(8))
+            {
+                m.texto = "sem resposta do pp_furo_node";
+                return m;
             }
         }
-        if (age < 0.0 || age > slot_hole_max_age_sec_) {
-            RCLCPP_DEBUG(
-                get_logger(), "[SLOT] buracos vistos ha %.1f s (max %.1f) — correcao fora.",
-                age, slot_hole_max_age_sec_);
-            return std::nullopt;
+        const auto res = fut.get();
+        m.texto = res->message;
+        if (!res->success) {
+            return m;
         }
-        if (stamp < pp_plane_reset_time_) {
-            RCLCPP_DEBUG(
-                get_logger(),
-                "[SLOT] buracos de antes da ultima mudanca do plano do tampo — correcao fora.");
-            return std::nullopt;
-        }
-        return manip_task_execution::nearestHole(candidates, x, y, slot_hole_max_correction_m_);
+        m.furo_visto = res->message.find("furo=visto") != std::string::npos;
+        m.lat = ppCampo(res->message, "lat_mm", 0.0) / 1000.0;
+        m.rad = ppCampo(res->message, "rad_mm", 0.0) / 1000.0;
+        m.giro = ppCampo(res->message, "giro_graus", 0.0) * M_PI / 180.0;
+        m.alt = ppCampo(res->message, "alt_mm", 0.0) / 1000.0;
+        // Medida absurda (tag trocada, reflexo): vale como "nao mediu".
+        m.ok = std::abs(m.lat) < 0.12 && std::abs(m.rad) < 0.12 && std::abs(m.giro) < 0.5 &&
+            m.alt > 0.0 && m.alt < 0.15;
+        return m;
     }
 
-    /// Alvo xy do slot pela FUSAO tag+buraco (2026-11-09). `t` entra como
-    /// tag + z_offset + slot_off_nominal + xy_corr e sai com xy:
-    ///   1. buraco visto de garra vazia desta base (stack_preseen_hole_,
-    ///      qualquer idade) ou, sem ele, buraco fresco do detector: media
-    ///      ponderada com slot_hole_weight, se a <= slot_hole_max_correction_m;
-    ///   2. senao, slot da PP com offset tag->buraco APRENDIDO: tag + offset
-    ///      aprendido + xy_corr no lugar do nominal;
-    ///   3. senao, nada muda (alvo nominal, como antes).
-    /// A ESCADINHA (xy_corr) fica FORA da fusao: o buraco observa o centro da
-    /// cavidade, e a fusao e' entre as duas estimativas desse centro
-    /// (tag + slot_off_nominal vs buraco); xy_corr e' somada INTEIRA depois,
-    /// nos tres ramos (antes, no ramo 1, ela entrava em `t` e era diluida
-    /// pelo peso: sobrava (1-w)*xy_corr). Ela compensa o cubo fora do centro
-    /// da garra e o vies de leitura tag->TCP, que o buraco nao enxerga (a
-    /// parte "leitura da tag" o buraco ate' corrige em parte; se a PP ficar
-    /// consistentemente 1 cm para tras com buraco visto, zerar
-    /// stack_place_y_offset_m so' para slot e' o proximo ajuste). O raio de
-    /// aceitacao e' medido contra tag + slot_off_nominal, a MESMA referencia
-    /// (`expected`) com que preObserveStackBase aceitou o buraco de garra
-    /// vazia — senao um buraco aceito la' a 4-5 cm era rejeitado aqui so'
-    /// pelos 12 mm da escadinha.
-    /// z e yaw nunca mudam. Oportunista: falhar em melhorar nunca piora.
-    void fuseSlotTarget(
-        Eigen::Vector3d & t, const std::string & frame,
-        manip_task_execution::StackTargetKind kind,
-        const Eigen::Vector3d & tag_pos, const Eigen::Vector3d & slot_off_nominal,
-        const Eigen::Vector3d & xy_corr)
+    StackOutcome placeOnPpSlot(
+        const std::shared_ptr<MoveGroupInterface> & arm,
+        const std::string & slot_frame,
+        const std::string & table_pose,
+        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
-        if (!slot_hole_correction_enable_) {
-            return;
+        if (pp_slot_ocupado_ == slot_frame) {
+            return StackOutcome::kBaseNotSeen;   // ja' avisado no log; o bloco volta ao pote
         }
-        // Centro da cavidade estimado pela tag (sem escadinha).
-        const double base_x = tag_pos.x() + slot_off_nominal.x();
-        const double base_y = tag_pos.y() + slot_off_nominal.y();
-        std::optional<manip_task_execution::HoleCandidate> hole;
-        const char * source = "ao vivo";
-        if (stack_preseen_hole_ && stack_preseen_hole_->frame == frame) {
-            hole = manip_task_execution::HoleCandidate{stack_preseen_hole_->x, stack_preseen_hole_->y};
-            source = "garra vazia";
+        // 1) Tag do slot: a leitura de garra vazia (preObserveStackBase) ou, sem ela, agora.
+        geometry_msgs::msg::TransformStamped tf;
+        if (stack_preseen_base_ && stack_preseen_base_->frame == slot_frame) {
+            tf = stack_preseen_base_->tf;
         } else {
-            hole = nearestLiveHole(base_x, base_y);
-        }
-        if (hole) {
-            const double dist = std::hypot(hole->x - base_x, hole->y - base_y);
-            if (dist <= slot_hole_max_correction_m_) {
-                const auto fused =
-                    manip_task_execution::fuseSlotXy(base_x, base_y, *hole, slot_hole_weight_);
-                t.x() = fused.x + xy_corr.x();
-                t.y() = fused.y + xy_corr.y();
-                RCLCPP_INFO(
-                    get_logger(),
-                    "[SLOT] fusao tag+buraco (%s): tag+nominal [%.4f %.4f], buraco [%.4f %.4f], "
-                    "peso %.2f -> centro [%.4f %.4f] + escadinha [%+.1f %+.1f] mm = alvo "
-                    "[%.4f %.4f] (dist %.1f mm, fonte %s)",
-                    frame.c_str(), base_x, base_y, hole->x, hole->y, slot_hole_weight_,
-                    fused.x, fused.y, xy_corr.x() * 1000.0, xy_corr.y() * 1000.0,
-                    t.x(), t.y(), dist * 1000.0, source);
-                return;
+            publishStage(goal_handle, "pp_procurando_slot");
+            speak("Procurando o encaixe " + spokenTargetName(slot_frame));
+            waitForCameraStream("PLACE");
+            if (!stackReadBase(slot_frame, tf, std::nullopt, "pp detect " + slot_frame)) {
+                return StackOutcome::kBaseNotSeen;
             }
+        }
+        const Eigen::Vector3d tag_p = framePosition(tf);
+        if (tag_p.y() < 0.10) {
+            RCLCPP_WARN(
+                get_logger(), "[PP] %s em y=%.3f (atras/sob o braco) - nao solto.",
+                slot_frame.c_str(), tag_p.y());
+            return StackOutcome::kBaseNotSeen;
+        }
+        const double tag_yaw = frameYaw(tf);
+        const Eigen::Vector3d fora = ppEixoParaFora(tag_p, tag_yaw);
+        // TCP = face de cima do cubo. Soltura nominal: fundo do cubo
+        // ref_drop_clearance acima do tampo (a tag do slot esta' no tampo).
+        const double z_solto = tag_p.z() + cube_height_m_ + ref_drop_clearance_m_;
+        // Onde o TCP comandado tem de estar para o cubo ficar em cima do furo.
+        // Comeca num palpite e e' RECALCULADO a cada parada pela camera.
+        Eigen::Vector2d alvo(
+            tag_p.x() - pp_tag_ate_o_furo_m_ * fora.x(), tag_p.y() - pp_tag_ate_o_furo_m_ * fora.y());
+        // Camera virada para a frente: dedos a -90 graus do eixo "para fora" da
+        // tag. Com o adesivo colado como os de hoje isso e' yaw(dedos) = yaw(tag)
+        // (conferido no robo em 16/11); pelo eixo, vale mesmo se um adesivo
+        // estiver girado de 90 ou 180 graus.
+        double yaw_garra = ppYawCameraParaFrente(fora);
+        std::array<double, 5> q{};
+        Eigen::Vector3d tcp_cmd(alvo.x(), alvo.y(), z_solto);
+        RCLCPP_INFO(
+            get_logger(),
+            "[PP] %s: tag em [%.3f %.3f %.3f], palpite do furo [%.3f %.3f] (%.0f mm antes da tag); "
+            "chegando em %zu parada(s).",
+            slot_frame.c_str(), tag_p.x(), tag_p.y(), tag_p.z(), alvo.x(), alvo.y(),
+            pp_tag_ate_o_furo_m_ * 1000.0, std::min(pp_recuo_m_.size(), pp_altura_m_.size()));
+
+        // 0 = chegou; 1 = sem IK; 2 = movimento falhou / cancelado.
+        const auto ir = [&](double recuo, double altura, const std::string & etapa) -> int {
+                const Eigen::Vector3d tcp(
+                    alvo.x() - recuo * fora.x(), alvo.y() - recuo * fora.y(), z_solto + altura);
+                std::array<double, 5> qn{};
+                if (!manip_task_execution::solveIk(tcp, 0.0, 0.0, qn)) {
+                    return 1;
+                }
+                qn[4] = std::remainder(qn[0] + M_PI - yaw_garra, 2.0 * M_PI);
+                publishStage(goal_handle, etapa);
+                stack_arm_moved_ = true;
+                if (!moveToJointTarget(arm, qn, etapa + " " + slot_frame)) {
+                    return 2;
+                }
+                q = qn;
+                tcp_cmd = tcp;
+                return sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_))) ?
+                       0 : 2;
+            };
+        const auto recalcular = [&](const PpMedida & m) {
+                const Eigen::Vector2d p(tcp_cmd.x(), tcp_cmd.y());
+                const Eigen::Vector2d r = p.normalized();
+                const Eigen::Vector2d l(-r.y(), r.x());
+                alvo = p + m.rad * r + m.lat * l;
+                yaw_garra += std::max(-0.26, std::min(0.26, m.giro));
+            };
+
+        speak("~Chegando no encaixe " + spokenTargetName(slot_frame));
+        const std::size_t n = std::min(pp_recuo_m_.size(), pp_altura_m_.size());
+        if (n == 0) {
+            RCLCPP_ERROR(get_logger(), "[PP] pp_recuo_m/pp_altura_m vazios.");
+            return StackOutcome::kNoIk;
+        }
+        PpMedida med;
+        bool mediu = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            const bool ultima = i + 1 == n;
+            const int rc = ir(
+                pp_recuo_m_[i], pp_altura_m_[i],
+                ultima ? "pp_sobre_o_furo" : "pp_aproximando_" + std::to_string(i + 1));
+            if (rc == 2) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (rc == 1) {
+                if (!ultima) {
+                    RCLCPP_WARN(get_logger(), "[PP] parada %zu sem IK - pulo para a seguinte.", i + 1);
+                    continue;
+                }
+                RCLCPP_ERROR(
+                    get_logger(), "[PP] sem IK a 0 grau em cima do furo [%.3f %.3f %.3f] - fora de alcance.",
+                    alvo.x(), alvo.y(), z_solto + pp_altura_m_[i]);
+                last_unreachable_targets_ = {Eigen::Vector3d(alvo.x(), alvo.y(), z_solto)};
+                return StackOutcome::kUnreachable;
+            }
+            med = ppMedir(slot_frame);
+            RCLCPP_INFO(
+                get_logger(), "[PP] parada %zu/%zu (%.0f mm antes, %.0f mm acima): %s", i + 1, n,
+                pp_recuo_m_[i] * 1000.0, pp_altura_m_[i] * 1000.0, med.texto.c_str());
+            if (med.ok) {
+                // Em cima do furo o cubo deve estar a ~0 dele; nas paradas de
+                // antes, ainda a `recuo` do furo. O alvo novo vale para as duas.
+                recalcular(med);
+                mediu = true;
+            }
+        }
+        // 2) Em cima do furo: corrige ate' a tolerancia (poucas vezes).
+        for (int c = 0; med.ok && c < pp_correcoes_max_; ++c) {
+            const double falta = std::hypot(tcp_cmd.x() - alvo.x(), tcp_cmd.y() - alvo.y());
+            if (falta <= pp_tolerancia_m_ && std::abs(med.giro) < 0.017) {
+                break;
+            }
+            RCLCPP_INFO(
+                get_logger(), "[PP] corrigindo em cima do furo: faltam %.1f mm, giro %+.1f graus.",
+                falta * 1000.0, med.giro * 180.0 / M_PI);
+            const int rc = ir(0.0, pp_altura_m_[n - 1], "pp_corrigindo");
+            if (rc == 2) {
+                return StackOutcome::kMoveFailed;
+            }
+            if (rc == 1) {
+                break;
+            }
+            med = ppMedir(slot_frame);
+            RCLCPP_INFO(get_logger(), "[PP] depois da correcao %d: %s", c + 1, med.texto.c_str());
+            if (med.ok) {
+                recalcular(med);
+            }
+        }
+        if (!mediu) {
             RCLCPP_WARN(
                 get_logger(),
-                "[SLOT] buraco (%s) a %.1f mm do centro tag+nominal de %s, acima de %.1f mm — "
-                "ignorado.",
-                source, dist * 1000.0, frame.c_str(), slot_hole_max_correction_m_ * 1000.0);
+                "[PP] a camera nao mediu o furo em nenhuma parada (%s) - deso reto pelo palpite da tag.",
+                med.texto.c_str());
+            speak("Nao vi o encaixe, vou descer pelo que tenho");
         }
-        if (slot_hole_learn_offset_ && kind == manip_task_execution::StackTargetKind::kSlot) {
-            const auto learned = slot_hole_learner_.estimate();
-            if (learned) {
-                t.x() = tag_pos.x() + learned->first + xy_corr.x();
-                t.y() = tag_pos.y() + learned->second + xy_corr.y();
-                RCLCPP_INFO(
-                    get_logger(),
-                    "[SLOT] sem buraco para %s: uso o offset tag->buraco aprendido dx=%+.1f "
-                    "dy=%+.1f mm (%zu amostras) no lugar do nominal %+.1f/%+.1f",
-                    frame.c_str(), learned->first * 1000.0, learned->second * 1000.0,
-                    slot_hole_learner_.size(), slot_off_nominal.x() * 1000.0,
-                    slot_off_nominal.y() * 1000.0);
-            }
+        // 3) Desce reto em z. Com medida, da altura VISTA do fundo do cubo (o
+        // braco cede de 7 a 13 mm com o cubo) ate' pp_entra_no_furo_m abaixo do
+        // tampo; sem medida, a altura nominal da ultima parada, como antes.
+        const double desce = std::max(
+            0.008, std::min(0.035, med.ok ? med.alt + pp_entra_no_furo_m_ : pp_altura_m_[n - 1]));
+        const Eigen::Vector3d tcp_final(alvo.x(), alvo.y(), tcp_cmd.z() - desce);
+        std::array<double, 5> q_final{};
+        if (!manip_task_execution::solveIk(tcp_final, 0.0, 0.0, q_final)) {
+            RCLCPP_ERROR(
+                get_logger(), "[PP] sem IK para a descida ate' [%.3f %.3f %.3f].",
+                tcp_final.x(), tcp_final.y(), tcp_final.z());
+            return StackOutcome::kNoIk;
         }
+        q_final[4] = std::remainder(q_final[0] + M_PI - yaw_garra, 2.0 * M_PI);
+        stack_lift_q_ = q;   // subida apos soltar: volta para a ultima parada
+        RCLCPP_INFO(
+            get_logger(), "[PP] descendo reto %.0f mm (fundo do cubo %s a %.0f mm do tampo) e soltando.",
+            desce * 1000.0, med.ok ? "visto" : "estimado",
+            (med.ok ? med.alt : pp_altura_m_[n - 1]) * 1000.0);
+        publishStage(goal_handle, "pp_descendo");
+        if (!moveToJointTarget(arm, q_final, "pp descend " + slot_frame)) {
+            return StackOutcome::kMoveFailed;
+        }
+        last_slot_decision_ = SlotDecision{"pp:" + slot_frame, table_pose, tcp_final, 0.0, std::nullopt};
+        return StackOutcome::kOk;
     }
 
     /// Yaw atual da LINHA DOS DEDOS (eixo X do TCP projetado no plano XY da
@@ -5042,36 +4814,6 @@ private:
         return false;
     }
 
-    /// Recolhe o braco a pegar_obj (melhor esforco, j2/j3 primeiro = sobe na
-    /// vertical) depois de deixar o cubo na mesa de precisao / pilha sem
-    /// entrega: toda saida que nao e' falha de movimento deixa o braco em
-    /// pegar_obj (como a superficie e o fallback da pilha), senao o proximo
-    /// passo do executor parte com o braco estendido sobre a mesa.
-    void retractAfterLeavingCube(
-        const std::shared_ptr<MoveGroupInterface> & arm,
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
-        const std::string & tag)
-    {
-        publishStage(goal_handle, tag + "_retract");
-        std::array<double, 5> q_rest{};
-        bool ok = false;
-        if (namedPoseJoints(arm, "pegar_obj", q_rest)) {
-            ok = moveToJointTargetJoints23First(arm, q_rest, tag + " retract pegar_obj");
-        } else {
-            arm->setStartStateToCurrentState();
-            arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget("pegar_obj");
-            ok = planAndExecute(arm, tag + " retract pegar_obj");
-        }
-        if (!ok) {
-            RCLCPP_ERROR(
-                get_logger(),
-                "[%s] cubo ficou na mesa e o retorno a pegar_obj falhou - braco pode estar "
-                "estendido sobre a mesa.", tag.c_str());
-            speak("!Nao consegui recolher o braco");
-        }
-    }
-
     /// Resolve a escada de inclinacao para um ponto do TCP E a pre-pose
     /// `pre_lift` acima dele (mesma inclinacao nas duas).
     static bool solveLadderWithLift(
@@ -5236,8 +4978,7 @@ private:
 
     /// Solta o cubo carregado com o TCP em `target` e os dedos no yaw da tag
     /// alvo (2026-10-21): pre-pose `pre_lift` acima, descida vertical, abre a
-    /// garra, sobe de volta. Marca release_done_in_place_ (runPlaceCycle nao
-    /// abre de novo) e cube_left_on_table_ (ate' alguem re-pegar/aceitar).
+    /// garra, sobe de volta. Marca cube_left_on_table_ (ate' alguem re-pegar/aceitar).
     /// kLiftFailed = soltou mas nao subiu. `fk_err_xy` = erro XY do TCP por
     /// FK na soltura (< 0 sem estado); `fk_actual` = onde a ponta parou.
     /// `tilt_comp` soma a compensacao de inclinacao em z (quina baixa do cubo
@@ -5307,11 +5048,12 @@ private:
                 std::hypot(actual.x() - cmd.x(), actual.y() - cmd.y()) * 1000.0);
         }
         gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_full_open");
+        // 2026-11-17 (pedido do operador): na ENTREGA nunca gripper_full_open,
+        // so' gripper_open (os dedos largos esbarram nos vizinhos).
+        gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, stage + " open gripper")) {
             return DropResult::kGripperFailed;
         }
-        release_done_in_place_ = true;
         cube_left_on_table_ = true;
         if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_) / 2))) {
             return DropResult::kLiftFailed;
@@ -5320,506 +5062,6 @@ private:
             return DropResult::kLiftFailed;
         }
         return DropResult::kDone;
-    }
-
-    // =====================================================================
-    // ENCAIXE NO SLOT DA MESA DE PRECISAO (2026-10-21).
-    //
-    // Geometria: a tag do slot esta no FUNDO da cavidade (z_tag); o tampo
-    // fica slot_cavity_depth_m acima. O TCP (face de cima do cubo carregado)
-    // desce na VERTICAL ate z_tag + cavidade + folga + cubo: o fundo do cubo
-    // para slot_drop_clearance_m acima do tampo e, se estiver alinhado em
-    // (x, y) e yaw (faces paralelas as paredes), cai dentro ao abrir.
-    //
-    // O braco chega hoje com ~1-2 cm de erro e a folga e' de 2 mm, entao uma
-    // descida so' nao basta: depois de soltar, o braco sobe, olha a tag do
-    // PROPRIO cubo (ate' 2 leituras, a 2a de mais alto) e decide
-    // (place_precision::decideSlotAction):
-    //   encaixado    = topo em z_tag + cubo (+- slot_seat_tolerance_m) ->
-    //                  sucesso. O xy NAO decide (as duas tags sao lidas de
-    //                  poses diferentes do braco: 1-2 cm de FK); um cubo
-    //                  assentado nao pode estar fora da cavidade;
-    //   na borda     = topo >= z_tag + cavidade + cubo - tol (apoiado por
-    //                  cima) -> re-pega o cubo (regraspCube, TCP NUNCA abaixo
-    //                  da borda: os dedos chegam ao tampo), corrige pelo erro
-    //                  MEDIDO (onde caiu x onde foi mandado) + proximo ponto
-    //                  da espiral (spiralOffsets) e solta de novo, ate'
-    //                  slot_max_attempts;
-    //   meio dentro / tombado / abaixo do fundo = NAO re-pega (os dedos iriam
-    //                  abaixo do tampo): olha de novo e, se continuar, deixa;
-    //   nao visto    = olha de novo de mais alto; se continuar, NAO declara
-    //                  encaixe nem re-pega as cegas: 'slot_nao_verificado'.
-    // Falha final: o cubo fica onde esta (cube_left_on_table_: o container de
-    // bordo e' liberado e a posicao vai para a memoria), fail_reason
-    // 'slot_nao_encaixou' / 'slot_nao_verificado', e o braco RECOLHE a
-    // pegar_obj. NUNCA cai na mesa comum. Sem planning scene da mesa: a
-    // unica guarda contra empurrar a mesa e' nunca comandar z abaixo da
-    // borda.
-    // Estagios: slot_detecting, slot_aligning, slot_inserting, slot_verifying,
-    // slot_reobserving, slot_retry_N, slot_retract (+ slot_search,
-    // slot_regrasp).
-    // =====================================================================
-    StackOutcome placeIntoPrecisionSlot(
-        const std::shared_ptr<MoveGroupInterface> & arm,
-        const std::shared_ptr<MoveGroupInterface> & gripper,
-        const std::string & slot_frame,
-        const std::string & table_pose,
-        const std::string & cube_frame,
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
-    {
-        using manip_task_execution::PlacementDecision;
-        using manip_task_execution::SeatState;
-        using manip_task_execution::StackTargetKind;
-
-        publishStage(goal_handle, "slot_detecting");
-        speak("~Procurando o encaixe " + spokenTargetName(slot_frame));
-        waitForCameraStream("PLACE");
-
-        geometry_msgs::msg::TransformStamped slot_tf;
-        if (!stackReadBase(slot_frame, slot_tf, std::nullopt, "slot detect " + slot_frame)) {
-            bool seen = false;
-            if (container_search_lateral_) {
-                seen = searchTagLateral(arm, slot_frame, slot_tf, stack_arm_moved_, goal_handle, "slot");
-                if (cancellationRequested()) {
-                    return StackOutcome::kMoveFailed;
-                }
-            }
-            if (!seen) {
-                return StackOutcome::kBaseNotSeen;
-            }
-        }
-        if (slot_tf.transform.translation.y < 0.10) {
-            RCLCPP_WARN(
-                get_logger(), "[SLOT] %s em y=%.3f (atras/sob o braco) - nao encaixo.",
-                slot_frame.c_str(), slot_tf.transform.translation.y);
-            return StackOutcome::kBaseNotSeen;
-        }
-
-        // Pre-alinhamento lateral (mesmo do empilhamento): a camera do punho
-        // ve melhor o slot por cima quando ele esta longe do centro.
-        constexpr double kTagXNearZero = 0.1;
-        if (std::abs(slot_tf.transform.translation.x) > kTagXNearZero) {
-            publishStage(goal_handle, "slot_pre_approach");
-            arm->setStartStateToCurrentState();
-            arm->setEndEffectorLink("tcp");
-            arm->setNamedTarget(
-                slot_tf.transform.translation.x > 0.0 ? "tag_direita" : "tag_esquerda");
-            stack_arm_moved_ = true;
-            if (!planAndExecute(arm, "slot go tag_lateral")) {
-                return StackOutcome::kMoveFailed;
-            }
-            const rclcpp::Time parou_lateral = this->get_clock()->now();
-            if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
-                return StackOutcome::kMoveFailed;
-            }
-            if (!stackReadBase(slot_frame, slot_tf, parou_lateral, "slot final " + slot_frame)) {
-                return StackOutcome::kBaseNotSeen;
-            }
-        }
-
-        // Liga o detector de buracos no plano do TAMPO (tag no tampo = cota
-        // da propria tag; tag no fundo = fundo + profundidade da cavidade).
-        publishPpPlaneZ(
-            slot_tf.transform.translation.z +
-            (slot_tag_on_tabletop_ ? 0.0 : slot_cavity_depth_m_));
-
-        // slot_p = CENTRO do FUNDO da cavidade (nao a tag): a tag fica no
-        // tampo, slot_center_offset_m alem do slot (ver os parametros).
-        auto slot_from_tag = [this, &slot_frame](
-            const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
-                const auto o = manip_task_execution::slotCenterOffset(
-                    frameYaw(tf), slot_center_offset_m_, 0.0, -1.0);
-                Eigen::Vector3d p = framePosition(tf) + Eigen::Vector3d(
-                    o.dx, o.dy, slot_tag_on_tabletop_ ? -slot_cavity_depth_m_ : 0.0);
-                // Buraco da PP VISTO (marrom no tampo branco): fusao com o
-                // centro real da cavidade, peso slot_hole_weight (2026-11-09;
-                // sem learner neste caminho). Oportunista.
-                double age = -1.0;
-                std::size_t n_holes = 0;
-                const auto hole = nearestLiveHole(p.x(), p.y(), &age, &n_holes);
-                if (hole) {
-                    const auto fused =
-                        manip_task_execution::fuseSlotXy(p.x(), p.y(), *hole, slot_hole_weight_);
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "[SLOT] %s: buraco visto a dx=%+.1f dy=%+.1f mm do alvo da tag — fusao "
-                        "peso %.2f -> alvo xy [%.4f %.4f] (%zu visto(s), %.1f s).",
-                        slot_frame.c_str(), (hole->x - p.x()) * 1000.0, (hole->y - p.y()) * 1000.0,
-                        slot_hole_weight_, fused.x, fused.y, n_holes, age);
-                    p.x() = fused.x;
-                    p.y() = fused.y;
-                }
-                return p;
-            };
-        Eigen::Vector3d slot_p = slot_from_tag(slot_tf);
-        double slot_yaw = frameYaw(slot_tf);
-        RCLCPP_INFO(
-            get_logger(),
-            "[SLOT] tag %s em [%.4f %.4f %.4f] -> centro do slot [%.4f %.4f] "
-            "(%.0f mm para o robo na borda da tag), fundo z=%.4f%s",
-            slot_frame.c_str(), slot_tf.transform.translation.x, slot_tf.transform.translation.y,
-            slot_tf.transform.translation.z, slot_p.x(), slot_p.y(),
-            slot_center_offset_m_ * 1000.0, slot_p.z(),
-            slot_tag_on_tabletop_ ? " (tag no tampo)" : " (tag no fundo)");
-        const std::optional<double> finger_yaw_now = currentFingerYaw(arm);
-        const double z_offset = stackTcpZOffset(StackTargetKind::kSlot);
-        RCLCPP_INFO(
-            get_logger(),
-            "[SLOT] slot %s em [%.4f %.4f %.4f] yaw=%.3f; TCP de soltura %.3f acima "
-            "(cubo %.3f + cavidade %.3f + folga %.3f)",
-            slot_frame.c_str(), slot_p.x(), slot_p.y(), slot_p.z(), slot_yaw, z_offset,
-            cube_height_m_, slot_cavity_depth_m_, slot_drop_clearance_m_);
-
-        // Pre-aproximacao TCP2 + re-leitura de perto (mesma da pilha/pick:
-        // "de longe a camera erra o ponto; de perto acerta").
-        publishStage(goal_handle, "slot_aligning");
-        if (stack_pre_ik_tcp2_ && stack_pre_ik_tcp2_z_ > 0.0) {
-            manip_task_execution::ArmModel tcp2_model{};
-            tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
-            const Eigen::Vector3d target0 = slot_p + Eigen::Vector3d(0.0, 0.0, z_offset);
-            std::array<double, 5> q_pre{};
-            bool pre_ok = false;
-            double tilt_pre = 0.0;
-            for (const double tilt : tiltLadderRad(slot_tilt_ladder_deg_)) {
-                if (manip_task_execution::solveIk(target0, tilt, 0.0, q_pre, tcp2_model)) {
-                    pre_ok = true;
-                    tilt_pre = tilt;
-                    break;
-                }
-            }
-            if (pre_ok) {
-                q_pre[4] = wristForCubeYaw(slot_yaw, q_pre[0], tilt_pre, finger_yaw_now);
-                stack_arm_moved_ = true;
-                if (!moveToJointTarget(arm, q_pre, "slot pre tcp2 " + slot_frame)) {
-                    return StackOutcome::kMoveFailed;
-                }
-                const rclcpp::Time parou_tcp2 = this->get_clock()->now();
-                if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
-                    return StackOutcome::kMoveFailed;
-                }
-                geometry_msgs::msg::TransformStamped fresh;
-                if (stackReadBase(slot_frame, fresh, parou_tcp2, "slot re_detect_tcp2 " + slot_frame)) {
-                    const Eigen::Vector3d d = slot_from_tag(fresh) - slot_p;
-                    slot_p = slot_from_tag(fresh);
-                    slot_yaw = frameYaw(fresh);
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "[SLOT] re-leitura de perto: slot moveu dx=%+.1f dy=%+.1f dz=%+.1f mm, yaw=%.3f",
-                        d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0, slot_yaw);
-                } else {
-                    RCLCPP_WARN(
-                        get_logger(), "[SLOT] sem leitura nova de %s de perto - sigo com a de longe.",
-                        slot_frame.c_str());
-                }
-            } else {
-                RCLCPP_WARN(get_logger(), "[SLOT] pre-ponto TCP2 sem IK - sigo direto para a descida.");
-            }
-        }
-
-        const auto spiral = manip_task_execution::spiralOffsets(
-            slot_search_step_m_, slot_search_radius_m_);
-        const int max_attempts = std::max(1, slot_max_attempts_);
-        // Borda da cavidade: onde fica a tag de um cubo APOIADO POR CIMA e o
-        // piso do TCP em qualquer re-pega (os dedos chegam ao tampo, nunca
-        // abaixo - sem planning scene da mesa, isto e' a unica guarda).
-        const double z_rim = manip_task_execution::slotRimCubeTagZ(
-            slot_p.z(), cube_height_m_, slot_cavity_depth_m_);
-        Eigen::Vector2d corr(0.0, 0.0);
-        double yaw_corr = 0.0;
-        std::optional<Eigen::Vector3d> first_target;
-        const Eigen::Vector3d expected_top(
-            slot_p.x(), slot_p.y(),
-            manip_task_execution::seatedCubeTagZ(slot_p.z(), cube_height_m_));
-
-        for (int attempt = 0; attempt < max_attempts; ++attempt) {
-            const auto & off = spiral[std::min<std::size_t>(attempt, spiral.size() - 1)];
-            Eigen::Vector3d target(
-                slot_p.x() + off.dx + corr.x(), slot_p.y() + off.dy + corr.y(), slot_p.z() + z_offset);
-            const double finger_yaw = slot_yaw + yaw_corr;
-            if (attempt > 0) {
-                publishStage(goal_handle, "slot_retry_" + std::to_string(attempt));
-                speak("Tentando encaixar de novo");
-                RCLCPP_INFO(
-                    get_logger(),
-                    "[SLOT] tentativa %d/%d: espiral (%+.1f %+.1f) mm + correcao (%+.1f %+.1f) mm, "
-                    "yaw %+.1f graus",
-                    attempt + 1, max_attempts, off.dx * 1000.0, off.dy * 1000.0,
-                    corr.x() * 1000.0, corr.y() * 1000.0, yaw_corr * 180.0 / M_PI);
-            } else {
-                speak("~Encaixando o cubo");
-            }
-
-            double fk_err_xy = -1.0;
-            Eigen::Vector3d fk_actual = target;
-            double tilt = 0.0;
-            DropResult dr = dropCubeAt(
-                arm, gripper, target, finger_yaw, finger_yaw_now, slot_tilt_ladder_deg_,
-                slot_pre_lift_m_, true, true, goal_handle, "slot_inserting", &fk_err_xy, &fk_actual,
-                &tilt);
-            if (dr == DropResult::kNoIk && attempt > 0 && first_target) {
-                // Deslocamento da espiral sem IK: volta ao ponto da 1a soltura
-                // (resolveu) em vez de sair com o cubo na garra.
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[SLOT] sem IK para este deslocamento - soltando no ponto da primeira soltura.");
-                target = *first_target;
-                dr = dropCubeAt(
-                    arm, gripper, target, finger_yaw, finger_yaw_now, slot_tilt_ladder_deg_,
-                    slot_pre_lift_m_, true, true, goal_handle, "slot_inserting", &fk_err_xy,
-                    &fk_actual, &tilt);
-            }
-            if (dr == DropResult::kNoIk) {
-                if (attempt == 0) {
-                    RCLCPP_ERROR(
-                        get_logger(),
-                        "[SLOT] IK propria nao achou solucao (com pre-pose) para [%.3f %.3f %.3f] - "
-                        "fora de alcance.",
-                        target.x(), target.y(), target.z());
-                    last_unreachable_targets_ = {target};
-                    return StackOutcome::kUnreachable;
-                }
-                // Nao deveria acontecer (o ponto da 1a soltura resolveu): o
-                // cubo esta na garra apos a re-pega - sai como fora de alcance
-                // para o caminho de sempre devolve-lo ao container de bordo
-                // (passa por pegar_obj) em vez de abortar com o braco estendido.
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "[SLOT] sem IK nem no ponto da primeira soltura - devolvendo o cubo ao container.");
-                last_unreachable_targets_ = {target};
-                return StackOutcome::kUnreachable;
-            }
-            if (attempt == 0) {
-                first_target = target;
-            }
-            if (dr == DropResult::kGripperFailed) {
-                last_place_failure_reason_ = "garra_nao_abriu_no_destino";
-                return StackOutcome::kMoveFailed;
-            }
-            if (dr == DropResult::kMoveFailed) {
-                return StackOutcome::kMoveFailed;
-            }
-            if (dr == DropResult::kLiftFailed) {
-                return StackOutcome::kMoveFailed;
-            }
-            if (tilt > 1e-6) {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "[SLOT] descida final com %.0f graus de inclinacao (0 graus sem IK aqui) - "
-                    "encaixe de BAIXA confianca: cubo inclinado dificilmente entra em 2 mm de folga.",
-                    tilt * 180.0 / M_PI);
-            }
-
-            // Verificacao pela tag do proprio cubo: ate' kSlotMaxObservations
-            // leituras (a segunda de mais alto) antes de decidir
-            // (decideSlotAction). Nunca sucesso sem ver; nunca re-pega as
-            // cegas; nunca re-pega um cubo assentado ou meio dentro.
-            manip_task_execution::SlotLimits slim;
-            slim.z_slot_tag = slot_p.z();
-            slim.cube_height_m = cube_height_m_;
-            slim.cavity_depth_m = slot_cavity_depth_m_;
-            // Nunca mais que metade da cavidade (3-6 mm na mesa real): as
-            // faixas encaixado/borda nao podem se sobrepor.
-            const double seat_tol = manip_task_execution::effectiveSeatTolerance(
-                slot_seat_tolerance_m_, slot_cavity_depth_m_);
-            slim.seat_tol_m = seat_tol;
-            slim.attempts_done = attempt + 1;
-            slim.max_attempts = max_attempts;
-            slim.max_observations = kSlotMaxObservations;
-            CubeObservation obs;
-            manip_task_execution::SlotAction action = manip_task_execution::SlotAction::kLeave;
-            double err_xy = 0.0;
-            for (int look = 0; look < kSlotMaxObservations; ++look) {
-                obs = observePlacedCube(
-                    arm, cube_frame, expected_top, finger_yaw, slot_tilt_ladder_deg_, goal_handle,
-                    look == 0 ? "slot_verifying" : "slot_reobserving",
-                    look == 0 ? 0.0 : slot_reobserve_extra_z_m_);
-                if (cancellationRequested()) {
-                    return StackOutcome::kMoveFailed;
-                }
-                manip_task_execution::SlotObservation so;
-                so.seen = obs.seen;
-                if (obs.seen) {
-                    const SeatState seat = manip_task_execution::slotSeatState(
-                        obs.p.z(), slot_p.z(), cube_height_m_, slot_cavity_depth_m_, seat_tol);
-                    err_xy = std::hypot(obs.p.x() - slot_p.x(), obs.p.y() - slot_p.y());
-                    so.z_cube_tag = obs.p.z();
-                    so.err_xy_m = err_xy;
-                    const bool on_rim = seat == SeatState::kUnseated &&
-                        obs.p.z() >= z_rim - seat_tol;
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "[SLOT] cubo %s visto em [%.4f %.4f %.4f] yaw=%.3f (leitura %d/%d): dxy=%.1f mm, "
-                        "dz=%+.1f mm do assentado, %+.1f mm da borda -> %s (tolerancia z %.0f mm)",
-                        cube_frame.c_str(), obs.p.x(), obs.p.y(), obs.p.z(), obs.yaw, look + 1,
-                        kSlotMaxObservations, err_xy * 1000.0,
-                        (obs.p.z() - expected_top.z()) * 1000.0, (obs.p.z() - z_rim) * 1000.0,
-                        seat == SeatState::kSeated ? "ENCAIXADO" :
-                        on_rim ? "APOIADO NA BORDA" :
-                        seat == SeatState::kUnseated ? "MEIO DENTRO / TOMBADO" :
-                        "leitura inconsistente (abaixo do fundo)",
-                        seat_tol * 1000.0);
-                } else {
-                    RCLCPP_WARN(
-                        get_logger(),
-                        "[SLOT] cubo %s NAO visto apos soltar (leitura %d/%d; erro FK XY na soltura "
-                        "%.1f mm, so' informativo).",
-                        cube_frame.c_str(), look + 1, kSlotMaxObservations, fk_err_xy * 1000.0);
-                }
-                slim.observations_done = look + 1;
-                action = manip_task_execution::decideSlotAction(so, slim);
-                RCLCPP_INFO(
-                    get_logger(), "[SLOT] decisao apos a soltura %d/%d (leitura %d): %s",
-                    attempt + 1, max_attempts, look + 1,
-                    manip_task_execution::slotActionName(action));
-                if (action != manip_task_execution::SlotAction::kReobserve) {
-                    break;
-                }
-            }
-
-            if (action == manip_task_execution::SlotAction::kAccept) {
-                if (err_xy > slot_xy_tolerance_m_) {
-                    // Diagnostico de FK: a tag do slot foi lida do pre-ponto
-                    // TCP2 e a do cubo da pose de verificacao - configuracoes
-                    // diferentes do braco. O assentamento em z e' a evidencia.
-                    RCLCPP_WARN(
-                        get_logger(),
-                        "[SLOT] encaixado em z mas dxy=%.1f mm > %.0f mm entre as duas leituras - "
-                        "discrepancia de FK entre poses, nao do encaixe.",
-                        err_xy * 1000.0, slot_xy_tolerance_m_ * 1000.0);
-                }
-                speak("!Encaixei o cubo");
-                last_slot_decision_ = SlotDecision{
-                    "slot:" + slot_frame, table_pose, target, 0.0, obs.p};
-                cube_left_on_table_ = false;
-                return StackOutcome::kOk;
-            }
-            if (action == manip_task_execution::SlotAction::kRegrasp) {
-                // Apoiado na borda: TCP no plano da tag vista, mas nunca
-                // abaixo da borda (leitura baixa mandaria os dedos para
-                // dentro do tampo).
-                const Eigen::Vector3d grasp_p(
-                    obs.p.x(), obs.p.y(), manip_task_execution::slotRegraspTcpZ(obs.p.z(), z_rim));
-                RCLCPP_INFO(
-                    get_logger(),
-                    "[SLOT] re-pega na borda: TCP z=%.4f (visto %.4f, borda %.4f; piso = borda).",
-                    grasp_p.z(), obs.p.z(), z_rim);
-                const RegraspResult rr = regraspCube(
-                    arm, gripper, grasp_p, obs.yaw, slot_tilt_ladder_deg_, slot_pre_lift_m_,
-                    goal_handle, "slot");
-                if (rr == RegraspResult::kMoveFailed) {
-                    return StackOutcome::kMoveFailed;
-                }
-                if (rr == RegraspResult::kMoveFailedHolding) {
-                    cube_left_on_table_ = false;
-                    last_place_failure_reason_ = "falha_com_bloco_na_garra";
-                    return StackOutcome::kMoveFailed;
-                }
-                if (rr == RegraspResult::kHolding) {
-                    cube_left_on_table_ = false;
-                    if (slot_use_measured_correction_) {
-                        // Erro sistematico medido: onde o cubo caiu x onde o
-                        // TCP foi mandado. Proxima soltura compensa.
-                        Eigen::Vector2d err(obs.p.x() - target.x(), obs.p.y() - target.y());
-                        corr -= err;
-                        const double n = corr.norm();
-                        if (n > slot_correction_max_m_ && n > 0.0) {
-                            corr *= slot_correction_max_m_ / n;
-                        }
-                        const double dyaw = manip_task_execution::nearestQuarterTurn(finger_yaw, obs.yaw);
-                        constexpr double kMaxYawCorr = 10.0 * M_PI / 180.0;
-                        yaw_corr = std::max(-kMaxYawCorr, std::min(kMaxYawCorr, yaw_corr + dyaw));
-                        RCLCPP_INFO(
-                            get_logger(),
-                            "[SLOT] correcao medida: cubo caiu (%+.1f %+.1f) mm do mandado, yaw %+.1f graus "
-                            "-> correcao acumulada (%+.1f %+.1f) mm, yaw %+.1f graus",
-                            err.x() * 1000.0, err.y() * 1000.0, dyaw * 180.0 / M_PI,
-                            corr.x() * 1000.0, corr.y() * 1000.0, yaw_corr * 180.0 / M_PI);
-                    }
-                    continue;
-                }
-                // kNotGrabbed: a garra fechou vazia na borda - o cubo nao
-                // esta onde foi visto; fica na mesa (abaixo).
-            }
-
-            // kLeave (ou re-pega sem sucesso): o cubo fica onde esta - nunca
-            // uma descida abaixo da borda. Recolhe o braco antes de sair.
-            if (!obs.seen) {
-                last_place_failure_reason_ = "slot_nao_verificado";
-                speak("!Nao vi o cubo depois de soltar, nao sei se encaixou");
-                last_slot_decision_ = SlotDecision{
-                    "slot_nao_verificado:" + slot_frame, table_pose, target, 0.0,
-                    Eigen::Vector3d(fk_actual.x(), fk_actual.y(), expected_top.z())};
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "[SLOT] %s solto em %s mas NAO visto em %d leitura(s) - nao declaro encaixe "
-                    "(slot_nao_verificado); cubo fica na mesa.",
-                    cube_frame.c_str(), slot_frame.c_str(), kSlotMaxObservations);
-            } else {
-                last_place_failure_reason_ = "slot_nao_encaixou";
-                speak("!Nao consegui encaixar o cubo");
-                last_slot_decision_ = SlotDecision{
-                    "slot_falhou:" + slot_frame, table_pose, target, 0.0, obs.p};
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "[SLOT] nao encaixei %s em %s apos %d soltura(s) - cubo fica na mesa em "
-                    "[%.3f %.3f %.3f].",
-                    cube_frame.c_str(), slot_frame.c_str(), attempt + 1,
-                    obs.p.x(), obs.p.y(), obs.p.z());
-            }
-            retractAfterLeavingCube(arm, goal_handle, "slot");
-            return StackOutcome::kNoIk;
-        }
-        // Nao deveria chegar aqui: a ultima soltura nunca re-pega
-        // (decideSlotAction) e sai acima. Defesa: cubo na mesa, recolhe.
-        if (last_place_failure_reason_.empty()) {
-            last_place_failure_reason_ = cube_left_on_table_ ? "slot_nao_encaixou" : "encaixe_falhou";
-        }
-        if (cube_left_on_table_) {
-            retractAfterLeavingCube(arm, goal_handle, "slot");
-        }
-        return StackOutcome::kNoIk;
-    }
-
-    /// Desfechos do encaixe no slot (moveToPlaceTarget). Nunca cai na mesa:
-    /// um cubo solto fora da cavidade atrapalha a mesa de precisao inteira.
-    /// kBaseNotSeen / fora de alcance => o cubo volta ao container de bordo
-    /// (unreachable; com bailout vem a sugestao de deslocamento da base).
-    bool handleSlotOutcome(
-        const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
-        StackOutcome out,
-        const std::string & slot_frame)
-    {
-        if (out == StackOutcome::kOk) {
-            return true;
-        }
-        if (out == StackOutcome::kUnreachable &&
-            tryUnreachableBailout(
-                goal_handle, slot_tilt_ladder_deg_, "SLOT",
-                "O encaixe " + spokenTargetName(slot_frame)))
-        {
-            return false;
-        }
-        if (out == StackOutcome::kBaseNotSeen || out == StackOutcome::kUnreachable) {
-            last_place_failure_reason_ =
-                out == StackOutcome::kBaseNotSeen ? "base_nao_vista" : "alvo_fora_de_alcance";
-            last_failure_unreachable_ = true;
-            last_suggested_shift_m_ = 0.0;
-            RCLCPP_WARN(
-                get_logger(),
-                "[SLOT] nao encaixei em %s (%s) e NAO vou soltar na mesa - devolvendo o bloco "
-                "ao container de bordo (unreachable, sugestao 0).",
-                slot_frame.c_str(), last_place_failure_reason_.c_str());
-            speak("!Nao achei o encaixe, vou guardar o bloco");
-            return false;
-        }
-        if (out == StackOutcome::kNoIk) {
-            // 'slot_nao_encaixou' ja preenchido: o cubo ficou na mesa.
-            return false;
-        }
-        if (last_place_failure_reason_.empty()) {
-            last_place_failure_reason_ = cube_left_on_table_ ? "slot_nao_encaixou" : "encaixe_falhou";
-        }
-        return false;
     }
 
     // =====================================================================
@@ -5936,8 +5178,8 @@ private:
                     if (fix == PileFix::kCorrectXy) {
                         Eigen::Vector2d err(obs.p.x() - chk.expected_top.x(), obs.p.y() - chk.expected_top.y());
                         const double n = err.norm();
-                        if (n > slot_correction_max_m_ && n > 0.0) {
-                            err *= slot_correction_max_m_ / n;
+                        if (n > kPileCorrectionMaxM && n > 0.0) {
+                            err *= kPileCorrectionMaxM / n;
                         }
                         target2 -= Eigen::Vector3d(err.x(), err.y(), 0.0);
                         RCLCPP_INFO(
@@ -6461,7 +5703,7 @@ private:
 
     bool moveToPlaceTarget(
         const std::shared_ptr<MoveGroupInterface> & arm,
-        const std::shared_ptr<MoveGroupInterface> & gripper,
+        const std::shared_ptr<MoveGroupInterface> & /*gripper*/,
         const std::string & table_pose,
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle)
     {
@@ -6470,85 +5712,80 @@ private:
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
         surface_arm_moved_ = false;
-        release_done_in_place_ = false;
         post_release_check_.reset();
         {
             const auto goal = goal_handle->get_goal();
             if (!goal->stack_on.empty()) {
-                // 2026-10-21: o tipo do alvo vem do id da tag (slot da mesa de
-                // precisao / tag de referencia da pilha / cubo).
+                // 2026-10-21: o tipo do alvo vem do id da tag (tag de
+                // referencia da pilha / cubo).
                 const manip_task_execution::StackTargetKind kind =
                     manip_task_execution::classifyStackTarget(
-                        goal->stack_on, slot_tag_ids_, stack_reference_tag_ids_);
+                        goal->stack_on, stack_reference_tag_ids_);
                 if (isShelfPlaceTarget(table_pose)) {
                     RCLCPP_WARN(
                         get_logger(),
                         "[STACK] empilhar na prateleira (%s) nao e suportado — place normal.",
                         table_pose.c_str());
-                } else if (kind == manip_task_execution::StackTargetKind::kSlot &&
-                    !slot_use_stack_logic_)
-                {
-                    RCLCPP_INFO(
+                } else if (isPpSlot(goal->stack_on)) {
+                    // Mesa de precisao (2026-11-16): chegada em paradas com a
+                    // camera medindo o furo. Nunca cai na mesa comum: sem como
+                    // soltar no furo, o bloco volta ao pote de bordo e o
+                    // executor tenta depois (replanejamento).
+                    const StackOutcome out =
+                        placeOnPpSlot(arm, goal->stack_on, table_pose, goal_handle);
+                    if (out == StackOutcome::kOk) {
+                        return true;
+                    }
+                    if (out == StackOutcome::kUnreachable &&
+                        tryUnreachableBailout(
+                            goal_handle, std::vector<double>{}, "PP", "O encaixe"))
+                    {
+                        return false;
+                    }
+                    if (out == StackOutcome::kMoveFailed) {
+                        last_place_failure_reason_ = "pp_movimento_falhou";
+                        return false;
+                    }
+                    last_place_failure_reason_ =
+                        pp_slot_ocupado_ == goal->stack_on ? "slot_ocupado" :
+                        out == StackOutcome::kBaseNotSeen ? "slot_nao_visto" : "alvo_fora_de_alcance";
+                    last_failure_unreachable_ = true;
+                    last_suggested_shift_m_ = 0.0;
+                    stack_arm_moved_ = true;
+                    RCLCPP_WARN(
                         get_logger(),
-                        "[SLOT] stack_on=%s e' um slot da mesa de precisao - encaixe (ws '%s').",
-                        goal->stack_on.c_str(), goal->ws.c_str());
-                    const StackOutcome out = placeIntoPrecisionSlot(
-                        arm, gripper, goal->stack_on, table_pose, goal->tag_frame, goal_handle);
-                    return handleSlotOutcome(goal_handle, out, goal->stack_on);
+                        "[PP] nao soltei em %s (%s) - devolvendo o bloco ao container de bordo.",
+                        goal->stack_on.c_str(), last_place_failure_reason_.c_str());
+                    speak("Nao consegui chegar no encaixe, vou guardar o bloco de volta");
+                    return false;
                 } else {
                     if (kind == manip_task_execution::StackTargetKind::kReference) {
                         RCLCPP_INFO(
                             get_logger(),
                             "[STACK] stack_on=%s e' a tag de referencia da pilha - primeiro cubo.",
                             goal->stack_on.c_str());
-                    } else if (kind == manip_task_execution::StackTargetKind::kSlot) {
-                        RCLCPP_INFO(
-                            get_logger(),
-                            "[STACK] stack_on=%s e' slot da mesa de precisao - logica do empilhar (ws '%s').",
-                            goal->stack_on.c_str(), goal->ws.c_str());
                     }
                     const StackOutcome out = placeStackedOnFrame(
-                        arm, goal->stack_on, table_pose, goal_handle,
-                        std::vector<double>(goal->place_joints.begin(), goal->place_joints.end()),
-                        kind, normalizedWs(goal->ws));
+                        arm, goal->stack_on, table_pose, goal_handle, kind, normalizedWs(goal->ws));
                     if (out == StackOutcome::kOk) {
                         return true;
                     }
                     // Fila de alcance (2026-08-28): base VISTA, sem IK antes
                     // de mover — sai cedo, sem fallback de mesa e sem soltar.
-                    // 2026-11-16: o calculo de alcance usa a MESMA escada da
-                    // IK. Com a escada da pilha (15/30 graus) o slot da PP,
-                    // que so' desce a 0 grau, saia "alcancavel agora" e a
-                    // sugestao ia 0: a fila nao deslocava a base e a tentativa
-                    // final derrubava a missao (run_20261116_110428, tag_101).
                     if (out == StackOutcome::kUnreachable &&
                         tryUnreachableBailout(
-                            goal_handle,
-                            isSlotLikeTarget(kind, goal->stack_on) ?
-                            slot_tilt_ladder_deg_ : stack_tilt_ladder_deg_,
-                            "STACK",
+                            goal_handle, stack_tilt_ladder_deg_, "STACK",
                             "O bloco base esta fora do meu alcance"))
                     {
                         return false;
                     }
-                    // AMT1 (2026-08-28): na precision placement (ws PP_*) o
-                    // stack_on e um slot registrado (tag_amt1_slot_k) e o
-                    // fallback na mesa (Mesa10) largaria o cubo em cima de
-                    // outro. Base nao vista / chegada fora da tolerancia /
-                    // fora de alcance sem bailout => NAO cai na mesa: sai
-                    // como unreachable com sugestao 0 — o caminho existente
-                    // (runPlaceCycle) devolve o cubo ao container de
-                    // bordo e execute() responde skipped+unreachable; o no
-                    // AMT1 re-registra os slots e repete 1x. WS_* inalterado.
                     // 2026-10-21 (rodada 2): a tag de referencia (kReference,
                     // tag 200) e' o MARCO da pilha - nao vista / sem alcance
-                    // tambem NAO cai na mesa comum (a pilha inteira nasceria
-                    // fora do marco): mesmo caminho do PP (cubo volta ao
-                    // container de bordo, unreachable, sugestao 0).
+                    // NAO cai na mesa comum (a pilha inteira nasceria fora do
+                    // marco): o cubo volta ao container de bordo (unreachable,
+                    // sugestao 0).
                     if ((out == StackOutcome::kBaseNotSeen || out == StackOutcome::kNoIk ||
-                        out == StackOutcome::kUnreachable) &&
-                        (normalizedWs(goal->ws).rfind("PP", 0) == 0 ||
-                        isReferenceKind(kind)))
+                        out == StackOutcome::kUnreachable) && isReferenceKind(kind))
                     {
                         last_place_failure_reason_ =
                             out == StackOutcome::kBaseNotSeen ? "base_nao_vista" :
@@ -6557,22 +5794,18 @@ private:
                         last_failure_unreachable_ = true;
                         last_suggested_shift_m_ = 0.0;
                         // Chegada reprovada: o braco esta na pre-pose acima
-                        // do slot — a devolucao passa por pegar_obj antes.
+                        // da marca — a devolucao passa por pegar_obj antes.
                         if (out == StackOutcome::kNoIk) {
                             stack_arm_moved_ = true;
                         }
                         RCLCPP_WARN(
                             get_logger(),
-                            "[STACK] %s (%s): nao empilhei sobre %s (%s) e NAO vou soltar na mesa "
-                            "— devolvendo o bloco ao container de bordo (unreachable, sugestao 0).",
-                            kind == manip_task_execution::StackTargetKind::kReference ?
-                            "marco da pilha" : "PP",
+                            "[STACK] marco da pilha (%s): nao empilhei sobre %s (%s) e NAO vou soltar "
+                            "na mesa — devolvendo o bloco ao container de bordo (unreachable, "
+                            "sugestao 0).",
                             goal->ws.c_str(), goal->stack_on.c_str(),
                             last_place_failure_reason_.c_str());
-                        speak(
-                            kind == manip_task_execution::StackTargetKind::kReference ?
-                            "Nao achei a marca da pilha, vou guardar o bloco de volta" :
-                            "Nao achei o lugar certo na mesa de precisao, vou guardar o bloco de volta");
+                        speak("Nao achei a marca da pilha, vou guardar o bloco de volta");
                         return false;
                     }
                     if (out == StackOutcome::kMoveFailed || !stack_fallback_to_table_) {
@@ -6684,7 +5917,7 @@ private:
             }
 
             // Mesa comum de uma WS: escolha de slot por camera (2026-08-21).
-            // Fora da guarda (shelf, PP, goal sem ws, slot explicito, flag
+            // Fora da guarda (shelf, goal sem ws, slot explicito, flag
             // off) segue byte a byte o caminho legado abaixo.
             {
                 const auto goal = goal_handle->get_goal();
@@ -6922,6 +6155,12 @@ private:
     void execute(
         const std::shared_ptr<GoalHandlePlaceTag> goal_handle)
     {
+        // 2026-11-17 (AMT travou no robo, 15h48): o ExecutionGuard e' solto ANTES de o
+        // resultado sair, entao o pedido seguinte pode chegar (33 ms depois) com este
+        // execute ainda destruindo as MoveGroupInterface; o novo ficou preso para sempre
+        // criando a do gripper. Este lock e' o 1o local: so' e' solto depois de TUDO
+        // deste execute ser destruido. (Hipotese: nao deu para tirar a pilha do processo.)
+        std::lock_guard<std::mutex> escopo_do_execute(execute_scope_mutex_);
         ExecutionGuard execution_guard(*this);
         publishPlaceActive(true);
         const auto goal = goal_handle->get_goal();
@@ -6934,7 +6173,6 @@ private:
         stack_arm_moved_ = false;
         container_arm_moved_ = false;
         surface_arm_moved_ = false;
-        release_done_in_place_ = false;
         cube_left_on_table_ = false;
         post_release_check_.reset();
 
@@ -7031,8 +6269,8 @@ private:
         }
         speak("~Objeto localizado no " + spokenTargetName(container_pose));
 
-        auto arm = makeInterfaceWithTimeout("arm");
-        auto gripper = makeInterfaceWithTimeout("gripper");
+        auto arm = interfaceFor("arm");
+        auto gripper = interfaceFor("gripper");
         if (!arm || !gripper) {
             result->success = false;
             result->message =
@@ -7065,15 +6303,14 @@ private:
         if (!success && last_place_failure_reason_.empty()) {
             last_place_failure_reason_ = "ik_ou_execucao_falhou";
         }
-        // 2026-10-21: o cubo saiu da garra e ficou na mesa sem encaixar
-        // (slot_nao_encaixou): a entrega falhou, mas o container de bordo
-        // esta vazio de fato - sem isto o proximo pick deste bloco iria
-        // procura-lo no pote.
+        // 2026-10-21: o cubo saiu da garra e ficou na mesa (correcao da
+        // pilha): a entrega falhou, mas o container de bordo esta vazio de
+        // fato - sem isto o proximo pick deste bloco iria procura-lo no pote.
         if (!success && cube_left_on_table_) {
             std::string err;
             if (container_state_store_->setEmpty(container_pose, &err)) {
                 RCLCPP_WARN(
-                    get_logger(), "[PLACE] cubo ficou na mesa sem encaixar - %s marcado vazio.",
+                    get_logger(), "[PLACE] cubo ficou na mesa - %s marcado vazio.",
                     container_pose.c_str());
             } else {
                 RCLCPP_ERROR(
@@ -7366,7 +6603,7 @@ private:
         publishStage(goal_handle, "returning_cube_opening_gripper");
         gripper->setStartStateToCurrentState();
         // 2026-11-16 (pedido do operador): garra larga so' no home, ao
-        // empilhar, na PP e ao olhar o container da mesa. No pote de bordo
+        // empilhar e ao olhar o container da mesa. No pote de bordo
         // os dedos largos esbarram nos vizinhos: volta a gripper_open.
         gripper->setNamedTarget("gripper_open");
         if (!planAndExecute(gripper, "return cube: open gripper")) {
@@ -7467,22 +6704,16 @@ private:
 
         // 2026-11-03: EMPILHAR - olha a base da pilha de garra vazia antes
         // de ir ao container (preObserveStackBase). Mesmos casos que chegam
-        // ao placeStackedOnFrame com leitura de camera: nao vale para slot da
-        // mesa de precisao, prateleira nem replay por juntas gravadas (AMT1).
+        // ao placeStackedOnFrame com leitura de camera: nao vale para prateleira.
         stack_preseen_base_.reset();
-        stack_preseen_hole_.reset();
         container_preseen_.reset();
-        // 2026-11-09: a garra abre ANTES de olhar a base. Ela ia abrir logo
-        // em seguida de qualquer jeito (nada muda quando ja' esta aberta), mas
-        // se o goal comeca com a garra fechada (startup, goal anterior
-        // abortado no pick) o pp_hole_detector le joint6 > -0.12 como
-        // "segurando" e mascara o centro da imagem (dedos fechados), tapando
-        // a cavidade justo na leitura de perto do TCP2.
+        // 2026-11-09: a garra abre ANTES de olhar a base (ela ia abrir logo
+        // em seguida de qualquer jeito).
         publishStage(goal_handle, "opening_gripper");
         gripper->setStartStateToCurrentState();
         // 2026-11-16 (pedido do operador): garra larga so' quando vai olhar a
-        // base da pilha, o slot da PP (ambos stack_on) ou o container da
-        // mesa; place comum abre em gripper_open.
+        // base da pilha (stack_on) ou o container da mesa; place comum abre
+        // em gripper_open.
         const bool garra_larga = !goal->stack_on.empty() || !goal->container_color.empty();
         gripper->setNamedTarget(garra_larga ? "gripper_full_open" : "gripper_open");
         if (!planAndExecute(gripper, "open gripper")) {
@@ -7491,17 +6722,16 @@ private:
         if (stack_observe_before_pick_ && !goal->stack_on.empty() &&
             !isShelfPlaceTarget(table_pose))
         {
-            const manip_task_execution::StackTargetKind kind =
-                manip_task_execution::classifyStackTarget(
-                    goal->stack_on, slot_tag_ids_, stack_reference_tag_ids_);
-            const bool joints_replay =
-                goal->place_joints.size() >= 5 &&
-                kind == manip_task_execution::StackTargetKind::kCube;
-            if ((kind != manip_task_execution::StackTargetKind::kSlot || slot_use_stack_logic_) &&
-                !joints_replay &&
-                !preObserveStackBase(arm, goal->stack_on, kind, goal_handle))
-            {
+            // Slot da PP: tag no tampo, como a de referencia da pilha.
+            const bool pp_slot = isPpSlot(goal->stack_on);
+            const manip_task_execution::StackTargetKind kind = pp_slot ?
+                manip_task_execution::StackTargetKind::kReference :
+                manip_task_execution::classifyStackTarget(goal->stack_on, stack_reference_tag_ids_);
+            if (!preObserveStackBase(arm, goal->stack_on, kind, goal_handle, pp_slot)) {
                 return false;  // cancelado
+            }
+            if (last_failure_unreachable_) {
+                return false;  // PP fora do eixo: a base anda antes; o bloco continua no pote
             }
         }
 
@@ -7643,20 +6873,6 @@ private:
         
         publishStage(goal_handle, "going_table");
         if (!moveToPlaceTarget(arm, gripper, table_pose, goal_handle)) {
-            // 2026-10-21: o cubo saiu da garra no modo de precisao e ficou
-            // na mesa sem encaixar - nao ha' o que devolver; a memoria de
-            // slots guarda onde ele ficou (obstaculo) e execute() libera o
-            // container de bordo.
-            if (cube_left_on_table_) {
-                if (slot_memory_enabled_ && !goal->tag_frame.empty()) {
-                    std::size_t removed = 0;
-                    std::string err;
-                    (void)container_state_store_->removeTableSlotsForTag(
-                        goal->tag_frame, &removed, &err);
-                }
-                recordSlotUsed(arm, place_ws, goal->tag_frame);
-                return false;
-            }
             // Fila de alcance (2026-08-28): alvo visto fora de alcance — o
             // cubo volta ao container de bordo antes de o goal sair como
             // skipped/unreachable (execute()). Se a devolucao falhar, vira a
@@ -7676,17 +6892,13 @@ private:
         arm->setMaxAccelerationScalingFactor(1.0);
         
 
-        if (release_done_in_place_) {
-            // 2026-10-21: a garra ja abriu dentro do encaixe (slot).
-            RCLCPP_INFO(get_logger(), "[PLACE] garra ja aberta no modo de precisao - sem abertura final.");
-        } else {
+        {
             publishStage(goal_handle, "opening_gripper_final");
             gripper->setStartStateToCurrentState();
-            // 2026-11-16 (pedido do operador): solta largo so' ao empilhar
-            // (stack_on); mesa comum, prateleira e container da mesa soltam
-            // em gripper_open.
-            gripper->setNamedTarget(
-                goal->stack_on.empty() ? "gripper_open" : "gripper_full_open");
+            // 2026-11-17 (pedido do operador): na ENTREGA sempre gripper_open,
+            // tambem na PP e na pilha (em 16/11 soltava largo com stack_on; na
+            // PP os dedos largos esbarram nos blocos vizinhos).
+            gripper->setNamedTarget("gripper_open");
             if (!planAndExecute(gripper, "open gripper final")) {
                 last_place_failure_reason_ = "garra_nao_abriu_no_destino";
                 return false;

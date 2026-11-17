@@ -944,3 +944,38 @@ def test_r3_yaml_real_da_arena_tem_o_override_da_ws6():
     data = dan.load_yaml(real)
     assert parse_dock(data, "WS6")[6] == pytest.approx(0.35)
     assert parse_dock(data, "WS1")[6] is None
+
+
+# ---- faixa lateral que acompanha o curso (2026-11-16) --------------------------
+# Medido nas gravacoes de 16/11: face a 0,39 m; perna da mesa a x=0,32 m (7 cm
+# mais perto) e 0,54-0,68 m de lado. A faixa fixa de 0,50 m cortava o curso
+# quando a perna "entrava" nela, com o robo ainda a mais de 20 cm.
+CORREDOR, EXTRA, FACE, MARGEM = 0.21, 0.11, 0.39, 0.05
+
+
+def _livre(pontos, falta):
+    perto = dan._side_nearest(pontos, CORREDOR + falta + EXTRA)
+    return perto is None or perto > FACE - MARGEM
+
+
+def test_side_nearest_respeita_o_limite_lateral():
+    pts = [(0.30, 0.40), (0.45, 0.32), (0.49, 0.36)]
+    assert dan._side_nearest(pts, 0.50) == pytest.approx(0.32)
+    assert dan._side_nearest(pts, 0.44) == pytest.approx(0.40)
+    assert dan._side_nearest(pts, 0.25) is None and dan._side_nearest([], 0.5) is None
+
+
+@pytest.mark.parametrize("perna_y, pedido", [(0.55, 0.20), (0.54, 0.20), (0.57, 0.15), (0.68, 0.20)])
+def test_perna_longe_nao_corta_mais_o_curso(perna_y, pedido):
+    # casos reais de 16/11 (20h37, 21h09, 16h02, 20h55), todos cortados no meio
+    for andou in (0.0, 0.05, 0.10, 0.15, pedido):      # o laco vigia ate' o corte; depois so' desliza
+        assert _livre([(perna_y - andou, 0.32)], max(0.0, pedido - andou)), (perna_y, andou)
+    # e o robo termina (curso + 6 cm de deslize) a pelo menos 5 cm dela
+    assert perna_y - (pedido + 0.06) - CORREDOR >= 0.05
+
+
+def test_obstaculo_no_caminho_continua_barrando():
+    assert not _livre([(0.40, 0.32)], 0.20)            # dentro do que o robo vai alcancar
+    assert not _livre([(0.30, 0.32)], 0.02)            # quase encostando, falta pouco: barra
+    assert not _livre([(0.41, 0.34)], 0.25)            # prateleira torta de 15h50 (recusa correta)
+    assert _livre([(0.40, 0.36)], 0.20)                # mais perto que a face, mas menos de 5 cm: livre

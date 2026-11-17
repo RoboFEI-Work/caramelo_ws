@@ -22,7 +22,7 @@
 //                              base parada antes da manipulacao
 //   reach_queue_enabled, reach_queue_ws_prefixes, reach_queue_max_nudges,
 //   reach_queue_max_shift_m, reach_queue_min_shift_m
-//   amt1_timeout, amt1_stage_timeout
+//   amt1_timeout, amt1_stage_timeout, amt1_look_poses
 //   retry_unfinished_at_end    (true) a arvore caiu ou deixou coisa por fazer
 //                              => replaneja o que falta e segue; o epilogo
 //                              (home + FINISH) roda sempre. false = arvore
@@ -293,6 +293,16 @@ struct MissionBuildContext
   // insere se a acao anterior pode ter deixado o braco fora de home.
   bool home_before_dock{true};
   std::string startup_pose_name{"home"};
+  // 2026-11-16 (AMT refeita): poses por onde o braco passa para a camera ver
+  // a fileira INTEIRA da mesa de precisao (de pegar_obj cabem 5 dos 7 slots).
+  // Em cada uma, menos a ultima, vai um <Amt1Sort observe_only> (o servidor so'
+  // acumula a olhada); na ultima vai o <Amt1Sort> que ordena. Vazio = nao move
+  // o braco (bancada sem MoveIt).
+  std::string amt1_look_poses{"tag_esquerda,tag_direita,pegar_obj"};
+  // 2026-11-17 ("disse que ordenou sem ter ordenado"): rodadas de olhar +
+  // ordenar ate' o servidor responder success, que agora so' sai com a mesa
+  // VISTA em ordem. Rodada 1 ordena, a 2 confere (e arruma o que faltou)...
+  int amt1_rounds{4};
   // GoToWS falhou depois de todos os retries internos do align => PULA o
   // bloco da estacao (picks/places dela) e a missao segue, para nao perder
   // a task inteira por uma mesa inacessivel.
@@ -679,12 +689,10 @@ std::string buildTreeXmlFromActions(
       if (action["stack_on"]) {
         stack_on = action["stack_on"].as<std::string>("");
       }
-      // SLOT DA MESA DE PRECISAO (formato 2026): `at_tag: tag_102` = soltar
-      // centrado na tag de referencia do slot, que esta SOBRE A MESA. Vai
-      // ao no de place reaproveitando o stack_on (mesmo caminho: TF da tag,
-      // XY da tag, z da tag + stack_place_z_offset). Pendencia: o place
-      // precisa de um z-offset proprio para "tag na mesa" (o offset atual
-      // assume um cubo embaixo) — validar no robo.
+      // SLOT DA MESA DE PRECISAO: `at_tag: tag_102` = soltar o cubo no furo
+      // do slot dessa tag. Vai ao no de place pelo campo stack_on; la' o id
+      // da tag (pp_slot_tag_ids) escolhe o caminho da PP (2026-11-16, refeito
+      // do zero: chegada em paradas com a camera medindo o furo).
       std::string at_tag;
       if (action["at_tag"]) {
         at_tag = action["at_tag"].as<std::string>("");
@@ -1016,14 +1024,40 @@ std::string buildTreeXmlFromActions(
         target_attr = " target_order=\"" + escapeXmlAttr(blackboardPort(target_key)) + "\"";
       }
 
-      xml << "      <Amt1Sort name=\"amt1_" << i
-          << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
-          << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
-          << "\" expected_tags=\"" << escapeXmlAttr(blackboardPort(tags_key))
-          << "\" direction=\"" << escapeXmlAttr(blackboardPort(direction_key))
-          << "\" max_onboard=\"" << escapeXmlAttr(blackboardPort(max_onboard_key))
-          << "\"" << target_attr
-          << " timeout=\"{amt1_timeout}\" stage_timeout=\"{amt1_stage_timeout}\"/>\n";
+      // 2026-11-16 (AMT refeita sobre a PP nova): o servidor /amt1_sort nao
+      // move o braco — so' olha pela camera e manda pick/place. O braco passa
+      // aqui pelas poses de olhar (amt1_look_poses).
+      const auto amt_leaf = [&](const std::string & name, const bool observe) {
+          xml << "      <Amt1Sort name=\"" << name
+              << "\" ws=\"" << escapeXmlAttr(blackboardPort(ws_key))
+              << "\" table_pose=\"" << escapeXmlAttr(blackboardPort(table_pose_key))
+              << "\" expected_tags=\"" << escapeXmlAttr(blackboardPort(tags_key))
+              << "\" direction=\"" << escapeXmlAttr(blackboardPort(direction_key))
+              << "\" max_onboard=\"" << escapeXmlAttr(blackboardPort(max_onboard_key))
+              << "\"" << target_attr << (observe ? " observe_only=\"true\"" : " confirm=\"true\"")
+              << " timeout=\"{amt1_timeout}\" stage_timeout=\"{amt1_stage_timeout}\"/>\n";
+        };
+      std::vector<std::string> looks;
+      {
+        std::stringstream ss(ctx.amt1_look_poses);
+        for (std::string pose; std::getline(ss, pose, ','); ) {
+          if (!pose.empty()) {
+            looks.push_back(pose);
+          }
+        }
+      }
+      // ForceSuccess: esgotadas as rodadas a missao segue para o FINISH, como antes.
+      xml << "      <ForceSuccess>\n      <RetryUntilSuccessful num_attempts=\""
+          << std::max(1, ctx.amt1_rounds) << "\">\n      <Sequence>\n";
+      for (std::size_t k = 0; k < looks.size(); ++k) {
+        xml << "      <GoToNamedPose name=\"amt1_olhar_" << i << "_" << k << "\" pose_name=\""
+            << escapeXmlAttr(looks[k]) << "\"/>\n";
+        if (k + 1 < looks.size()) {
+          amt_leaf("amt1_olhada_" + std::to_string(i) + "_" + std::to_string(k), true);
+        }
+      }
+      amt_leaf("amt1_" + std::to_string(i), false);
+      xml << "      </Sequence>\n      </RetryUntilSuccessful>\n      </ForceSuccess>\n";
       station_has_actions = station_has_actions || station_open;
       ctx.plan_rows.push_back(
         "[" + std::to_string(i) + "] amt1  ordenar " + std::to_string(expected_tags.size()) +
@@ -1516,6 +1550,9 @@ int main(int argc, char ** argv)
     ctx.startup_home = startup_home;
     ctx.home_before_dock = home_before_dock;
     ctx.startup_pose_name = startup_pose_name;
+    ctx.amt1_look_poses = node->declare_parameter<std::string>(
+      "amt1_look_poses", "tag_esquerda,tag_direita,pegar_obj");
+    ctx.amt1_rounds = node->declare_parameter<int>("amt1_rounds", 4);
     // false = comportamento antigo (goto falhou => missao inteira falha).
     ctx.skip_unreachable_station =
       node->declare_parameter<bool>("skip_unreachable_station", true);

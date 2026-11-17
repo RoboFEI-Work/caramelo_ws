@@ -1,7 +1,6 @@
-// Testes dos helpers puros do place de precisao (sem ROS, 2026-10-21):
-// classificacao do stack_on, giro de 90 graus mais proximo, espiral de
-// busca, assentamento no slot, cota da pilha pela memoria e a decisao de
-// verificacao apos soltar.
+// Testes dos helpers puros do empilhamento (sem ROS, 2026-10-21):
+// classificacao do stack_on, giro de 90 graus mais proximo, cota da pilha
+// pela memoria e a decisao de verificacao apos soltar.
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -14,13 +13,8 @@
 
 using manip_task_execution::classifyStackTarget;
 using manip_task_execution::decidePlacement;
-using manip_task_execution::decideSlotAction;
-using manip_task_execution::effectiveSeatTolerance;
 using manip_task_execution::expectedPileTopZ;
 using manip_task_execution::findStackMemory;
-using manip_task_execution::fuseSlotXy;
-using manip_task_execution::HoleCandidate;
-using manip_task_execution::isSeatedInSlot;
 using manip_task_execution::nearestQuarterTurn;
 using manip_task_execution::PileFix;
 using manip_task_execution::pileFixFor;
@@ -28,20 +22,9 @@ using manip_task_execution::pileRegraspFloorZ;
 using manip_task_execution::PlacementDecision;
 using manip_task_execution::PlacementLimits;
 using manip_task_execution::PlacementObservation;
-using manip_task_execution::PlanarOffset;
-using manip_task_execution::SeatState;
-using manip_task_execution::SlotAction;
-using manip_task_execution::SlotLimits;
-using manip_task_execution::SlotObservation;
-using manip_task_execution::slotRegraspTcpZ;
-using manip_task_execution::slotRimCubeTagZ;
-using manip_task_execution::slotSeatState;
-using manip_task_execution::spiralOffsets;
 using manip_task_execution::stackLevelFromMemory;
 using manip_task_execution::StackMemoryEntry;
-using manip_task_execution::slotCenterOffset;
 using manip_task_execution::StackTargetKind;
-using manip_task_execution::TagHoleOffsetLearner;
 using manip_task_execution::tagIdFromFrame;
 using manip_task_execution::tiltDropZCompensation;
 
@@ -50,7 +33,6 @@ namespace
 
 constexpr double kTol = 1e-9;
 constexpr double kDeg = M_PI / 180.0;
-const std::vector<std::int64_t> kSlotIds{101, 102, 103, 104, 105, 106, 107};
 const std::vector<std::int64_t> kRefIds{200};
 
 double wrap90(double a)
@@ -72,29 +54,21 @@ TEST(PlacePrecision, TagIdFromFrame)
   EXPECT_FALSE(tagIdFromFrame("tag_1a").has_value());
   EXPECT_FALSE(tagIdFromFrame("ct_vermelho").has_value());
   EXPECT_FALSE(tagIdFromFrame("").has_value());
-  EXPECT_FALSE(tagIdFromFrame("tag_amt1_slot_3").has_value());
+  EXPECT_FALSE(tagIdFromFrame("tag_slot_3").has_value());
 }
 
 TEST(PlacePrecision, ClassifyStackTarget)
 {
-  for (int id = 101; id <= 107; ++id) {
-    EXPECT_EQ(
-      classifyStackTarget("tag_" + std::to_string(id), kSlotIds, kRefIds),
-      StackTargetKind::kSlot) << id;
-  }
-  EXPECT_EQ(classifyStackTarget("tag_200", kSlotIds, kRefIds), StackTargetKind::kReference);
-  EXPECT_EQ(classifyStackTarget("tag_4", kSlotIds, kRefIds), StackTargetKind::kCube);
-  EXPECT_EQ(classifyStackTarget("tag_100", kSlotIds, kRefIds), StackTargetKind::kCube);
-  EXPECT_EQ(classifyStackTarget("tag_108", kSlotIds, kRefIds), StackTargetKind::kCube);
-  // Frame que nao casa 'tag_<n>' = comportamento atual (cubo).
-  EXPECT_EQ(classifyStackTarget("tag_amt1_slot_2", kSlotIds, kRefIds), StackTargetKind::kCube);
-  EXPECT_EQ(classifyStackTarget("ct_vermelho", kSlotIds, kRefIds), StackTargetKind::kCube);
-  EXPECT_EQ(classifyStackTarget("", kSlotIds, kRefIds), StackTargetKind::kCube);
-  // Listas vazias: tudo e' cubo.
-  EXPECT_EQ(classifyStackTarget("tag_101", {}, {}), StackTargetKind::kCube);
-  EXPECT_EQ(classifyStackTarget("tag_200", {}, {}), StackTargetKind::kCube);
-  // Um id nas duas listas: slot vence (mais restritivo).
-  EXPECT_EQ(classifyStackTarget("tag_200", {200}, {200}), StackTargetKind::kSlot);
+  EXPECT_EQ(classifyStackTarget("tag_200", kRefIds), StackTargetKind::kReference);
+  EXPECT_EQ(classifyStackTarget("tag_4", kRefIds), StackTargetKind::kCube);
+  // 2026-11-16: os ids dos slots da mesa de precisao (101..107) nao sao mais
+  // especiais: a PP foi removida.
+  EXPECT_EQ(classifyStackTarget("tag_104", kRefIds), StackTargetKind::kCube);
+  // Frame que nao casa 'tag_<n>' = cubo.
+  EXPECT_EQ(classifyStackTarget("ct_vermelho", kRefIds), StackTargetKind::kCube);
+  EXPECT_EQ(classifyStackTarget("", kRefIds), StackTargetKind::kCube);
+  // Lista vazia: tudo e' cubo.
+  EXPECT_EQ(classifyStackTarget("tag_200", {}), StackTargetKind::kCube);
 }
 
 // ---- giro de 90 graus ----------------------------------------------------
@@ -134,119 +108,7 @@ TEST(PlacePrecision, NearestQuarterTurnPicksSmallestTurn)
     nearestQuarterTurn(0.7 + 2.0 * M_PI, 0.2), nearestQuarterTurn(0.7, 0.2), 1e-12);
 }
 
-// ---- espiral -------------------------------------------------------------
-
-TEST(PlacePrecision, SpiralOffsetsOrderedByRadiusNoRepeat)
-{
-  const double s = 0.003;
-  const auto sp = spiralOffsets(s, 0.009);
-  ASSERT_GE(sp.size(), 6u);
-  // Comeca em (0,0) e segue +X, +Y, -X, -Y, depois a diagonal (+s,+s).
-  EXPECT_NEAR(sp[0].dx, 0.0, kTol); EXPECT_NEAR(sp[0].dy, 0.0, kTol);
-  EXPECT_NEAR(sp[1].dx, s, kTol);   EXPECT_NEAR(sp[1].dy, 0.0, kTol);
-  EXPECT_NEAR(sp[2].dx, 0.0, kTol); EXPECT_NEAR(sp[2].dy, s, kTol);
-  EXPECT_NEAR(sp[3].dx, -s, kTol);  EXPECT_NEAR(sp[3].dy, 0.0, kTol);
-  EXPECT_NEAR(sp[4].dx, 0.0, kTol); EXPECT_NEAR(sp[4].dy, -s, kTol);
-  EXPECT_NEAR(sp[5].dx, s, kTol);   EXPECT_NEAR(sp[5].dy, s, kTol);
-  // Raio nao decrescente e nunca acima do maximo.
-  std::set<std::pair<long, long>> seen;
-  double last_r = -1.0;
-  for (const auto & p : sp) {
-    EXPECT_GE(p.radius(), last_r - kTol);
-    EXPECT_LE(p.radius(), 0.009 + 1e-9);
-    last_r = p.radius();
-    const auto key = std::make_pair(std::lround(p.dx / s), std::lround(p.dy / s));
-    EXPECT_TRUE(seen.insert(key).second) << "repetido " << p.dx << " " << p.dy;
-  }
-  // Grade 7x7 cortada pelo circulo de 9 mm: 1 + 4 + 4 + 4 + 8 + 4 + 4 = 29.
-  EXPECT_EQ(sp.size(), 29u);
-}
-
-TEST(PlacePrecision, SlotCenterOffsetFollowsTagEdgeTowardRobot)
-{
-  // Mesa de frente para o braco: 4 cm para -Y (para o robo), qualquer que
-  // seja o giro de 90 graus com que a tag foi colada.
-  for (const double yaw : {0.0, M_PI / 2.0, M_PI, -M_PI / 2.0}) {
-    const auto o = slotCenterOffset(yaw, 0.04, 0.0, -1.0);
-    EXPECT_NEAR(o.dx, 0.0, kTol) << yaw;
-    EXPECT_NEAR(o.dy, -0.04, kTol) << yaw;
-  }
-  // Mesa girada 10 graus: o deslocamento gira junto (nao fica no eixo do braco).
-  const double r = 10.0 * M_PI / 180.0;
-  const auto g = slotCenterOffset(M_PI / 2.0 + r, 0.04, 0.0, -1.0);
-  EXPECT_NEAR(g.dx, 0.04 * std::sin(r), kTol);
-  EXPECT_NEAR(g.dy, -0.04 * std::cos(r), kTol);
-  // Offset 0 ou direcao nula: tag centrada no slot.
-  const auto z = slotCenterOffset(0.3, 0.0, 0.0, -1.0);
-  EXPECT_NEAR(z.dx, 0.0, kTol); EXPECT_NEAR(z.dy, 0.0, kTol);
-  const auto n = slotCenterOffset(0.3, 0.04, 0.0, 0.0);
-  EXPECT_NEAR(n.dx, 0.0, kTol); EXPECT_NEAR(n.dy, 0.0, kTol);
-}
-
-TEST(PlacePrecision, SpiralOffsetsDegenerate)
-{
-  EXPECT_EQ(spiralOffsets(0.0, 0.01).size(), 1u);
-  EXPECT_EQ(spiralOffsets(0.003, 0.0).size(), 1u);
-  EXPECT_EQ(spiralOffsets(-1.0, 0.01).size(), 1u);
-  // Raio menor que o passo: so a origem.
-  EXPECT_EQ(spiralOffsets(0.005, 0.004).size(), 1u);
-  // Raio = passo: origem + 4 vizinhos.
-  EXPECT_EQ(spiralOffsets(0.005, 0.005).size(), 5u);
-}
-
-// ---- assentamento no slot ------------------------------------------------
-
-TEST(PlacePrecision, SeatedInSlotWithTolerance)
-{
-  const double z_slot = 0.010;   // fundo da cavidade
-  const double h = 0.042;
-  const double d = 0.005;        // cavidade rasa da mesa de precisao (3-6 mm)
-  const double tol = 0.0025;     // = cavidade/2
-  const double seated = z_slot + h;  // 0.052
-  // Tolerancia pedida maior que cavidade/2 e' cortada: assentado + 4 mm ja e' borda.
-  EXPECT_NEAR(effectiveSeatTolerance(0.008, d), 0.0025, kTol);
-  EXPECT_NEAR(effectiveSeatTolerance(0.001, d), 0.001, kTol);
-  EXPECT_NEAR(effectiveSeatTolerance(-1.0, d), 0.0, kTol);
-  EXPECT_FALSE(isSeatedInSlot(seated + 0.004, z_slot, h, d, 0.008));
-  EXPECT_TRUE(isSeatedInSlot(seated + 0.002, z_slot, h, d, 0.008));
-  EXPECT_TRUE(isSeatedInSlot(seated, z_slot, h, d, tol));
-  EXPECT_TRUE(isSeatedInSlot(seated + tol - 1e-6, z_slot, h, d, tol));
-  EXPECT_TRUE(isSeatedInSlot(seated + tol, z_slot, h, d, tol));
-  EXPECT_FALSE(isSeatedInSlot(seated + tol + 1e-6, z_slot, h, d, tol));
-  // Leitura um pouco abaixo do esperado continua 'encaixado'.
-  EXPECT_TRUE(isSeatedInSlot(seated - tol, z_slot, h, d, tol));
-  EXPECT_TRUE(isSeatedInSlot(seated - d, z_slot, h, d, tol));
-  // Abaixo do fundo da cavidade + cubo: impossivel -> nao encaixado.
-  EXPECT_FALSE(isSeatedInSlot(seated - d - 1e-6, z_slot, h, d, tol));
-  // Apoiado por cima: ~cavidade mais alto.
-  EXPECT_FALSE(isSeatedInSlot(seated + d, z_slot, h, d, tol));
-  EXPECT_EQ(slotSeatState(seated + d, z_slot, h, d, tol), SeatState::kUnseated);
-  // Metade da cavidade e exatamente a tolerancia (limite inclusivo = assentado);
-  // um fio acima ja e borda.
-  EXPECT_EQ(slotSeatState(seated + d / 2.0, z_slot, h, d, tol), SeatState::kSeated);
-  EXPECT_EQ(slotSeatState(seated + d / 2.0 + 1e-6, z_slot, h, d, tol), SeatState::kUnseated);
-  EXPECT_EQ(slotSeatState(seated, z_slot, h, d, tol), SeatState::kSeated);
-  EXPECT_EQ(slotSeatState(seated - 0.06, z_slot, h, d, tol), SeatState::kInconsistent);
-  // Tolerancia negativa vale 0.
-  EXPECT_TRUE(isSeatedInSlot(seated, z_slot, h, d, -1.0));
-  EXPECT_FALSE(isSeatedInSlot(seated + 1e-6, z_slot, h, d, -1.0));
-}
-
-TEST(PlacePrecision, SlotRimAndRegraspFloor)
-{
-  const double z_slot = 0.010;
-  const double h = 0.042;
-  const double d = 0.005;
-  // Borda = fundo + cavidade + cubo: onde a tag de um cubo apoiado fica.
-  EXPECT_NEAR(slotRimCubeTagZ(z_slot, h, d), 0.057, kTol);
-  // Cavidade negativa vale 0.
-  EXPECT_NEAR(slotRimCubeTagZ(z_slot, h, -1.0), 0.052, kTol);
-  // Re-pega: o z visto, mas nunca abaixo da borda (dedos no tampo).
-  const double rim = slotRimCubeTagZ(z_slot, h, d);
-  EXPECT_NEAR(slotRegraspTcpZ(rim + 0.003, rim), rim + 0.003, kTol);
-  EXPECT_NEAR(slotRegraspTcpZ(rim - 0.006, rim), rim, kTol);
-  EXPECT_NEAR(slotRegraspTcpZ(rim, rim), rim, kTol);
-}
+// ---- soltura inclinada ---------------------------------------------------
 
 TEST(PlacePrecision, TiltDropZCompensation)
 {
@@ -268,98 +130,6 @@ TEST(PlacePrecision, TiltDropZCompensation)
   EXPECT_NEAR(tiltDropZCompensation(45.0 * kDeg, 0.0, 0.0), 0.0, kTol);
   // Cubo mais largo que alto: a largura pesa no seno.
   EXPECT_GT(tiltDropZCompensation(15.0 * kDeg, 0.08, h), tiltDropZCompensation(15.0 * kDeg, w, h));
-}
-
-// ---- decisao do slot -----------------------------------------------------
-
-namespace
-{
-
-SlotLimits slotLimits(int attempts_done, int observations_done, double cavity = 0.005)
-{
-  SlotLimits lim;
-  lim.z_slot_tag = 0.010;
-  lim.cube_height_m = 0.042;
-  lim.cavity_depth_m = cavity;
-  lim.seat_tol_m = 0.008;   // cortada para cavidade/2 (2,5 mm com 5 mm)
-  lim.attempts_done = attempts_done;
-  lim.max_attempts = 6;
-  lim.observations_done = observations_done;
-  lim.max_observations = 2;
-  return lim;
-}
-
-SlotObservation seenAt(double z, double xy = 0.0)
-{
-  SlotObservation o;
-  o.seen = true;
-  o.z_cube_tag = z;
-  o.err_xy_m = xy;
-  return o;
-}
-
-}  // namespace
-
-TEST(PlacePrecision, DecideSlotActionSeatedIgnoresXy)
-{
-  const double seated = 0.052;
-  // Assentado: aceita com qualquer xy (duas leituras de poses diferentes).
-  EXPECT_EQ(decideSlotAction(seenAt(seated, 0.0), slotLimits(1, 1)), SlotAction::kAccept);
-  EXPECT_EQ(decideSlotAction(seenAt(seated, 0.015), slotLimits(1, 1)), SlotAction::kAccept);
-  EXPECT_EQ(decideSlotAction(seenAt(seated + 0.002, 0.03), slotLimits(1, 1)), SlotAction::kAccept);
-  EXPECT_EQ(decideSlotAction(seenAt(seated - 0.004, 0.0), slotLimits(1, 1)), SlotAction::kAccept);
-  // Mesmo sem orcamento nenhum: assentado e' assentado.
-  EXPECT_EQ(decideSlotAction(seenAt(seated, 0.02), slotLimits(6, 2)), SlotAction::kAccept);
-}
-
-TEST(PlacePrecision, DecideSlotActionRimRegraspOnlyWithBudget)
-{
-  const double rim = slotRimCubeTagZ(0.010, 0.042, 0.005);  // 0.057
-  // Borda na 1a leitura: confirma com a 2a antes de re-pegar (cavidade rasa).
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(1, 1)), SlotAction::kReobserve);
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(1, 2)), SlotAction::kRegrasp);
-  EXPECT_EQ(decideSlotAction(seenAt(rim + 0.005), slotLimits(1, 2)), SlotAction::kRegrasp);
-  // Leitura ate' tol (2,5 mm) abaixo da borda ainda conta como borda.
-  EXPECT_EQ(decideSlotAction(seenAt(rim - 0.002), slotLimits(1, 2)), SlotAction::kRegrasp);
-  // Ultima soltura: nao re-pega, deixa.
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(6, 2)), SlotAction::kLeave);
-  EXPECT_EQ(decideSlotAction(seenAt(rim), slotLimits(5, 2)), SlotAction::kRegrasp);
-}
-
-TEST(PlacePrecision, DecideSlotActionIntermediateNeverRegrasps)
-{
-  // Cavidade funda (41 mm) tem faixa intermediaria entre assentado + tol e
-  // borda - tol (com 5 mm as duas faixas se encostam e nao ha meio-termo).
-  const double seated = 0.052;
-  const double rim = 0.093;
-  const double deep = 0.041;
-  for (const double z : {seated + 0.009, seated + 0.020, rim - 0.009, (seated + rim) / 2.0}) {
-    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 1, deep)), SlotAction::kReobserve) << z;
-    EXPECT_EQ(decideSlotAction(seenAt(z), slotLimits(1, 2, deep)), SlotAction::kLeave) << z;
-    // Com orcamento de solturas sobrando continua sem re-pegar.
-    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 1, deep)), SlotAction::kRegrasp) << z;
-    EXPECT_NE(decideSlotAction(seenAt(z), slotLimits(1, 2, deep)), SlotAction::kRegrasp) << z;
-  }
-  // Inconsistente (abaixo do fundo + cubo): idem.
-  EXPECT_EQ(decideSlotAction(seenAt(seated - 0.05), slotLimits(1, 1)), SlotAction::kReobserve);
-  EXPECT_EQ(decideSlotAction(seenAt(seated - 0.05), slotLimits(1, 2)), SlotAction::kLeave);
-}
-
-TEST(PlacePrecision, DecideSlotActionUnseenNeverAcceptsNorRegrasps)
-{
-  SlotObservation unseen;
-  unseen.seen = false;
-  EXPECT_EQ(decideSlotAction(unseen, slotLimits(1, 1)), SlotAction::kReobserve);
-  EXPECT_EQ(decideSlotAction(unseen, slotLimits(1, 2)), SlotAction::kLeave);
-  EXPECT_EQ(decideSlotAction(unseen, slotLimits(6, 2)), SlotAction::kLeave);
-  // Nunca kAccept / kRegrasp sem ver, com qualquer orcamento.
-  for (int a = 1; a <= 6; ++a) {
-    for (int o = 1; o <= 2; ++o) {
-      const SlotAction act = decideSlotAction(unseen, slotLimits(a, o));
-      EXPECT_NE(act, SlotAction::kAccept);
-      EXPECT_NE(act, SlotAction::kRegrasp);
-    }
-  }
 }
 
 // ---- correcao da pilha ---------------------------------------------------
@@ -446,7 +216,7 @@ TEST(PlacePrecision, StackLevelFromMemoryCycleAndLastWins)
   EXPECT_FALSE(findStackMemory(dup, "tag_200").has_value());
 }
 
-// ---- decisao de verificacao (generica; a pilha usa, o slot nao) ---------
+// ---- decisao de verificacao (pilha) ---------------------------------------
 
 TEST(PlacePrecision, DecidePlacementGenericBudgetAndProxy)
 {
@@ -524,86 +294,4 @@ TEST(PlacePrecision, DecidePlacementPileOneCorrection)
   unseen.seen = false;
   unseen.fk_err_xy_m = 0.05;
   EXPECT_EQ(decidePlacement(unseen, lim), PlacementDecision::kAcceptUnverified);
-}
-
-// ---- fusao tag + buraco e offset aprendido (2026-11-09) ------------------
-
-TEST(PlacePrecision, FuseSlotXyWeights)
-{
-  const HoleCandidate hole{0.110, -0.220};
-  // peso 0 = so' a tag; peso 1 = so' o buraco.
-  const HoleCandidate only_tag = fuseSlotXy(0.100, -0.200, hole, 0.0);
-  EXPECT_NEAR(only_tag.x, 0.100, kTol);
-  EXPECT_NEAR(only_tag.y, -0.200, kTol);
-  const HoleCandidate only_hole = fuseSlotXy(0.100, -0.200, hole, 1.0);
-  EXPECT_NEAR(only_hole.x, 0.110, kTol);
-  EXPECT_NEAR(only_hole.y, -0.220, kTol);
-  // 0,7: 70% do caminho da tag ate' o buraco.
-  const HoleCandidate mixed = fuseSlotXy(0.100, -0.200, hole, 0.7);
-  EXPECT_NEAR(mixed.x, 0.107, kTol);
-  EXPECT_NEAR(mixed.y, -0.214, kTol);
-}
-
-TEST(PlacePrecision, FuseSlotXyClampsWeight)
-{
-  const HoleCandidate hole{0.110, -0.220};
-  const HoleCandidate below = fuseSlotXy(0.100, -0.200, hole, -0.5);
-  EXPECT_NEAR(below.x, 0.100, kTol);
-  EXPECT_NEAR(below.y, -0.200, kTol);
-  const HoleCandidate above = fuseSlotXy(0.100, -0.200, hole, 3.0);
-  EXPECT_NEAR(above.x, 0.110, kTol);
-  EXPECT_NEAR(above.y, -0.220, kTol);
-  // NaN cai em 0 (so' tag): nunca manda lixo para o braco.
-  const HoleCandidate nan_w = fuseSlotXy(0.100, -0.200, hole, std::nan(""));
-  EXPECT_NEAR(nan_w.x, 0.100, kTol);
-  EXPECT_NEAR(nan_w.y, -0.200, kTol);
-}
-
-TEST(PlacePrecision, LearnerNeedsMinSamples)
-{
-  TagHoleOffsetLearner learner(2, 0.0, -0.040, 0.03);
-  EXPECT_EQ(learner.size(), 0u);
-  EXPECT_FALSE(learner.estimate().has_value());
-  EXPECT_TRUE(learner.push(0.002, -0.043));
-  EXPECT_EQ(learner.size(), 1u);
-  EXPECT_FALSE(learner.estimate().has_value());
-  EXPECT_TRUE(learner.push(0.004, -0.045));
-  ASSERT_TRUE(learner.estimate().has_value());
-  // Duas amostras: media dos dois valores.
-  EXPECT_NEAR(learner.estimate()->first, 0.003, kTol);
-  EXPECT_NEAR(learner.estimate()->second, -0.044, kTol);
-}
-
-TEST(PlacePrecision, LearnerMedianRejectsOutlier)
-{
-  TagHoleOffsetLearner learner(2, 0.0, -0.040, 0.03);
-  EXPECT_TRUE(learner.push(0.001, -0.050));
-  EXPECT_TRUE(learner.push(0.003, -0.052));
-  EXPECT_TRUE(learner.push(0.020, -0.054));  // dentro de 3 cm do nominal
-  // Buraco de OUTRO slot (10 cm ao lado): fora de max_dev, nao entra.
-  EXPECT_FALSE(learner.push(0.100, -0.040));
-  EXPECT_FALSE(learner.push(0.000, 0.030));
-  EXPECT_EQ(learner.size(), 3u);
-  ASSERT_TRUE(learner.estimate().has_value());
-  // Mediana por componente: o 0,020 em x nao puxa a estimativa (seria 0,008 na media).
-  EXPECT_NEAR(learner.estimate()->first, 0.003, kTol);
-  EXPECT_NEAR(learner.estimate()->second, -0.052, kTol);
-  // NaN nunca entra.
-  EXPECT_FALSE(learner.push(std::nan(""), -0.040));
-  EXPECT_EQ(learner.size(), 3u);
-}
-
-TEST(PlacePrecision, LearnerReset)
-{
-  TagHoleOffsetLearner learner(1, 0.0, -0.040, 0.03);
-  EXPECT_TRUE(learner.push(0.002, -0.041));
-  ASSERT_TRUE(learner.estimate().has_value());
-  learner.reset();
-  EXPECT_EQ(learner.size(), 0u);
-  EXPECT_FALSE(learner.estimate().has_value());
-  // Depois do reset volta a aprender do zero.
-  EXPECT_TRUE(learner.push(-0.005, -0.030));
-  ASSERT_TRUE(learner.estimate().has_value());
-  EXPECT_NEAR(learner.estimate()->first, -0.005, kTol);
-  EXPECT_NEAR(learner.estimate()->second, -0.030, kTol);
 }

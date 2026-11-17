@@ -1,6 +1,6 @@
 // Lock de execucao do manipulador: flock(2) exclusivo num arquivo (parametro
 // manipulator_lock_file, default /tmp/caramelo_manip_action.lock) para que um
-// unico no (pick/place/amt1) mova o braco por vez. tryAcquire nao bloqueia;
+// unico no (pick/place) mova o braco por vez. tryAcquire nao bloqueia;
 // o errno do open fica guardado para error(). RAII: o destrutor solta o lock
 // e fecha o fd.
 #pragma once

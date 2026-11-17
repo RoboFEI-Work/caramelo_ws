@@ -17,7 +17,10 @@ install(
   PROGRAMS
     scripts/perception_gate_node.py
     scripts/container_detector_node.py
-    scripts/pp_hole_detector_node.py
+    scripts/pp_furo_node.py
+    scripts/pp_furo.py
+    scripts/amt_sort_node.py
+    scripts/amt_sort_core.py
     scripts/workstation_surface_node.py
     scripts/vision_debug_node.py
     scripts/calib_camera_record.py
@@ -36,10 +39,11 @@ if(BUILD_TESTING)
   # Visao de depuracao: projecao, pintura da grade, tags, barra, gate de idade, sem ROS.
   ament_add_pytest_test(test_vision_debug test/test_vision_debug.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-  # Buraco da mesa de precisao: marrom sobre tampo branco, anel, projecao, rastreio.
-  ament_add_pytest_test(test_pp_hole_detector test/test_pp_hole_detector.py
+  # Mesa de precisao (2026-11-16): furo e cubo medidos em quadros reais da D455.
+  ament_add_pytest_test(test_pp_furo test/test_pp_furo.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-  ament_add_pytest_test(test_pp_align_vision test/test_pp_align_vision.py
+  # AMT refeita (2026-11-16): quem esta' em qual slot e o plano de trocas.
+  ament_add_pytest_test(test_amt_sort_core test/test_amt_sort_core.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()
 

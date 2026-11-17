@@ -51,7 +51,7 @@ uso. Os comentários por objeto descrevem o trajeto real (`origem -> destino`).
 | `task_BTT_II.yaml` | Basic Transportation Task, 5 cubos / 4 mesas. |
 | `task_BMT.yaml` | Basic Manipulation Task, 3 cubos WS_1 → WS_4 + 1 decoy. |
 | `task_ATT_1.yaml` | Advanced Transportation: shelf, pilha e containers por cor. |
-| `task_AMT1_pp1.yaml` | Advanced Manipulation Task 1: ordenar os 6 cubos da PP_1 (`amt1_sort`). |
+| `task_AMT1_pp1.yaml` | Advanced Manipulation Task 1 (formato antigo): ordenar os 6 cubos da PP_1 (`amt1_sort`). |
 | `tarefa_completa_tags0a7.yaml` | Tudo em uma: shelf, mesas, pilha e container por cor (8 cubos). |
 | `task_portas_abertas.yaml` | Demonstração Portas Abertas (mapa `arena_portas_abertas`). |
 

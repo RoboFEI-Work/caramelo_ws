@@ -46,8 +46,6 @@ def generate_launch_description():
     launch_pick_telemetry = LaunchConfiguration("launch_pick_telemetry")
     use_container_detector = LaunchConfiguration("use_container_detector")
     container_detector_always_on = LaunchConfiguration("container_detector_always_on")
-    use_pp_hole_detector = LaunchConfiguration("use_pp_hole_detector")
-    pp_hole_detector_always_on = LaunchConfiguration("pp_hole_detector_always_on")
     use_surface_detector = LaunchConfiguration("use_surface_detector")
     surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
     use_vision_debug = LaunchConfiguration("use_vision_debug")
@@ -98,20 +96,6 @@ def generate_launch_description():
             "container_detector_always_on",
             default_value="false",
             description="Detector processa sempre (calibracao/bag), nao so durante o place",
-        ),
-        DeclareLaunchArgument(
-            "use_pp_hole_detector",
-            default_value="true",
-            description=(
-                "Detector do BURACO (cavidade marrom no tampo branco) da mesa de precision "
-                "placement (pp_hole_detector_node.py): o place corrige o alvo xy do slot pelo "
-                "centro visto. So processa imagem enquanto ha um place ativo."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "pp_hole_detector_always_on",
-            default_value="false",
-            description="Detector de buracos processa sempre (calibracao/bag), nao so durante o place",
         ),
         # --- Superficie livre ---
         DeclareLaunchArgument(
@@ -484,46 +468,6 @@ def generate_launch_description():
         }],
     )
 
-    # --- AMT1: ordenacao das tags da mesa de precision placement ---
-    # Servidor /amt1_sort. Cliente de /pick_tag e /place_tag (nao pega nem
-    # solta sozinho); so move o braco para OBSERVAR a mesa, por isso recebe
-    # os mesmos URDF/SRDF locais, o mesmo lock e o mesmo yaml dos containers.
-    # tag_frames = so as tag_* da lista do apriltag (os ct_* do detector de
-    # containers nao sao cubos).
-    amt1_sort_action = Node(
-        respawn=True,
-        respawn_delay=3.0,
-        package="manip_task_execution",
-        executable="amt1_sort_action_node",
-        output="screen",
-        condition=IfCondition(use_pick_place),
-        parameters=[{
-            "container_state_file": container_state_file,
-            "manipulator_lock_file": manipulator_lock_file,
-            "robot_description": primitive_robot_description,
-            "robot_description_semantic": robot_description_semantic_content,
-            "tag_frames": [
-                frame for frame in slot_obstacle_tag_frames if frame.startswith("tag_")
-            ],
-            # Altura do cubo: tampo = z da tag - cube_height_m (o place soma
-            # stack_place_z_offset ao soltar).
-            "cube_height_m": 0.042,
-            # Busca de tag que falta: gira
-            # SO a j1 ("j1"); "base" = anda de lado; "j1_then_base" = os dois.
-            "search_mode": "j1",
-            "search_j1_offsets_deg": [-30.0, 30.0, -60.0, 60.0],
-            # Observa de tag_direita e depois tag_esquerda (j2=0 no SRDF nas
-            # duas; validado em teste 2026-08-31).
-            "observe_poses": ["tag_direita", "tag_esquerda"],
-            "reobserve_poses": ["tag_direita", "tag_esquerda"],
-            # Precisao do place: re-registro local antes de cada
-            # place e passe de verificacao/ajuste (tolerancia 15 mm).
-            "place_local_reregister": True,
-            "verify_after_sort": True,
-            "verify_tol_m": 0.015,
-        }],
-    )
-
     # --- Camera RealSense ---
     # publish_tf:=false: o TF da camera vem do URDF do Caramelo (RSP), nao do driver.
     # GroupAction scoped+forwarding=False: o rs_launch.py itera as launch
@@ -608,24 +552,32 @@ def generate_launch_description():
         ],
     )
 
-    # --- Buraco da mesa de precision placement ---
-    # Cavidade MARROM no tampo BRANCO (anel branco obrigatorio): centros em
-    # /manip/pp_hole_detector/holes; o place corrige o alvo xy do slot
-    # (slot_hole_* no mtc_place_action_node). Plano do tampo vem do place em
-    # /manip/pp_plane_z. nice +15 como os outros de visao.
-    pp_hole_detector = Node(
+    # --- Mesa de precisao (2026-11-16, refeita do zero) ---
+    # pp_furo_node: mede pela camera o centro do furo do slot e quanto o cubo
+    # esta' fora dele (servico /manip/pp_furo/medir, chamado pelo place em cada
+    # parada da chegada). So' olha: nao move o braco. So' assina a imagem crua
+    # durante um place na PP. nice +15 como os outros de visao.
+    pp_furo = Node(
         package="manip_bringup",
-        executable="pp_hole_detector_node.py",
-        name="pp_hole_detector",
+        executable="pp_furo_node.py",
+        name="pp_furo",
         output="screen",
         prefix="nice -n 15",
         respawn=True,
         respawn_delay=5.0,
-        condition=IfCondition(use_pp_hole_detector),
-        parameters=[
-            os.path.join(manip_bringup_share, "config", "pp_hole_detector.yaml"),
-            {"always_on": ParameterValue(pp_hole_detector_always_on, value_type=bool)},
-        ],
+        condition=IfCondition(use_pick_place),
+    )
+
+    # --- AMT refeita (2026-11-16): ordenar os blocos da mesa de precisao ---
+    # Servidor /amt1_sort. Olha a fileira pela camera (quem esta' em qual slot),
+    # planeja as trocas e manda /pick_tag e /place_tag; nao move o braco.
+    amt_sort = Node(
+        package="manip_bringup",
+        executable="amt_sort_node.py",
+        output="screen",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_pick_place),
     )
 
     # --- Mapa da mesa (superficie livre) ---
@@ -707,9 +659,7 @@ def generate_launch_description():
                      "' == 'true' and '",
                      LaunchConfiguration("container_detector_always_on"),
                      "' == 'true' else 0) + (1 if '",
-                     LaunchConfiguration("use_pp_hole_detector"),
-                     "' == 'true' and '",
-                     LaunchConfiguration("pp_hole_detector_always_on"),
+                     LaunchConfiguration("use_pick_place"),     # pp_furo assina a imagem crua sempre
                      "' == 'true' else 0)"]),
                 value_type=int),
         }],
@@ -836,13 +786,13 @@ def generate_launch_description():
         reset_container_states_once,
         pick_action,
         place_action,
-        amt1_sort_action,
         realsense,
         perception_gate,
         renice_camera,
         apriltag,
         container_detector,
-        pp_hole_detector,
+        pp_furo,
+        amt_sort,
         workstation_surface,
         vision_debug,
         vision_viewer,

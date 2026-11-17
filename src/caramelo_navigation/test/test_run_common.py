@@ -243,3 +243,23 @@ def test_hipoteses_separam_piso_do_esc():
     titulos = [h[0] for h in an.hipoteses(r)]
     assert any("piso do ESC" in t for t in titulos)
     assert any("acima do piso" in t for t in titulos)
+
+
+def test_corrida_nova_para_os_videos_da_anterior_so_pelo_pid_do_pos_corrida(tmp_path):
+    # 2026-11-17: a corrida seguinte rodou com os videos da anterior renderizando e nao fez nenhum pick.
+    import subprocess
+    import sys
+    dorme = "import time; time.sleep(30)"
+    pos = subprocess.Popen([sys.executable, "-c", dorme, "--pos-corrida", "x"])
+    outro = subprocess.Popen([sys.executable, "-c", dorme])
+    try:
+        (tmp_path / ".pos_corrida.pid").write_text(str(outro.pid))
+        rc.parar_videos_da_corrida_anterior(tmp_path)      # pid de outra coisa: nao mexe
+        (tmp_path / ".pos_corrida.pid").write_text(str(pos.pid))
+        rc.parar_videos_da_corrida_anterior(tmp_path)
+        assert pos.wait(timeout=5) != 0 and outro.poll() is None
+        (tmp_path / ".pos_corrida.pid").write_text("lixo")
+        rc.parar_videos_da_corrida_anterior(tmp_path)      # arquivo ruim nao levanta
+    finally:
+        pos.kill()
+        outro.kill()

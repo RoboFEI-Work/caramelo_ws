@@ -18,7 +18,6 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(caramelo_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
@@ -28,6 +27,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -59,15 +59,6 @@ target_include_directories(reach_shift PUBLIC
   ${EIGEN3_INCLUDE_DIRS})
 target_compile_features(reach_shift PUBLIC cxx_std_17)
 target_link_libraries(reach_shift custom_ik)
-
-# AMT1 (2026-08-28): planejador PURO da ordenacao por ciclos (slots por x,
-# plano pick/place com buffer 2, oraculo simulatePlan, re-registro dos
-# slots). Sem ROS: testado por gtest com as 720 permutacoes.
-add_library(amt1_sort_planner src/amt1_sort_planner.cpp)
-target_include_directories(amt1_sort_planner PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
-target_compile_features(amt1_sort_planner PUBLIC cxx_std_17)
 
 # Superficie livre (2026-10-19): regras do rulebook (bordas, objetos, parede,
 # profundidade da zona) sobre a grade top-down da mesa publicada pelo
@@ -129,6 +120,7 @@ ament_target_dependencies(
   "rclcpp_action"
   "sensor_msgs"
   "std_msgs"
+  "std_srvs"
   "tf2"
   "tf2_ros"
   "tf2_geometry_msgs"
@@ -136,42 +128,16 @@ ament_target_dependencies(
 target_link_libraries(mtc_place_action_node
   container_state_store custom_ik reach_shift surface_place_planner place_precision)
 
-# AMT1 (2026-08-28): servidor /amt1_sort — observa a mesa de precision
-# placement, planeja (amt1_sort_planner) e executa picks/places como CLIENTE
-# de /pick_tag e /place_tag, com nudge_base (caramelo_msgs) para alcance.
-add_executable(amt1_sort_action_node src/amt1_sort_action_node.cpp)
-target_include_directories(amt1_sort_action_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
-target_compile_features(amt1_sort_action_node PUBLIC c_std_99 cxx_std_17)
-ament_target_dependencies(
-  amt1_sort_action_node
-  "caramelo_msgs"
-  "geometry_msgs"
-  "moveit_ros_planning_interface"
-  "my_robot_msgs"
-  "rclcpp"
-  "rclcpp_action"
-  "std_msgs"
-  "tf2"
-  "tf2_ros"
-  "tf2_geometry_msgs"
-)
-target_link_libraries(amt1_sort_action_node
-  amt1_sort_planner container_state_store custom_ik place_precision yaml-cpp)
-
 install(
   TARGETS
     container_state_store
     custom_ik
     reach_shift
-    amt1_sort_planner
     surface_place_planner
     place_precision
     custom_ik_check
     mtc_pick_action_node
     mtc_place_action_node
-    amt1_sort_action_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -196,11 +162,6 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_reach_shift test/test_reach_shift.cpp TIMEOUT 300)
   target_link_libraries(test_reach_shift reach_shift)
-
-  # AMT1 (2026-08-28): planejador puro, 720 permutacoes x 2 buffers contra o
-  # oraculo simulatePlan (< 1 s; TIMEOUT folgado para maquina ocupada).
-  ament_add_gtest(test_amt1_sort_planner test/test_amt1_sort_planner.cpp TIMEOUT 120)
-  target_link_libraries(test_amt1_sort_planner amt1_sort_planner)
 
   # Superficie livre (2026-10-19): mesas sinteticas x regras do rulebook.
   ament_add_gtest(test_surface_place_planner test/test_surface_place_planner.cpp TIMEOUT 120)

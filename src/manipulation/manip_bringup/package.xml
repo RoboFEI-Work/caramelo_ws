@@ -27,6 +27,8 @@
   <!-- perception_gate_node.py -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>caramelo_msgs</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
   <!-- container_detector_node.py -->
   <exec_depend>sensor_msgs</exec_depend>

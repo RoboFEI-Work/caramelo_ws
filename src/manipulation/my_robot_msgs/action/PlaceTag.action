@@ -1,8 +1,8 @@
 string tag_frame
 string table_pose
-# 2026-08-21: estacao de destino ("WS_3", "SH_1", "PP_1"...). O no de place
-# precisa distinguir mesa comum (escolha de slot por camera) de precision
-# placement/shelf, e chaveia por estacao a memoria de slots ja usados.
+# 2026-08-21: estacao de destino ("WS_3", "SH_1"...). O no de place precisa
+# distinguir mesa comum (escolha de slot por camera) de prateleira, e chaveia
+# por estacao a memoria de slots ja usados.
 # Vazio = comportamento legado (pose nomeada unica).
 string ws
 # 2026-08-24: EMPILHAR — frame TF do objeto BASE ja na mesa (ex. "tag_4")
@@ -22,11 +22,6 @@ string container_color
 # comportamento de sempre (escada completa + skip / fallback na mesa).
 # Ignorado na prateleira (MesaSh).
 bool final_attempt
-# 2026-08-31: JUNTAS GRAVADAS — se nao vazio (5 valores), o place do stack_on
-# vai DIRETO para estas juntas (a configuracao em que a garra fechou na pega
-# daquele slot) em vez de resolver a IK do ponto xyz. So vale se a base nao
-# se moveu desde a pega (quem chama garante). Vazio = IK normal.
-float64[] place_joints
 # 2026-10-19: SUPERFICIE LIVRE — lados da mesa encostados numa PAREDE
 # (rulebook 4.4: zona de manipulacao comeca a 10 cm da parede). Tokens
 # separados por virgula, vistos pelo ROBO docado de frente para a mesa:
