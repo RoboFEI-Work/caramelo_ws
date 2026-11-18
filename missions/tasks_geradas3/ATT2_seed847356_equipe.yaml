@@ -19,7 +19,7 @@
 task_id: ATT2
 name: Advanced Transportation Test II
 duration_min: 20
-active_service_areas: [WS_2, WS_4, WS_7, SH_1, WS_8, WS_9, PP]
+active_service_areas: [WS_2, WS_3, WS_7, SH_1, WS_8, WS_9, PP]
 objects:
 - {id: 1}
 - {id: 6}
@@ -39,7 +39,7 @@ start_state:
   WS_2:
     obj_ids: [1, 8]
     table: [1, 8]
-  WS_4:
+  WS_3:
     obj_ids: [16]
     table: [16]
     containers:
@@ -67,7 +67,7 @@ finish_state:
   WS_2:
     obj_ids: []
     table: []
-  WS_4:
+  WS_3:
     obj_ids: [10, 12]
     table: []
     containers:
