@@ -436,7 +436,26 @@ public:
         // commit 143cfd0): so a IK estrita de 45 graus, uma leitura de tag.
         // Por isso os defaults abaixo sao false / 45 — o fallback "J4 livre" e
         // a pegada "bottom" ficam disponiveis por parametro.
-        shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", false);
+        // 2026-11-18 (operador: "na shelf, objeto muito perto nem sempre pega"):
+        // CAUSA medida nos bags de 17 e 18/11: a junta 3 PARA em ~2,17 rad
+        // (batente do servo; nunca passou de 2,175 em nenhum bag) e a IK de 45
+        // graus pedia 2,23 a 2,32 para alvos a y <= 0,37 m: a j3 ficava curta,
+        // o TCP fora do bloco e a garra fechava no vazio (6 falhas em 7; nas
+        // 190 solucoes de mesa gravadas nenhuma passa de 2,17). Agora a IK da
+        // shelf respeita shelf_j3_max; quando os 45 graus nao cabem, o
+        // fallback "J4 livre" (ligado por padrao a partir de hoje) resolve a
+        // posicao com a ferramenta 3 a 8 graus fora dos 45 (conferido offline
+        // com custom_ik_check e IK_J3_MAX=2.16 nos alvos que falharam).
+        shelf_j3_max_ = this->declare_parameter<double>("shelf_j3_max", 2.16);
+        // 2026-11-18 (pedido do operador: "logo apos pegar o objeto ele passa pra
+        // pose pegar_obj; pode ir direto pro pre_container"): com o bloco na
+        // garra o recuo para na fase 1 (acima do ponto da pega) e o transporte
+        // segue dali ao pre_container (recolhe j2..j5, gira a j1 por ultimo),
+        // sem voltar a pegar_obj_sh. Lido na hora do uso: se o caminho novo
+        // esbarrar na estante, volta ao antigo sem relancar com
+        //   ros2 param set /pick_action_server shelf_direto_ao_pre_container false
+        this->declare_parameter<bool>("shelf_direto_ao_pre_container", true);
+        shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", true);
         shelf_free_max_dev_deg_ = this->declare_parameter<double>(
             "shelf_free_max_dev_deg", 30.0);
         shelf_free_j2_max_ = this->declare_parameter<double>(
@@ -694,7 +713,8 @@ private:
     // Alvo do TCP (manip_base_link) que a escada nao alcancou; vira
     // target_x/target_y do result (diagnostico).
     std::optional<Eigen::Vector3d> last_unreachable_target_;
-    bool shelf_j4_free_{false};
+    bool shelf_j4_free_{true};
+    double shelf_j3_max_{2.16};   ///< batente real da junta 3 (rad), so' na IK da shelf
     double shelf_free_max_dev_deg_{30.0};
     double shelf_free_j2_max_{1.2};
     double shelf_grasp_tilt_deg_{45.0};
@@ -1972,9 +1992,11 @@ private:
         if (used_free_fallback) {
             *used_free_fallback = false;
         }
+        manip_task_execution::ArmModel model;
+        model.j3_max = std::min(model.j3_max, shelf_j3_max_);   // batente real (2026-11-18)
         const CustomIkOutcome strict = solveCustomIkForTag(
             tag_frame, tilt_from_vertical, kShelfWristJoint5, label, cycle_name, q_out,
-            nullptr, manip_task_execution::IkOptions{}, manip_task_execution::ArmModel{},
+            nullptr, manip_task_execution::IkOptions{}, model,
             target_z_offset);
         if (strict == CustomIkOutcome::kOk) {
             return true;
@@ -1992,7 +2014,6 @@ private:
         manip_task_execution::IkOptions options;
         options.orientation_weight = 0.0;  // posicao exata, orientacao livre
         options.max_orientation_error = shelf_free_max_dev_deg_ * M_PI / 180.0;
-        manip_task_execution::ArmModel model;
         model.j2_max = std::min(model.j2_max, shelf_free_j2_max_);
         const std::string free_label = std::string(label) + " (J4 livre)";
         const bool ok = solveCustomIkForTag(
@@ -2226,7 +2247,8 @@ private:
 
         publishStage(goal_handle, "shelf_phase1");
         const std::array<double, 5> phase1{
-            q_ik_out[0], 0.0, kShelfPhase1Joint3, q_ik_out[3], kShelfWristJoint5};
+            q_ik_out[0], 0.0, std::min(kShelfPhase1Joint3, shelf_j3_max_), q_ik_out[3],
+            kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
             return false;
         }
@@ -2274,7 +2296,9 @@ private:
             const manip_task_execution::ArmModel limits;
             phase3[2] = std::max(
                 limits.j3_min,
-                std::min(limits.j3_max, phase2[2] + shelf_phase3_j3_delta_deg_ * M_PI / 180.0));
+                std::min(
+                    std::min(limits.j3_max, shelf_j3_max_),
+                    phase2[2] + shelf_phase3_j3_delta_deg_ * M_PI / 180.0));
             phase3[3] = std::max(
                 limits.j4_min,
                 std::min(limits.j4_max, phase2[3] + shelf_phase3_j4_delta_deg_ * M_PI / 180.0));
@@ -2292,12 +2316,14 @@ private:
     }
 
     /// Caminho inverso: desfaz a fase 2, depois a fase 1, e volta a pose de
-    /// partida da prateleira — com o bloco na garra.
+    /// partida da prateleira. `com_bloco` (pega feita): para na fase 1 e o
+    /// transporte segue direto ao pre_container (shelf_direto_ao_pre_container).
     bool retreatFromShelf(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::array<double, 5> & q_ik,
         const std::string & cycle_name,
-        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
+        const bool com_bloco = false)
     {
         publishStage(goal_handle, "shelf_retreat");
 
@@ -2313,9 +2339,16 @@ private:
         }
 
         const std::array<double, 5> phase1{
-            q_ik[0], 0.0, kShelfPhase1Joint3, q_ik[3], kShelfWristJoint5};
+            q_ik[0], 0.0, std::min(kShelfPhase1Joint3, shelf_j3_max_), q_ik[3], kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
             return false;
+        }
+        if (com_bloco && this->get_parameter("shelf_direto_ao_pre_container").as_bool()) {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "[%s] shelf: bloco na garra - da fase 1 direto ao pre_container, sem %s.",
+                cycle_name.c_str(), kShelfStartPose);
+            return true;
         }
 
         arm->setStartStateToCurrentState();
@@ -2937,8 +2970,8 @@ private:
         bool is_shelf)
     {
         // Prateleira (pedido 2026-08-17): NUNCA passar por pegar_obj com o
-        // bloco vindo da estante — o retorno ja deixou o braco em
-        // pegar_obj_sh; segue direto ao pre_container.
+        // bloco vindo da estante. Desde 2026-11-18 o retorno deixa o braco na
+        // FASE 1 (nao mais em pegar_obj_sh); segue direto ao pre_container.
         // if (!is_shelf) {
         //     publishStage(goal_handle, "returning_to_pegar_obj");
         //     speak("!Bloco seguro");
@@ -3416,9 +3449,10 @@ private:
             (void)liftAfterGraspTable(arm, cycle_name, goal_handle);
         }
 
-        // Caminho inverso com o bloco na garra: fase 1 -> pegar_obj_sh.
+        // Caminho inverso com o bloco na garra: fase 1 e dali direto ao
+        // pre_container (2026-11-18; antes passava por pegar_obj_sh).
         if (is_shelf &&
-            !retreatFromShelf(arm, shelf_q, cycle_name, goal_handle))
+            !retreatFromShelf(arm, shelf_q, cycle_name, goal_handle, /*com_bloco=*/true))
         {
             // O bloco JA esta na garra: nao pode virar retry (o proximo ciclo
             // abriria a garra em cima da prateleira) nem skip.

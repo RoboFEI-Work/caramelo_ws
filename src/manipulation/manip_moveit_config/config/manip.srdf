@@ -231,6 +231,11 @@
         <joint name="manip_joint6" value="-0.2265"/>
         <joint name="manip_joint7" value="-0.2265"/>
     </group_state>
+    <!-- open_ct (2026-11-17): igual ao de caramelo.srdf (que e' o que o robo usa). -->
+    <group_state name="open_ct" group="gripper">
+        <joint name="manip_joint6" value="0"/>
+        <joint name="manip_joint7" value="0"/>
+    </group_state>
     <group_state name="gripper_half_open" group="gripper">
         <joint name="manip_joint6" value="0"/>
         <joint name="manip_joint7" value="0"/>

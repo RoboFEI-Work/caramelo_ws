@@ -277,3 +277,34 @@ int main(int argc, char ** argv)
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+// 2026-11-18: bloco PERTO na prateleira. Alvos reais que falharam (run_20261118_105742): com o
+// batente real da junta 3 (2,16 rad) os 45 graus nao tem solucao, e a orientacao livre (como o
+// fallback "J4 livre" da shelf: desvio <= 30 graus, j2 <= 1,2) resolve dentro do batente. O alvo
+// que funcionou em 17/11 (y = 0,38) continua resolvendo nos 45 graus.
+TEST(ShelfPerto, BatenteDaJunta3)
+{
+  using manip_task_execution::ArmModel;
+  using manip_task_execution::IkOptions;
+  const double tilt = M_PI / 4.0;
+  ArmModel real;
+  real.j3_max = 2.16;
+  std::array<double, 5> q{};
+  for (const auto & alvo : {Eigen::Vector3d(0.005, 0.369, -0.037), Eigen::Vector3d(0.016, 0.353, -0.038),
+      Eigen::Vector3d(0.003, 0.357, -0.037)})
+  {
+    ASSERT_TRUE(manip_task_execution::solveIk(alvo, tilt, 0.0, q));
+    EXPECT_GT(q[2], 2.17) << "sem o batente a IK pede o que o servo nao faz";
+    EXPECT_FALSE(manip_task_execution::solveIk(alvo, tilt, 0.0, q, real, IkOptions{}));
+    IkOptions livre;
+    livre.orientation_weight = 0.0;
+    livre.max_orientation_error = 30.0 * M_PI / 180.0;
+    ArmModel real_livre = real;
+    real_livre.j2_max = 1.2;
+    ASSERT_TRUE(manip_task_execution::solveIk(alvo, tilt, 0.0, q, real_livre, livre));
+    EXPECT_LE(q[2], 2.16 + 1e-6);
+  }
+  ASSERT_TRUE(manip_task_execution::solveIk(Eigen::Vector3d(0.042, 0.380, -0.039), tilt, 0.0, q, real, IkOptions{}));
+  EXPECT_LE(q[2], 2.16);
+}
+

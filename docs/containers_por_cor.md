@@ -194,6 +194,13 @@ vertical) → `opening_gripper_final` → `container_closing_gripper` →
 `returning_cube_container` → `returning_cube_opening_gripper` → `returning_cube_pre_container_out`
 → `returning_cube_pegar_obj_final` → `skipped_unreachable`.
 
+**Abertura da garra na soltura (2026-11-17, pedido do operador):** dentro do container da mesa
+a garra solta na pose `open_ct` (as duas juntas em 0, em `caramelo.srdf`), e **só ali**; mesa
+comum, prateleira, pilha, PP e o pote de bordo continuam em `gripper_open` (−0,2265). Segurando o
+bloco as juntas ficam em +0,135/+0,145, então `open_ct` abre 0,14 rad por dedo, cerca de 40% do
+curso até `gripper_open`. Se a SRDF carregada não tiver `open_ct` (move_group não relançado), o
+nó avisa no log e solta em `gripper_open`.
+
 ## 5. Teste depois de qualquer mudança (roteiro de 10 min)
 
 1. Detector offline nas fotos: `--out overlay.png` → um blob por cor, `ACEITO`, sem

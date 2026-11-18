@@ -95,6 +95,10 @@ bool reportOne(
     options.max_orientation_error = 30.0 * M_PI / 180.0;
     model.j2_max = 1.2;
   }
+  // 2026-11-18: IK_J3_MAX=2.16 testa com o batente REAL da junta 3 (o default 2.6 e' o do URDF).
+  if (const char * j3 = std::getenv("IK_J3_MAX")) {
+    model.j3_max = std::atof(j3);
+  }
   const std::string mode_name = free_orientation ? mode.name + "+free" : mode.name;
   if (!manip_task_execution::solveIk(
       target, mode.tilt_from_vertical, q5, q, model, options))

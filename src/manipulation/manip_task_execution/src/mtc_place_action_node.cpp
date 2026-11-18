@@ -6898,7 +6898,18 @@ private:
             // 2026-11-17 (pedido do operador): na ENTREGA sempre gripper_open,
             // tambem na PP e na pilha (em 16/11 soltava largo com stack_on; na
             // PP os dedos largos esbarram nos blocos vizinhos).
-            gripper->setNamedTarget("gripper_open");
+            // 2026-11-17 (pedido do operador): DENTRO do container da mesa (por
+            // cor) a garra solta em open_ct (as duas juntas em 0, caramelo.srdf)
+            // e SO' ali. container_exit_pending_ = placeIntoContainer chegou.
+            if (!(container_exit_pending_ && gripper->setNamedTarget("open_ct"))) {
+                if (container_exit_pending_) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[CONTAINER] pose 'open_ct' nao existe na SRDF carregada (relancar o "
+                        "move_group?) - solto em gripper_open.");
+                }
+                gripper->setNamedTarget("gripper_open");
+            }
             if (!planAndExecute(gripper, "open gripper final")) {
                 last_place_failure_reason_ = "garra_nao_abriu_no_destino";
                 return false;
