@@ -946,7 +946,6 @@ std::vector<TransferItem> buildTransfers(
   const std::set<int> & ignored_object_ids,
   const std::map<int, ContainerAssignment> & container_assignments,
   const std::map<int, int> & stack_assignments,
-  const bool yaml_declares_containers,
   const Format2026Info & f26)
 {
   std::set<int> all_ids;
@@ -1140,19 +1139,11 @@ std::vector<TransferItem> buildTransfers(
       continue;
     }
 
-    // Formato novo (SEM bloco `containers:` no yaml): objeto de cor com
-    // container fisico, solto numa mesa comum e fora de pilha -> o place
-    // tenta o container dessa cor (se a camera vir um; senao, mesa). No
-    // formato antigo (com `containers:`) so as constraints "inside" mandam
-    // para container — quem nao esta numa constraint vai para a mesa.
-    if (!yaml_declares_containers && item.needs_place && item.container_color.empty() &&
-      stack_participants.count(obj_id) == 0 && item.to_ws.rfind("WS", 0) == 0)
-    {
-      const auto obj_it = objects.find(obj_id);
-      if (obj_it != objects.end() && colorHasContainer(obj_it->second.color)) {
-        item.container_color = obj_it->second.color;
-      }
-    } else if (assigned_to_container) {
+    // So vai para container quem o yaml manda explicitamente (constraint
+    // "inside" ou `containers: {COR: [ids]}` no formato 2026). A cor no
+    // `type` do objeto (ex.: ATTC_RED) e' so' a cor da peca: NAO manda para
+    // o container dessa cor (regra antiga, removida em 2026-11-19).
+    if (assigned_to_container) {
       const auto obj_it = objects.find(obj_id);
       if (obj_it != objects.end() && !obj_it->second.color.empty() &&
         obj_it->second.color != item.container_color)
@@ -1881,7 +1872,6 @@ int main(int argc, char ** argv)
         ignored_object_ids,
         container_assignments,
         stack_assignments,
-        !containers.empty(),
         f26);
     const auto output = buildOutput(transfers, ws_to_table_pose, ws_map_yaml_path);
 

@@ -436,3 +436,13 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Confirmado pelos bags: na prateleira o braco nunca vai a' pegar_obj das mesas (pick: home -> pegar_obj_sh -> pega -> pegar_obj_sh -> pre_container; place: pre_container -> pirocao -> MesaSh -> pirocao).
 - NAO VERIFICADO no robo. RISCO da saida direta (conta minha, sem as medidas da estante): ao recolher de frente, a ponta sobe de z ~0,05 para ~0,14 m e a camera de ~0,13 para ~0,19 m ainda perto da boca do vao (r ~0,31); se a tabua de cima for baixa, pode raspar. O caminho antigo mantinha a garra baixa (<= 0,10 na boca).
 - VERIFICADO: compila; 79 gtests (inclui o novo).
+
+## 2026-11-19 — Planner: cor do objeto deixa de mandar para container
+- Pedido: versao antiga punha no container da cor indicada ao lado da tag; hoje a cor e' so' da tag.
+- Feito (branch mudanca_pp, sem commit): regra removida em `manip_bt/src/task_planner.cpp` (e o parametro `yaml_declares_containers` de buildTransfers); teste novo `test_cor_no_type_nao_manda_para_container` (falha no binario antigo com container_color RED/BLUE, passa no novo); docs `guia_missoes.md` e `containers_por_cor.md` atualizados.
+- Verificado: build do manip_bt; 38/38 pytests do planner. Nao rodou no robo (relancar so' o que chama o task_planner).
+
+## 2026-11-19 — Shelf: sem a pose parecida com pegar_obj no transporte
+- Pedido e causa: ver `decisoes.md` 19/11 (shelf). Logs da run_20261118_115655 mostram fase1 -> pegar_obj_sh -> pre_container [j1 parado] -> [j1 por ultimo].
+- Feito (branch mudanca_pp, sem commit): `mtc_pick_action_node.cpp` — retreatFromShelf sem o atalho da fase 1 (sempre volta a pegar_obj_sh); transferGraspedObjectToContainer move direto ao pre_container quando is_shelf.
+- Verificado: build do manip_task_execution; colcon test 55 testes, 0 falhas. NAO rodou no robo (relancar a manipulacao). Risco: no movimento unico a j1 gira 180 graus enquanto o braco abre (j3 2,16 -> 1,08); conferir que o bloco nao raspa a estante no comeco do giro.

@@ -28,7 +28,7 @@ Arquivos:
 | Detector (parâmetros) | `src/manipulation/manip_bringup/config/container_detector.yaml` |
 | Place (código + defaults dos parâmetros) | `src/manipulation/manip_task_execution/src/mtc_place_action_node.cpp` |
 | Launch (nós, args, obstáculos) | `src/manipulation/manip_bringup/launch/manip_stack.launch.py` |
-| Planner (cor → container) | `src/manipulation/manip_bt/src/task_planner.cpp` |
+| Planner (container explícito no yaml → `container_color`; a cor do objeto não conta) | `src/manipulation/manip_bt/src/task_planner.cpp` |
 | Executor (valida `container_color`) | `src/manipulation/manip_bt/src/bt_yaml_executor.cpp` |
 | Action | `src/manipulation/my_robot_msgs/action/PlaceTag.action` (campo `container_color`) |
 | Fotos e overlays de calibração | `docs/imagens/containers/` (fotos da RealSense, overlays do detector e a montagem de 25/08) |

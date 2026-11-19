@@ -447,14 +447,16 @@ public:
         // posicao com a ferramenta 3 a 8 graus fora dos 45 (conferido offline
         // com custom_ik_check e IK_J3_MAX=2.16 nos alvos que falharam).
         shelf_j3_max_ = this->declare_parameter<double>("shelf_j3_max", 2.16);
-        // 2026-11-18 (pedido do operador: "logo apos pegar o objeto ele passa pra
-        // pose pegar_obj; pode ir direto pro pre_container"): com o bloco na
-        // garra o recuo para na fase 1 (acima do ponto da pega) e o transporte
-        // segue dali ao pre_container (recolhe j2..j5, gira a j1 por ultimo),
-        // sem voltar a pegar_obj_sh. Lido na hora do uso: se o caminho novo
-        // esbarrar na estante, volta ao antigo sem relancar com
-        //   ros2 param set /pick_action_server shelf_direto_ao_pre_container false
-        this->declare_parameter<bool>("shelf_direto_ao_pre_container", true);
+        // 2026-11-19 (pedido do operador: "tem que sair direto de pegar_obj_sh
+        // e ir pra pre_container"): com o bloco vindo da estante o recuo volta
+        // a pegar_obj_sh e dali vai ao pre_container num movimento SO'. Antes
+        // o transporte recolhia j2..j5 com a j1 parada (pose intermediaria
+        // parecida com pegar_obj: j1 1,57 / j2 0 / j3 1,08 / j4 1,82) e so'
+        // depois girava a j1. (Substitui a mudanca de 2026-11-18, que parava
+        // na fase 1 e pulava pegar_obj_sh: nao era o pedido.) Lido na hora do
+        // uso; volta ao movimento em duas etapas sem relancar com
+        //   ros2 param set /pick_action_server shelf_pre_container_direto false
+        this->declare_parameter<bool>("shelf_pre_container_direto", true);
         shelf_j4_free_ = this->declare_parameter<bool>("shelf_j4_free", true);
         shelf_free_max_dev_deg_ = this->declare_parameter<double>(
             "shelf_free_max_dev_deg", 30.0);
@@ -2316,14 +2318,12 @@ private:
     }
 
     /// Caminho inverso: desfaz a fase 2, depois a fase 1, e volta a pose de
-    /// partida da prateleira. `com_bloco` (pega feita): para na fase 1 e o
-    /// transporte segue direto ao pre_container (shelf_direto_ao_pre_container).
+    /// partida da prateleira (pegar_obj_sh), com ou sem bloco.
     bool retreatFromShelf(
         const std::shared_ptr<MoveGroupInterface> & arm,
         const std::array<double, 5> & q_ik,
         const std::string & cycle_name,
-        const std::shared_ptr<GoalHandlePickTag> & goal_handle,
-        const bool com_bloco = false)
+        const std::shared_ptr<GoalHandlePickTag> & goal_handle)
     {
         publishStage(goal_handle, "shelf_retreat");
 
@@ -2343,14 +2343,6 @@ private:
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
             return false;
         }
-        if (com_bloco && this->get_parameter("shelf_direto_ao_pre_container").as_bool()) {
-            RCLCPP_INFO(
-                this->get_logger(),
-                "[%s] shelf: bloco na garra - da fase 1 direto ao pre_container, sem %s.",
-                cycle_name.c_str(), kShelfStartPose);
-            return true;
-        }
-
         arm->setStartStateToCurrentState();
         arm->setEndEffectorLink("tcp");
         arm->setNamedTarget(kShelfStartPose);
@@ -2970,8 +2962,8 @@ private:
         bool is_shelf)
     {
         // Prateleira (pedido 2026-08-17): NUNCA passar por pegar_obj com o
-        // bloco vindo da estante. Desde 2026-11-18 o retorno deixa o braco na
-        // FASE 1 (nao mais em pegar_obj_sh); segue direto ao pre_container.
+        // bloco vindo da estante. O retorno deixa o braco em pegar_obj_sh e,
+        // desde 2026-11-19, dali vai ao pre_container num movimento so'.
         // if (!is_shelf) {
         //     publishStage(goal_handle, "returning_to_pegar_obj");
         //     speak("!Bloco seguro");
@@ -2993,14 +2985,19 @@ private:
         //     }
         // }
 
-        (void)is_shelf;  // so o retorno a pegar_obj (comentado acima) dependia disso
-
-        // Direto ao pre_container: recolhe j2..j5 e gira a j1 por ultimo (o
-        // bloco nao varre a mesa girando), como fazia o retorno a pegar_obj.
+        // Mesa: recolhe j2..j5 e gira a j1 por ultimo (o bloco nao varre a
+        // mesa girando), como fazia o retorno a pegar_obj. Prateleira
+        // (2026-11-19): de pegar_obj_sh ao pre_container num movimento so',
+        // sem a pose intermediaria com a j1 parada.
         publishStage(goal_handle, "going_pre_container");
         std::array<double, 5> q_pre{};
+        const bool shelf_direto =
+          is_shelf && this->get_parameter("shelf_pre_container_direto").as_bool();
         if (namedPoseJoints(arm, "pre_container", q_pre)) {
-            if (!moveToJointTargetJoint1Last(arm, q_pre, cycle_name + " pre_container")) {
+            const bool ok = shelf_direto ?
+              moveToJointTarget(arm, q_pre, cycle_name + " pre_container [shelf, direto]") :
+              moveToJointTargetJoint1Last(arm, q_pre, cycle_name + " pre_container");
+            if (!ok) {
                 return TransferOutcome::kFailHolding;
             }
         } else {
@@ -3449,10 +3446,9 @@ private:
             (void)liftAfterGraspTable(arm, cycle_name, goal_handle);
         }
 
-        // Caminho inverso com o bloco na garra: fase 1 e dali direto ao
-        // pre_container (2026-11-18; antes passava por pegar_obj_sh).
-        if (is_shelf &&
-            !retreatFromShelf(arm, shelf_q, cycle_name, goal_handle, /*com_bloco=*/true))
+        // Caminho inverso com o bloco na garra: fase 1 -> pegar_obj_sh; o
+        // transporte segue dali direto ao pre_container (2026-11-19).
+        if (is_shelf && !retreatFromShelf(arm, shelf_q, cycle_name, goal_handle))
         {
             // O bloco JA esta na garra: nao pode virar retry (o proximo ciclo
             // abriria a garra em cima da prateleira) nem skip.

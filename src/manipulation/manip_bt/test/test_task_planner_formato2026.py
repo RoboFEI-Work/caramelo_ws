@@ -587,3 +587,24 @@ def test_old_amt1_mission_has_no_target_order(planner, tmp_path):
     assert "target_order" not in actions[1], actions
     assert actions[1]["expected_tags"] == [1, 2, 3, 4, 5, 6], actions
     assert "AMT1: ordenar 6 tags na PP_1 (Mesa10, left_to_right, max 3 a bordo)" in log, log
+
+
+def test_cor_no_type_nao_manda_para_container(planner, tmp_path):
+    """Cor no `type` (ATTC_RED) e' so' a cor da peca: sem `containers:` no
+    yaml, o place vai para a mesa, sem `container_color` (regra antiga)."""
+    text = """task_id: BTT1
+name: Basic Transportation Test I
+active_service_areas: [WS_1, WS_5]
+objects: [{id: 3, type: ATTC_RED}, {id: 7, type: ATTC-blue}]
+start_state:
+  WS_5: {obj_ids: [3, 7], table: [3, 7]}
+  WS_1: {obj_ids: [], table: []}
+finish_state:
+  WS_5: {obj_ids: [], table: []}
+  WS_1: {obj_ids: [3, 7], table: [3, 7]}
+"""
+    rc, log, actions = _plan_text(planner, text, tmp_path)
+    assert rc == 0, log
+    places = _places(actions)
+    assert sorted(p["tag_frame"] for p in places) == ["tag_3", "tag_7"], places
+    assert not any("container_color" in p for p in places), places

@@ -445,20 +445,19 @@ task_id: BTT2
 version: equipe            # "equipe" = sem cores; a versão do robô traz a cor no type
 active_service_areas: [WS_1, WS_2, WS_3, WS_6]
 objects:
-- {id: 4, type: ATTC}      # cor desconhecida -> place na mesa
-- {id: 8, type: ATTC_RED}  # cor no type (aceita RED/BLUE, vermelho/azul, ATTC-blue, ...)
+- {id: 4, type: ATTC}      # place na mesa
+- {id: 8, type: ATTC_RED}  # cor no type = so' a cor da peca; place na mesa tambem
 start_state:
   WS_2: {obj_ids: [13, 4]}
 finish_state:
   WS_6: {obj_ids: [30, 13, 4]}
 ```
 
-- Não há `containers:`/`cont_ids` nem tag nos containers: **sem bloco `containers:` no
-  YAML, se o objeto tem cor (RED/BLUE) e vai para uma mesa comum, o place tenta o container
-  dessa cor visto pela câmera** (`container_color` na ação); sem container visível (ou sem o
-  detector no ar), solta na mesa. Formato antigo **com** `containers:` + "inside": só os objetos
-  das constraints vão para container (pela COR do container, que precisa ser RED/BLUE); os
-  outros vão para a mesa como antes.
+- Não há `containers:`/`cont_ids` nem tag nos containers. **A cor ao lado do tipo
+  (`ATTC_RED`, `ATTC-blue`...) é só a cor da peça: não manda para o container daquela cor**
+  (regra antiga, removida em 2026-11-19). Formato antigo **com** `containers:` + "inside": só os
+  objetos das constraints vão para container (pela COR do container, que precisa ser RED/BLUE);
+  os outros vão para a mesa.
 - Objeto sem frame em `tags_36h11.yaml` é **erro** do planner (antes sumia do plano em
   silêncio). Objeto só no `start_state` vira aviso (não é pego); só no `finish_state` é erro.
   `type` com "DECOY" é ignorado. `stacks:` continua (§3.3).

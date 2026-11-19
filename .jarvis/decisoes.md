@@ -215,3 +215,13 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - Pedidos do operador: conferencia no fim (olhar a mesa, arrumar o que faltar); no place a base anda de lado para ficar alinhada com o slot ("isso precisa funcionar"); sem vai e volta no pick.
 - Decisoes minhas (dizer se mudarem): (1) `success` do /amt1_sort = mesa vista em ordem SEM nenhuma operacao na chamada; quem repete e' o executor (`amt1_rounds` 4), e esgotadas as rodadas a missao segue para o FINISH; (2) sem tag de slot para ancorar a fila o no' nao mexe em bloco (antes chutava "comeca no 101"); (3) alinhamento do place pelo protocolo de alcance que ja' existia (unreachable + passo), limite 8 cm, de garra vazia; (4) a base volta ao centro uma vez no fim de cada rodada, porque as olhadas so' cobrem a fileira a partir do centro; (5) `nudge_coast_est` 0,06 e nao 0,085 (o medido), por falta de medida com corte antes dos 6 cm.
 - Nao mexi: pose `pegar_obj` (j4 2,199 contra o limite de 1,913; T9) e a causa fisica da queda do adaptador de rede (T35).
+
+## 2026-11-19 — Cor no `type` do objeto nao manda mais para o container
+- Pedido do operador: "a cor do lado [da tag] e' apenas a cor da tag", nao e' para colocar no container daquela cor.
+- Removida do task_planner.cpp (buildTransfers) a regra do formato "novo 25/08" sem `containers:`: objeto `ATTC_RED`/`ATTC-blue` indo para WS ganhava `container_color`. Agora so' vai para container o que o yaml manda explicitamente (`finish_state.<WS>.containers.<COR>` no 2026; constraint "inside" no antigo). Status: vigente.
+
+## 2026-11-19 — Shelf com bloco: pegar_obj_sh -> pre_container num movimento so'
+- Pedido do operador: "quando ele pega o objeto na shelf, ele ta indo pra uma pose muito parecida de pegar_obj; tem que sair direto de pegar_obj_sh e ir pra pre_container".
+- Causa (run_20261118_115655): depois de pegar_obj_sh o transporte fazia `pre_container [j1 parado]` (pre_container com a j1 ainda na estante: 1,57 / 0 / 1,08 / 1,82, parecida com pegar_obj) e so' depois `[j1 por ultimo]`.
+- Decisao: na shelf o recuo volta SEMPRE a pegar_obj_sh e dali vai ao pre_container num movimento unico (`shelf_pre_container_direto` true; false = volta as duas etapas, por `ros2 param set`, sem relancar). Mesa inalterada.
+- **Substitui** a "SAIDA DIRETA" de 2026-11-18 (parar na fase 1 e pular pegar_obj_sh): interpretacao errada do pedido; o parametro `shelf_direto_ao_pre_container` foi removido. Status: vigente.
