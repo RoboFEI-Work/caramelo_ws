@@ -235,3 +235,7 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - Pedido do operador: "para empilhar em mesa de 5 ele coloca muito errado, faca com que ele verifique melhor o ponto antes de empilhar".
 - Fato: nao ha log de pilha na Mesa5 neste PC (runs/ e ~/.ros/log so' tem pilha na Mesa15, WS_6, 18/11). Nessas, longe x perto diferiu 2-5 cm (dz +31 a +46 mm) e havia UMA leitura de perto, de um pre-ponto mirado pela leitura de longe.
 - Decisao: ate' 3 olhadas de perto, re-mirando pela leitura nova, ate' duas seguidas concordarem (xy 8 mm, z 12 mm); senao usa a ultima com aviso. Vale para toda pilha (nao so' Mesa5); slot da PP fica com 1 olhada. Params lidos a cada place. Status: vigente.
+
+## 2026-11-19 — Container: 1o bloco no centro, 2o em cima do 1o
+- Pedido do operador: "para o ct, faca ele colocar o segundo bloco aonde colocou o primeiro, mas um pouco mais alto; e para o primeiro bloco sempre de prioridade para o ponto mais central possivel".
+- Decisao: `container_empilha_no_primeiro` true — sem bloco solto, ordem por |deslocamento| (centro 1o, laterais so' sem IK); com bloco solto, candidato mais perto dele (na deteccao atual) e alvo +`container_empilha_extra_z_m` 0,03 por bloco solto. "Um pouco mais alto" = 3 cm (escolha minha: cubo 4,2 em container de 7 -> topo do 1o 2,8 cm abaixo da borda). Substitui na pratica a regra de 25/08 (o mais longe dos soltos); os offsets 0,022 de T41 viram so' fallback de IK. Status: vigente.

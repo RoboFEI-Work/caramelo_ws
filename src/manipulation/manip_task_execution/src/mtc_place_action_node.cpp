@@ -128,7 +128,7 @@ public:
         stack_place_x_offset_m_ =
             this->declare_parameter<double>("stack_place_x_offset_m", 0.0);
         stack_place_y_offset_m_ =
-            this->declare_parameter<double>("stack_place_y_offset_m", -0.02);
+            this->declare_parameter<double>("stack_place_y_offset_m", -0.01);
         stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
@@ -277,6 +277,16 @@ public:
             "container_slot_offsets_long_m", std::vector<double>{0.022, -0.022, 0.0});
         container_slot_offsets_short_m_ = this->declare_parameter<std::vector<double>>(
             "container_slot_offsets_short_m", std::vector<double>{0.0, 0.0, 0.0});
+        // 2026-11-19 (operador: "para o ct, faca ele colocar o segundo bloco
+        // aonde colocou o primeiro, mas um pouco mais alto. E para o primeiro
+        // bloco sempre de prioridade para o ponto mais central possivel"):
+        // 1o bloco = candidato de menor deslocamento (centro); os outros so' se
+        // o centro nao tiver IK. Com bloco ja' solto no container (memoria de
+        // slots): candidato mais PERTO dele e alvo +container_empilha_extra_z_m
+        // por bloco ja' solto. false = regra antiga (o mais longe dos soltos).
+        // Lidos a cada place.
+        this->declare_parameter<bool>("container_empilha_no_primeiro", true);
+        this->declare_parameter<double>("container_empilha_extra_z_m", 0.03);
         container_exit_gripper_position_ =
             this->declare_parameter<double>("container_exit_gripper_position", 0.170);
         cube_height_m_ = this->declare_parameter<double>("cube_height_m", 0.042);
@@ -2035,8 +2045,14 @@ private:
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
         const std::string & frame,
         double frame_yaw,
-        const Eigen::Vector3d & target)
+        const Eigen::Vector3d & target,
+        double * extra_z_out = nullptr)
     {
+        if (extra_z_out) {
+            *extra_z_out = 0.0;
+        }
+        const bool empilha =
+          this->get_parameter("container_empilha_no_primeiro").as_bool();
         // Lidos na hora (2026-11-19): ros2 param set vale no proximo place.
         container_slot_offsets_long_m_ =
           this->get_parameter("container_slot_offsets_long_m").as_double_array();
@@ -2078,6 +2094,51 @@ private:
         }
         std::size_t best = 0;
         double best_score = -1.0;
+        if (empilha) {
+            // Ordem por chave crescente: sem bloco solto = |deslocamento|
+            // (centro primeiro); com bloco solto = distancia ao bloco mais
+            // proximo (o ponto onde caiu o 1o, na deteccao de agora).
+            const auto chave = [&](std::size_t k) {
+                if (prior.empty()) {
+                    const double ds = k < offs_s.size() ? offs_s[k] : 0.0;
+                    return std::hypot(offs_l[k], ds);
+                }
+                double d = std::numeric_limits<double>::infinity();
+                for (const auto & p : prior) {
+                    d = std::min(d, (cands[k] - p).norm());
+                }
+                return d;
+            };
+            std::vector<std::pair<double, std::size_t>> ord;
+            for (std::size_t k = 0; k < cands.size(); ++k) {
+                ord.emplace_back(chave(k), k);
+            }
+            std::stable_sort(ord.begin(), ord.end(),
+                             [](const auto & a, const auto & b) { return a.first < b.first; });
+            best = ord.front().second;
+            const double extra_z = prior.empty() ? 0.0 :
+              this->get_parameter("container_empilha_extra_z_m").as_double() *
+              static_cast<double>(prior.size());
+            if (extra_z_out) {
+                *extra_z_out = extra_z;
+            }
+            RCLCPP_INFO(
+                get_logger(),
+                "[CONTAINER] %zu bloco(s) ja soltos em %s (memoria): candidato %zu/%zu "
+                "(%+.3f longo, %+.3f curto) -> [%.3f %.3f]%s",
+                prior.size(), frame.c_str(), best + 1, cands.size(),
+                offs_l[best], best < offs_s.size() ? offs_s[best] : 0.0,
+                cands[best].x(), cands[best].y(),
+                prior.empty() ? " — o mais central" :
+                (" — em cima do bloco solto (" + std::to_string(ord.front().first * 100.0).substr(0, 4) +
+                " cm dele), +" + std::to_string(extra_z * 100.0).substr(0, 3) + " cm de altura").c_str());
+            std::vector<Eigen::Vector2d> ranked;
+            for (const auto & [chave_k, k] : ord) {
+                (void)chave_k;
+                ranked.push_back(cands[k]);
+            }
+            return ranked;
+        }
         if (!prior.empty()) {
             for (std::size_t k = 0; k < cands.size(); ++k) {
                 double score = std::numeric_limits<double>::infinity();
@@ -5566,8 +5627,10 @@ private:
         // sempre no centro empilha o 2o em cima do 1o (e a garra o re-pega ao
         // fechar). Cada bloco vai para o candidato mais LONGE dos que a
         // memoria de slots diz que ja soltamos neste container.
+        double empilha_extra_z = 0.0;
         const std::vector<Eigen::Vector2d> slot_cands =
-            containerSlotCandidates(goal_handle, frame, frame_yaw, target);
+            containerSlotCandidates(goal_handle, frame, frame_yaw, target, &empilha_extra_z);
+        target.z() += empilha_extra_z;
 
         const std::vector<double> tilts = tiltLadderRad(container_tilt_ladder_deg_);
         // Pose de recuo VERTICAL (stack_pre_lift_m acima) resolvida junto, na
@@ -5624,10 +5687,10 @@ private:
         q_lift[4] = q[4];
         RCLCPP_INFO(
             get_logger(),
-            "[CONTAINER] alvo [%.3f %.3f %.3f] (borda %.3f + cubo %.3f + folga %.3f), "
-            "ferramenta a %.0f graus, yaw %.3f -> j [%.3f %.3f %.3f %.3f %.3f]",
+            "[CONTAINER] alvo [%.3f %.3f %.3f] (borda %.3f + cubo %.3f + folga %.3f + "
+            "empilha %.3f), ferramenta a %.0f graus, yaw %.3f -> j [%.3f %.3f %.3f %.3f %.3f]",
             target.x(), target.y(), target.z(), plane_z, cube_height_m_,
-            container_drop_clearance_m_, tilt_used * 180.0 / M_PI, frame_yaw,
+            container_drop_clearance_m_, empilha_extra_z, tilt_used * 180.0 / M_PI, frame_yaw,
             q[0], q[1], q[2], q[3], q[4]);
 
         if (dry_run) {

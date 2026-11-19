@@ -65,6 +65,12 @@ Medidas atuais: 170 × 105 × 70 mm (medidas em 25/08). Cubo 42 mm.
 
 ### 1.1 Como escolher os deslocamentos (`container_slot_offsets_long_m`)
 
+> **Desde 2026-11-19 (`container_empilha_no_primeiro: true`, padrão)**: o 1º bloco vai no
+> candidato **mais central** (deslocamento 0); os laterais só entram se o centro não tiver IK.
+> Do 2º em diante: o candidato mais perto do bloco já solto (memória de slots), **mais alto**
+> `container_empilha_extra_z_m` (0,03) por bloco já solto — o 2º cai em cima do 1º. `false` =
+> regra abaixo (o mais longe dos soltos). Os dois parâmetros são lidos a cada place.
+
 Regra: `d = L/2 − cubo/2 − 0,02` no máximo, onde `L` é o lado longo interno e 0,02 é a
 margem para os dedos abertos não pegarem a parede. Para L = 0,170: d ≤ 0,085 − 0,021 −
 0,02 = 0,044 → usávamos **0,03**; desde 2026-11-19 **0,022** (o alvo às vezes caía na parede e

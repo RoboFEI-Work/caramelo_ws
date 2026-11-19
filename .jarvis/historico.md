@@ -454,3 +454,7 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-19 — Pilha: verificacao do ponto antes de empilhar
 - Feito (sem commit): `mtc_place_action_node.cpp` preObserveStackBase com laco de olhadas (`stack_pre_observe_max_olhadas` 3, `_converge_xy_m` 0.008, `_converge_z_m` 0.012); doc `place_precisao_e_pilha.md` §6. Build + 55 testes ok. NAO testado no robo; custo estimado ~5-6 s por olhada extra.
 - Proximo: corrida com pilha na WS_8 (Mesa5); mandar o run para ver se converge e se o erro final cai. Se nao convergir nunca, o ruido de perto e' maior que 8 mm -> subir o limite ou o problema e' a calibracao camera-braco (T4).
+
+## 2026-11-19 — Container: centro primeiro, 2o bloco empilhado no 1o
+- Feito (sem commit): `mtc_place_action_node.cpp` containerSlotCandidates (modo novo + extra_z) e alvo/log com "empilha"; doc `containers_por_cor.md` §1.1. Build + 55 testes ok. NAO testado no robo.
+- Atencao no teste: a saida fecha a garra dentro do container (container_close_gripper_on_exit); com o 2o bloco em cima do 1o, conferir que a verificacao de esforco nao deixa re-pegar.
