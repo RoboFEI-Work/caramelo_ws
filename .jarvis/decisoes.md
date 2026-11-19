@@ -239,3 +239,7 @@ Formato: data · decisão · motivo · consequências · origem · status.
 ## 2026-11-19 — Container: 1o bloco no centro, 2o em cima do 1o
 - Pedido do operador: "para o ct, faca ele colocar o segundo bloco aonde colocou o primeiro, mas um pouco mais alto; e para o primeiro bloco sempre de prioridade para o ponto mais central possivel".
 - Decisao: `container_empilha_no_primeiro` true — sem bloco solto, ordem por |deslocamento| (centro 1o, laterais so' sem IK); com bloco solto, candidato mais perto dele (na deteccao atual) e alvo +`container_empilha_extra_z_m` 0,03 por bloco solto. "Um pouco mais alto" = 3 cm (escolha minha: cubo 4,2 em container de 7 -> topo do 1o 2,8 cm abaixo da borda). Substitui na pratica a regra de 25/08 (o mais longe dos soltos); os offsets 0,022 de T41 viram so' fallback de IK. Status: vigente.
+
+## 2026-11-19 — Pilha: sempre no mesmo ponto, cada vez mais alto
+- Pedido do operador: "faca o empilhar colocar sempre no mesmo ponto, porem cada vez mais alto". (O operador vinha ajustando a escadinha `stack_place_y_offset_m` a mao: -0,02 -> 0,01 -> 0,0, commits empilhar/empilha/empilhaa.)
+- Decisao: `stack_mesmo_ponto` true — cubo sobre cubo usa xy do 1o cubo da cadeia (findStackRoot na memoria 'stack:') e z = topo dele + cube_height x (niveis-1) + stack_place_z_offset; a leitura da tag so' confere (> `stack_mesmo_ponto_max_desvio_m` 0,05 -> vale a leitura). 1o cubo (sobre tag_200) nao muda. Status: vigente.

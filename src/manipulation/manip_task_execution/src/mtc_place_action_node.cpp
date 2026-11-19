@@ -130,6 +130,16 @@ public:
         stack_place_y_offset_m_ =
             this->declare_parameter<double>("stack_place_y_offset_m", 0.0);
         stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
+        // 2026-11-19 (operador: "faca o empilhar colocar sempre no mesmo
+        // ponto, porem cada vez mais alto"): cubo sobre cubo mira o xy do
+        // PRIMEIRO cubo da pilha (memoria 'stack:'), com z = topo dele + um
+        // cubo por nivel ja' empilhado, em vez da leitura da tag do cubo de
+        // baixo (que acumulava a escadinha). A leitura segue como conferencia:
+        // discordou do ponto da memoria mais que stack_mesmo_ponto_max_desvio_m
+        // (robo saiu e voltou / pilha mexida) -> vale a leitura. Lidos a cada
+        // place; false = mira a tag do cubo de baixo, como antes.
+        this->declare_parameter<bool>("stack_mesmo_ponto", true);
+        this->declare_parameter<double>("stack_mesmo_ponto_max_desvio_m", 0.05);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
         stack_arrival_tolerance_m_ =
@@ -3813,13 +3823,53 @@ private:
             manip_task_execution::tagIdFromFrame(base_frame) ?
             Eigen::Vector3d(stack_place_x_offset_m_, stack_place_y_offset_m_, 0.0) :
             Eigen::Vector3d::Zero();
+        // Pilha no mesmo ponto (2026-11-19): primeiro cubo da cadeia e
+        // quantos cubos ha' ate' a base, pela memoria.
+        std::optional<manip_task_execution::StackMemoryEntry> raiz;
+        int niveis_ate_base = 0;
+        if (kind == StackTargetKind::kCube &&
+            this->get_parameter("stack_mesmo_ponto").as_bool())
+        {
+            const auto mem = stackMemoryEntries(ws);
+            raiz = manip_task_execution::findStackRoot(mem, base_frame);
+            niveis_ate_base = manip_task_execution::stackLevelFromMemory(mem, base_frame);
+            if (!raiz) {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[STACK] mesmo ponto: %s sem cadeia na memoria — miro a leitura da tag.",
+                    base_frame.c_str());
+            }
+        }
+        const double max_desvio =
+          this->get_parameter("stack_mesmo_ponto_max_desvio_m").as_double();
         // Retorno EXPLICITO: com auto o lambda devolvia a expressao do Eigen
         // apontando para o temporario ja destruido (alvo lixo, "fora de alcance").
         auto target_from = [&](const geometry_msgs::msg::TransformStamped & tf) -> Eigen::Vector3d {
-                return Eigen::Vector3d(
+                const Eigen::Vector3d lida(
                     tf.transform.translation.x,
                     tf.transform.translation.y,
-                    tf.transform.translation.z + z_offset) + xy_corr;
+                    tf.transform.translation.z);
+                if (raiz && niveis_ate_base >= 1) {
+                    const Eigen::Vector3d topo_base(
+                        raiz->x, raiz->y,
+                        raiz->z + static_cast<double>(niveis_ate_base - 1) * cube_height_m_);
+                    const double desvio = std::hypot(lida.x() - raiz->x, lida.y() - raiz->y);
+                    if (desvio <= max_desvio) {
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "[STACK] mesmo ponto: xy do 1o cubo (%s) [%.3f %.3f], topo da base "
+                            "z=%.3f (%d nivel(is)); leitura da tag a %.1f cm dali, z lido %.3f.",
+                            raiz->tag_frame.c_str(), raiz->x, raiz->y, topo_base.z(),
+                            niveis_ate_base, desvio * 100.0, lida.z());
+                        return topo_base + Eigen::Vector3d(0.0, 0.0, z_offset) + xy_corr;
+                    }
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] mesmo ponto: leitura de %s a %.1f cm do 1o cubo (limite %.1f) — "
+                        "uso a leitura.",
+                        base_frame.c_str(), desvio * 100.0, max_desvio * 100.0);
+                }
+                return lida + Eigen::Vector3d(0.0, 0.0, z_offset) + xy_corr;
             };
         Eigen::Vector3d target = target_from(base_tf);
         if (xy_corr.norm() > 1e-6) {

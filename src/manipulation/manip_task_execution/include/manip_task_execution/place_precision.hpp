@@ -84,6 +84,13 @@ std::optional<StackMemoryEntry> findStackMemory(
 int stackLevelFromMemory(
   const std::vector<StackMemoryEntry> & entries, const std::string & base_frame);
 
+/// Registro do PRIMEIRO cubo da cadeia que termina em `base_frame` (o que
+/// esta' direto sobre a tag de referencia / base desconhecida). nullopt se
+/// `base_frame` nao tem registro. Ex.: A sobre tag_200, B sobre A:
+/// root(B) = root(A) = registro de A. (2026-11-19: pilha no mesmo ponto.)
+std::optional<StackMemoryEntry> findStackRoot(
+  const std::vector<StackMemoryEntry> & entries, const std::string & base_frame);
+
 /// Piso do TCP na re-pega de um cubo da PILHA: topo esperado - um cubo - tol
 /// (o cubo pode ter caido para o nivel de baixo / a mesa ao lado de uma base
 /// de nivel 1); nunca mais fundo que isso.

@@ -458,3 +458,7 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-19 — Container: centro primeiro, 2o bloco empilhado no 1o
 - Feito (sem commit): `mtc_place_action_node.cpp` containerSlotCandidates (modo novo + extra_z) e alvo/log com "empilha"; doc `containers_por_cor.md` §1.1. Build + 55 testes ok. NAO testado no robo.
 - Atencao no teste: a saida fecha a garra dentro do container (container_close_gripper_on_exit); com o 2o bloco em cima do 1o, conferir que a verificacao de esforco nao deixa re-pegar.
+
+## 2026-11-19 — Pilha no mesmo ponto
+- Feito (sem commit): `place_precision.{hpp,cpp}` findStackRoot + gtest; `mtc_place_action_node.cpp` target_from com o ponto do 1o cubo; doc `place_precisao_e_pilha.md` §6. Build + 56 testes ok. NAO testado no robo.
+- Depende da memoria de slots (`slot_memory_enabled`) ter o registro do 1o cubo; sem ele, log "sem cadeia na memoria" e mira a tag como antes.

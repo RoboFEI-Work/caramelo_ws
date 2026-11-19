@@ -126,6 +126,24 @@ int stackLevelFromMemory(
   return level;
 }
 
+std::optional<StackMemoryEntry> findStackRoot(
+  const std::vector<StackMemoryEntry> & entries, const std::string & base_frame)
+{
+  static const std::string kPrefix = "stack:";
+  std::optional<StackMemoryEntry> root;
+  std::set<std::string> visited;
+  std::string frame = base_frame;
+  while (!frame.empty() && visited.insert(frame).second) {
+    const auto rec = findStackMemory(entries, frame);
+    if (!rec) {
+      break;
+    }
+    root = rec;
+    frame = rec->slot.substr(kPrefix.size());
+  }
+  return root;
+}
+
 PlacementDecision decidePlacement(
   const PlacementObservation & obs, const PlacementLimits & lim)
 {

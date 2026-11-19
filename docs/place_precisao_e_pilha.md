@@ -113,6 +113,8 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `stack_memory_fallback` | true | — | base pela memória |
 | `stack_max_level` | 4 | — | só aviso |
 | `precision_verify_timeout_ms` | 4000 | sim | espera pela tag nas leituras de verificação/memória (mais amostras na mediana) |
+| `stack_mesmo_ponto` | true | — | 2026-11-19: cubo sobre cubo mira o xy do **1º cubo da pilha** (memória `stack:`) e z = topo dele + 4,2 cm por nível já empilhado; a leitura da tag de baixo só confere. false = mira a tag do cubo de baixo (antes). Lido a cada place |
+| `stack_mesmo_ponto_max_desvio_m` | 0.05 | sim | leitura da tag de baixo mais longe que isso do 1º cubo (robô saiu e voltou / pilha mexida) → vale a leitura |
 | `stack_pre_observe_max_olhadas` | 3 | sim | 2026-11-19: olhadas de perto (garra vazia) na base antes de pegar o bloco; cada uma re-mira o pré-ponto TCP2 pela leitura anterior. 1 = uma olhada (antes). Lido a cada place |
 | `stack_pre_observe_converge_xy_m` / `_z_m` | 0.008 / 0.012 | sim | duas leituras seguidas dentro disso = ponto CONFERIDO; esgotou as olhadas = usa a última, com aviso |
 

@@ -23,6 +23,7 @@ using manip_task_execution::PlacementDecision;
 using manip_task_execution::PlacementLimits;
 using manip_task_execution::PlacementObservation;
 using manip_task_execution::stackLevelFromMemory;
+using manip_task_execution::findStackRoot;
 using manip_task_execution::StackMemoryEntry;
 using manip_task_execution::StackTargetKind;
 using manip_task_execution::tagIdFromFrame;
@@ -294,4 +295,22 @@ TEST(PlacePrecision, DecidePlacementPileOneCorrection)
   unseen.seen = false;
   unseen.fk_err_xy_m = 0.05;
   EXPECT_EQ(decidePlacement(unseen, lim), PlacementDecision::kAcceptUnverified);
+}
+
+TEST(PlacePrecision, FindStackRootSegueACadeiaAteOPrimeiroCubo)
+{
+  // A (tag_3) sobre tag_200, B (tag_7) sobre A, C (tag_9) sobre B.
+  const std::vector<StackMemoryEntry> mem{
+    {"stack:tag_200", "tag_3", 0.06, 0.36, 0.037},
+    {"stack:tag_3", "tag_7", 0.07, 0.37, 0.079},
+    {"stack:tag_7", "tag_9", 0.08, 0.38, 0.121},
+  };
+  for (const char * f : {"tag_3", "tag_7", "tag_9"}) {
+    const auto r = findStackRoot(mem, f);
+    ASSERT_TRUE(r.has_value()) << f;
+    EXPECT_EQ(r->tag_frame, "tag_3") << f;
+    EXPECT_DOUBLE_EQ(r->x, 0.06);
+  }
+  EXPECT_FALSE(findStackRoot(mem, "tag_200").has_value());
+  EXPECT_FALSE(findStackRoot(mem, "tag_99").has_value());
 }
