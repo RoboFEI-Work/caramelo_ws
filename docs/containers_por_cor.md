@@ -57,7 +57,7 @@ Medidas atuais: 170 × 105 × 70 mm (medidas em 25/08). Cubo 42 mm.
 | Tolerância dos lados (máximo) | `container_detector.yaml` → `dims_tolerance_upper_frac` | 1.0 | blob inteiro pode medir até 2× — de perto as paredes inflam a mancha (27/08: 0,20 × 0,176 m era rejeitado). Blob cortado: só a área conta |
 | **Altura da borda no place** | `mtc_place_action_node.cpp` → `container_rim_height_m` | 0.07 | = altura do container (borda acima do tampo) |
 | Folga de soltura | `container_drop_clearance_m` | 0.01 | fundo do cubo acima da borda; o braço afunda ~2,5 cm estendido, então 0,01 = cubo ~1,5 cm dentro |
-| Deslocamento para vários blocos | `container_slot_offsets_long_m` | [0.03, −0.03, 0.0] | ver §1.1 |
+| Deslocamento para vários blocos | `container_slot_offsets_long_m` | [0.022, −0.022, 0.0] | ver §1.1; lido a cada place (`ros2 param set /place_action_server …` vale sem relançar) |
 | Deslocamento no lado curto | `container_slot_offsets_short_m` | [0, 0, 0] | só se o lado curto couber 2 cubos com folga |
 | Folga do container como obstáculo | `clearanceForFrame` (prefixo `ct_`) | 0.13 | ≈ metade da diagonal + margem |
 | Yaw confiável (mancha alongada) | `container_detector.yaml` → `yaw_min_aspect_full` / `yaw_min_aspect_partial` | 1.3 / 1.5 | razão lado longo/curto medida no plano; abaixo disso usa o último yaw confiável da cor (`yaw_memory_s` 60 s). Para um container quase quadrado, baixar |
@@ -67,7 +67,9 @@ Medidas atuais: 170 × 105 × 70 mm (medidas em 25/08). Cubo 42 mm.
 
 Regra: `d = L/2 − cubo/2 − 0,02` no máximo, onde `L` é o lado longo interno e 0,02 é a
 margem para os dedos abertos não pegarem a parede. Para L = 0,170: d ≤ 0,085 − 0,021 −
-0,02 = 0,044 → usamos **0,03** (dois cubos a 6 cm de centro a centro = 1,8 cm entre eles).
+0,02 = 0,044 → usávamos **0,03**; desde 2026-11-19 **0,022** (o alvo às vezes caía na parede e
+mexia o container; dois cubos a 4,4 cm de centro a centro, quase encostados, e 0,8 cm a mais de
+folga da parede).
 Sequência `[+d, −d, 0]`: 1º bloco num lado, 2º no outro, 3º no meio (cai em cima/entre).
 Para um container maior (ex. 220 mm) dá para usar `[0.06, -0.06, 0.0]` ou 4 posições
 `[0.06, -0.06, 0.02, -0.02]`. O place escolhe sempre o candidato **mais longe dos blocos

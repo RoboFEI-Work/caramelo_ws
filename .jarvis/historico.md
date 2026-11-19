@@ -446,3 +446,11 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido e causa: ver `decisoes.md` 19/11 (shelf). Logs da run_20261118_115655 mostram fase1 -> pegar_obj_sh -> pre_container [j1 parado] -> [j1 por ultimo].
 - Feito (branch mudanca_pp, sem commit): `mtc_pick_action_node.cpp` — retreatFromShelf sem o atalho da fase 1 (sempre volta a pegar_obj_sh); transferGraspedObjectToContainer move direto ao pre_container quando is_shelf.
 - Verificado: build do manip_task_execution; colcon test 55 testes, 0 falhas. NAO rodou no robo (relancar a manipulacao). Risco: no movimento unico a j1 gira 180 graus enquanto o braco abre (j3 2,16 -> 1,08); conferir que o bloco nao raspa a estante no comeco do giro.
+
+## 2026-11-19 — Place no container: area menor
+- Feito (sem commit): `mtc_place_action_node.cpp` offsets 0,022 e lidos na hora; `docs/containers_por_cor.md` (tabela e §1.1). Build + 55 testes ok. NAO testado no robo.
+- Proximo, se ainda bater na parede: mandar a corrida (runs/run_*) para ver se o centro detectado esta' deslocado (ai' e' o detector, nao o offset).
+
+## 2026-11-19 — Pilha: verificacao do ponto antes de empilhar
+- Feito (sem commit): `mtc_place_action_node.cpp` preObserveStackBase com laco de olhadas (`stack_pre_observe_max_olhadas` 3, `_converge_xy_m` 0.008, `_converge_z_m` 0.012); doc `place_precisao_e_pilha.md` §6. Build + 55 testes ok. NAO testado no robo; custo estimado ~5-6 s por olhada extra.
+- Proximo: corrida com pilha na WS_8 (Mesa5); mandar o run para ver se converge e se o erro final cai. Se nao convergir nunca, o ruido de perto e' maior que 8 mm -> subir o limite ou o problema e' a calibracao camera-braco (T4).

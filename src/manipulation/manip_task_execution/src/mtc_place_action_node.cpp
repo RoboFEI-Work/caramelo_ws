@@ -158,6 +158,19 @@ public:
             this->declare_parameter<bool>("stack_observe_before_pick", true);
         stack_pre_observe_tcp2_ =
             this->declare_parameter<bool>("stack_pre_observe_tcp2", true);
+        // 2026-11-19 (operador: "para empilhar em mesa de 5 ele coloca muito
+        // errado, faca com que ele verifique melhor o ponto antes de
+        // empilhar"): a leitura de perto era UMA so', de um pre-ponto mirado
+        // pela leitura de longe — e longe x perto diferiam 2-5 cm (dz ate'
+        // +46 mm, run_20261118_115655). Agora repete a olhada de perto,
+        // re-mirando pela leitura nova, ate' duas leituras seguidas
+        // concordarem (xy e z abaixo dos limites) ou acabar o numero de
+        // olhadas (fica a ultima, com aviso). So' pilha: o slot da PP segue
+        // com uma olhada. Lidos a cada place (ros2 param set vale na hora);
+        // max_olhadas 1 = comportamento de antes.
+        this->declare_parameter<int>("stack_pre_observe_max_olhadas", 3);
+        this->declare_parameter<double>("stack_pre_observe_converge_xy_m", 0.008);
+        this->declare_parameter<double>("stack_pre_observe_converge_z_m", 0.012);
         // 2026-10-21 - PILHA (formato 2026 da competicao): stack_on =
         // "tag_200" para o PRIMEIRO cubo da pilha (tag adesiva no tampo da
         // zona de empilhamento); os seguintes vem com stack_on = tag do cubo
@@ -252,8 +265,16 @@ public:
             this->declare_parameter<double>("container_drop_clearance_m", 0.01);
         container_close_gripper_on_exit_ =
             this->declare_parameter<bool>("container_close_gripper_on_exit", true);
+        // 2026-11-19 (operador: "as vezes ele acha o ponto nas laterais do
+        // container e acaba derrubando/mexendo ele"): 0,03 -> 0,022. Com o
+        // container de 0,170 e o cubo de 0,042 sobravam ~3,4 cm ate' a parede,
+        // pouco para o erro do centro detectado + garra inclinada (15-30 graus
+        // nas corridas de 18/11). 0,022 = dois cubos (o maximo por container
+        // nas tasks_geradas4) quase encostados, +0,8 cm de folga por lado.
+        // Lido a cada place: ajusta com o stack no ar por
+        //   ros2 param set /place_action_server container_slot_offsets_long_m "[0.015, -0.015, 0.0]"
         container_slot_offsets_long_m_ = this->declare_parameter<std::vector<double>>(
-            "container_slot_offsets_long_m", std::vector<double>{0.03, -0.03, 0.0});
+            "container_slot_offsets_long_m", std::vector<double>{0.022, -0.022, 0.0});
         container_slot_offsets_short_m_ = this->declare_parameter<std::vector<double>>(
             "container_slot_offsets_short_m", std::vector<double>{0.0, 0.0, 0.0});
         container_exit_gripper_position_ =
@@ -803,7 +824,7 @@ private:
     // Varios blocos no mesmo container: candidatos de deslocamento do ponto
     // de soltura no eixo LONGO/curto do container (m). O escolhido e' o mais
     // longe dos blocos ja soltos la (memoria de slots).
-    std::vector<double> container_slot_offsets_long_m_{0.03, -0.03, 0.0};
+    std::vector<double> container_slot_offsets_long_m_{0.022, -0.022, 0.0};
     std::vector<double> container_slot_offsets_short_m_{0.0, 0.0, 0.0};
     double container_exit_gripper_position_{0.170};  // manip_joint6/7: fechada 0.170, aberta -0.2265
 
@@ -2016,6 +2037,11 @@ private:
         double frame_yaw,
         const Eigen::Vector3d & target)
     {
+        // Lidos na hora (2026-11-19): ros2 param set vale no proximo place.
+        container_slot_offsets_long_m_ =
+          this->get_parameter("container_slot_offsets_long_m").as_double_array();
+        container_slot_offsets_short_m_ =
+          this->get_parameter("container_slot_offsets_short_m").as_double_array();
         const auto & offs_l = container_slot_offsets_long_m_;
         const auto & offs_s = container_slot_offsets_short_m_;
         if (offs_l.empty()) {
@@ -4180,74 +4206,112 @@ private:
                 Eigen::Vector3d(
                 pp_tag_ate_o_furo_m_ * ppEixoParaFora(framePosition(tf), frameYaw(tf))) :
                 Eigen::Vector3d(0.0, 0.0, 0.0);
-            const Eigen::Vector3d target =
-                framePosition(tf) + Eigen::Vector3d(0.0, 0.0, stackTcpZOffset(kind)) - recuo_furo;
-            manip_task_execution::ArmModel tcp2_model{};
-            tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
-            std::array<double, 5> q_pre{};
-            bool pre_ok = false;
-            double tilt_pre = 0.0;
-            for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
-                if (manip_task_execution::solveIk(target, tilt, 0.0, q_pre, tcp2_model)) {
-                    pre_ok = true;
-                    tilt_pre = tilt;
+            const int max_olhadas = pp_slot ? 1 : static_cast<int>(std::max<int64_t>(
+                1, this->get_parameter("stack_pre_observe_max_olhadas").as_int()));
+            const double conv_xy =
+                this->get_parameter("stack_pre_observe_converge_xy_m").as_double();
+            const double conv_z =
+                this->get_parameter("stack_pre_observe_converge_z_m").as_double();
+            for (int olhada = 1; olhada <= max_olhadas; ++olhada) {
+                if (cancellationRequested()) {
+                    return false;
+                }
+                const Eigen::Vector3d target =
+                    framePosition(tf) + Eigen::Vector3d(0.0, 0.0, stackTcpZOffset(kind)) - recuo_furo;
+                manip_task_execution::ArmModel tcp2_model{};
+                tcp2_model.tcp_z = stack_pre_ik_tcp2_z_;
+                bool lida = false;       // leitura fresca nesta olhada
+                bool convergiu = false;  // concorda com a leitura que mirou esta olhada
+                std::array<double, 5> q_pre{};
+                bool pre_ok = false;
+                double tilt_pre = 0.0;
+                for (const double tilt : tiltLadderRad(stack_tilt_ladder_deg_)) {
+                    if (manip_task_execution::solveIk(target, tilt, 0.0, q_pre, tcp2_model)) {
+                        pre_ok = true;
+                        tilt_pre = tilt;
+                        break;
+                    }
+                }
+                if (pre_ok) {
+                    // Slot da PP: camera virada para a frente (ppYawCameraParaFrente).
+                    q_pre[4] = pp_slot ?
+                        std::remainder(
+                        q_pre[0] + M_PI -
+                        ppYawCameraParaFrente(ppEixoParaFora(framePosition(tf), frameYaw(tf))),
+                        2.0 * M_PI) :
+                        wristForCubeYaw(frameYaw(tf), q_pre[0], tilt_pre, currentFingerYaw(arm));
+                    publishStage(goal_handle, "stack_pre_observe_tcp2");
+                    moved = true;
+                    if (!moveToJointTarget(arm, q_pre, "stack pre_observe tcp2 " + base_frame)) {
+                        break;
+                    }
+                    {
+                        const rclcpp::Time parou_tcp2 = this->get_clock()->now();
+                        if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
+                            return false;
+                        }
+                        geometry_msgs::msg::TransformStamped fresh;
+                        if (stackReadBase(
+                                base_frame, fresh, parou_tcp2, "stack pre_observe tcp2 " + base_frame))
+                        {
+                            const Eigen::Vector3d d = framePosition(fresh) - framePosition(tf);
+                            RCLCPP_INFO(
+                                get_logger(),
+                                "[STACK] leitura de perto %d/%d (garra vazia): base moveu dx=%+.1f "
+                                "dy=%+.1f dz=%+.1f mm em relacao a %s.",
+                                olhada, max_olhadas, d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0,
+                                olhada == 1 ? "de longe" : "olhada anterior");
+                            tf = fresh;
+                            convergiu = std::hypot(d.x(), d.y()) <= conv_xy &&
+                              std::abs(d.z()) <= conv_z;
+                            lida = true;
+                        } else {
+                            RCLCPP_WARN(
+                                get_logger(),
+                                "[STACK] pre-ponto TCP2 (garra vazia): sem TF fresca de %s — fico com a %s.",
+                                base_frame.c_str(), olhada == 1 ? "de longe" : "olhada anterior");
+                        }
+                        // PP: de garra vazia e de perto o furo aparece INTEIRO. O
+                        // pp_furo_node mede o centro dele em relacao a' tag e guarda.
+                        if (pp_slot) {
+                            const PpMedida m = ppMedir(base_frame);
+                            // Com a garra vazia, tag de bloco em cima do slot = slot ocupado
+                            // (AMT: plano errado ou bloco que nao saiu). Nao soltar em cima.
+                            if (m.texto.find("ocupado=") != std::string::npos) {
+                                pp_slot_ocupado_ = base_frame;
+                                RCLCPP_WARN(
+                                    get_logger(), "[PP] %s esta' OCUPADO (%s) - nao vou soltar ali.",
+                                    base_frame.c_str(), m.texto.c_str());
+                            }
+                            RCLCPP_INFO(
+                                get_logger(), "[PP] furo de %s visto de garra vazia: %s (%s)",
+                                base_frame.c_str(), m.furo_visto ? "INTEIRO, centro medido" : "NAO medido",
+                                m.texto.c_str());
+                        }
+                    }
+                } else {
+                    RCLCPP_WARN(
+                        get_logger(), "[STACK] pre-ponto TCP2 sem IK — fico com a leitura %s.",
+                        olhada == 1 ? "de pegar_obj" : "da olhada anterior");
                     break;
                 }
-            }
-            if (pre_ok) {
-                // Slot da PP: camera virada para a frente (ppYawCameraParaFrente).
-                q_pre[4] = pp_slot ?
-                    std::remainder(
-                    q_pre[0] + M_PI -
-                    ppYawCameraParaFrente(ppEixoParaFora(framePosition(tf), frameYaw(tf))),
-                    2.0 * M_PI) :
-                    wristForCubeYaw(frameYaw(tf), q_pre[0], tilt_pre, currentFingerYaw(arm));
-                publishStage(goal_handle, "stack_pre_observe_tcp2");
-                moved = true;
-                if (moveToJointTarget(arm, q_pre, "stack pre_observe tcp2 " + base_frame)) {
-                    const rclcpp::Time parou_tcp2 = this->get_clock()->now();
-                    if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, stack_settle_ms_)))) {
-                        return false;
-                    }
-                    geometry_msgs::msg::TransformStamped fresh;
-                    if (stackReadBase(
-                            base_frame, fresh, parou_tcp2, "stack pre_observe tcp2 " + base_frame))
-                    {
-                        const Eigen::Vector3d d = framePosition(fresh) - framePosition(tf);
-                        RCLCPP_INFO(
-                            get_logger(),
-                            "[STACK] leitura de perto (garra vazia): base moveu dx=%+.1f dy=%+.1f "
-                            "dz=%+.1f mm em relacao a de longe.",
-                            d.x() * 1000.0, d.y() * 1000.0, d.z() * 1000.0);
-                        tf = fresh;
-                    } else {
-                        RCLCPP_WARN(
-                            get_logger(),
-                            "[STACK] pre-ponto TCP2 (garra vazia): sem TF fresca de %s — fico com a de longe.",
-                            base_frame.c_str());
-                    }
-                    // PP: de garra vazia e de perto o furo aparece INTEIRO. O
-                    // pp_furo_node mede o centro dele em relacao a' tag e guarda.
-                    if (pp_slot) {
-                        const PpMedida m = ppMedir(base_frame);
-                        // Com a garra vazia, tag de bloco em cima do slot = slot ocupado
-                        // (AMT: plano errado ou bloco que nao saiu). Nao soltar em cima.
-                        if (m.texto.find("ocupado=") != std::string::npos) {
-                            pp_slot_ocupado_ = base_frame;
-                            RCLCPP_WARN(
-                                get_logger(), "[PP] %s esta' OCUPADO (%s) - nao vou soltar ali.",
-                                base_frame.c_str(), m.texto.c_str());
-                        }
-                        RCLCPP_INFO(
-                            get_logger(), "[PP] furo de %s visto de garra vazia: %s (%s)",
-                            base_frame.c_str(), m.furo_visto ? "INTEIRO, centro medido" : "NAO medido",
-                            m.texto.c_str());
-                    }
+                if (!lida || pp_slot) {
+                    break;
                 }
-            } else {
-                RCLCPP_WARN(
-                    get_logger(), "[STACK] pre-ponto TCP2 sem IK — fico com a leitura de pegar_obj.");
-            }
+                if (convergiu) {
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[STACK] ponto de %s CONFERIDO na olhada %d: duas leituras seguidas "
+                        "concordam (xy <= %.0f mm, z <= %.0f mm).",
+                        base_frame.c_str(), olhada, conv_xy * 1000.0, conv_z * 1000.0);
+                    break;
+                } else if (olhada == max_olhadas && max_olhadas > 1) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[STACK] ponto de %s NAO convergiu em %d olhadas de perto — uso a ultima.",
+                        base_frame.c_str(), max_olhadas);
+                }
+            }  // for olhada
         }
         if (cancellationRequested()) {
             return false;

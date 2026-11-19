@@ -225,3 +225,13 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - Causa (run_20261118_115655): depois de pegar_obj_sh o transporte fazia `pre_container [j1 parado]` (pre_container com a j1 ainda na estante: 1,57 / 0 / 1,08 / 1,82, parecida com pegar_obj) e so' depois `[j1 por ultimo]`.
 - Decisao: na shelf o recuo volta SEMPRE a pegar_obj_sh e dali vai ao pre_container num movimento unico (`shelf_pre_container_direto` true; false = volta as duas etapas, por `ros2 param set`, sem relancar). Mesa inalterada.
 - **Substitui** a "SAIDA DIRETA" de 2026-11-18 (parar na fase 1 e pular pegar_obj_sh): interpretacao errada do pedido; o parametro `shelf_direto_ao_pre_container` foi removido. Status: vigente.
+
+## 2026-11-19 — Container: alvo mais perto do centro (offsets 0,03 -> 0,022)
+- Pedido do operador: "as vezes ele acha o ponto nas laterais do container e acaba derrubando/mexendo ele; tem como pegar uma area um pouco menor?".
+- Fato (run_20261118_115655): alvo = centro detectado +-0,030 no lado longo; garra a 15-30 graus. Container 0,170 x 0,105, cubo 0,042 -> ~3,4 cm do cubo a' parede. tasks_geradas4: no maximo 2 blocos por container.
+- Decisao: `container_slot_offsets_long_m` [0.022, -0.022, 0.0] (cubos quase encostados, +0,8 cm de folga por lado) e leitura do parametro a cada place (ajuste sem relancar). Nao mexi no detector (centro / wall_bias / partial_extend): sem bag desses casos nao sei se o erro e' do centro. Status: vigente.
+
+## 2026-11-19 — Pilha: conferir a base com olhadas de perto repetidas
+- Pedido do operador: "para empilhar em mesa de 5 ele coloca muito errado, faca com que ele verifique melhor o ponto antes de empilhar".
+- Fato: nao ha log de pilha na Mesa5 neste PC (runs/ e ~/.ros/log so' tem pilha na Mesa15, WS_6, 18/11). Nessas, longe x perto diferiu 2-5 cm (dz +31 a +46 mm) e havia UMA leitura de perto, de um pre-ponto mirado pela leitura de longe.
+- Decisao: ate' 3 olhadas de perto, re-mirando pela leitura nova, ate' duas seguidas concordarem (xy 8 mm, z 12 mm); senao usa a ultima com aviso. Vale para toda pilha (nao so' Mesa5); slot da PP fica com 1 olhada. Params lidos a cada place. Status: vigente.

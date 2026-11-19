@@ -113,6 +113,8 @@ Quando a tag base **é** vista, o único efeito novo antes de soltar é o alinha
 | `stack_memory_fallback` | true | — | base pela memória |
 | `stack_max_level` | 4 | — | só aviso |
 | `precision_verify_timeout_ms` | 4000 | sim | espera pela tag nas leituras de verificação/memória (mais amostras na mediana) |
+| `stack_pre_observe_max_olhadas` | 3 | sim | 2026-11-19: olhadas de perto (garra vazia) na base antes de pegar o bloco; cada uma re-mira o pré-ponto TCP2 pela leitura anterior. 1 = uma olhada (antes). Lido a cada place |
+| `stack_pre_observe_converge_xy_m` / `_z_m` | 0.008 / 0.012 | sim | duas leituras seguidas dentro disso = ponto CONFERIDO; esgotou as olhadas = usa a última, com aviso |
 
 Parâmetros existentes reusados sem mudança: `stack_place_z_offset` (0.05), `stack_pre_lift_m`,
 `stack_tilt_ladder_deg`, `stack_tag_samples/dwell/max_spread`, `stack_settle_ms`,
