@@ -128,7 +128,7 @@ public:
         stack_place_x_offset_m_ =
             this->declare_parameter<double>("stack_place_x_offset_m", 0.0);
         stack_place_y_offset_m_ =
-            this->declare_parameter<double>("stack_place_y_offset_m", 0.01);
+            this->declare_parameter<double>("stack_place_y_offset_m", 0.0);
         stack_pre_lift_m_ = this->declare_parameter<double>("stack_pre_lift_m", 0.02);
         stack_fallback_to_table_ =
             this->declare_parameter<bool>("stack_fallback_to_table", true);
@@ -742,7 +742,7 @@ private:
     // Empilhamento (2026-08-24), ver placeStackedOnFrame.
     double stack_place_z_offset_{0.05};
     double stack_place_x_offset_m_{0.0};
-    double stack_place_y_offset_m_{0.012};
+    double stack_place_y_offset_m_{0.0};
     double stack_pre_lift_m_{0.05};
     bool stack_fallback_to_table_{true};
     double stack_arrival_tolerance_m_{0.03};
