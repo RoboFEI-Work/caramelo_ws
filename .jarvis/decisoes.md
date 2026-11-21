@@ -243,3 +243,8 @@ Formato: data · decisão · motivo · consequências · origem · status.
 ## 2026-11-19 — Pilha: sempre no mesmo ponto, cada vez mais alto
 - Pedido do operador: "faca o empilhar colocar sempre no mesmo ponto, porem cada vez mais alto". (O operador vinha ajustando a escadinha `stack_place_y_offset_m` a mao: -0,02 -> 0,01 -> 0,0, commits empilhar/empilha/empilhaa.)
 - Decisao: `stack_mesmo_ponto` true — cubo sobre cubo usa xy do 1o cubo da cadeia (findStackRoot na memoria 'stack:') e z = topo dele + cube_height x (niveis-1) + stack_place_z_offset; a leitura da tag so' confere (> `stack_mesmo_ponto_max_desvio_m` 0,05 -> vale a leitura). 1o cubo (sobre tag_200) nao muda. Status: vigente.
+
+## 2026-11-19 — Planner: na mesma mesa, pick antes do place
+- Pedido do operador: "caso ele chegue em uma mesa onde ele tenha que pegar um bloco e por um bloco, ele priorize pegar o bloco primeiro".
+- Decisao: o plano (quais picks/places em cada visita) nao muda; so' a ordem de emissao (`orderVisitSteps` em task_plan_search.cpp): pega tudo o que cabe e e' permitido, solta UM quando lotado/travado e volta aos picks. Usado no emitActions (task_planner) e na re-tentativa do bt_yaml_executor. Limite fisico: com 3 a bordo o 1o passo e' place. `picks_first=false` volta a ordem antiga (so' no codigo; nao ha flag de linha de comando). Status: vigente.
+- Complemento (mesmo dia): "para a shelf nao precisa ter essa modificacao" -> visitas a ws "SH*" ficam na ordem antiga (places, depois picks). Teste VisitOrder.ShelfKeepsPlacesFirst.

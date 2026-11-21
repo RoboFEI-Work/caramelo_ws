@@ -1303,6 +1303,7 @@ std::optional<YAML::Node> buildRetryActions(
   YAML::Node seq(YAML::NodeType::Sequence);
   std::string summary;
   std::string last_ws;
+  tp::PlannerState sim = state;
   for (const tp::Visit & v : visits) {
     if (v.ws != last_ws) {
       const auto g = goto_of_ws.find(v.ws);
@@ -1320,11 +1321,14 @@ std::optional<YAML::Node> buildRetryActions(
         seq.push_back(a);
         summary += " " + verb + " " + tp::findTransferById(transfers, id).tag_frame;
       };
-    for (const int id : v.places) {
-      emit(by_id.at(id)->place_idx, "place", id);
-    }
-    for (const int id : v.picks) {
-      emit(by_id.at(id)->pick_idx, "pick", id);
+    // Pick primeiro na mesma visita (2026-11-19), a partir do estado real
+    // (o que ja esta a bordo).
+    for (const tp::VisitStep & step : tp::orderVisitSteps(transfers, sim, v)) {
+      if (step.is_pick) {
+        emit(by_id.at(step.obj_id)->pick_idx, "pick", step.obj_id);
+      } else {
+        emit(by_id.at(step.obj_id)->place_idx, "place", step.obj_id);
+      }
     }
   }
   if (seq.size() == 0) {

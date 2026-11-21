@@ -86,6 +86,13 @@ struct Visit
   std::vector<int> picks;
 };
 
+// Passo de uma visita na ordem de EXECUCAO (2026-11-19).
+struct VisitStep
+{
+  bool is_pick = false;
+  int obj_id = -1;
+};
+
 // ---- regras compartilhadas (guloso e busca) ---------------------------------
 const TransferItem & findTransferById(const std::vector<TransferItem> & transfers, int obj_id);
 bool hasUnfinishedWork(const std::vector<TransferItem> & transfers, const PlannerState & state);
@@ -104,6 +111,18 @@ std::vector<int> picksAtWs(
   const std::set<int> * only = nullptr);
 // Guloso: proxima estacao = mais (places, picks) com robo carregado, mais
 // picks com robo vazio; empate sorteado em `rng`. Vazia se nada a fazer.
+// Ordem de execucao de uma visita com PICK PRIMEIRO (pedido do operador
+// 2026-11-19: "caso ele chegue em uma mesa onde ele tenha que pegar um bloco
+// e por um bloco, ele priorize pegar o bloco primeiro"). Mesmo conjunto de
+// places/picks da visita (o plano nao muda); so' a ordem: pega enquanto
+// cabe a bordo e e' permitido (pickAllowedNow), solta UM quando nao da mais
+// para pegar e volta a tentar os picks. `state` = estado ao CHEGAR na
+// estacao; sai atualizado. Se as regras travarem (nao deveria), completa na
+// ordem antiga (places, depois picks). `picks_first` false = ordem antiga.
+// Prateleira (ws "SH*") fica sempre na ordem antiga.
+std::vector<VisitStep> orderVisitSteps(
+  const std::vector<TransferItem> & transfers, PlannerState & state, const Visit & visit,
+  bool picks_first = true);
 std::string chooseNextWs(
   const std::vector<TransferItem> & transfers, const std::set<std::string> & candidate_ws,
   const PlannerState & state, std::mt19937 & rng);
@@ -192,9 +211,10 @@ void appendGoto(
   YAML::Node & action_seq, std::string & current_ws, const std::string & ws,
   const std::map<std::string, std::string> & ws_to_table_pose);
 // Lista de acoes goto/home/pick/place do bt_yaml_executor a partir das visitas.
+// Cada visita sai na ordem de orderVisitSteps (pick primeiro, 2026-11-19).
 YAML::Node emitActions(
   const std::vector<Visit> & visits, const std::vector<TransferItem> & transfers,
-  const std::map<std::string, std::string> & ws_to_table_pose);
+  const std::map<std::string, std::string> & ws_to_table_pose, bool picks_first = true);
 
 }  // namespace task_plan
 }  // namespace manip_bt

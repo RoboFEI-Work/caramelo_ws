@@ -462,3 +462,8 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-19 — Pilha no mesmo ponto
 - Feito (sem commit): `place_precision.{hpp,cpp}` findStackRoot + gtest; `mtc_place_action_node.cpp` target_from com o ponto do 1o cubo; doc `place_precisao_e_pilha.md` §6. Build + 56 testes ok. NAO testado no robo.
 - Depende da memoria de slots (`slot_memory_enabled`) ter o registro do 1o cubo; sem ele, log "sem cadeia na memoria" e mira a tag como antes.
+
+## 2026-11-19 — Planner: pick primeiro na visita
+- Feito (sem commit): `task_plan_search.{hpp,cpp}` (VisitStep, orderVisitSteps, emitActions), `bt_yaml_executor.cpp` (re-tentativa), 2 gtests VisitOrder; docs `planejador_por_tempo.md` e `guia_missoes.md`. Build ok; gtests todos ok (inclui os novos); 38 pytests do planner ok. Lint (flake8/pep257/uncrustify) falha igual antes (uncrustify ja' divergia em bt_yaml_executor.cpp no HEAD).
+- FINAL2_seed201663: SH_1 -> place tag_2, pick tag_25, place tag_1, pick tag_28 (chegou com 3); WS_3 -> place tag_26, pick tag_6, place tag_28.
+- Nao rodou no robo; relancar so' o run_mission (o planner e' chamado por missao).

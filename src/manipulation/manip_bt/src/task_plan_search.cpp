@@ -386,6 +386,73 @@ std::vector<int> picksAtWs(
   return emitted;
 }
 
+std::vector<VisitStep> orderVisitSteps(
+  const std::vector<TransferItem> & transfers,
+  PlannerState & state,
+  const Visit & visit,
+  const bool picks_first)
+{
+  std::vector<VisitStep> steps;
+  std::vector<int> places = visit.places;
+  std::vector<int> picks = visit.picks;
+  const auto do_pick = [&](const int id) {
+      const auto & t = findTransferById(transfers, id);
+      steps.push_back({true, id});
+      state.picked.insert(id);
+      if (t.needs_place) {
+        state.inventory.push_back(id);
+      }
+    };
+  const auto do_place = [&](const int id) {
+      steps.push_back({false, id});
+      state.placed.insert(id);
+      state.inventory.erase(
+        std::remove(state.inventory.begin(), state.inventory.end(), id), state.inventory.end());
+    };
+  // Prateleira fica na ordem antiga (operador 2026-11-19: "para a shelf nao
+  // precisa ter essa modificacao").
+  const bool prateleira = visit.ws.rfind("SH", 0) == 0;
+  if (picks_first && !prateleira) {
+    bool progress = true;
+    while (progress && (!places.empty() || !picks.empty())) {
+      progress = false;
+      // 1) todos os picks que cabem e sao permitidos agora
+      for (auto it = picks.begin(); it != picks.end(); ) {
+        const auto & t = findTransferById(transfers, *it);
+        if (pickAllowedNow(
+            transfers, state, t, visit.ws, static_cast<int>(state.inventory.size())))
+        {
+          do_pick(*it);
+          it = picks.erase(it);
+          progress = true;
+        } else {
+          ++it;
+        }
+      }
+      // 2) um place (libera lugar / destrava pilha) e volta aos picks
+      for (auto it = places.begin(); it != places.end(); ++it) {
+        const auto & t = findTransferById(transfers, *it);
+        const bool a_bordo = std::find(
+          state.inventory.begin(), state.inventory.end(), *it) != state.inventory.end();
+        if (a_bordo && placeReady(transfers, state, t)) {
+          do_place(*it);
+          places.erase(it);
+          progress = true;
+          break;
+        }
+      }
+    }
+  }
+  // Ordem antiga (ou sobra, se as regras travaram): places, depois picks.
+  for (const int id : places) {
+    do_place(id);
+  }
+  for (const int id : picks) {
+    do_pick(id);
+  }
+  return steps;
+}
+
 std::string chooseNextWs(
   const std::vector<TransferItem> & transfers,
   const std::set<std::string> & candidate_ws,
@@ -1023,14 +1090,30 @@ void appendGoto(
 YAML::Node emitActions(
   const std::vector<Visit> & visits,
   const std::vector<TransferItem> & transfers,
-  const std::map<std::string, std::string> & ws_to_table_pose)
+  const std::map<std::string, std::string> & ws_to_table_pose,
+  const bool picks_first)
 {
   YAML::Node action_seq(YAML::NodeType::Sequence);
   std::string current_ws;
+  PlannerState sim;   // o plano do task_planner sempre parte do robo vazio
   for (const Visit & v : visits) {
     appendGoto(action_seq, current_ws, v.ws, ws_to_table_pose);
-    for (const int obj_id : v.places) {
-      const TransferItem & t = findTransferById(transfers, obj_id);
+    for (const VisitStep & step : orderVisitSteps(transfers, sim, v, picks_first)) {
+      const TransferItem & t = findTransferById(transfers, step.obj_id);
+      if (step.is_pick) {
+        YAML::Node pick;
+        pick["kind"] = "pick";
+        pick["tag_frame"] = t.tag_frame;
+        pick["ws"] = t.from_ws;
+        // O pick tambem precisa saber o tipo de mesa: a prateleira (MesaSh)
+        // exige uma sequencia de movimentos propria.
+        pick["table_pose"] = tablePoseForWs(ws_to_table_pose, t.from_ws);
+        if (!t.from_level.empty()) {
+          pick["shelf_level"] = t.from_level;   // informativo (2026)
+        }
+        action_seq.push_back(pick);
+        continue;
+      }
       YAML::Node place;
       place["kind"] = "place";
       place["tag_frame"] = t.tag_frame;
@@ -1049,20 +1132,6 @@ YAML::Node emitActions(
         place["shelf_level"] = t.to_level;    // informativo (2026)
       }
       action_seq.push_back(place);
-    }
-    for (const int obj_id : v.picks) {
-      const TransferItem & t = findTransferById(transfers, obj_id);
-      YAML::Node pick;
-      pick["kind"] = "pick";
-      pick["tag_frame"] = t.tag_frame;
-      pick["ws"] = t.from_ws;
-      // O pick tambem precisa saber o tipo de mesa: a prateleira (MesaSh)
-      // exige uma sequencia de movimentos propria.
-      pick["table_pose"] = tablePoseForWs(ws_to_table_pose, t.from_ws);
-      if (!t.from_level.empty()) {
-        pick["shelf_level"] = t.from_level;   // informativo (2026)
-      }
-      action_seq.push_back(pick);
     }
   }
   return action_seq;

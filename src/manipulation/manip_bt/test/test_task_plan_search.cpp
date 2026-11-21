@@ -445,3 +445,57 @@ TEST(StartState, UniformDistancesMinimizeRevisits)
   EXPECT_EQ(st.size(), 4u);   // X, S, P, Q (cada estacao uma vez)
   simulate(r.visits, transfers);
 }
+
+TEST(VisitOrder, PickFirstWhenThereIsRoomAboard)
+{
+  // 1: A -> B; 2: B -> A. Em B com 1 a bordo: pega o 2 ANTES de soltar o 1.
+  const std::vector<tp::TransferItem> transfers{transfer(1, "A", "B"), transfer(2, "B", "A")};
+  tp::PlannerState s;
+  s.picked = {1};
+  s.inventory = {1};
+  const auto steps = tp::orderVisitSteps(transfers, s, tp::Visit{"B", {1}, {2}});
+  ASSERT_EQ(steps.size(), 2u);
+  EXPECT_TRUE(steps[0].is_pick);
+  EXPECT_EQ(steps[0].obj_id, 2);
+  EXPECT_FALSE(steps[1].is_pick);
+  EXPECT_EQ(steps[1].obj_id, 1);
+  EXPECT_EQ(s.inventory, (std::vector<int>{2}));
+  // picks_first=false = ordem antiga
+  tp::PlannerState s2;
+  s2.picked = {1};
+  s2.inventory = {1};
+  const auto old = tp::orderVisitSteps(transfers, s2, tp::Visit{"B", {1}, {2}}, false);
+  EXPECT_FALSE(old[0].is_pick);
+}
+
+TEST(VisitOrder, FullAboardPlacesOneThenPicks)
+{
+  // 1,2,3: A -> B; 4,5: B -> A. Em B lotado: solta 1, pega 4, solta 2, pega 5, solta 3.
+  const std::vector<tp::TransferItem> transfers{
+    transfer(1, "A", "B"), transfer(2, "A", "B"), transfer(3, "A", "B"),
+    transfer(4, "B", "A"), transfer(5, "B", "A")};
+  tp::PlannerState s;
+  s.picked = {1, 2, 3};
+  s.inventory = {1, 2, 3};
+  const auto steps = tp::orderVisitSteps(transfers, s, tp::Visit{"B", {1, 2, 3}, {4, 5}});
+  std::vector<std::pair<bool, int>> got;
+  for (const auto & st : steps) {
+    got.emplace_back(st.is_pick, st.obj_id);
+  }
+  EXPECT_EQ(got, (std::vector<std::pair<bool, int>>{
+    {false, 1}, {true, 4}, {false, 2}, {true, 5}, {false, 3}}));
+  EXPECT_EQ(s.inventory, (std::vector<int>{4, 5}));
+}
+
+TEST(VisitOrder, ShelfKeepsPlacesFirst)
+{
+  // Mesmo caso do PickFirst, mas na prateleira: solta antes de pegar.
+  const std::vector<tp::TransferItem> transfers{transfer(1, "A", "SH_1"), transfer(2, "SH_1", "A")};
+  tp::PlannerState s;
+  s.picked = {1};
+  s.inventory = {1};
+  const auto steps = tp::orderVisitSteps(transfers, s, tp::Visit{"SH_1", {1}, {2}});
+  ASSERT_EQ(steps.size(), 2u);
+  EXPECT_FALSE(steps[0].is_pick);
+  EXPECT_TRUE(steps[1].is_pick);
+}

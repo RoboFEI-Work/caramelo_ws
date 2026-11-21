@@ -792,7 +792,7 @@ alcançar todos os objetos/containers (28/08: container azul a +20 cm → alvo
 3 cm fora do alcance → cubo caiu na mesa). **Solução**: por estação de mesa
 comum, o executor embrulha os picks/places numa `<ReachQueue>`:
 
-1. Passada 1 na ordem do planner (places, depois picks) com `final_attempt=false`.
+1. Passada 1 na ordem do planner (pick primeiro quando cabe a bordo, desde 2026-11-19) com `final_attempt=false`.
    Alvo VISTO sem IK → o servidor sai cedo com `success=true, skipped=true,
    unreachable=true, suggested_base_shift_m=±0.10..0.25` (o place antes
    devolve o cubo ao container de bordo) → a fila loga `ADIADO pick_N` e adia.

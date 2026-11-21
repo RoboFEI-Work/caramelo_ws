@@ -198,6 +198,11 @@ O que a busca responde às perguntas do operador:
 - **Pick × place**: não há prioridade fixa; o custo decide. Chegando numa estação, solta tudo
   o que pode (grátis) e pega o que compensa; ir soltar antes de pegar mais só acontece
   quando reduz trocas ou distância.
+- **Ordem dentro da visita (2026-11-19, pedido do operador)**: a busca decide QUAIS picks e
+  places acontecem em cada estação; a emissão (`orderVisitSteps`) executa **o pick primeiro**
+  sempre que cabe a bordo e é permitido, e só solta um bloco quando não dá mais para pegar
+  (lotado), voltando aos picks em seguida. Ex.: chegando com 3 a bordo numa mesa com 2 places
+  e 2 picks → `place, pick, place, pick`. Vale também para a re-tentativa do executor. **Exceção: prateleira (`SH*`)** fica na ordem antiga (solta tudo, depois pega).
 - **3 cubos a bordo**: nenhum pick cabe; os únicos filhos são estações com place possível —
   a busca escolhe a que leva ao menor total (não a mais próxima necessariamente, porque
   olha o resto da rota).
