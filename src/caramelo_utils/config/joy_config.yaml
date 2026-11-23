@@ -2,7 +2,8 @@ joystick:
   ros__parameters:
     device_id: 0
     device_name: ""
-    deadzone: 0.5
+    # 2026-11-23: 0,5 -> 0,1 (metade do curso do analogico nao fazia nada)
+    deadzone: 0.1
     autorepeat_rate: 20.0
     sticky_buttons: false
     coalesce_interval_ms: 1

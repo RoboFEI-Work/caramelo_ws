@@ -467,3 +467,16 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Feito (sem commit): `task_plan_search.{hpp,cpp}` (VisitStep, orderVisitSteps, emitActions), `bt_yaml_executor.cpp` (re-tentativa), 2 gtests VisitOrder; docs `planejador_por_tempo.md` e `guia_missoes.md`. Build ok; gtests todos ok (inclui os novos); 38 pytests do planner ok. Lint (flake8/pep257/uncrustify) falha igual antes (uncrustify ja' divergia em bt_yaml_executor.cpp no HEAD).
 - FINAL2_seed201663: SH_1 -> place tag_2, pick tag_25, place tag_1, pick tag_28 (chegou com 3); WS_3 -> place tag_26, pick tag_6, place tag_28.
 - Nao rodou no robo; relancar so' o run_mission (o planner e' chamado por missao).
+
+## 2026-11-22 — Teleop com controle de PS4 (pergunta)
+- Correcao do operador: o `caramelo_utils/teleop.launch.py` (PC) nao usa o controle, so' o teclado. O controle e' o `raspberry_bringup/joystick.launch.py` da Pi (contexto.md corrigido).
+- Nada alterado. Sem registro de teste com PS4; sem controle no PC e sem nos ROS no ar em 22/11. Pontos a conferir com `ros2 topic echo /joy` na Pi: deadman botao 5 (no mapeamento SDL2 do joy do Jazzy = botao PS, nao R1; nao verificado), giro no eixo 3 (analogico direito VERTICAL no SDL2), deadzone 0,5, angular 8 rad/s sem limite nas rodas.
+
+## 2026-11-23 — Controle de PS4 no PC (caramelo_utils/teleop.launch.py)
+- Pedido: joystick no PC em vez da Pi. Operador mediu com `ros2 topic echo /joy`: analogico esquerdo = eixos 0/1, L2/R2 = eixos 4/5, R1 = botao 10 (11o). Analogico direito (eixos 2/3) NAO medido, assumido pelo mapeamento SDL2.
+- Feito (sem commit): `src/caramelo_utils/config/joy_teleop.yaml` (deadman R1=10; x eixo 1 x0,5; y eixo 0 x0,4; giro eixo 2 x1,0; antes 2,0/2,0/5,0 com deadman 5), `joy_config.yaml` deadzone 0,5 -> 0,1, `teleop.launch.py` arg `use_keyboard` (default true). Build: o build/caramelo_utils era sem symlink e travou ao trocar de modo -> apaguei `build/caramelo_utils` e recompilei com --symlink-install (ok). `--show-args` ok.
+- NAO testado com o robo. Teste sugerido: rodas fora do chao, Pi sem joystick.launch, navegacao desligada (twist_mux tambem repassa /cmd_vel e o nav2_twist_relay manda direto nas rodas).
+
+## 2026-11-23 — joy_teleop do PC morria no 1o comando (corrigido) + incidente no teste
+- Erro do operador: `[joy_teleop-1]: process has died ... exit code 1`. Reproduzido: `AttributeError: 'Twist' object has no attribute 'twist'` — mapeamentos `twist-linear-x/...` (formato de TwistStamped, copiado da Pi) com `interface_type` Twist. Ja' era assim antes da mudanca de 23/11: o joystick pelo PC nunca funcionou. Corrigido para `linear-x`, `linear-y`, `angular-z`; build ok; no' de teste nao cai mais.
+- INCIDENTE (Claude): para testar rodei joy_teleop com `-r __ns:=/teste`, mas o `topic_name` da config e' ABSOLUTO (`/joy_vel`) e o shell do agente estava na MESMA rede ROS do teleop aberto pelo operador (twist_mux -> twist_relay -> /mecanum_controller/reference). Saiu 3x Twist (x 0,5, y 0,2, wz -1,0) em /joy_vel por ~2 s. Conferido logo depois: /mecanum_controller/reference com 0 assinantes (controlador das rodas da Pi fora do ar) -> o robo nao tinha como mexer. Licao: `__ns` nao isola topicos absolutos; antes de publicar qualquer coisa num teste, checar `ros2 topic info` dos destinos ou remapear o topico explicitamente (`-r /joy_vel:=/teste/joy_vel`).

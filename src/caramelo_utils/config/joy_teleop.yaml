@@ -1,20 +1,33 @@
+# Controle de PS4 no PC (2026-11-23, pedido do operador: joystick no PC em vez
+# da Raspberry). Indices medidos com `ros2 topic echo /joy` (driver joy do
+# Jazzy, mapeamento SDL2): analogico esquerdo = eixos 0 (lados) e 1 (frente);
+# L2/R2 = eixos 4 e 5; R1 = botao 10. Analogico direito = eixos 2/3 pelo
+# mesmo mapeamento (NAO medido).
+#   R1 segurado (deadman) libera o movimento; soltou = para.
+#   analogico esquerdo: frente/tras (x) e lado (y); direito para os lados: giro.
+# Escalas perto dos limites da navegacao (vx 0,60 / vy 0,40 / wz 0,50); antes
+# 2,0 / 2,0 / 5,0, sem limite nas rodas. Sentido trocado num eixo = trocar o
+# sinal do scale.
+# Chaves sem o prefixo 'twist-' (2026-11-23): a mensagem e' Twist, nao
+# TwistStamped; 'twist-linear-x' derrubava o no' no 1o comando
+# (AttributeError: 'Twist' object has no attribute 'twist').
 joy_teleop:
   ros__parameters:
     move:
       type: topic
       interface_type: geometry_msgs/msg/Twist
       topic_name: /joy_vel
-      deadman_buttons: [5]
+      deadman_buttons: [10]
       axis_mappings:
-        twist-linear-x:
+        linear-x:
           axis: 1
-          scale: 2.0
+          scale: 0.5
           offset: 0.0
-        twist-linear-y:
-          axis: 3
-          scale: 2.0
-          offset: 0.0
-        twist-angular-z:
+        linear-y:
           axis: 0
-          scale: 5.0
+          scale: 0.4
+          offset: 0.0
+        angular-z:
+          axis: 2
+          scale: 1.0
           offset: 0.0

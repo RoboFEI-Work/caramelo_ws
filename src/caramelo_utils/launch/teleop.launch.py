@@ -9,6 +9,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
@@ -19,6 +20,10 @@ def generate_launch_description():
     caramelo_utils_pkg = get_package_share_directory('caramelo_utils')
 
     use_sim_time_arg = DeclareLaunchArgument(name="use_sim_time", default_value="False", description="Use simulated time")
+    # 2026-11-23: use_keyboard:=false = so' o controle (sem o xterm do teclado).
+    use_keyboard_arg = DeclareLaunchArgument(
+        name="use_keyboard", default_value="true",
+        description="Abre o teleop_twist_keyboard num xterm (/cmd_vel_key)")
 
     joy_teleop = Node(
         package="joy_teleop",
@@ -56,6 +61,7 @@ def generate_launch_description():
         output="screen",
         prefix="xterm -e",
         parameters=[],
+        condition=IfCondition(LaunchConfiguration("use_keyboard")),
         remappings=[
             # Remapeia /cmd_vel para /key_vel para funcionar com twist_mux
             ("/cmd_vel", "/cmd_vel_key"),
@@ -95,6 +101,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             use_sim_time_arg,
+            use_keyboard_arg,
             joy_teleop,
             joy_node,
             twist_mux_launch,
