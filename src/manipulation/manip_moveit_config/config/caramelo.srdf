@@ -124,12 +124,14 @@
         <joint name="manip_joint4" value="1.8151"/>
         <joint name="manip_joint5" value="1.5708"/>
     </group_state>
+    <!-- 2026-11-24 (operador): container1 = j1 -70, j2 12, j3 76, j4 83, j5 -71 graus
+         (antes -65, 12, 82, 80, -58). -->
     <group_state name="container1" group="arm">
-        <joint name="manip_joint1" value="-1.13446"/>
+        <joint name="manip_joint1" value="-1.22173"/>
         <joint name="manip_joint2" value="0.20944"/>
-        <joint name="manip_joint3" value="1.43117"/>
-        <joint name="manip_joint4" value="1.39626"/>
-        <joint name="manip_joint5" value="-1.01229"/>
+        <joint name="manip_joint3" value="1.32645"/>
+        <joint name="manip_joint4" value="1.44862"/>
+        <joint name="manip_joint5" value="-1.23918"/>
     </group_state>
     <group_state name="container2" group="arm">
         <joint name="manip_joint1" value="-1.58825"/>

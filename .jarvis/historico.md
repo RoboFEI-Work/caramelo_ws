@@ -485,3 +485,7 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: falas repetidas 2x; antes de pegar, dizer que identificou o cubo X e seguir como esta.
 - Causa vista nos logs ([SPEECH] do pick_action_server): "Procurando a tag X" era dito no ciclo e de novo na varredura (sweepForTag, ~1 s depois) e de novo a cada tentativa (dedupe do speech_node e' 8 s).
 - Feito (sem commit) em `mtc_pick_action_node.cpp`: varredura nao fala mais; "Procurando a tag X" e o novo "!Identifiquei o cubo X" (substitui "~Vi a tag X") saem uma vez por goal (flags `falou_procurando_`/`falou_identificou_`, zeradas antes das tentativas); "Tentativa numero 1" nao e' mais dita (so' 2 em diante). Resto igual. Build ok. NAO testado no robo; relancar a manipulacao.
+
+## 2026-11-24 — Juntas do container1 (refeito apos o "mapa arena")
+- Pedido: container1 = j1 -70, j2 12, j3 76, j4 83, j5 -71 graus (antes -65, 12, 82, 80, -58). A 1a versao (commit 5588932) foi descartada pelo operador ao reorganizar a branch; refeito em cima de 7b99c4e "mapa arena".
+- Feito (sem commit): group_state `container1` em `manip_moveit_config/config/caramelo.srdf` e `manip.srdf` -> -1.22173, 0.20944, 1.32645, 1.44862, -1.23918 rad. Build ok. NAO testado no robo; relancar a manipulacao (move_group le o SRDF no inicio).
