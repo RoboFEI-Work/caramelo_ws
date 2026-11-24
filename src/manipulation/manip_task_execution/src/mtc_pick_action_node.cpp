@@ -730,6 +730,9 @@ private:
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
     bool speech_enabled_{true};
+    // 2026-11-23: falas ditas uma vez por goal (zeradas antes das tentativas).
+    bool falou_procurando_{false};
+    bool falou_identificou_{false};
     bool verify_grasp_effort_{true};
     double grasp_min_effort_nm_{0.15};
     double grasp_min_effort_increase_nm_{0.05};
@@ -1735,7 +1738,8 @@ private:
             return false;
         }
         const double center = joints[0];
-        speak("~Procurando a tag " + spokenTagName(tag_frame));
+        // 2026-11-23 (pedido do operador: falas repetidas): o ciclo ja disse
+        // "Procurando a tag X" seg antes; a varredura nao fala de novo.
         int step = 0;
         for (const double offset : offsets) {
             if (cancellationRequested()) {
@@ -3186,7 +3190,12 @@ private:
         // (transfer com bloco na garra) NAO seta o flag.
         retryable_failure = false;
         publishStage(goal_handle, "detecting_tag");
-        speak("~Procurando a tag " + spokenTagName(tag_frame));
+        // 2026-11-23 (pedido do operador: falas repetidas): uma vez por goal,
+        // nao a cada tentativa.
+        if (!falou_procurando_) {
+            falou_procurando_ = true;
+            speak("~Procurando a tag " + spokenTagName(tag_frame));
+        }
         waitForCameraStream(cycle_name);
 
         geometry_msgs::msg::TransformStamped tag_tf;
@@ -3206,7 +3215,13 @@ private:
             return false;
         }
 
-        speak("~Vi a tag " + spokenTagName(tag_frame));
+        // 2026-11-23 (pedido do operador): antes de pegar, anunciar o cubo
+        // identificado (substitui o "Vi a tag X"). Alta para nao ser
+        // descartada; uma vez por goal para nao repetir nas tentativas.
+        if (!falou_identificou_) {
+            falou_identificou_ = true;
+            speak("!Identifiquei o cubo " + spokenTagName(tag_frame));
+        }
         // Pedido do operador 2026-08-15: na PRATELEIRA nao ha pre-aproximacao
         // — o alinhamento XY da camera foi pensado para a vista de cima da
         // mesa; em frente a estante ele so move o braco a toa perto da
@@ -3644,6 +3659,8 @@ private:
         // trocar para a pose inicial gravada (fallback_frame) se a tag sumir.
         std::string frame_to_pick = goal->tag_frame;
         bool fallback_used = false;
+        falou_procurando_ = false;
+        falou_identificou_ = false;
         for (int attempt = 1; attempt <= max_pick_attempts; ++attempt) {
             attempts_done = attempt;
             const std::string cycle_name =
@@ -3658,7 +3675,9 @@ private:
                 ikProfileForAttempt(attempt), ikProfileNameForAttempt(attempt));
             setActiveInterfaces(arm, gripper);
 
-            if (max_pick_attempts > 1) {
+            // 2026-11-23: a 1a tentativa nao e' anunciada (a primeira fala do
+            // pick passa a ser "Identifiquei o cubo X").
+            if (max_pick_attempts > 1 && attempt > 1) {
                 speak("~Tentativa numero " + std::to_string(attempt));
             }
 
