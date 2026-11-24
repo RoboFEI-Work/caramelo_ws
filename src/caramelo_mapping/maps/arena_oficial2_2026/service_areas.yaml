@@ -1,0 +1,325 @@
+service_areas:
+  START:
+    type: start
+    frame_id: map
+    final_robot_pose:
+      x: 2.2072
+      y: 0.2812
+      yaw: 1.392474
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: false
+    manipulation_enabled: false
+    notes: Area start da arena.
+  FINISH:
+    type: finish
+    frame_id: map
+    final_robot_pose:
+      x: 2.0012
+      y: 0.3079
+      yaw: -1.75779
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: false
+    manipulation_enabled: false
+    notes: Area finish da arena.
+  WS1:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 3.7166
+      y: 0.1204
+      yaw: -1.724964
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS1 - pose final do robo em frente a mesa
+  WS2:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 5.4389
+      y: -0.1059
+      yaw: -1.715121
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS2 - pose final do robo em frente a mesa
+  WS3:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 4.0334
+      y: 2.2034
+      yaw: 1.441812
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.15
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS3 - pose final do robo em frente a mesa
+  WS4:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 4.2307
+      y: 3.5353
+      yaw: -1.679005
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.15
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS4 - pose final do robo em frente a mesa
+  SH1:
+    type: shelf
+    frame_id: map
+    final_robot_pose:
+      x: 5.9839
+      y: 2.4314
+      yaw: 1.472887
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.5
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: SH1 - pose final do robo em frente a mesa
+  PP1:
+    type: precision_placement
+    frame_id: map
+    final_robot_pose:
+      x: 3.018
+      y: 5.6871
+      yaw: 1.43865
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.025
+      angular_tolerance: 0.035
+      use_docking: true
+    manipulation_enabled: true
+    notes: PP1 - pose final do robo em frente a mesa
+  RT1:
+    kind: RT
+    dock_id: RT1
+    approach: front
+    full_name: Rotating Table
+    table_height_m: 0.1
+    diameter_m: 0.6
+    precision: high
+  SH2:
+    type: shelf
+    frame_id: map
+    final_robot_pose:
+      x: 6.0877
+      y: 5.2072
+      yaw: 0.666731
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: SH2 - pose final do robo em frente a mesa
+  WS9:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: -0.2184
+      y: 4.2168
+      yaw: -1.646757
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.15
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS9 - pose final do robo em frente a mesa
+  SH4:
+    type: shelf
+    frame_id: map
+    final_robot_pose:
+      x: -1.7235
+      y: 6.3278
+      yaw: 2.217125
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: SH4 - pose final do robo em frente a mesa
+  SH3:
+    type: shelf
+    frame_id: map
+    final_robot_pose:
+      x: -2.3678
+      y: 3.8609
+      yaw: 1.42941
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: SH3 - pose final do robo em frente a mesa
+  WS8:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: -2.5365
+      y: 1.1663
+      yaw: -1.815275
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS8 - pose final do robo em frente a mesa
+  WS7:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: -0.9326
+      y: 0.8669
+      yaw: -1.764464
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.05
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS7 - pose final do robo em frente a mesa
+  WS10:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: -0.4049
+      y: 2.8622
+      yaw: 1.358764
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.15
+    docking:
+      approach_offset: 0.25
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS10 - pose final do robo em frente a mesa
+  PP2:
+    type: precision_placement
+    frame_id: map
+    final_robot_pose:
+      x: 1.243
+      y: 5.9577
+      yaw: 1.435913
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.45
+      linear_tolerance: 0.025
+      angular_tolerance: 0.035
+      use_docking: true
+    manipulation_enabled: true
+    notes: PP2 - pose final do robo em frente a mesa
+  WS5:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 2.4146
+      y: 2.6437
+      yaw: 2.929838
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.2
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS5 - pose final do robo em frente a mesa
+  WS6:
+    type: workstation
+    frame_id: map
+    final_robot_pose:
+      x: 1.1091
+      y: 2.7859
+      yaw: -0.046037
+    table:
+      width: 0.8
+      depth: 0.5
+      height: 0.1
+    docking:
+      approach_offset: 0.2
+      linear_tolerance: 0.03
+      angular_tolerance: 0.04
+      use_docking: true
+    manipulation_enabled: true
+    notes: WS6 - pose final do robo em frente a mesa
