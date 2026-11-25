@@ -22,26 +22,25 @@
 task_id: BMT
 name: Basic Manipulation Test
 duration_min: 6
-active_service_areas: [WS_9, WS_5]
+active_service_areas: [WS_1, WS_3]
 objects:
 - {id: 11, color: BLUE}
 - {id: 12, color: BLUE}
-
-stacking_areas:
-  WS_5: {reference_tag: 200}
+- {id: 26, color: RED}
+- {id: 27, color: RED}
 start_state:
-  WS_9:
-    obj_ids: [11,12]
-    table: [11,12]
-  WS_5:
+  WS_1:
+    obj_ids: [11,12,26,27]
+    table: [11,12,26,27]
+  WS_3:
     obj_ids: []
     table: []
-    stack: []
+
 finish_state:
-  WS_9:
+  WS_1:
     obj_ids: []
     table: []
-  WS_5:
-    obj_ids: [11,12]
-    table: []
-    stack: [11,12]
+  WS_3:
+    obj_ids: [11,12,26]
+    table: [11,12,26]
+
