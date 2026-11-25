@@ -49,6 +49,7 @@ def generate_launch_description():
     use_surface_detector = LaunchConfiguration("use_surface_detector")
     surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
     use_vision_debug = LaunchConfiguration("use_vision_debug")
+    use_task_viewer = LaunchConfiguration("use_task_viewer")
     use_vision_viewer = LaunchConfiguration("use_vision_viewer")
 
     manip_bringup_share = get_package_share_directory("manip_bringup")
@@ -119,6 +120,15 @@ def generate_launch_description():
             description=(
                 "Imagem da camera anotada (tags, containers, mapa da mesa, status) em "
                 "/manip/vision_debug/image (vision_debug_node.py); custo zero sem espectador."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_task_viewer",
+            default_value="true",
+            description=(
+                "Janela em tela cheia, por cima de tudo, so' durante o pick/place: camera "
+                "anotada + qual tag esta pegando/colocando (/manip/task_label). Fecha no "
+                "fim de cada pick/place. Precisa de DISPLAY e de use_vision_debug."
             ),
         ),
         DeclareLaunchArgument(
@@ -623,6 +633,18 @@ def generate_launch_description():
         condition=IfCondition(use_vision_debug),
     )
 
+    # 2026-11-25 (pedido do operador): janela em tela cheia durante o pick/place
+    # com a tag do momento; o processo da janela morre no fim (RAM de volta).
+    task_viewer = Node(
+        package="manip_bringup",
+        executable="task_viewer_node.py",
+        name="task_viewer",
+        output="screen",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_task_viewer),
+    )
+
     # Espectador pronto (opcional): rqt_image_view ja aberto no topico anotado.
     vision_viewer = Node(
         package="rqt_image_view",
@@ -795,6 +817,7 @@ def generate_launch_description():
         amt_sort,
         workstation_surface,
         vision_debug,
+        task_viewer,
         vision_viewer,
         speech,
         pick_telemetry,

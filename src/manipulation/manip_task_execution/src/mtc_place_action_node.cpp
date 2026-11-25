@@ -411,6 +411,9 @@ public:
             this->create_publisher<std_msgs::msg::Bool>(
                 "/manip/place_active",
                 rclcpp::QoS(1).transient_local().reliable());
+        task_label_publisher_ =
+            this->create_publisher<std_msgs::msg::String>(
+                "/manip/task_label", rclcpp::QoS(1).transient_local().reliable());
         publishPlaceActive(false);
         // Cota (z em manip_base_link) da BORDA do container da mesa de
         // destino, para o container_detector fazer o ray-cast no plano certo.
@@ -689,6 +692,7 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_publisher_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr place_active_publisher_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr task_label_publisher_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr
         camera_info_subscription_;
     std::atomic<std::uint64_t> camera_info_count_{0};
@@ -1048,6 +1052,7 @@ private:
     void releaseExecutionResources()
     {
         publishPlaceActive(false);
+        publishTaskLabel("");
         publishSurfaceObserve(false);
         // AUDITORIA 31/08 (espelho do pick, item 2.6): NAO zerar os MGIs —
         // manter um vivo preserva o CurrentStateMonitor aquecido e evita, a
@@ -1055,6 +1060,22 @@ private:
         // destruidos que TODOS os peers (Pi incluida) precisam rastrear.
         cancel_requested_.store(false);
         execution_lock_->release();
+    }
+
+
+    // 2026-11-25 (pedido do operador): rotulo do que o braco esta fazendo,
+    // para o task_viewer (janela em tela cheia durante o pick/place). Vazio
+    // = terminou (a janela fecha). Latched: quem sobe depois ve o atual.
+    void publishTaskLabel(const std::string & text)
+    {
+        std_msgs::msg::String message;
+        message.data = text;
+        task_label_publisher_->publish(message);
+    }
+
+    static std::string tagLabelName(const std::string & tag_frame)
+    {
+        return tag_frame.rfind("tag_", 0) == 0 ? "TAG " + tag_frame.substr(4) : tag_frame;
     }
 
     void publishPlaceActive(bool active)
@@ -6382,6 +6403,17 @@ private:
         ExecutionGuard execution_guard(*this);
         publishPlaceActive(true);
         const auto goal = goal_handle->get_goal();
+        {
+            std::string destino;
+            if (!goal->container_color.empty()) {
+                destino = " no container " + containerColorPt(goal->container_color);
+            } else if (!goal->stack_on.empty()) {
+                destino = " em cima de " + tagLabelName(goal->stack_on);
+            }
+            publishTaskLabel(
+                "COLOCANDO " + tagLabelName(goal->tag_frame) + destino +
+                (goal->ws.empty() ? std::string() : "  |  " + goal->ws));
+        }
 
         // Fila de alcance (2026-08-28): estado por goal, zerado ANTES de
         // qualquer saida (o cancel antes de comecar tambem preenche o result).

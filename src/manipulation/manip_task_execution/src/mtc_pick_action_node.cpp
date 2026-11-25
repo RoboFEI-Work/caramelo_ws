@@ -326,6 +326,9 @@ public:
             this->create_publisher<std_msgs::msg::Bool>(
                 "/manip/pick_active",
                 rclcpp::QoS(1).transient_local().reliable());
+        task_label_publisher_ =
+            this->create_publisher<std_msgs::msg::String>(
+                "/manip/task_label", rclcpp::QoS(1).transient_local().reliable());
 
         // Item 3.10 (gate da percepcao): com a camera desligada fora do
         // pick/place, o 1o frame demora ~2,6s a voltar e o estagio
@@ -686,6 +689,7 @@ private:
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr speech_publisher_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pick_active_publisher_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr task_label_publisher_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr
         camera_info_subscription_;
     std::atomic<std::uint64_t> camera_info_count_{0};
@@ -873,6 +877,22 @@ private:
         message.data = text;
         speech_publisher_->publish(message);
         RCLCPP_INFO(this->get_logger(), "[SPEECH] %s", text.c_str());
+    }
+
+
+    // 2026-11-25 (pedido do operador): rotulo do que o braco esta fazendo,
+    // para o task_viewer (janela em tela cheia durante o pick/place). Vazio
+    // = terminou (a janela fecha). Latched: quem sobe depois ve o atual.
+    void publishTaskLabel(const std::string & text)
+    {
+        std_msgs::msg::String message;
+        message.data = text;
+        task_label_publisher_->publish(message);
+    }
+
+    static std::string tagLabelName(const std::string & tag_frame)
+    {
+        return tag_frame.rfind("tag_", 0) == 0 ? "TAG " + tag_frame.substr(4) : tag_frame;
     }
 
     void publishPickActive(bool active)
@@ -1250,6 +1270,7 @@ private:
     void releaseExecutionResources()
     {
         publishPickActive(false);
+        publishTaskLabel("");
         // Auditoria 2026-08-07, item 2.6: NAO zerar active_arm_/gripper_ —
         // manter um MGI vivo preserva o CurrentStateMonitor COMPARTILHADO
         // aquecido (a subscription de joint_states nao esfria entre goals;
@@ -3499,6 +3520,9 @@ private:
         ExecutionGuard execution_guard(*this);
         publishPickActive(true);
         const auto goal = goal_handle->get_goal();
+        publishTaskLabel(
+            "PEGANDO " + tagLabelName(goal->tag_frame) +
+            (goal->table_pose.empty() ? std::string() : "  |  " + goal->table_pose));
         auto result = std::make_shared<PickTag::Result>();
         last_grasp_joints_.clear();
 
