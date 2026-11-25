@@ -1,0 +1,73 @@
+# Matriz de distancias entre docks (metros, comprimento de caminho).
+# GERADO por compute_dock_distances (caramelo_navigation) - nao editar a mao.
+# Regerar depois de mudar poses de dock ou o mapa:
+#   ros2 run caramelo_navigation compute_dock_distances --map-name arena_oficial2_2026
+# Lido pelo task_planner (manip_bt) para ordenar as estacoes por tempo;
+# sem este arquivo o planejador segue guloso (docs/planejador_por_tempo.md).
+schema: 1
+map: arena_oficial2_2026
+generated_by: compute_dock_distances
+generated_at: '2026-11-25T08:49:18'
+pose: staging
+inflation_m: 0.25
+docks: [START, FINISH, WS1, WS2, WS3, WS4, SH1, PP1, SH2, WS9, SH4, SH3, WS8, WS7, WS10, PP2, WS5, WS6]
+skipped_docks: [RT1]
+euclidean_pairs: []
+notes: []
+method: astar8
+resolution_m: 0.02
+distances_m:
+  START: {START: 0.0, FINISH: 0.937, WS1: 1.859, WS2: 3.537, WS3: 2.899, WS4: 5.277, SH1: 4.693, PP1: 5.74,
+    SH2: 6.789, WS9: 6.052, SH4: 8.07, SH3: 6.656, WS8: 5.797, WS7: 4.2, WS10: 4.282, PP2: 6.086, WS5: 2.959,
+    WS6: 3.465}
+  FINISH: {FINISH: 0.0, START: 0.937, WS1: 1.826, WS2: 3.637, WS3: 2.417, WS4: 4.728, SH1: 4.329, PP1: 4.836,
+    SH2: 6.425, WS9: 5.116, SH4: 7.134, SH3: 5.72, WS8: 4.86, WS7: 3.264, WS10: 3.346, PP2: 5.149, WS5: 2.055,
+    WS6: 2.529}
+  WS1: {WS1: 0.0, START: 1.859, FINISH: 1.826, WS2: 1.811, WS3: 1.708, WS4: 4.074, SH1: 2.834, PP1: 5.211,
+    SH2: 5.586, WS9: 6.543, SH4: 8.561, SH3: 7.51, WS8: 6.651, WS7: 5.054, WS10: 5.136, PP2: 6.22, WS5: 2.712,
+    WS6: 4.026}
+  WS2: {WS2: 0.0, START: 3.537, FINISH: 3.637, WS1: 1.811, WS3: 2.425, WS4: 4.145, SH1: 1.991, PP1: 6.144,
+    SH2: 5.127, WS9: 7.733, SH4: 9.751, SH3: 9.321, WS8: 8.462, WS7: 6.865, WS10: 6.947, PP2: 7.411, WS5: 3.902,
+    WS6: 5.838}
+  WS3: {WS3: 0.0, START: 2.899, FINISH: 2.417, WS1: 1.708, WS2: 2.425, WS4: 2.496, SH1: 1.928, PP1: 4.237,
+    SH2: 4.008, WS9: 5.569, SH4: 7.587, SH3: 7.157, WS8: 6.712, WS7: 5.248, WS10: 4.783, PP2: 5.246, WS5: 1.738,
+    WS6: 3.673}
+  WS4: {WS4: 0.0, START: 5.277, FINISH: 4.728, WS1: 4.074, WS2: 4.145, WS3: 2.496, SH1: 2.536, PP1: 1.998,
+    SH2: 2.17, WS9: 4.771, SH4: 6.789, SH3: 7.339, WS8: 7.921, WS7: 6.457, WS10: 5.595, PP2: 3.781, WS5: 2.672,
+    WS6: 3.996}
+  SH1: {SH1: 0.0, START: 4.693, FINISH: 4.329, WS1: 2.834, WS2: 1.991, WS3: 1.928, WS4: 2.536, PP1: 4.534,
+    SH2: 3.518, WS9: 7.296, SH4: 9.313, SH3: 9.069, WS8: 8.624, WS7: 7.16, WS10: 6.695, PP2: 6.305, WS5: 3.65,
+    WS6: 5.585}
+  PP1: {PP1: 0.0, START: 5.74, FINISH: 4.836, WS1: 5.211, WS2: 6.144, WS3: 4.237, WS4: 1.998, SH1: 4.534,
+    SH2: 3.015, WS9: 3.463, SH4: 5.166, SH3: 6.031, WS8: 7.139, WS7: 5.711, WS10: 4.813, PP2: 2.158, WS5: 2.781,
+    WS6: 3.285}
+  SH2: {SH2: 0.0, START: 6.789, FINISH: 6.425, WS1: 5.586, WS2: 5.127, WS3: 4.008, WS4: 2.17, SH1: 3.518,
+    PP1: 3.015, WS9: 6.329, SH4: 8.032, SH3: 8.896, WS8: 9.876, WS7: 8.412, WS10: 7.55, PP2: 5.023, WS5: 4.627,
+    WS6: 5.951}
+  WS9: {WS9: 0.0, START: 6.052, FINISH: 5.116, WS1: 6.543, WS2: 7.733, WS3: 5.569, WS4: 4.771, SH1: 7.296,
+    PP1: 3.463, SH2: 6.329, SH4: 2.232, SH3: 2.568, WS8: 4.18, WS7: 3.905, WS10: 2.587, PP2: 1.819, WS5: 3.831,
+    WS6: 2.587}
+  SH4: {SH4: 0.0, START: 8.07, FINISH: 7.134, WS1: 8.561, WS2: 9.751, WS3: 7.587, WS4: 6.789, SH1: 9.313,
+    PP1: 5.166, SH2: 8.032, WS9: 2.232, SH3: 3.05, WS8: 5.142, WS7: 5.282, WS10: 3.964, PP2: 3.009, WS5: 5.849,
+    WS6: 4.605}
+  SH3: {SH3: 0.0, START: 6.656, FINISH: 5.72, WS1: 7.51, WS2: 9.321, WS3: 7.157, WS4: 7.339, SH1: 9.069,
+    PP1: 6.031, SH2: 8.896, WS9: 2.568, SH4: 3.05, WS8: 2.245, WS7: 3.13, WS10: 2.374, PP2: 4.387, WS5: 5.986,
+    WS6: 4.008}
+  WS8: {WS8: 0.0, START: 5.797, FINISH: 4.86, WS1: 6.651, WS2: 8.462, WS3: 6.712, WS4: 7.921, SH1: 8.624,
+    PP1: 7.139, SH2: 9.876, WS9: 4.18, SH4: 5.142, SH3: 2.245, WS7: 1.696, WS10: 2.525, PP2: 5.999, WS5: 5.624,
+    WS6: 3.96}
+  WS7: {WS7: 0.0, START: 4.2, FINISH: 3.264, WS1: 5.054, WS2: 6.865, WS3: 5.248, WS4: 6.457, SH1: 7.16,
+    PP1: 5.711, SH2: 8.412, WS9: 3.905, SH4: 5.282, SH3: 3.13, WS8: 1.696, WS10: 1.682, PP2: 5.262, WS5: 4.16,
+    WS6: 2.496}
+  WS10: {WS10: 0.0, START: 4.282, FINISH: 3.346, WS1: 5.136, WS2: 6.947, WS3: 4.783, WS4: 5.595, SH1: 6.695,
+    PP1: 4.813, SH2: 7.55, WS9: 2.587, SH4: 3.964, SH3: 2.374, WS8: 2.525, WS7: 1.682, PP2: 4.364, WS5: 3.612,
+    WS6: 1.633}
+  PP2: {PP2: 0.0, START: 6.086, FINISH: 5.149, WS1: 6.22, WS2: 7.411, WS3: 5.246, WS4: 3.781, SH1: 6.305,
+    PP1: 2.158, SH2: 5.023, WS9: 1.819, SH4: 3.009, SH3: 4.387, WS8: 5.999, WS7: 5.262, WS10: 4.364, WS5: 3.508,
+    WS6: 2.836}
+  WS5: {WS5: 0.0, START: 2.959, FINISH: 2.055, WS1: 2.712, WS2: 3.902, WS3: 1.738, WS4: 2.672, SH1: 3.65,
+    PP1: 2.781, SH2: 4.627, WS9: 3.831, SH4: 5.849, SH3: 5.986, WS8: 5.624, WS7: 4.16, WS10: 3.612, PP2: 3.508,
+    WS6: 2.502}
+  WS6: {WS6: 0.0, START: 3.465, FINISH: 2.529, WS1: 4.026, WS2: 5.838, WS3: 3.673, WS4: 3.996, SH1: 5.585,
+    PP1: 3.285, SH2: 5.951, WS9: 2.587, SH4: 4.605, SH3: 4.008, WS8: 3.96, WS7: 2.496, WS10: 1.633, PP2: 2.836,
+    WS5: 2.502}

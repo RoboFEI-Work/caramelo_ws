@@ -105,27 +105,31 @@
         <joint name="manip_joint4" value="1.8151"/>
         <joint name="manip_joint5" value="1.5708"/>
     </group_state>
-    <!-- 2026-11-24 (operador): container1 = j1 -70, j2 12, j3 76, j4 83, j5 -71 graus
-         (antes -65, 12, 82, 80, -58). -->
+    <!-- 2026-11-24 (operador): container1 = j1 -68, j2 12, j3 76, j4 83, j5 -71 graus
+         (antes -70 na 1a mudanca de hoje; originalmente -65, 12, 82, 80, -58). -->
     <group_state name="container1" group="arm">
-        <joint name="manip_joint1" value="-1.22173"/>
+        <joint name="manip_joint1" value="-1.18682"/>
         <joint name="manip_joint2" value="0.20944"/>
         <joint name="manip_joint3" value="1.32645"/>
         <joint name="manip_joint4" value="1.44862"/>
         <joint name="manip_joint5" value="-1.23918"/>
     </group_state>
+    <!-- 2026-11-24 (operador): container2 = j1 -91, j2 -4, j3 96, j4 70, j5 -94 graus
+         (antes -91, 0, 96, 73, -94). -->
     <group_state name="container2" group="arm">
         <joint name="manip_joint1" value="-1.58825"/>
-        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint2" value="-0.06981"/>
         <joint name="manip_joint3" value="1.67552"/>
-        <joint name="manip_joint4" value="1.27409"/>
+        <joint name="manip_joint4" value="1.22173"/>
         <joint name="manip_joint5" value="-1.64061"/>
     </group_state>
+    <!-- 2026-11-24 (operador): container3 = j1 -111, j2 2, j3 89, j4 72, j5 -107 graus
+         (antes -113, 5, 89, 77, -107). -->
     <group_state name="container3" group="arm">
-        <joint name="manip_joint1" value="-1.97222"/>
-        <joint name="manip_joint2" value="0.08727"/>
+        <joint name="manip_joint1" value="-1.93732"/>
+        <joint name="manip_joint2" value="0.03491"/>
         <joint name="manip_joint3" value="1.55334"/>
-        <joint name="manip_joint4" value="1.3439"/>
+        <joint name="manip_joint4" value="1.25664"/>
         <joint name="manip_joint5" value="-1.8675"/>
     </group_state>
     <group_state name="Mesa0" group="arm">

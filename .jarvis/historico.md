@@ -489,3 +489,16 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-24 — Juntas do container1 (refeito apos o "mapa arena")
 - Pedido: container1 = j1 -70, j2 12, j3 76, j4 83, j5 -71 graus (antes -65, 12, 82, 80, -58). A 1a versao (commit 5588932) foi descartada pelo operador ao reorganizar a branch; refeito em cima de 7b99c4e "mapa arena".
 - Feito (sem commit): group_state `container1` em `manip_moveit_config/config/caramelo.srdf` e `manip.srdf` -> -1.22173, 0.20944, 1.32645, 1.44862, -1.23918 rad. Build ok. NAO testado no robo; relancar a manipulacao (move_group le o SRDF no inicio).
+
+## 2026-11-24 — Juntas do container1 (de novo) e container3
+- Pedido: ct1 = j1 -68, j2 12, j3 76, j4 83, j5 -71 graus (so' a j1 mudou: -70 -> -68); ct3 = -111, 2, 89, 72, -107 (antes -113, 5, 89, 77, -107).
+- Feito (sem commit): group_state `container1` e `container3` em `manip_moveit_config/config/caramelo.srdf` e `manip.srdf`. O SRDF instalado e' symlink para o src: sem build. NAO testado no robo; relancar a manipulacao (move_group le o SRDF no inicio).
+- 2026-11-24 (seguinte): ct2 = -91, -4, 96, 70, -94 graus (antes -91, 0, 96, 73, -94), nos dois SRDFs. Mesmo estado: sem build, sem commit, nao testado no robo.
+
+## 2026-11-24 — Shelf: pose intermediaria (fase 1) com j3 +142 e j4 -30
+- Pedido: a pose entre pegar_obj_sh e a pega (fase 1) passa a ter J3 = +142 graus e J4 = -30 graus (antes J3 = min(132, shelf_j3_max 2,16) ~124 graus e J4 da IK de 45 graus). J1 continua da IK, J2 = 0, J5 = +90.
+- Feito (sem commit) em `mtc_pick_action_node.cpp`: `kShelfPhase1Joint3` = 142 graus, novo `kShelfPhase1Joint4` = -30 graus, nos dois usos (ida e retorno `retreatFromShelf`); a trava `shelf_j3_max` sai da fase 1 e fica so' na IK da pega. Build ok. NAO testado no robo; relancar a manipulacao.
+- Fato dos bags: de 18/11 a 21/11 a j3 nunca passou de 2,176 rad (124,7 graus); hoje (24/11) run_133311 chegou a 2,387 (136,8) e run_161019 a 2,368 (135,7). Ninguem confirmou se o batente do servo mudou; 142 graus (2,478) nunca foi medido.
+- Conta (modelo custom_ik): com j2 0 / j3 142 / j4 -30 o TCP fica ~37 cm a frente e ~6 cm acima da base do braco, ferramenta ~22 graus abaixo da horizontal, ja dentro da boca do vao.
+- 2026-11-24 (seguinte): J4 da fase 1 da shelf -30 -> -10 graus (`kShelfPhase1Joint4`). Build ok, sem commit, nao testado no robo. Conta (modelo custom_ik): TCP ~33 cm a frente e ~2 cm abaixo da base do braco, ferramenta ~42 graus abaixo da horizontal (com -30 era ~37 cm e ~6 cm acima).
+- 2026-11-24 (19h40): a fase 1 com j3 142 NAO termina: run_20261124_193512/193714, pick log "j3 alvo=2.4784 atual=2.1748 <-- FORA da tolerancia", 2 tentativas abortadas. Causa = limite de posicao na EEPROM do servo 3 (~2,17 rad; ja documentado em 10/08 no manipulator_arm.xacro do caramelo_hardware_ws). Os 136 graus vistos hoje cedo foram picos de 0,1 s (13:34:01, 16:14:11), nao posicao mantida. Operador escolheu j3 124 / j4 -10 (`kShelfPhase1Joint3` = 124 graus). Conta: TCP ~41 cm a frente, ~10 cm acima da base do braco, ferramenta ~24 graus abaixo da horizontal. Build ok, sem commit, nao testado no robo.

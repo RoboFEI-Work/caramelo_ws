@@ -1850,13 +1850,18 @@ private:
     // este caminho NAO usa a IK do MoveIt (setPoseTarget), e sim a IK propria
     // (custom_ik.hpp) em duas fases de espaco de juntas, definidas pelo
     // operador:
-    //   fase 1 — j1/j4 da IK de 45 graus, j2 = 0, j3 = kShelfPhase1Joint3,
-    //            j5 = +1.5708
+    //   fase 1 — j1 da IK de 45 graus, j2 = 0, j3 = kShelfPhase1Joint3,
+    //            j4 = kShelfPhase1Joint4, j5 = +1.5708
     //   fase 2 — j1..j4 da IK da PEGADA (shelf_grasp_tilt_deg; 0 = "bottom",
     //            ferramenta para baixo, desde 2026-08-24; 45 = a mesma da
     //            fase 1, como era antes), j5 continua +1.5708
     // O retorno faz o caminho inverso (fase 1 com a solucao de 45 graus).
-    static constexpr double kShelfPhase1Joint3 = 2.3038;
+    // 2026-11-24 (operador): fase 1 com j3 = 124 graus e j4 = -10 graus fixos
+    // (antes j3 = 2.3038 travado em shelf_j3_max e j4 da IK). Pedido era j3
+    // 142, mas o servo 3 recusa passar de ~2,17 rad (limite na EEPROM): a fase
+    // 1 abortava com a j3 parada em 2,175. 124 = o maximo que ele entrega.
+    static constexpr double kShelfPhase1Joint3 = 124.0 * M_PI / 180.0;
+    static constexpr double kShelfPhase1Joint4 = -10.0 * M_PI / 180.0;
     static constexpr double kShelfWristJoint5 = 1.5708;
     // (kTableForwardWristJoint5 removido em 2026-08-28 junto com a pega
     // frontal da mesa; a shelf continua +1.5708.)
@@ -2253,8 +2258,7 @@ private:
 
         publishStage(goal_handle, "shelf_phase1");
         const std::array<double, 5> phase1{
-            q_ik_out[0], 0.0, std::min(kShelfPhase1Joint3, shelf_j3_max_), q_ik_out[3],
-            kShelfWristJoint5};
+            q_ik_out[0], 0.0, kShelfPhase1Joint3, kShelfPhase1Joint4, kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf fase1")) {
             return false;
         }
@@ -2343,7 +2347,7 @@ private:
         }
 
         const std::array<double, 5> phase1{
-            q_ik[0], 0.0, std::min(kShelfPhase1Joint3, shelf_j3_max_), q_ik[3], kShelfWristJoint5};
+            q_ik[0], 0.0, kShelfPhase1Joint3, kShelfPhase1Joint4, kShelfWristJoint5};
         if (!moveToJointTarget(arm, phase1, cycle_name + " shelf retorno fase1")) {
             return false;
         }
