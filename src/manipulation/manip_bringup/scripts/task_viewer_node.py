@@ -60,16 +60,20 @@ class Supervisor(Node):
     def _on_label(self, msg: String) -> None:
         if msg.data.strip():
             self._close_at = None
-            self._open()
+            self._open(msg.data.strip())
         elif self._child is not None and self._close_at is None:
             self._close_at = time.monotonic() + float(self.get_parameter('close_delay_s').value)
 
-    def _open(self) -> None:
+    def _open(self, label: str) -> None:
         if self._sem_display or (self._child is not None and self._child.poll() is None):
             return
         cmd = [sys.executable, os.path.abspath(__file__), '--janela',
                '--ros-args', '-r', '__node:=task_viewer_janela']
-        self._child = subprocess.Popen(cmd)
+        # 2026-11-25: o rotulo vai junto. A janela nasce DEPOIS da mensagem, e o
+        # latched so' existe enquanto o publicador vive: com "ros2 topic pub -1"
+        # (teste na mao) ele ja' saiu e a janela ficava so' com "...".
+        env = dict(os.environ, CARAMELO_TASK_LABEL=label)
+        self._child = subprocess.Popen(cmd, env=env)
         self.get_logger().info(f'janela do pick/place aberta (pid {self._child.pid}).')
 
     def _close(self) -> None:
@@ -113,7 +117,7 @@ def janela() -> None:
 
     rclpy.init(args=sys.argv)
     node = Node('task_viewer_janela')
-    estado = {'label': ''}
+    estado = {'label': os.environ.get('CARAMELO_TASK_LABEL', '').strip()}
 
     def on_label(msg):
         # Vazio e' ignorado: pick e place publicam no mesmo topico latched, e ao
