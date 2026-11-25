@@ -297,6 +297,16 @@ public:
         // Lidos a cada place.
         this->declare_parameter<bool>("container_empilha_no_primeiro", true);
         this->declare_parameter<double>("container_empilha_extra_z_m", 0.03);
+        // 2026-11-25 (operador: "na mesa de 15 ele afunda o bloco no container,
+        // na de 10 esta boa"): correcao de altura do alvo do container POR
+        // MESA. A FK da pose Mesa15 da' o tampo so' 4,1 cm acima do da Mesa10
+        // (deveria ser 5) e os logs mostram chegada 2,0-2,4 cm abaixo do alvo.
+        // Casa pelo prefixo da table_pose ("Mesa15" vale para Mesa15.1/.2).
+        // Listas paralelas; lidas a cada place (ros2 param set vale na hora).
+        this->declare_parameter<std::vector<std::string>>(
+            "container_z_extra_mesas", std::vector<std::string>{"Mesa15"});
+        this->declare_parameter<std::vector<double>>(
+            "container_z_extra_m", std::vector<double>{0.02});
         container_exit_gripper_position_ =
             this->declare_parameter<double>("container_exit_gripper_position", 0.170);
         cube_height_m_ = this->declare_parameter<double>("cube_height_m", 0.042);
@@ -2051,6 +2061,34 @@ private:
     /// container (yaw do frame). Sem bloco anterior na memoria: candidato 0.
     /// Com blocos: o candidato mais longe do bloco mais proximo — robusto ao
     /// sinal do yaw (pode virar 180 graus entre deteccoes) e a onde o 1o caiu.
+    /// 2026-11-25: correcao de z do alvo do container para a table_pose
+    /// (prefixo mais longo de container_z_extra_mesas); 0 se nenhuma casa.
+    double containerZExtraForTable(const std::string & table_pose)
+    {
+        const auto mesas = this->get_parameter("container_z_extra_mesas").as_string_array();
+        const auto extras = this->get_parameter("container_z_extra_m").as_double_array();
+        double extra = 0.0;
+        std::size_t best_len = 0;
+        for (std::size_t i = 0; i < mesas.size() && i < extras.size(); ++i) {
+            const std::string & m = mesas[i];
+            if (m.empty() || table_pose.rfind(m, 0) != 0 || m.size() <= best_len) {
+                continue;
+            }
+            // "Mesa1" nao pode casar "Mesa15": depois do prefixo so' fim ou '.'.
+            if (table_pose.size() > m.size() && table_pose[m.size()] != '.') {
+                continue;
+            }
+            best_len = m.size();
+            extra = extras[i];
+        }
+        if (best_len > 0) {
+            RCLCPP_INFO(
+                get_logger(), "[CONTAINER] correcao de altura da mesa %s: %+.3f m.",
+                table_pose.c_str(), extra);
+        }
+        return extra;
+    }
+
     std::vector<Eigen::Vector2d> containerSlotCandidates(
         const std::shared_ptr<GoalHandlePlaceTag> & goal_handle,
         const std::string & frame,
@@ -5681,6 +5719,8 @@ private:
         const std::vector<Eigen::Vector2d> slot_cands =
             containerSlotCandidates(goal_handle, frame, frame_yaw, target, &empilha_extra_z);
         target.z() += empilha_extra_z;
+        const double mesa_extra_z = containerZExtraForTable(table_pose);
+        target.z() += mesa_extra_z;
 
         const std::vector<double> tilts = tiltLadderRad(container_tilt_ladder_deg_);
         // Pose de recuo VERTICAL (stack_pre_lift_m acima) resolvida junto, na
@@ -5738,9 +5778,10 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "[CONTAINER] alvo [%.3f %.3f %.3f] (borda %.3f + cubo %.3f + folga %.3f + "
-            "empilha %.3f), ferramenta a %.0f graus, yaw %.3f -> j [%.3f %.3f %.3f %.3f %.3f]",
+            "empilha %.3f + mesa %.3f), ferramenta a %.0f graus, yaw %.3f -> j [%.3f %.3f %.3f %.3f %.3f]",
             target.x(), target.y(), target.z(), plane_z, cube_height_m_,
-            container_drop_clearance_m_, empilha_extra_z, tilt_used * 180.0 / M_PI, frame_yaw,
+            container_drop_clearance_m_, empilha_extra_z, mesa_extra_z,
+            tilt_used * 180.0 / M_PI, frame_yaw,
             q[0], q[1], q[2], q[3], q[4]);
 
         if (dry_run) {

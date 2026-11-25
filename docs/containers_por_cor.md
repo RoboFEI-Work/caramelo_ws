@@ -70,6 +70,12 @@ Medidas atuais: 170 × 105 × 70 mm (medidas em 25/08). Cubo 42 mm.
 > Do 2º em diante: o candidato mais perto do bloco já solto (memória de slots), **mais alto**
 > `container_empilha_extra_z_m` (0,03) por bloco já solto — o 2º cai em cima do 1º. `false` =
 > regra abaixo (o mais longe dos soltos). Os dois parâmetros são lidos a cada place.
+>
+> **Correção de altura por mesa (2026-11-25)**: `container_z_extra_mesas` (`["Mesa15"]`) +
+> `container_z_extra_m` (`[0.02]`), listas paralelas, somam ao z do alvo quando a `table_pose`
+> começa pelo nome (vale para `Mesa15.1`/`.2`). Motivo: na mesa de 15 o bloco afundava no
+> container (FK da Mesa15 dá o tampo só 4,1 cm acima da Mesa10, e a chegada fica 2,0–2,4 cm
+> abaixo do alvo). Lidos a cada place.
 
 Regra: `d = L/2 − cubo/2 − 0,02` no máximo, onde `L` é o lado longo interno e 0,02 é a
 margem para os dedos abertos não pegarem a parede. Para L = 0,170: d ≤ 0,085 − 0,021 −
