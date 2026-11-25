@@ -98,8 +98,9 @@ class Supervisor(Node):
 def titulo_e_tag(label: str):
     """'PEGANDO TAG 25  |  Mesa15' -> ('PICK:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:'."""
     texto = label.strip().upper()
-    titulo = 'PICK:' if texto.startswith('PEGANDO') else (
-        'PLACE:' if texto.startswith('COLOCANDO') else '')
+    # 'PICK ...' / 'PLACE ...' tambem valem (teste na mao: "pick tag 20").
+    titulo = 'PICK:' if texto.startswith(('PEGANDO', 'PICK')) else (
+        'PLACE:' if texto.startswith(('COLOCANDO', 'PLACE')) else '')
     m = re.search(r'TAG[ _]*([A-Z0-9_]+)', texto)
     tag = f'TAG {m.group(1)}' if m else texto
     return titulo, tag
