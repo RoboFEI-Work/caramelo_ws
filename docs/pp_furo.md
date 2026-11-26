@@ -118,7 +118,9 @@ Código: `ppAjustarCubo` em `mtc_place_action_node.cpp`, chamado depois da subid
 1. Volta à 1ª parada do place (de lá a câmera vê o furo inteiro) e lê a tag do cubo e a do slot.
 2. Furo = tag do slot + `pp_ajuste_tag_ate_o_furo_m` na direção do robô. Erro = cubo − furo nessa
    direção (+ = mais perto da tag do slot). O erro de lado (ao longo da fileira) também é medido.
-3. Erro ≤ `pp_ajuste_tolerancia_m`: nada a fazer.
+3. Erro ≤ `pp_ajuste_tolerancia_m` nos dois eixos: nada a fazer. **Tag do slot não vista** = o cubo está
+   em cima dela: usa a posição da tag lida antes de soltar e empurra sempre, na direção da tag
+   (sem a tag do cubo também, supõe o cubo centrado na tag do slot).
 4. Fora da tolerância: gira o punho 90° em relação ao place (dedos ao longo de tag↔furo), abre a
    garra toda, desce com o TCP sobre o furo na altura da soltura.
 5. Fecha primeiro o dedo do lado para onde o cubo escapou (`pp_ajuste_dedo_empurra`) e depois o
@@ -137,7 +139,7 @@ Parâmetros (todos valem ao vivo com `ros2 param set /place_action_server ...`):
 |---|---|---|
 | `pp_ajuste_habilitado` | true | false desliga o ajuste |
 | `pp_ajuste_tag_ate_o_furo_m` | 0.055 | centro da tag → centro do furo (arena; no laboratório ~0.046) |
-| `pp_ajuste_tolerancia_m` | 0.006 | erro aceito sem empurrar |
+| `pp_ajuste_tolerancia_m` | 0.001 | erro aceito sem empurrar (1 mm: na pratica empurra quase sempre) |
 | `pp_ajuste_max` | 2 | empurrões por place (um por eixo) |
 | `pp_ajuste_dedo_aberto` | -0.994838 | garra toda aberta para descer em volta do cubo (eixo tag↔furo) |
 | `pp_ajuste_dedo_aberto_lado` | -0.2265 | abertura no eixo de lado (não pode abrir toda: vizinhos) |

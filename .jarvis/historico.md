@@ -571,3 +571,8 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Feito: speech_node nao sobe por padrao (use_audio false nos 2 launches; Kokoro e' TTS neural, pesa na CPU); speech_enabled false em pick/place/dock_align/amt_sort; removidas as esperas que so' existiam para a voz: 1,5 s depois do START (GoToWS) e 1 s antes de cada nudge lateral (nudge_speech_lead_s, agora 0 sem voz). Docs: voz_do_robo.md, docking_alinhamento_holonomico.md.
 - Mantido: task_viewer (tela com a tag), logs [SPEECH]/[AMT] nao saem mais no pick/place (speak retorna antes).
 - Verificado: build dos 5 pacotes; pytest dock/nudge 285 ok, amt_sort_core 14 ok. Nao testado no robo; sem commit.
+
+## 2026-11-26 — Ajuste da PP: tag do slot coberta + tolerancia 1 mm (T62)
+- Pedido: "caso ele nao veja a tag de referencia quer dizer que a tag esta em cima da de referencia, entao precisa fazer o ajuste"; "so' faz o ajuste caso a tag esteja 6mm de diferenca, mude para que quase sempre faca".
+- CORRECAO DO OPERADOR (recado deixado no comentario do codigo): o "threshold pro toque" do pedido anterior era a tolerancia do ajuste, nao o torque da garra (T59 foi interpretacao errada; o operador ja' voltou grasp_min_effort para 0.15/0.05). "Ele poe a tag torta e nao esta corrigindo".
+- Feito (ppAjustarCubo): sem a tag do slot usa tag_p/fora guardados no placeOnPpSlot e forca o empurrao no eixo da tag; sem as duas tags supoe o cubo sobre a tag do slot (erro +55 mm); tolerancia 0.001. Comentario com o recado limpo. Build ok; nao testado; sem commit.

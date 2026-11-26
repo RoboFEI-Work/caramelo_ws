@@ -227,9 +227,12 @@ public:
         // Centro do furo a partir do centro da tag do slot, na direcao do robo.
         // Arena 2026-11-26 (fotos): ~55 mm. Lab (mesa de 16/11): ~46 mm.
         this->declare_parameter<double>("pp_ajuste_tag_ate_o_furo_m", 0.055);
-        // Erro na direcao tag<->furo ate' onde o cubo vale como "no furo".
-        // Folga do furo ~2 mm por lado + ruido da tag (~2-3 mm).não era esse trashhold que eu falei. Ele poe a tag torta e nao esta corrigindo
-        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.002);
+        // Erro (em cada eixo) ate' onde o cubo vale como "no furo" e NAO empurra.
+        // 2026-11-26 (operador: "ele so' faz o ajuste caso a tag esteja 6 mm de
+        // diferenca, mude para que quase sempre ele faca o ajuste"; "ele poe a tag
+        // torta e nao esta corrigindo"): 6 -> 1 mm. O ruido da tag (~2-3 mm) ja'
+        // passa disso, entao na pratica empurra quase sempre.
+        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.001);
         // 2: um empurrao em cada eixo (tag<->furo e de lado), o de maior erro primeiro.
         this->declare_parameter<int>("pp_ajuste_max", 2);              // empurroes por place
         // Dedos (manip_joint6/7; fechada 0.170, aberta -0.2265, toda aberta -0.994838).
@@ -841,6 +844,8 @@ private:
         std::string slot_frame;
         std::array<double, 5> q_olhar{};  ///< 1a parada alcancada: a camera ve o furo inteiro
         double z_soltura{0.0};            ///< z do TCP comandado na soltura
+        Eigen::Vector3d tag_p{0.0, 0.0, 0.0};  ///< tag do slot lida antes de soltar
+        Eigen::Vector3d fora{1.0, 0.0, 0.0};   ///< robo -> tag do slot, no tampo
     };
     std::optional<PpAjuste> pp_ajuste_;
     rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr pp_medir_client_;
@@ -4893,7 +4898,7 @@ private:
         }
         last_slot_decision_ = SlotDecision{"pp:" + slot_frame, table_pose, tcp_final, 0.0, std::nullopt};
         if (q_olhar) {
-            pp_ajuste_ = PpAjuste{slot_frame, *q_olhar, tcp_final.z()};
+            pp_ajuste_ = PpAjuste{slot_frame, *q_olhar, tcp_final.z(), tag_p, fora};
         }
         return StackOutcome::kOk;
     }
@@ -4974,31 +4979,49 @@ private:
                 return;
             }
             geometry_msgs::msg::TransformStamped tf_slot, tf_cubo;
-            if (!stackReadBase(ctx.slot_frame, tf_slot, parou, "pp ajuste " + ctx.slot_frame, verifyTimeout()) ||
-                !stackReadBase(cube_frame, tf_cubo, parou, "pp ajuste " + cube_frame, verifyTimeout()))
-            {
+            const bool viu_slot =
+                stackReadBase(ctx.slot_frame, tf_slot, parou, "pp ajuste " + ctx.slot_frame, verifyTimeout());
+            const bool viu_cubo =
+                stackReadBase(cube_frame, tf_cubo, parou, "pp ajuste " + cube_frame, verifyTimeout());
+            if (cancellationRequested()) {
+                return;
+            }
+            // 2026-11-26 (operador): "caso ele nao veja a tag de referencia quer dizer
+            // que a tag esta em cima da de referencia, entao precisa fazer o ajuste".
+            // Sem a tag do slot: vale a posicao dela lida ANTES de soltar (a base
+            // nao andou) e o ajuste e' feito mesmo dentro da tolerancia. Sem a tag
+            // do slot E sem a do cubo (cubo tombado sobre ela): o cubo esta' sobre
+            // a tag do slot.
+            const Eigen::Vector3d t = viu_slot ? framePosition(tf_slot) : ctx.tag_p;
+            const Eigen::Vector3d fora = viu_slot ? ppEixoParaFora(t, frameYaw(tf_slot)) : ctx.fora;   // robo -> tag
+            const Eigen::Vector3d lado(-fora.y(), fora.x(), 0.0);
+            const Eigen::Vector3d furo = t - tag_ate_furo * fora;
+            if (!viu_cubo && viu_slot) {
                 RCLCPP_WARN(
-                    get_logger(), "[PP-AJUSTE] nao vi %s e %s juntas depois de soltar - sem ajuste.",
+                    get_logger(), "[PP-AJUSTE] vi %s mas nao a tag do cubo %s - sem ajuste.",
                     ctx.slot_frame.c_str(), cube_frame.c_str());
                 return;
             }
             // 2) Erro do cubo em relacao ao furo.
-            const Eigen::Vector3d t = framePosition(tf_slot);
-            const Eigen::Vector3d c = framePosition(tf_cubo);
-            const Eigen::Vector3d fora = ppEixoParaFora(t, frameYaw(tf_slot));   // robo -> tag
-            const Eigen::Vector3d lado(-fora.y(), fora.x(), 0.0);
-            const Eigen::Vector3d furo = t - tag_ate_furo * fora;
+            const Eigen::Vector3d c = viu_cubo ? framePosition(tf_cubo) : t;
             Eigen::Vector3d d = c - furo;
             d.z() = 0.0;
             const double e_tag = d.dot(fora);   // + = mais perto da tag do slot
             const double e_lado = d.dot(lado);
+            const bool forcar = !viu_slot;      // cubo cobrindo a tag do slot: ajusta sempre
+            if (!viu_slot) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[PP-AJUSTE] nao vi %s: o cubo esta' EM CIMA dela%s - ajusto pela posicao lida antes de soltar.",
+                    ctx.slot_frame.c_str(), viu_cubo ? "" : " (e a tag do cubo tambem nao aparece)");
+            }
             RCLCPP_INFO(
                 get_logger(),
                 "[PP-AJUSTE] %s em [%.3f %.3f], furo estimado [%.3f %.3f] (%.0f mm antes de %s): "
                 "erro %+.1f mm na direcao da tag (+ = mais perto dela), %+.1f mm de lado; tolerancia %.1f mm.",
                 cube_frame.c_str(), c.x(), c.y(), furo.x(), furo.y(), tag_ate_furo * 1000.0,
                 ctx.slot_frame.c_str(), e_tag * 1000.0, e_lado * 1000.0, tol * 1000.0);
-            if (std::abs(e_tag) <= tol && std::abs(e_lado) <= tol) {
+            if (!forcar && std::abs(e_tag) <= tol && std::abs(e_lado) <= tol) {
                 RCLCPP_INFO(
                     get_logger(), "[PP-AJUSTE] cubo no furo%s.", empurroes > 0 ? " depois do ajuste" : "");
                 if (empurroes > 0) {
@@ -5020,7 +5043,7 @@ private:
             //   tag<->furo: punho girado 90 graus, garra toda aberta (sem vizinhos nesse eixo);
             //   de lado (ao longo da fileira): punho do place, garra so' ate'
             //   pp_ajuste_dedo_aberto_lado (toda aberta bate nos blocos vizinhos).
-            const bool eixo_tag = std::abs(e_tag) >= std::abs(e_lado);
+            const bool eixo_tag = forcar || std::abs(e_tag) >= std::abs(e_lado);
             const Eigen::Vector3d eixo = eixo_tag ? fora : lado;
             const double e = eixo_tag ? e_tag : e_lado;
             const double aberto = eixo_tag ? dedo_aberto : dedo_aberto_lado;
