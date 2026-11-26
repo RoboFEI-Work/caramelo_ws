@@ -264,7 +264,12 @@ controller_server:
       # nessa manobra, a opcao do OPERADOR e max_vel_y 0.30 (101%), dinamico
       # (ros2 param set). NAO usar max_speed_xy 0.57 para isso: invalida a
       # reta a 0.60 (hypot 0.60 > 0.57) e derruba o cruzeiro para 0.533.
-      max_vel_x: 0.60 # Velocidade maxima em x.
+      # 0.60 -> 0.70 em x (operador, 2026-11-26: "aumente a velocidade para
+      # 0.7 m/s"). vy 0.40 e wz 0.50 MANTIDOS. Conta: reta 0.70 + giro 0.50 =
+      # roda 17.9 rad/s (89% do FS 20.06); pior caso legal (vx 0.57 + vy 0.40
+      # + wz 0.50) = 23.3 rad/s (116%): satura UMA roda e desvia a direcao
+      # nessa combinacao rara. Se aparecer, voltar a 0.60 ou max_vel_y 0.30.
+      max_vel_x: 0.70 # Velocidade maxima em x.
       min_vel_y: -0.40 # Velocidade minima lateral (simetrico com max_vel_y).
       max_vel_y: 0.40 # Velocidade maxima lateral (pedido do operador; 0.30 e a opcao dele se a diagonal+giro desviar).
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
@@ -293,7 +298,7 @@ controller_server:
       min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s (reto executa exato).
       # Casado com max_vel_x/y: este e' o limite do MODULO e, se ficasse no valor
       # antigo, os tetos por eixo acima nao teriam efeito nenhum.
-      max_speed_xy: 0.60 # Limite do modulo da velocidade linear (0.40 -> 0.60, 2026-11-07). NAO baixar: invalida a reta 0.60.
+      max_speed_xy: 0.70 # Limite do modulo (0.40 -> 0.60 em 2026-11-07; 0.70 em 2026-11-26, junto com max_vel_x). Tem de ficar = max_vel_x.
       min_speed_theta: 0.35 # 1.11 x piso fisico 0.315 rad/s de corpo (0.34 -> 0.35, operador 2026-11-07; = giro do shim). Com vtheta_samples 21 existe amostra EXATA em 0.35.
       # 0.35 -> 0.70 e -0.45 -> -0.90 (operador, 2026-09-14). MANTIDOS quando o
       # teto caiu de 0.70 para 0.40 m/s: o que incomodava era a velocidade de
@@ -531,7 +536,12 @@ controller_server:
       # puro = 60% do FS; diagonal com vy 0.40 = 72%; com giro 0.50 junto chega
       # perto de saturar — por isso vy fica em 0.40 (lateral e' a direcao que o
       # LiDAR frontal menos enxerga) e wz em 0.50 (AMCL acompanha o giro).
-      vx_max: 0.60
+      # 0.60 -> 0.70 em x (operador, 2026-11-26: "aumente a velocidade para
+      # 0.7 m/s"). vy 0.40 e wz 0.50 MANTIDOS. Conta: reta 0.70 + giro 0.50 =
+      # roda 17.9 rad/s (89% do FS 20.06); pior caso legal (vx 0.57 + vy 0.40
+      # + wz 0.50) = 23.3 rad/s (116%): satura UMA roda e desvia a direcao
+      # nessa combinacao rara. Se aparecer, voltar a 0.60 ou max_vel_y 0.30.
+      vx_max: 0.70
       # RE PERMITIDA (operador, 2026-11-07): "nao e' proibida, so' nao abusar"
       # — sem sensor traseiro. -0.25 = o piso do ESC: menos que isso nao anda.
       # Quem segura o abuso e' o PreferForwardCritic (abaixo): a re so' vence
