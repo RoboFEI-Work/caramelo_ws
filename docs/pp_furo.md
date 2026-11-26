@@ -90,3 +90,21 @@ Na parada 1 o `rad_mm` deve dar perto de +60 (o cubo ainda está 6 cm antes); na
   A pega do cubo torta na garra não é medida (o ponto do fundo do cubo é fixo).
 - Recalibrar `fundo_cubo_cam_mm` se a câmera ou a garra forem trocadas: com um place que
   entrou, é o centro do furo (frame da câmera) + 15 mm na normal do tampo, na parada final.
+
+## Furo pela borda (2026-11-26, PP da arena)
+
+A PP da arena tem o **fundo do furo claro** (não marrom), furo de ~46 mm e uma faixa de tampo
+de ~10 mm entre a tag e o furo: centro do furo a ~55 mm do centro da tag (no laboratório,
+45,8 mm), medido numa foto de celular. A máscara de cor dava `sem_furo` e escolhia a
+orientação ao acaso. `FuroCfg.metodo` (parâmetro `metodo` do `pp_furo_node`):
+
+- `cor`: só o método original (fundo marrom/escuro, furo colado na tag).
+- `borda`: quadrado de `borda_lado_mm` (42–52) alinhado à tag com o maior contraste nas
+  quatro bordas, miolo liso (`borda_interior_max`, para não achar o cubo, que tem tag em cima)
+  e borda do lado da tag além do quadrado preto + 4 mm. Inteiro só se a pior borda passar de
+  `borda_contraste_min` (8× o gradiente mediano; furos reais dão ≥ 20, falsos ≤ 4,4).
+- `auto` (padrão): `cor`; se ela não achar o furo inteiro, `borda`.
+
+Testes: `test/test_pp_furo.py` (foto da arena + não-regressão dos quadros do laboratório).
+**Falta validar com a D455 na arena.** Se o furo continuar sem medida, o palpite da 1ª parada
+é `pp_tag_ate_o_furo_m` do place (0,046; na arena ~0,055).

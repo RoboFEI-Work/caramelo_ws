@@ -52,6 +52,21 @@ class FuroCfg:
     fundo_cubo_cam_mm: tuple = (-13.25, -32.20, 131.78)
     # Angulo da tag na imagem (canto 0 -> canto 1) com as faces do cubo alinhadas.
     angulo_ref_graus: float = 180.0
+    # 2026-11-26 (PP da arena: fundo do furo CLARO, furo ~46-49 mm e ~10 mm
+    # SEPARADO da tag; a mascara de cor dava "sem_furo" e a orientacao saia
+    # aleatoria). metodo: "cor" (so' o de sempre), "borda" (so' o novo) ou
+    # "auto" (cor; se ela nao acha o furo INTEIRO, borda).
+    metodo: str = "auto"
+    # Busca pela borda: quadrado alinhado a' tag cujas 4 bordas tem o maior
+    # contraste (gradiente), qualquer que seja a cor do fundo.
+    borda_lado_mm: tuple = (42.0, 52.0)
+    borda_faixa_mm: float = 2.0        # espessura da faixa de cada borda
+    borda_contraste_min: float = 8.0   # pior borda / gradiente mediano da janela (furos reais: >= 20; falsos: <= 4,4)
+    borda_gap_tag_mm: float = 4.0      # o furo comeca pelo menos isto alem do quadrado preto
+    # Interior liso: o topo do cubo (tag colada) tem textura, o fundo do furo
+    # nao. Sem isto o CUBO era achado como furo nos quadros com o cubo por cima.
+    borda_interior_max: float = 1.5    # gradiente medio do miolo / mediano da janela
+    borda_miolo_mm: float = 5.0        # o miolo ignora esta faixa junto das bordas
 
 
 def homografia_tag(cantos, lado_mm):
@@ -85,7 +100,106 @@ def _orientar(cantos, bgr, cfg):
                           for k in range(4)]))
 
 
+def _quadrado_por_borda(ret, cfg):
+    """Melhor quadrado (alinhado a' tag) pelas bordas na vista retificada.
+
+    Devolve (score, pior_lado_rel, cx_px, cy_px, lado_px) ou None. score e
+    pior_lado_rel sao relativos ao gradiente mediano da janela (textura do tampo).
+    """
+    g = cv2.GaussianBlur(cv2.cvtColor(ret, cv2.COLOR_BGR2GRAY).astype(np.float32), (3, 3), 0)
+    gx = np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3))   # bordas verticais (esq./dir.)
+    gy = np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))   # bordas horizontais (cima/baixo)
+    fundo = float(np.median(gx + gy)) / 2.0 + 1.0
+    ix = cv2.integral(gx).astype(np.float64)
+    iy = cv2.integral(gy).astype(np.float64)
+    ig = cv2.integral((gx + gy) / 2.0).astype(np.float64)
+    m = int(round(cfg.borda_miolo_mm * cfg.px_mm))
+    h, w = g.shape
+    px = cfg.px_mm
+    b = max(1, int(round(cfg.borda_faixa_mm * px)))
+    x0, _x1, y0, _y1 = cfg.janela_mm
+    # A borda de baixo do furo (lado da tag) nao pode entrar na tag nem no
+    # contorno branco/azul dela: so' alem de lado_tag/2 + gap.
+    v_max = int(((-cfg.lado_tag_mm / 2.0 - cfg.borda_gap_tag_mm) - y0) * px)
+    melhor = None
+
+    def soma(ii, r0, r1, c0, c1):
+        # soma do retangulo [r0,r1) x [c0,c1) para arrays de r0/c0 (mesma forma)
+        return ii[r1, c1] - ii[r0, c1] - ii[r1, c0] + ii[r0, c0]
+
+    for lado_mm in np.arange(cfg.borda_lado_mm[0], cfg.borda_lado_mm[1] + 1e-6, 1.0):
+        s = int(round(lado_mm * px))
+        v_hi = min(h - b - 1, v_max) - s           # topo maximo (fundo do quadrado <= v_max)
+        u_hi = w - b - 1 - s
+        if v_hi <= b or u_hi <= b:
+            continue
+        vv, uu = np.mgrid[b:v_hi:2, b:u_hi:2]       # passo de 0,5 mm (4 px/mm): sobra na folga do furo
+        hb = b // 2
+        esq = soma(ix, vv, vv + s, uu - hb, uu - hb + b) / (s * b)
+        dirt = soma(ix, vv, vv + s, uu + s - hb, uu + s - hb + b) / (s * b)
+        cima = soma(iy, vv - hb, vv - hb + b, uu, uu + s) / (s * b)
+        baixo = soma(iy, vv + s - hb, vv + s - hb + b, uu, uu + s) / (s * b)
+        pior = np.minimum(np.minimum(esq, dirt), np.minimum(cima, baixo))
+        score = (esq + dirt + cima + baixo) / 4.0 + pior     # premia as 4 bordas juntas
+        miolo = soma(ig, vv + m, vv + s - m, uu + m, uu + s - m) / float((s - 2 * m) ** 2)
+        score = np.where(miolo <= cfg.borda_interior_max * fundo, score, -1.0)
+        # centro do furo perto do eixo da tag (|x| <= 25 mm, como no metodo da cor)
+        cx_mm = (uu + s / 2.0) / px + x0
+        score = np.where(np.abs(cx_mm) <= 25.0, score, -1.0)
+        i = int(np.argmax(score))
+        sc = float(score.flat[i])
+        if sc > 0.0 and (melhor is None or sc > melhor[0]):
+            r, c = np.unravel_index(i, score.shape)
+            melhor = (sc, float(pior[r, c]), uu[r, c] + s / 2.0, vv[r, c] + s / 2.0, float(s))
+    if melhor is None:
+        return None
+    sc, pior, cx, cy, s = melhor
+    return sc / fundo, pior / fundo, cx, cy, s
+
+
+def _medir_furo_borda(bgr, c0, cfg, giro_cantos):
+    """Furo pelas bordas (fundo de qualquer cor). Mesmo formato de saida do medir_furo."""
+    ks = range(4) if giro_cantos is None else [int(giro_cantos)]
+    melhor = None
+    for k in ks:
+        cantos = np.roll(c0, k, axis=0)
+        q = _quadrado_por_borda(_retificar(bgr, cantos, cfg), cfg)
+        if q is not None and (melhor is None or q[0] > melhor[1][0]):
+            melhor = (k, q, cantos)
+    out = {"ok": False, "motivo": "sem_furo", "completo": False,
+           "giro_cantos": 0 if giro_cantos is None else int(giro_cantos), "metodo": "borda"}
+    if melhor is None:
+        return out
+    k, (sc, pior, cx, cy, s), cantos = melhor
+    x0, _x1, y0, _y1 = cfg.janela_mm
+    cx_mm, cy_mm = cx / cfg.px_mm + x0, cy / cfg.px_mm + y0
+    lado = s / cfg.px_mm
+    completo = pior >= cfg.borda_contraste_min
+    p = homografia_tag(cantos, cfg.lado_tag_mm) @ np.array([cx_mm, cy_mm, 1.0])
+    out.update(ok=True, motivo="" if completo else "borda_fraca", completo=bool(completo),
+               giro_cantos=k, centro_mm=(float(cx_mm), float(cy_mm)), lado_mm=(lado, lado),
+               giro_graus=0.0, centro_px=(float(p[0] / p[2]), float(p[1] / p[2])),
+               contraste=(float(sc), float(pior)))
+    return out
+
+
 def medir_furo(bgr, cantos_tag, cfg: Optional[FuroCfg] = None, giro_cantos: Optional[int] = None):
+    """Furo do slot desta tag: pela cor, pela borda ou os dois (cfg.metodo)."""
+    cfg = cfg or FuroCfg()
+    c0 = np.asarray(cantos_tag, float).reshape(4, 2)
+    if cfg.metodo == "borda":
+        return _medir_furo_borda(bgr, c0, cfg, giro_cantos)
+    f = _medir_furo_cor(bgr, c0, cfg, giro_cantos)
+    if cfg.metodo == "auto" and not (f["ok"] and f["completo"]):
+        # Na cor a orientacao vem do "lado com mais marrom"; sem marrom ela e'
+        # aleatoria, entao a borda escolhe a sua (salvo se a memoria ja fixou).
+        fb = _medir_furo_borda(bgr, c0, cfg, giro_cantos)
+        if fb["ok"] and fb["completo"]:
+            return fb
+    return f
+
+
+def _medir_furo_cor(bgr, cantos_tag, cfg, giro_cantos):
     """Furo do slot desta tag, medido na vista retificada pela propria tag.
 
     Devolve dict com ok/motivo e, se ok:
@@ -94,14 +208,13 @@ def medir_furo(bgr, cantos_tag, cfg: Optional[FuroCfg] = None, giro_cantos: Opti
       completo          as 4 bordas sao do furo (nada tapando): so' entao o centro vale
       centro_px         centro na imagem          giro_cantos   ordem dos cantos usada
     """
-    cfg = cfg or FuroCfg()
     c0 = np.asarray(cantos_tag, float).reshape(4, 2)
     k = _orientar(c0, bgr, cfg) if giro_cantos is None else int(giro_cantos)
     cantos = np.roll(c0, k, axis=0)
     masc = _mascara(_retificar(bgr, cantos, cfg), cfg)
     n, lab, st, _ = cv2.connectedComponentsWithStats(masc, 8)
     x0, _x1, y0, y1 = cfg.janela_mm
-    out = {"ok": False, "motivo": "sem_furo", "completo": False, "giro_cantos": k}
+    out = {"ok": False, "motivo": "sem_furo", "completo": False, "giro_cantos": k, "metodo": "cor"}
     melhor = None
     for i in range(1, n):
         area = st[i, cv2.CC_STAT_AREA] / cfg.px_mm ** 2

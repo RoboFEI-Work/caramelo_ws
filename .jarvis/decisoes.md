@@ -148,6 +148,12 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - **Motivo**: operador acha que a gravacao (bag + Xvfb com RViz + ffmpeg + logs) e' um dos motivos do PC lento. Substitui o "ligado por padrao" das decisoes de 2026-11-11/13 (o resto delas vale quando gravar).
 - **Status**: vigente.
 
+## 2026-11-26 — PP: furo achado pela BORDA quando a cor falha (PP da arena)
+- **Decisao**: `pp_furo.FuroCfg.metodo` = `auto` (padrao): mascara de cor como antes; se ela nao achar o furo INTEIRO, quadrado 42-52 mm alinhado a' tag com o maior contraste nas 4 bordas, miolo liso e borda de baixo alem da tag + 4 mm, aceito so' com a pior borda >= 8x o gradiente mediano. `metodo:=cor` volta ao antigo.
+- **Motivo**: PP da arena com fundo claro e furo afastado da tag: a cor dava "sem_furo" nas 4 tags da foto e o place caia no palpite de 46 mm (curto ~9 mm). No lab o auto = cor em todos os quadros (1 melhor) e com o cubo por cima nunca aceita furo falso.
+- **Limite**: validado so' com foto de celular; falta a D455 na arena. ~140 ms/quadro a mais sem orientacao guardada.
+- **Status**: vigente, aguarda teste no robo.
+
 ## Regras de trabalho (vigentes, do operador)
 - Commits só quando pedidos; push manual.
 - Uma mudança por vez; "falhar em melhorar nunca pode piorar".

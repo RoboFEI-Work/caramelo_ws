@@ -92,3 +92,36 @@ def test_ordem_dos_cantos_nao_importa():
     for k in (1, 2, 3):
         f = F.medir_furo(bgr, np.roll(tags[104], k, axis=0))
         assert f["completo"] and np.allclose(f["centro_mm"], ref["centro_mm"], atol=0.05), (k, f)
+
+
+# 2026-11-26: PP da ARENA (foto de celular do operador): fundo do furo CLARO e
+# furo ~10 mm afastado da tag. A mascara de cor dava "sem_furo"; a busca pela
+# borda (metodo auto) tem de achar o furo inteiro alem da tag.
+ARENA = json.load(open(os.path.join(DADOS, "arena_foto_celular.json"), encoding="utf-8"))
+
+
+@pytest.mark.parametrize("tag", ["103", "104", "105", "106"])
+def test_arena_furo_claro_achado_pela_borda(tag):
+    bgr = cv2.imread(os.path.join(DADOS, "arena_foto_celular.png"))
+    cantos = np.array(ARENA["tags"][tag])
+    cor = F.medir_furo(bgr, cantos, F.FuroCfg(metodo="cor"))
+    assert not (cor["ok"] and cor["completo"])          # o problema da arena
+    f = F.medir_furo(bgr, cantos, F.FuroCfg())          # auto
+    assert f["ok"] and f["completo"] and f["metodo"] == "borda"
+    cx, cy = f["centro_mm"]
+    assert abs(cx) < 4.0 and -60.0 < cy < -52.0         # ~55 mm alem da tag (laboratorio: 45,8)
+    assert 44.0 <= f["lado_mm"][0] <= 52.0
+
+
+@pytest.mark.parametrize("nome", sorted(META))
+def test_auto_nunca_aceita_furo_que_a_cor_recusou_errado(nome):
+    """No laboratorio o auto so' pode concordar com a cor ou achar o furo no lugar certo."""
+    bgr, _m, tags = quadro(nome)
+    for _tid, cantos in tags.items():
+        cor = F.medir_furo(bgr, cantos, F.FuroCfg(metodo="cor"))
+        auto = F.medir_furo(bgr, cantos, F.FuroCfg())
+        if cor["ok"] and cor["completo"]:
+            assert auto == cor
+        elif auto["ok"] and auto["completo"]:
+            cx, cy = auto["centro_mm"]
+            assert abs(cx) < 2.0 and abs(cy - VETOR_104[1]) < 2.0 and auto["giro_cantos"] == 0

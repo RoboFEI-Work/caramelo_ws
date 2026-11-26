@@ -60,7 +60,12 @@ class PpFuro(Node):
         self.cfg = F.FuroCfg(
             lado_tag_mm=float(dp("lado_tag_mm", 31.8).value),
             fundo_cubo_cam_mm=tuple(dp("fundo_cubo_cam_mm", [-13.25, -32.20, 131.78]).value),
-            angulo_ref_graus=float(dp("angulo_ref_graus", 180.0).value))
+            angulo_ref_graus=float(dp("angulo_ref_graus", 180.0).value),
+            # 2026-11-26: furo pela borda (PP da arena: fundo claro, furo afastado da tag).
+            metodo=str(dp("metodo", "auto").value),
+            borda_lado_mm=tuple(dp("borda_lado_mm", [42.0, 52.0]).value),
+            borda_contraste_min=float(dp("borda_contraste_min", 8.0).value),
+            borda_interior_max=float(dp("borda_interior_max", 1.5).value))
         self.amostras = int(dp("amostras", 3).value)
         self.prazo_s = float(dp("prazo_s", 3.0).value)
         self.salvar_dir = os.path.expanduser(dp("salvar_dir", "~/.ros/pp_furo").value)

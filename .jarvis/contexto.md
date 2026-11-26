@@ -145,6 +145,7 @@ O que **não** está sendo preservado: respostas e decisões tomadas em conversa
 |---|---|
 | Runbook de competição, formato do YAML de missão | `docs/guia_missoes.md` |
 | Precision placement (PP) e pilha, fusão tag + buraco | `docs/place_precisao_e_pilha.md` (§3.1) |
+| PP da ARENA (2026-11-26, foto): tags 103-106, fundo do furo CLARO, furo ~46-48 mm, centro ~55 mm do centro da tag (lab: 45,8), ~10 mm de tampo entre tag e furo. Detector em uso: `manip_bringup/scripts/pp_furo.py` (metodo `auto`: cor -> borda) | `docs/pp_furo.md` (secao "Furo pela borda") |
 | Tuning do DWB e decisões de navegação de 07/11 | `docs/tuning_dwb_2026-11-07.md` |
 | Docking: diagnóstico e correções | `docs/diagnostico_docking_tour_2026-10-26.md`, `docs/docking_alinhamento_holonomico.md` |
 | Quadro de status dos itens de outubro | `docs/status_itens_2026-10-26.md` |
