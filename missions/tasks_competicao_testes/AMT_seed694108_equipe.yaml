@@ -1,0 +1,46 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: AMT — Advanced Manipulation Test | Duracao: 15 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = zona de empilhamento (uma WS, listada em stacking_areas):
+#                pilha sobre a tag de referencia, da BASE ao TOPO. Nesta prova
+#                essa mesa so recebe a pilha.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Cada objeto e' um ATTC: `id` = ID da AprilTag, `color` = cor do cubo (BLUE |
+# RED). Os IDs nao se repetem nesta task, entao nos estados o ID basta.
+# Containers nao tem AprilTag: o arquivo diz a cor e a workstation de cada um;
+# localizar o container sobre a mesa, pela cor, e' tarefa do robo.
+# AMT: o arranjo INICIAL da mesa de precisao nao e' informado (slots: null em
+# start_state). O robo deve ler as tags para descobrir em que slot cada objeto
+# esta e reorganizar conforme finish_state.
+task_id: AMT
+name: Advanced Manipulation Test
+duration_min: 15
+active_service_areas: [PP_1]
+objects:
+- {id: 1, color: RED}
+- {id: 2, color: RED}
+- {id: 3, color: RED}
+- {id: 4, color: RED}
+- {id: 5, color: RED}
+- {id: 6, color: BLUE}
+precision_tables:
+  PP_1:
+    slot_tags: [101, 102, 103, 104, 105, 106, 107]
+start_state:
+  PP_1:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: null
+finish_state:
+  PP_1:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: null}

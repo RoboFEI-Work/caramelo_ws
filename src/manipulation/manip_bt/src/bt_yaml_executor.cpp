@@ -931,7 +931,7 @@ std::string buildTreeXmlFromActions(
           }
         } else if (order_node && order_node.IsScalar()) {
           for (const int id :
-            manip_bt::Amt1SortBT::parseExpectedTags(order_node.as<std::string>()))
+            manip_bt::Amt1SortBT::parseTargetOrder(order_node.as<std::string>()))
           {
             target_order.push_back(id);
           }
@@ -947,8 +947,17 @@ std::string buildTreeXmlFromActions(
         throw std::runtime_error(
                 "actions[" + std::to_string(i) + "] amt1_sort target_order: " + what);
       }
+      // 2026-11-26 (operador: "na AMT o slot vazio pode ser em qualquer
+      // lugar"): -1 = slot vazio naquela posicao; pode repetir e nao conta
+      // na permutacao.
       std::string target_csv;
+      std::size_t target_ids = 0;
       for (std::size_t k = 0; k < target_order.size(); ++k) {
+        if (target_order[k] == -1) {
+          target_csv += (k == 0 ? "" : ",") + std::string("-1");
+          continue;
+        }
+        ++target_ids;
         if (std::find(target_order.begin(), target_order.begin() + k, target_order[k]) !=
           target_order.begin() + k)
         {
@@ -966,10 +975,10 @@ std::string buildTreeXmlFromActions(
         }
         target_csv += (k == 0 ? "" : ",") + std::to_string(target_order[k]);
       }
-      if (!target_order.empty() && target_order.size() != expected_tags.size()) {
+      if (!target_order.empty() && target_ids != expected_tags.size()) {
         throw std::runtime_error(
                 "actions[" + std::to_string(i) + "] amt1_sort target_order (" +
-                std::to_string(target_order.size()) + " ids) nao e permutacao de expected_tags (" +
+                std::to_string(target_ids) + " ids) nao e permutacao de expected_tags (" +
                 std::to_string(expected_tags.size()) + " ids).");
       }
 

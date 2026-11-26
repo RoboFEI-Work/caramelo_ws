@@ -1632,7 +1632,7 @@ Amt1Station resolveAmt1Station(
 
 /// AMT (formato 2026): alvo explicito por slot. finish_state.<PP>.slots
 /// {tag: id|null} lido na ordem de precision_tables.<PP>.slot_tags (esquerda
-/// -> direita), nulls pulados -> target_order. Vazio quando o yaml nao traz
+/// -> direita), null vira -1 (slot vazio NA POSICAO dele, 2026-11-26) -> target_order. Vazio quando o yaml nao traz
 /// `slots` como mapa (formatos antigos: ordem crescente). Valida que o alvo
 /// e' exatamente o conjunto de expected_tags.
 std::vector<int> deriveAmtTargetOrder(const YAML::Node & root, const Amt1Station & station)
@@ -1680,15 +1680,23 @@ std::vector<int> deriveAmtTargetOrder(const YAML::Node & root, const Amt1Station
               station.ws + ".slot_tags");
     }
   }
+  // 2026-11-26 (operador: "na AMT o slot vazio pode ser em qualquer lugar e
+  // ele tem que seguir a sequencia que vem no arquivo"): um item POR SLOT, -1
+  // = slot vazio. Antes o null era pulado e a lista encolhia: a AMT punha o
+  // i-esimo id no i-esimo slot e o vazio caia sempre no ULTIMO slot.
   for (const int tag : slot_tags) {
     const auto it = id_by_tag.find(tag);
-    if (it != id_by_tag.end()) {
-      order.push_back(it->second);
-    }
+    order.push_back(it != id_by_tag.end() ? it->second : -1);
+  }
+  while (!order.empty() && order.back() == -1) {
+    order.pop_back();   // vazios no fim nao mudam nada (e o yaml fica igual ao de antes)
   }
 
   const std::set<int> expected(station.expected_tags.begin(), station.expected_tags.end());
   for (const int id : order) {
+    if (id == -1) {
+      continue;
+    }
     if (expected.count(id) == 0) {
       throw std::runtime_error(
               where + ": objeto " + std::to_string(id) + " nao esta em start_state." +

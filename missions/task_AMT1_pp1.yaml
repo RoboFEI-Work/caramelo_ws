@@ -10,13 +10,13 @@
 # A rotina inteira (observar, planejar os ciclos, picks/places nos slots,
 # nudge da base) roda no amt1_sort_action_node (/amt1_sort).
 # Os objetos comecam e terminam na MESMA estacao (nada e' transportado); a
-# PP_1 PRECISA estar em active_service_areas. Detalhes: docs/guia_missoes.md, secao 3.6.
+# A PP (area "PP" no formato 2026) PRECISA estar em active_service_areas. Detalhes: docs/guia_missoes.md, secao 3.6.
 
 schema_version: 1
 task_id: AMT1
 name: Advanced Manipulation Task 1
 duration_min: 10
-active_service_areas: [PP_1]
+active_service_areas: [PP]   # 2026-11-26: formato 2026 usa a area "PP" (com PP_1 o planner recusava)
 
 objects:
   - {id: 01, type: ATTC}

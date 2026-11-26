@@ -214,9 +214,13 @@ def completar(estado, esperados, slot_ids):
 
 
 def alvo_por_ordem(slot_ids, ordem, direcao="left_to_right"):
-    """{slot: cubo}: ordem[i] no i-esimo slot, da esquerda para a direita (ou ao contrario)."""
+    """{slot: cubo}: ordem[i] no i-esimo slot, da esquerda para a direita (ou ao contrario).
+
+    2026-11-26 (operador: o slot vazio pode ser em qualquer lugar): ordem[i] < 0
+    = slot i VAZIO no alvo (o task_planner manda -1 no lugar do null do arquivo);
+    esse slot fica fora do alvo e nenhum cubo e' posto nele."""
     fila = list(slot_ids) if direcao != "right_to_left" else list(reversed(slot_ids))
-    return {s: c for s, c in zip(fila, ordem)}
+    return {s: c for s, c in zip(fila, ordem) if c is not None and c >= 0}
 
 
 def planejar(estado, alvo, a_bordo=(), capacidade=3):

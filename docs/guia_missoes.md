@@ -417,7 +417,10 @@ Mais regras do formato:
   referência da pilha) estão em `tags_36h11.yaml`; id sem frame é **erro** do planner.
 - **AMT**: `task_id: AMT` / `name: Advanced Manipulation Test` → `goto PP` + `amt1_sort` com os ids do
   arquivo (`expected_tags`) e a ordem pedida (`target_order`, de `finish_state.PP.slots`; nos
-  arquivos da competição é a ordem crescente). Ver §3.6.
+  arquivos da competição é a ordem crescente). Um item **por slot**, na ordem de
+  `precision_tables.PP.slot_tags`: o `null` vira **`-1` na posição dele** (desde 2026-11-26), então
+  o slot vazio pode estar em qualquer lugar (ex. `{101: 1, 102: 2, 103: null, ...}` → `[1, 2, -1, 3, …]`);
+  `-1` no fim é cortado. Antes o `null` era pulado e o vazio caía sempre no último slot. Ver §3.6.
 - Mesmo objeto em outro nível da prateleira (mesma estação) também é pick + place. Objeto só no `start_state` vira aviso (não é pego); só no `finish_state`
   é erro.
 

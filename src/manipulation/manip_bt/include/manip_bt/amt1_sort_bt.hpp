@@ -24,7 +24,8 @@ namespace manip_bt
 //
 // Portas: ws, table_pose, expected_tags (string "1,2,3" -> int32[]),
 // target_order (string "3,1,2" -> int32[]; alvo explicito esquerda ->
-// direita do formato 2026, vazio = ordem crescente de id), direction
+// direita do formato 2026, um item POR SLOT com -1 = slot vazio desde
+// 2026-11-26; vazio = ordem crescente de id), direction
 // (left_to_right | right_to_left), max_onboard (int, 0..3; 0 = todos os
 // containers vazios), timeout (prazo total, s, default 1800) e
 // stage_timeout (silencio maximo de feedback, s, default 300).
@@ -58,6 +59,9 @@ public:
   // "1,2,3" / "1 2 3" / "[1, 2, 3]" -> {1,2,3}. Lanca std::runtime_error em
   // token invalido, id negativo ou id repetido. Vazio -> lista vazia.
   static std::vector<int32_t> parseExpectedTags(const std::string & text);
+  /// 2026-11-26: target_order aceita -1 = SLOT VAZIO naquela posicao (pode
+  /// repetir); os demais ids seguem as regras de expected_tags.
+  static std::vector<int32_t> parseTargetOrder(const std::string & text);
 
 private:
   enum class Poll { kPending, kRejected, kFinished };

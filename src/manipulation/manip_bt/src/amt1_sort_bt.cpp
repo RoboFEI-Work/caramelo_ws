@@ -65,6 +65,39 @@ BT::PortsList Amt1SortBT::providedPorts()
   };
 }
 
+std::vector<int32_t> Amt1SortBT::parseTargetOrder(const std::string & text)
+{
+  // -1 (slot vazio) sai antes do parser de ids e volta na mesma posicao.
+  std::vector<int32_t> out;
+  std::string token;
+  std::string ids_text;
+  std::vector<bool> vazio;
+  const auto flush = [&]() {
+      if (token.empty()) {
+        return;
+      }
+      vazio.push_back(token == "-1");
+      if (token != "-1") {
+        ids_text += token + ",";
+      }
+      token.clear();
+    };
+  for (const char c : text) {
+    if (c == ',' || c == ';' || c == ' ' || c == '\t' || c == '[' || c == ']') {
+      flush();
+    } else {
+      token += c;
+    }
+  }
+  flush();
+  const std::vector<int32_t> ids = parseExpectedTags(ids_text);
+  std::size_t k = 0;
+  for (const bool v : vazio) {
+    out.push_back(v ? -1 : ids[k++]);
+  }
+  return out;
+}
+
 std::vector<int32_t> Amt1SortBT::parseExpectedTags(const std::string & text)
 {
   std::vector<int32_t> ids;
@@ -217,14 +250,15 @@ BT::NodeStatus Amt1SortBT::onStart()
   getInput("target_order", target_text);
   std::vector<int32_t> target_order;
   try {
-    target_order = parseExpectedTags(target_text);
+    target_order = parseTargetOrder(target_text);
   } catch (const std::exception & ex) {
     RCLCPP_ERROR(logger(), "%s target_order: %s", tag().c_str(), ex.what());
     return BT::NodeStatus::FAILURE;
   }
   if (!target_order.empty() && !expected_tags.empty()) {
     const std::set<int32_t> expected_set(expected_tags.begin(), expected_tags.end());
-    const std::set<int32_t> target_set(target_order.begin(), target_order.end());
+    std::set<int32_t> target_set(target_order.begin(), target_order.end());
+    target_set.erase(-1);   // slot vazio (2026-11-26)
     if (expected_set != target_set) {
       RCLCPP_ERROR(
         logger(), "%s target_order [%s] nao e permutacao de expected_tags [%s].",

@@ -338,7 +338,23 @@ def test_amt_custom_slot_order(planner, tmp_path):
     task.write_text(custom, encoding="utf-8")
     rc, log, actions = _run(planner, task, tmp_path)
     assert rc == 0, log
-    assert actions[1]["target_order"] == [6, 1, 4, 2, 5, 3], actions
+    # 2026-11-26: o null do 101 fica NA POSICAO (-1); antes a lista encolhia
+    # para [6, 1, 4, 2, 5, 3] e a AMT punha o 6 no 101.
+    assert actions[1]["target_order"] == [-1, 6, 1, 4, 2, 5, 3], actions
+
+
+def test_amt_slot_vazio_no_meio(planner, tmp_path):
+    """2026-11-26 (operador): o slot vazio pode estar em qualquer lugar do arquivo."""
+    src = (FIXTURES / "AMT_seed164474_equipe.yaml").read_text(encoding="utf-8")
+    custom = src.replace(
+        "slots: {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: null}",
+        "slots: {101: 1, 102: 2, 103: null, 104: 3, 105: 4, 106: 5, 107: 6}")
+    assert custom != src
+    task = tmp_path / "amt_meio.yaml"
+    task.write_text(custom, encoding="utf-8")
+    rc, log, actions = _run(planner, task, tmp_path)
+    assert rc == 0, log
+    assert actions[1]["target_order"] == [1, 2, -1, 3, 4, 5, 6], actions
 
 
 def test_final(planner, tmp_path):
@@ -576,17 +592,17 @@ def test_optimized_keeps_initial_stack_order(planner, tmp_path, case):
     assert _simulate_stacks(actions, start_stacks) == expected, actions
 
 
-def test_old_amt1_mission_has_no_target_order(planner, tmp_path):
-    """missions/task_AMT1_pp1.yaml (formato antigo): amt1_sort sem target_order."""
+def test_amt1_mission_file(planner, tmp_path):
+    """missions/task_AMT1_pp1.yaml (formato 2026 desde o commit 0dd0298): alvo por slot."""
     mission = WS_ROOT / "missions" / "task_AMT1_pp1.yaml"
     if not mission.is_file():
         pytest.skip(f"{mission} ausente")
     rc, log, actions = _run(planner, mission, tmp_path)
     assert rc == 0, log
     assert [a["kind"] for a in actions] == ["goto", "amt1_sort"], actions
-    assert "target_order" not in actions[1], actions
     assert actions[1]["expected_tags"] == [1, 2, 3, 4, 5, 6], actions
-    assert "AMT1: ordenar 6 tags na PP_1 (Mesa10, left_to_right, max 3 a bordo)" in log, log
+    # 107 null no fim: -1 do fim e' cortado (mesmo alvo de antes)
+    assert actions[1]["target_order"] == [1, 2, 3, 4, 5, 6], actions
 
 
 def test_cor_no_type_nao_manda_para_container(planner, tmp_path):

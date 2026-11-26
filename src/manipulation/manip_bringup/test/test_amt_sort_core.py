@@ -5,6 +5,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import amt_sort_core as A  # noqa: E402
@@ -194,3 +195,19 @@ def test_eliminacao_so_com_todos_os_blocos_localizados():
     est = {101: 5, 102: 2, 103: 6, 104: 1, 105: 4, 106: 3}
     assert A.completar(est, [1, 2, 3, 4, 5, 6], SLOTS)[107] is None
     assert 107 not in A.completar({101: 5}, [5, 9], SLOTS)  # falta o 9: nao conclui nada
+
+
+# 2026-11-26 (operador): o slot vazio do arquivo pode estar em qualquer lugar;
+# o task_planner manda -1 na posicao dele.
+@pytest.mark.parametrize("ordem,estado", [
+    ([1, 2, -1, 3, 4, 5, 6], {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: None}),
+    ([-1, 6, 5, 4, 3, 2, 1], {101: 3, 102: None, 103: 1, 104: 6, 105: 2, 106: 5, 107: 4}),
+    ([1, 2, 3, 4, 5, 6, -1], {101: 6, 102: 5, 103: None, 104: 3, 105: 2, 106: 1, 107: 4}),
+])
+def test_slot_vazio_em_qualquer_posicao(ordem, estado):
+    slots = [101, 102, 103, 104, 105, 106, 107]
+    alvo = A.alvo_por_ordem(slots, ordem)
+    ops, sobra = A.planejar(estado, alvo, capacidade=3)
+    fim, bordo = A.simular(estado, ops)
+    assert not sobra and not bordo
+    assert fim == {s: (c if c >= 0 else None) for s, c in zip(slots, ordem)}
