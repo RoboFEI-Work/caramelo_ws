@@ -30,7 +30,7 @@
 workstation_surface:
   ros__parameters:
     # --- ativacao / custo ---
-    rate_hz: 3.0
+    rate_hz: 5.0                   # 2026-11-26: 3 -> 5 (velocidade; so' processa durante a olhada do place)
     always_on: false               # true = processa sempre (calibracao); false = so na observacao do place
     image_topic: /camera/camera/color/image_raw
     camera_info_topic: /camera/camera/color/camera_info

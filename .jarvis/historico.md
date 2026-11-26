@@ -576,3 +576,9 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: "caso ele nao veja a tag de referencia quer dizer que a tag esta em cima da de referencia, entao precisa fazer o ajuste"; "so' faz o ajuste caso a tag esteja 6mm de diferenca, mude para que quase sempre faca".
 - CORRECAO DO OPERADOR (recado deixado no comentario do codigo): o "threshold pro toque" do pedido anterior era a tolerancia do ajuste, nao o torque da garra (T59 foi interpretacao errada; o operador ja' voltou grasp_min_effort para 0.15/0.05). "Ele poe a tag torta e nao esta corrigindo".
 - Feito (ppAjustarCubo): sem a tag do slot usa tag_p/fora guardados no placeOnPpSlot e forca o empurrao no eixo da tag; sem as duas tags supoe o cubo sobre a tag do slot (erro +55 mm); tolerancia 0.001. Comentario com o recado limpo. Build ok; nao testado; sem commit.
+
+## 2026-11-26 — Mais velocidade: braco, lugar livre e docking (T63)
+- Pedido: "voltar na velocidade de movimento do manip/dock/deteccao de espaco livre pro place" (sem o endireitar cubo girado).
+- Achado (log de pick de 17/11 deste PC): ~1,75 s parado entre movimentos; o "assentou" sempre ~885 ms porque getCurrentJointValues/getCurrentState exigem amostra com carimbo mais novo que o relogio do PC e o da Pi estava 0,43 s atrasado.
+- Feito: JointStateCache (hora de chegada) em arm_settle.hpp, usado no settle e nas checagens de estado de pick/place (armStateAvailable/currentArmJoints); esperas fixas reduzidas (ver T63 no estado). gtest test_arm_settle_cache novo.
+- Nao resolvido por codigo: a espera do proprio move_group ao planejar (~0,45 s com o relogio fora). So' acertar o relogio PC<->Pi tira.

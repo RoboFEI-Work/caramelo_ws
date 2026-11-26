@@ -410,6 +410,7 @@ public:
         // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
+        joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
         // 2026-08-31 (pedido do operador: apos os picks falharem no robo,
         // "volte as mudancas da IK"): apontar a j1 pela TF velha e o
         // alinhamento so-j1 voltam DESLIGADOS por default — o fluxo de pega
@@ -525,7 +526,7 @@ public:
         grasp_effort_sample_duration_ =
             this->declare_parameter<double>(
                 "grasp_effort_sample_duration",
-                0.8);
+                0.4);   // 2026-11-26: 0,8 -> 0,4 s (vazia ~0,01, cheia ~0,85 Nm: separa com folga)
         grasp_effort_max_age_ =
             this->declare_parameter<double>("grasp_effort_max_age", 0.4);
         grasp_retry_attempts_ =
@@ -1592,7 +1593,7 @@ private:
             // move_group. Espera o grupo PARAR (ver arm_settle.hpp).
             manip_task_execution::settleAfterMove(
                 *iface, settle_params_, this->get_logger(), label,
-                [this]() { return cancellationRequested(); });
+                [this]() { return cancellationRequested(); }, joint_cache_.get());
         }
         return ok;
     }
@@ -2060,6 +2061,29 @@ private:
         return ok;
     }
 
+    // 2026-11-26 (velocidade entre movimentos): estado do braco pela HORA DE
+    // CHEGADA do joint_states (JointStateCache, arm_settle.hpp), sem esperar
+    // uma amostra com carimbo mais novo que o relogio do PC (com o relogio da
+    // Pi atrasado, cada getCurrentState(2.0) custava o atraso, ~0,43 s).
+    // Amostra velha (> 0,1 s) => o metodo antigo do MoveGroupInterface.
+    bool armStateAvailable(const std::shared_ptr<MoveGroupInterface> & arm)
+    {
+        std::vector<double> v;
+        if (joint_cache_ && joint_cache_->read(arm->getJointNames(), 0.1, v)) {
+            return true;
+        }
+        return static_cast<bool>(arm->getCurrentState(2.0));
+    }
+
+    std::vector<double> currentArmJoints(const std::shared_ptr<MoveGroupInterface> & arm)
+    {
+        std::vector<double> v;
+        if (joint_cache_ && joint_cache_->read(arm->getJointNames(), 0.1, v)) {
+            return v;
+        }
+        return arm->getCurrentJointValues();
+    }
+
     /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
     /// pelo MoveIt — mantem checagem de colisao, deadlines e retries.
     bool moveToJointTarget(
@@ -2070,7 +2094,7 @@ private:
         if (cancellationRequested()) {
             return false;
         }
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_ERROR(
                 this->get_logger(),
                 "Sem estado atual do braco antes de '%s'.", label.c_str());
@@ -2106,6 +2130,7 @@ private:
     bool recompute_ik_after_j1_{true};
     int recompute_ik_settle_ms_{300};
     manip_task_execution::ArmSettleParams settle_params_;
+    std::unique_ptr<manip_task_execution::JointStateCache> joint_cache_;
     std::string start_gripper_pose_;
     bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
     double lift_after_grasp_m_{0.05};
@@ -2127,11 +2152,11 @@ private:
         const std::array<double, 5> & q,
         const std::string & label)
     {
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_WARN(this->get_logger(), "[%s] sem estado atual - movimento unico.", label.c_str());
             return moveToJointTarget(arm, q, label);
         }
-        const std::vector<double> cur = arm->getCurrentJointValues();
+        const std::vector<double> cur = currentArmJoints(arm);
         if (cur.size() < 5) {
             return moveToJointTarget(arm, q, label);
         }
@@ -2150,11 +2175,11 @@ private:
         const std::array<double, 5> & q,
         const std::string & label)
     {
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_WARN(this->get_logger(), "[%s] sem estado atual - movimento unico.", label.c_str());
             return moveToJointTarget(arm, q, label);
         }
-        const std::vector<double> cur = arm->getCurrentJointValues();
+        const std::vector<double> cur = currentArmJoints(arm);
         if (cur.size() < 5) {
             return moveToJointTarget(arm, q, label);
         }
@@ -2839,7 +2864,7 @@ private:
         // Guarda de estado (auditoria 2026-08-07, item 2.8c): getCurrentPose
         // abaixo devolve IDENTIDADE em silencio sem estado atual — melhor
         // falhar explicito aqui do que planejar para um alvo corrompido.
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_ERROR_STREAM(
                 this->get_logger(),
                 "Sem estado atual do braco em moveToTarget (" << label
@@ -2915,7 +2940,7 @@ private:
             // estado atual; sem ele o fluxo ficava pendurado INDEFINIDAMENTE
             // (visto: 6 min mudo apos "Failed to fetch current robot state").
             // Sem estado em 2 s -> falha limpa e o ladder de retry/skip segue.
-            if (!arm->getCurrentState(2.0)) {
+            if (!armStateAvailable(arm)) {
                 RCLCPP_ERROR_STREAM(
                     this->get_logger(),
                     "Sem estado atual do braco para IK aproximada em " << label

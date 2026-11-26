@@ -177,6 +177,12 @@ if(BUILD_TESTING)
   # pilha (classificacao, giro de 90, espiral, assentamento, nivel, decisao).
   ament_add_gtest(test_place_precision test/test_place_precision.cpp TIMEOUT 60)
   target_link_libraries(test_place_precision place_precision)
+  # 2026-11-26: espera de "braco assentou" pela hora de chegada (arm_settle.hpp).
+  ament_add_gtest(test_arm_settle_cache test/test_arm_settle_cache.cpp TIMEOUT 60)
+  target_include_directories(test_arm_settle_cache PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  ament_target_dependencies(test_arm_settle_cache
+    "moveit_ros_planning_interface" "rclcpp" "sensor_msgs")
 endif()
 
 ament_package()

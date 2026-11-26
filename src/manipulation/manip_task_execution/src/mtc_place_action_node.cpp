@@ -101,6 +101,7 @@ public:
         // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
+        joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
 
         const auto default_container_state_file = getDefaultContainerStatePath();
         container_state_file_ = this->declare_parameter<std::string>(
@@ -157,7 +158,9 @@ public:
         // Tempo entre o braco chegar e a primeira leitura valer: cobre o
         // assentamento mecanico e a latencia de exposicao da camera. Era 300 ms
         // fixos na re-deteccao do TCP2 — curto para 15 fps.
-        stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 600);
+        // 2026-11-26 (operador: mais velocidade): 600 -> 300 ms (paradas da PP/pilha); o arm_settle ja' espera o
+        // braco parar e as leituras exigem quadro de depois da parada.
+        stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 300);
         // 2026-11-03 (pedido do operador): EMPILHAR olhando a base ANTES de
         // pegar o bloco no container de bordo (garra vazia, nada na frente da
         // camera) e, logo depois de pegar, empilhar direto por essa leitura.
@@ -415,7 +418,7 @@ public:
                 "grasp_min_effort_increase_nm", 0.05);
         grasp_effort_sample_duration_ =
             this->declare_parameter<double>(
-                "grasp_effort_sample_duration", 0.8);
+                "grasp_effort_sample_duration", 0.4);   // 2026-11-26: 0,8 -> 0,4 s (vazia ~0,01, cheia ~0,85 Nm)
         grasp_effort_max_age_ =
             this->declare_parameter<double>("grasp_effort_max_age", 0.4);
         dynamic_joint_state_subscription_ =
@@ -511,7 +514,8 @@ public:
                 "ct_10", "ct_11", "ct_12", "ct_13", "ct_14", "ct_15", "ct_16",
                 "tag_20", "tag_21", "tag_22", "tag_23", "tag_24", "tag_25",
                 "tag_26", "tag_27", "tag_28", "tag_42"});
-        this->declare_parameter<double>("slot_observe_dwell_sec", 1.0);
+        // 2026-11-26 (operador: mais velocidade): 1,0 -> 0,5 s de leitura das tags na mesa.
+        this->declare_parameter<double>("slot_observe_dwell_sec", 0.5);
         this->declare_parameter<double>("slot_observe_max_dz_m", 0.15);
         this->declare_parameter<double>("slot_observe_min_radial_m", 0.10);
         // 0.07 centro a centro = 2,8 cm de vao entre cubos de 42 mm (o padrao
@@ -567,7 +571,9 @@ public:
             "surface_observe_poses",
             std::vector<std::string>{"pegar_obj", "tag_direita", "tag_esquerda"});
         this->declare_parameter<bool>("surface_observe_lazy", true);
-        this->declare_parameter<int>("surface_observe_settle_ms", 600);
+        // 2026-11-26 (operador: mais velocidade): 600 -> 300 ms; o braco ja' esperou PARAR (arm_settle) e as
+        // grades/tags so' valem se forem de depois da parada.
+        this->declare_parameter<int>("surface_observe_settle_ms", 300);
         this->declare_parameter<double>("surface_observe_timeout_sec", 5.0);
         this->declare_parameter<int>("surface_min_frames", 2);
         this->declare_parameter<std::string>(
@@ -742,7 +748,7 @@ private:
     std::vector<std::string> slot_selection_ws_prefixes_;
     std::vector<std::string> slot_excluded_poses_;
     std::vector<std::string> slot_obstacle_tag_frames_;
-    double slot_observe_dwell_sec_{1.0};
+    double slot_observe_dwell_sec_{0.5};
     double slot_observe_max_dz_m_{0.15};
     double slot_observe_min_radial_m_{0.10};
     double slot_min_clearance_m_{0.07};
@@ -810,7 +816,7 @@ private:
     int stack_tag_samples_{5};
     int stack_tag_dwell_ms_{700};
     double stack_tag_max_spread_m_{0.02};
-    int stack_settle_ms_{600};
+    int stack_settle_ms_{300};
     // Base da pilha lida de garra vazia antes do container (2026-11-03).
     bool stack_observe_before_pick_{true};
     bool stack_pre_observe_tcp2_{true};
@@ -930,7 +936,7 @@ private:
     bool surface_place_enabled_{true};
     std::vector<std::string> surface_observe_poses_;
     bool surface_observe_lazy_{true};
-    int surface_observe_settle_ms_{600};
+    int surface_observe_settle_ms_{300};
     double surface_observe_timeout_sec_{5.0};
     int surface_min_frames_{2};
     std::string surface_grid_topic_;
@@ -1514,7 +1520,7 @@ private:
             // move_group. Espera o grupo PARAR (ver arm_settle.hpp).
             manip_task_execution::settleAfterMove(
                 *iface, settle_params_, this->get_logger(), label,
-                [this]() { return cancellationRequested(); });
+                [this]() { return cancellationRequested(); }, joint_cache_.get());
         }
         return ok;
     }
@@ -1550,6 +1556,29 @@ private:
         return true;
     }
 
+    // 2026-11-26 (velocidade entre movimentos): estado do braco pela HORA DE
+    // CHEGADA do joint_states (JointStateCache, arm_settle.hpp), sem esperar
+    // uma amostra com carimbo mais novo que o relogio do PC (com o relogio da
+    // Pi atrasado, cada getCurrentState(2.0) custava o atraso, ~0,43 s).
+    // Amostra velha (> 0,1 s) => o metodo antigo do MoveGroupInterface.
+    bool armStateAvailable(const std::shared_ptr<MoveGroupInterface> & arm)
+    {
+        std::vector<double> v;
+        if (joint_cache_ && joint_cache_->read(arm->getJointNames(), 0.1, v)) {
+            return true;
+        }
+        return static_cast<bool>(arm->getCurrentState(2.0));
+    }
+
+    std::vector<double> currentArmJoints(const std::shared_ptr<MoveGroupInterface> & arm)
+    {
+        std::vector<double> v;
+        if (joint_cache_ && joint_cache_->read(arm->getJointNames(), 0.1, v)) {
+            return v;
+        }
+        return arm->getCurrentJointValues();
+    }
+
     /// Move o braco para um alvo em espaco de juntas (5 valores) planejando
     /// pelo MoveIt — mantem checagem de colisao, deadlines e retries.
     /// Espelho do moveToJointTarget validado no no de pick (2026-08-17).
@@ -1561,7 +1590,7 @@ private:
         if (cancellationRequested()) {
             return false;
         }
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_ERROR(
                 this->get_logger(),
                 "Sem estado atual do braco antes de '%s'.", label.c_str());
@@ -1737,6 +1766,7 @@ private:
     /// Carimbo no futuro alem disto = relogio da camera fora de sincronia: leitura recusada.
     static constexpr double kMinTagAgeSec = -0.15;
     manip_task_execution::ArmSettleParams settle_params_;
+    std::unique_ptr<manip_task_execution::JointStateCache> joint_cache_;
 
     /// Leitura da tag por MEDIANA de varias deteccoes (2026-09-14).
     ///
@@ -2077,11 +2107,11 @@ private:
         const std::array<double, 5> & q,
         const std::string & label)
     {
-        if (!arm->getCurrentState(2.0)) {
+        if (!armStateAvailable(arm)) {
             RCLCPP_WARN(get_logger(), "[%s] sem estado atual — movimento unico.", label.c_str());
             return moveToJointTarget(arm, q, label);
         }
-        const std::vector<double> cur = arm->getCurrentJointValues();
+        const std::vector<double> cur = currentArmJoints(arm);
         if (cur.size() < 5) {
             RCLCPP_WARN(get_logger(), "[%s] estado atual incompleto — movimento unico.", label.c_str());
             return moveToJointTarget(arm, q, label);
