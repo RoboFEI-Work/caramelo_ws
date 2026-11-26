@@ -211,3 +211,16 @@ def test_slot_vazio_em_qualquer_posicao(ordem, estado):
     fim, bordo = A.simular(estado, ops)
     assert not sobra and not bordo
     assert fim == {s: (c if c >= 0 else None) for s, c in zip(slots, ordem)}
+
+
+def test_comeca_com_cubo_no_slot_7():
+    """2026-11-26 (operador): pode comecar com bloco no 107, que tem de sair dali."""
+    slots = [101, 102, 103, 104, 105, 106, 107]
+    alvo = A.alvo_por_ordem(slots, [1, 2, 3, 4, 5, 6])
+    for vazio in slots[:-1]:
+        for perm in itertools.islice(itertools.permutations([1, 2, 3, 4, 5, 6]), 0, 720, 37):
+            estado = {s: None for s in slots}
+            estado.update(dict(zip([s for s in slots if s != vazio], perm)))
+            ops, sobra = A.planejar(estado, alvo, capacidade=3)
+            fim, bordo = A.simular(estado, ops)
+            assert not sobra and not bordo and fim == {**alvo, 107: None}, (estado, ops)

@@ -125,3 +125,27 @@ def test_auto_nunca_aceita_furo_que_a_cor_recusou_errado(nome):
         elif auto["ok"] and auto["completo"]:
             cx, cy = auto["centro_mm"]
             assert abs(cx) < 2.0 and abs(cy - VETOR_104[1]) < 2.0 and auto["giro_cantos"] == 0
+
+
+# 2026-11-26: trava pela geometria (sombra/cubo podem gerar leitura falsa).
+def test_trava_nominal_descarta_leitura_longe_e_usa_o_nominal():
+    bgr = cv2.imread(os.path.join(DADOS, "arena_foto_celular.png"))
+    cantos = np.array(ARENA["tags"]["104"])
+    k = np.eye(3) * 400.0
+    k[2, 2] = 1.0
+    k[0, 2], k[1, 2] = bgr.shape[1] / 2.0, bgr.shape[0] / 2.0
+    # nominal certo: a leitura (~ -54,5) entra na memoria
+    mem = F.Memoria()
+    r = F.medir(bgr, k, cantos, 0.0, mem, F.FuroCfg(vetor_nominal_mm=(0.0, -55.0)))
+    assert r["furo"] == "visto" and not mem.nominal and abs(mem.vetor_mm[1] + 55.0) < 3.0
+    # nominal 15 mm longe: a leitura e' descartada e vale o nominal
+    mem = F.Memoria()
+    r = F.medir(bgr, k, cantos, 0.0, mem, F.FuroCfg(vetor_nominal_mm=(0.0, -40.0)))
+    assert r["furo"] == "nominal" and r["descartado_mm"] > 6.0
+    assert mem.nominal and mem.vetor_mm == (0.0, -40.0) and r["ok"]
+    r2 = F.medir(bgr, k, cantos, 0.0, mem, F.FuroCfg(vetor_nominal_mm=(0.0, -40.0)))
+    assert r2["furo"] == "nominal"
+
+
+def test_sem_trava_comportamento_de_antes():
+    assert F.FuroCfg().vetor_nominal_mm is None

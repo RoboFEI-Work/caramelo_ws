@@ -67,6 +67,13 @@ class FuroCfg:
     # nao. Sem isto o CUBO era achado como furo nos quadros com o cubo por cima.
     borda_interior_max: float = 1.5    # gradiente medio do miolo / mediano da janela
     borda_miolo_mm: float = 5.0        # o miolo ignora esta faixa junto das bordas
+    # 2026-11-26 (operador: "ainda esta colocando mal o bloco, minha teoria e' que
+    # a sombra impacta na leitura do buraco"): trava pela GEOMETRIA da mesa. O furo
+    # fica sempre no mesmo lugar em relacao a' tag do slot; leitura a mais de
+    # nominal_tol_mm disso (sombra, cubo, reflexo) e' descartada e, sem leitura boa,
+    # vale o nominal. None = sem trava (comportamento de antes).
+    vetor_nominal_mm: Optional[tuple] = None
+    nominal_tol_mm: float = 6.0
 
 
 def homografia_tag(cantos, lado_mm):
@@ -304,6 +311,7 @@ class Memoria:
     giro_cantos: Optional[int] = None
     lado_mm: Optional[tuple] = None
     n: int = 0
+    nominal: bool = False                 # 2026-11-26: vetor_mm e' o nominal da geometria (sem leitura boa)
     _amostras: list = field(default_factory=list)
 
 
@@ -316,13 +324,26 @@ def medir(bgr, k_cam, cantos_tag, q5, mem: Memoria, cfg: Optional[FuroCfg] = Non
     cfg = cfg or FuroCfg()
     f = medir_furo(bgr, cantos_tag, cfg, mem.giro_cantos)
     out = {"furo": "nao", "ok": False}
+    nominal = tuple(cfg.vetor_nominal_mm) if cfg.vetor_nominal_mm else None
+    if nominal and f["ok"] and f["completo"]:
+        d = math.hypot(f["centro_mm"][0] - nominal[0], f["centro_mm"][1] - nominal[1])
+        if d > cfg.nominal_tol_mm:
+            out["descartado_mm"] = round(d, 1)   # leitura longe da geometria: nao entra na memoria
+            f = dict(f, completo=False)
     if f["ok"] and f["completo"]:
         mem._amostras.append(f["centro_mm"])
         mem.vetor_mm = tuple(float(v) for v in np.median(np.array(mem._amostras), axis=0))
         mem.giro_cantos, mem.lado_mm, mem.n = f["giro_cantos"], f["lado_mm"], len(mem._amostras)
+        mem.nominal = False
         out["furo"] = "visto"
     elif mem.vetor_mm is not None:
-        out["furo"] = "pela_tag"
+        out["furo"] = "nominal" if mem.nominal else "pela_tag"
+    if mem.vetor_mm is None and nominal:
+        # Nunca leu o furo direito: posicao nominal pela tag. A orientacao vem da
+        # leitura (mesmo descartada) ou do giro 0 dos adesivos de hoje.
+        mem.vetor_mm, mem.nominal = nominal, True
+        mem.giro_cantos = f.get("giro_cantos", 0) if f.get("ok") else 0
+        out["furo"] = "nominal"
     if mem.vetor_mm is None:
         out["motivo"] = "furo_nunca_visto"
         return out

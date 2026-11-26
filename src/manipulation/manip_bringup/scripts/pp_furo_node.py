@@ -9,7 +9,10 @@ Este no' NAO move nada: so' olha. Quem move e' o mtc_place_action_node.
 
   /manip/pp_furo/slot    String latched, ex. "tag_104" (publicado pelo place)
   /manip/pp_furo/medir   std_srvs/Trigger. success=true e a mensagem
-        furo=visto|pela_tag; lat_mm=..; rad_mm=..; giro_graus=..; alt_mm=..; n=..
+        furo=visto|pela_tag|nominal; lat_mm=..; rad_mm=..; giro_graus=..; alt_mm=..; n=..
+      (nominal, 2026-11-26: o furo nunca foi lido dentro de nominal_tol_mm da
+      geometria da mesa -> vetor_furo_nominal_mm; descartadas_mm = leituras
+      longe da geometria, por ex. sombra)
       lat/rad = quanto o cubo tem de andar (+lat = j1 crescendo, +rad = para longe
       da base); giro = quanto a garra tem de girar; alt = fundo do cubo acima do
       tampo. furo=visto: o furo estava inteiro na imagem; pela_tag: tapado pelo
@@ -65,7 +68,12 @@ class PpFuro(Node):
             metodo=str(dp("metodo", "auto").value),
             borda_lado_mm=tuple(dp("borda_lado_mm", [42.0, 52.0]).value),
             borda_contraste_min=float(dp("borda_contraste_min", 8.0).value),
-            borda_interior_max=float(dp("borda_interior_max", 1.5).value))
+            borda_interior_max=float(dp("borda_interior_max", 1.5).value),
+            # 2026-11-26: trava pela geometria da PP da ARENA (foto: centro do furo
+            # ~55 mm alem do centro da tag, centrado). [] = sem trava. Laboratorio:
+            # [0.36, -45.8]. Leitura a mais de nominal_tol_mm disso e' descartada.
+            vetor_nominal_mm=tuple(dp("vetor_furo_nominal_mm", [0.0, -55.0]).value) or None,
+            nominal_tol_mm=float(dp("nominal_tol_mm", 6.0).value))
         self.amostras = int(dp("amostras", 3).value)
         self.prazo_s = float(dp("prazo_s", 3.0).value)
         self.salvar_dir = os.path.expanduser(dp("salvar_dir", "~/.ros/pp_furo").value)
@@ -168,7 +176,7 @@ class PpFuro(Node):
             resp.message = "sem_imagem"
             return resp
         mem = self.memoria.setdefault(self.slot, F.Memoria())
-        oks, vistos, bgr_ult, com_tag, dono = [], 0, None, 0, None
+        oks, vistos, bgr_ult, com_tag, dono, descartes = [], 0, None, 0, None, []
         for _t, img, tags in novos[-self.amostras:]:
             dono = next((c for c, s in amt_sort_core.arranjo_do_quadro(tags, self.slot_ids)[0].items()
                          if s == self.slot), dono)
@@ -181,6 +189,8 @@ class PpFuro(Node):
             r = F.medir(bgr, self._k, tags[self.slot], self._q5, mem, self.cfg)
             bgr_ult = bgr
             vistos += r["furo"] == "visto"
+            if "descartado_mm" in r:
+                descartes.append(r["descartado_mm"])
             if r["ok"]:
                 oks.append(r)
         ocupado = f"; ocupado={dono}" if dono is not None else ""
@@ -189,11 +199,13 @@ class PpFuro(Node):
             self._salvar(bgr_ult, resp.message, {})
             return resp
         med = {k: float(np.median([o[k] for o in oks])) for k in ("lat_mm", "rad_mm", "alt_mm", "giro_graus")}
-        furo = "visto" if vistos * 2 > len(oks) else "pela_tag"
+        furo = "visto" if vistos * 2 > len(oks) else (
+            "nominal" if any(o["furo"] == "nominal" for o in oks) else "pela_tag")
         resp.success = True
         resp.message = (f"furo={furo}; lat_mm={med['lat_mm']:+.2f}; rad_mm={med['rad_mm']:+.2f}; "
                         f"giro_graus={med['giro_graus']:+.2f}; alt_mm={med['alt_mm']:.1f}; n={len(oks)}; "
-                        f"vetor_mm={mem.vetor_mm[0]:+.2f},{mem.vetor_mm[1]:+.2f}" + ocupado)
+                        f"vetor_mm={mem.vetor_mm[0]:+.2f},{mem.vetor_mm[1]:+.2f}"
+                        + (f"; descartadas_mm={descartes}" if descartes else "") + ocupado)
         self.get_logger().info(f"[pp_furo] slot {self.slot}: {resp.message}")
         self._salvar(bgr_ult, resp.message, med)
         return resp

@@ -265,7 +265,7 @@ class AmtSort(Node):
 
     def _operar(self, gh, op, cubo, slot, goal, feitos, total, res):
         """Um pick ou place. (ok, motivo)"""
-        nudges, final, repetiu = 0, False, False
+        nudges, final, repetiu, reatracou = 0, False, False, False
         while True:
             if not self._esperar_braco(gh):
                 return False, "cancelado" if gh.is_cancel_requested else "braco_sem_resposta"
@@ -286,12 +286,39 @@ class AmtSort(Node):
                 repetiu = True        # falhou porque o braco sumiu no meio: espera voltar e repete
                 continue
             passo = float(r.suggested_base_shift_m)
+            andou_de_lado = False
             if not final and r.unreachable and abs(passo) > 1e-3 and nudges < self.max_nudges:
                 # sem fala aqui: o pick/place e o nudge ja' avisam (3 frases para 1 evento atrasavam a voz)
                 self.get_logger().info(f"[AMT] {op} do bloco {cubo} pediu a base {passo:+.2f} m de lado.")
                 nudges += 1
                 if self._andar(gh, passo, res):
                     continue
+            # 2026-11-26 (operador: "pega a tag e depois ve que nao consegue chegar no ponto e
+            # fica preso nesse looping infinito; e' bom ele mexer pra frente, caso seja possivel,
+            # ou se alinhar mais com a tag"): fora de alcance e o passo de lado nao resolveu
+            # (sugestao 0 = de lado nao alcanca, ou a base nao andou). Antes caia direto na
+            # tentativa final, que falhava igual, e a rodada seguinte repetia tudo.
+            #   1) alinhar com o slot pela geometria da fileira (slot fora da frente do robo);
+            #   2) ir PARA FRENTE: refazer o docking (dock_id vazio = o ultimo), que leva a
+            #      base 'a distancia de trabalho da mesa sem raspar; uma vez por operacao.
+            x = (self.slot_ids.index(slot) - (len(self.slot_ids) - 1) / 2.0) * self.passo_slot_m + self._desvio
+            if not final and r.unreachable and abs(x) > 0.05 and nudges < self.max_nudges:
+                self.get_logger().info(
+                    f"[AMT] {op} do bloco {cubo} fora de alcance; alinho a base com o slot {slot} ({x:+.2f} m).")
+                nudges += 1
+                if self._andar(gh, -math.copysign(min(0.25, abs(x)), x), res):
+                    andou_de_lado = True
+                    continue
+            if not final and r.unreachable and not reatracou and not andou_de_lado:
+                reatracou = True
+                self.get_logger().info(f"[AMT] {op} do bloco {cubo} fora de alcance; chego mais perto da mesa (re-docking).")
+                self._falar("Nao alcanco, vou chegar mais perto da mesa")
+                a = self._chamar(self._atracar, AlignToDock.Goal(), gh, "refazendo_docking_alcance")
+                if a is not None and a.success:
+                    self._desvio = 0.0
+                    continue
+                self.get_logger().warn(
+                    f"[AMT] re-docking para alcance: {'sem resposta' if a is None else a.message or 'falhou'}.")
             # Nao viu o alvo e a base esta' longe dele (ficou alinhada com outro slot num place):
             # anda ate' o slot pela geometria da fileira (slot do meio em frente ao robo no docking).
             x = (self.slot_ids.index(slot) - (len(self.slot_ids) - 1) / 2.0) * self.passo_slot_m + self._desvio

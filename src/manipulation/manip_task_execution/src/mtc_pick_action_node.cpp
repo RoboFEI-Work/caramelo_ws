@@ -3736,10 +3736,12 @@ private:
             // 2026-08-31 (pedido do operador): a tag da ponta some da camera
             // — com fallback_frame (pose INICIAL gravada, frame difundido
             // pelo no AMT1), as tentativas seguintes pegam por ele.
+            bool trocou_para_reserva = false;
             if (!fallback_used && !goal->fallback_frame.empty() &&
                 last_pick_failure_reason_ == "tag_nao_encontrada")
             {
                 fallback_used = true;
+                trocou_para_reserva = true;
                 frame_to_pick = goal->fallback_frame;
                 retryable_failure = true;
                 RCLCPP_WARN(
@@ -3750,6 +3752,22 @@ private:
             }
 
             if (!retryable_failure || attempt >= max_pick_attempts) {
+                break;
+            }
+
+            // 2026-11-26 (operador: "quando esta procurando a tag e nao acha, ele
+            // procura 3 vezes da mesma forma e depois se mexe. Nao precisa passar
+            // por todas as iks antes de se mover"): sem tag, a tentativa seguinte
+            // repetiria a MESMA busca (deteccao + j1 na ultima vista + varredura);
+            // a escada de IK so' ajuda quem ja' viu a tag. Sai ja' (skipped,
+            // tag_nao_encontrada) para quem chamou mover a base. A reserva
+            // (fallback_frame) continua valendo: ela troca o alvo, nao repete.
+            if (last_pick_failure_reason_ == "tag_nao_encontrada" && !trocou_para_reserva) {
+                RCLCPP_WARN(
+                    this->get_logger(),
+                    "PICK de %s: tag nao encontrada na tentativa %d — nao repito a mesma busca; "
+                    "volto para a base se mexer.",
+                    frame_to_pick.c_str(), attempt);
                 break;
             }
 
@@ -3951,7 +3969,11 @@ private:
             result->fail_reason = last_pick_failure_reason_;
             result->message = "Pick pulado apos esgotar as tentativas (" +
                 last_pick_failure_reason_ + ")";
-            speak("!Nao peguei o bloco, vou para o proximo");
+            // 2026-11-26: sem tag o "!Nao encontrei a tag X" ja' foi dito; "vou
+            // para o proximo" seria falso quando quem chamou mexe a base e repete.
+            if (last_pick_failure_reason_ != "tag_nao_encontrada") {
+                speak("!Nao peguei o bloco, vou para o proximo");
+            }
             execution_guard.release();
             goal_handle->succeed(result);
         } else {
