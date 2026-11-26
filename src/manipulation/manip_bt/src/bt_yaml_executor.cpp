@@ -575,16 +575,22 @@ std::string buildTreeXmlFromActions(
 
       close_reach_queue();
       close_station_block();
-      if (use_docking && ctx.home_before_dock && !arm_at_home) {
+      // 2026-11-26 (operador: "quando ele da o undocking ele precisa voltar pra
+      // home"): o GoToWS faz o undock logo no inicio, entao o home vem ANTES de
+      // todo goto, com ou sem docking no destino (antes era so' com docking: um
+      // goto de navegacao pura saia da mesa com o braco onde o place deixou).
+      // E tenta 2 vezes: na 1a falha (ex.: start fora da tolerancia logo depois
+      // do place) o robo saia da mesa com o braco esticado.
+      if (ctx.home_before_dock && !arm_at_home) {
         // ForceSuccess: sem home o docking ainda funciona (so' LiDAR).
         const std::string pre_key = actionBlackboardKey(i, "pre_dock_pose");
         blackboard->set(pre_key, std::string("home"));
-        xml << "      <ForceSuccess>\n";
+        xml << "      <ForceSuccess>\n      <RetryUntilSuccessful num_attempts=\"2\">\n";
         xml << "      <GoToNamedPose name=\"home_antes_" << i << "\" pose_name=\""
             << escapeXmlAttr(blackboardPort(pre_key)) << "\"/>\n";
-        xml << "      </ForceSuccess>\n";
+        xml << "      </RetryUntilSuccessful>\n      </ForceSuccess>\n";
         ctx.plan_rows.push_back(
-          "[" + std::to_string(i) + "] home  (automatico antes do docking: camera)");
+          "[" + std::to_string(i) + "] home  (automatico antes do undock/goto)");
         arm_at_home = true;
       }
       const bool wrap = use_docking && ctx.skip_unreachable_station;

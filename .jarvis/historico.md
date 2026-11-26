@@ -556,3 +556,8 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Fato usado: a garra tem dois dedos independentes (manip_joint6 = finger_left, manip_joint7 = finger_right, controlador gripper_controller com as duas juntas).
 - Verificado: colcon build manip_task_execution ok; no isolado (domain 88) sobe e lista os params. NAO testado no robo; sem commit.
 - Pendente: calibrar `pp_ajuste_dedo_empurra`/`apoio` e a altura (`pp_ajuste_z_extra_m`) no robo; conferir no log `[PP-AJUSTE]` o lado escolhido.
+
+## 2026-11-26 — Braco em home antes do undock (T58)
+- Pedido: "quando ele da o undocking ele precisa voltar pra home".
+- Achado: o undock e' o 1o passo do GoToWS; o executor ja' punha `home` antes do goto, mas so' quando o destino tinha docking, e com ForceSuccess sem nova tentativa (uma falha do home = sai da mesa com o braco onde o place deixou).
+- Feito (bt_yaml_executor.cpp): home antes de todo goto com o braco fora de home, 2 tentativas. Build ok; arvore aceita no isolado. NAO testado no robo; sem commit.
