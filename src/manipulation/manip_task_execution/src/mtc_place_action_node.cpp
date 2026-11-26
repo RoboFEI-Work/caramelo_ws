@@ -229,7 +229,7 @@ public:
         this->declare_parameter<double>("pp_ajuste_tag_ate_o_furo_m", 0.055);
         // Erro na direcao tag<->furo ate' onde o cubo vale como "no furo".
         // Folga do furo ~2 mm por lado + ruido da tag (~2-3 mm).
-        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.006);
+        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.002);
         this->declare_parameter<int>("pp_ajuste_max", 1);              // empurroes por place
         // Dedos (manip_joint6/7; fechada 0.170, aberta -0.2265, toda aberta -0.994838).
         this->declare_parameter<double>("pp_ajuste_dedo_aberto", -0.994838);  // descer em volta do cubo
