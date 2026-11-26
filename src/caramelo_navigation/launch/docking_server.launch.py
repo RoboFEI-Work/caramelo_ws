@@ -22,9 +22,15 @@ DEFAULT_CONTROLLER = {
     # agora executa EXATO. v_min segue a regra 1.08x piso do controller_server
     # (comando sempre executavel com folga); v_max acima do v_min.
     "v_linear_min": 0.131,
-    "v_linear_max": 0.16,
+    # 2026-11-26 (operador: "o undocking pode ser mais rapido, a velocidade
+    # dele"): 0.16 -> 0.30 e slowdown 0.45 -> 0.15. Com 0.45 o undock inteiro
+    # (~0.15-0.3 m de re') ficava dentro da zona de desaceleracao e rodava no
+    # piso (~0.13 m/s). Hoje este controlador so' serve o UNDOCK: a chegada e'
+    # Nav2 -> staging -> align_to_dock; o /dock_robot e' so' o rollback
+    # (docking.use_dock_robot) e tambem ficaria mais rapido.
+    "v_linear_max": 0.30,
     "v_angular_max": 0.4,
-    "slowdown_radius": 0.45,
+    "slowdown_radius": 0.15,
     # False: o dock fica ENCOSTADO na bancada (obstaculo no costmap) — o
     # checker de colisao sempre disparava na aproximacao ("Collision detected")
     # e abortava. A protecao da navegacao normal continua no collision_monitor.

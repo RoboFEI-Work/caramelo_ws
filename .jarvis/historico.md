@@ -582,3 +582,15 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Achado (log de pick de 17/11 deste PC): ~1,75 s parado entre movimentos; o "assentou" sempre ~885 ms porque getCurrentJointValues/getCurrentState exigem amostra com carimbo mais novo que o relogio do PC e o da Pi estava 0,43 s atrasado.
 - Feito: JointStateCache (hora de chegada) em arm_settle.hpp, usado no settle e nas checagens de estado de pick/place (armStateAvailable/currentArmJoints); esperas fixas reduzidas (ver T63 no estado). gtest test_arm_settle_cache novo.
 - Nao resolvido por codigo: a espera do proprio move_group ao planejar (~0,45 s com o relogio fora). So' acertar o relogio PC<->Pi tira.
+
+## 2026-11-26 — Ajuste da PP: 1 empurrao, tolerancia 2 mm (T64)
+- Pedidos: "ele ta fazendo o ajuste na pp mais de uma vez"; "1mm de tolerancia na pp e' muito pouco, coloque em 2mm".
+- Feito: pp_ajuste_max 1 (era 2: um por eixo) e sem a olhada de conferencia depois do ultimo empurrao; pp_ajuste_tolerancia_m 0.002. Build ok; sem commit.
+
+## 2026-11-26 — Ajuste da PP: verificacao final no outro eixo (T65)
+- Pedido: "quando ele faz verificacao final, ele tem que ver se esta torto, e se tiver precisa ajustar. Principalmente no outro eixo da tag".
+- Feito (ppAjustarCubo): cada eixo empurrado no maximo 1 vez (fez_tag/fez_lado); depois do 1o empurrao olha de novo e empurra o outro eixo se fora da tolerancia; pp_ajuste_max 2. Build ok; sem commit; nao testado.
+
+## 2026-11-26 — Undock mais rapido (T66)
+- Pedido: "o undocking pode ser mais rapido, a velocidade dele".
+- Feito: DEFAULT_CONTROLLER do docking_server.launch.py: v_linear_max 0.16->0.30, slowdown_radius 0.45->0.15. Sem commit; nao testado.

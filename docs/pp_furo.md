@@ -126,7 +126,8 @@ Código: `ppAjustarCubo` em `mtc_place_action_node.cpp`, chamado depois da subid
 5. Fecha primeiro o dedo do lado para onde o cubo escapou (`pp_ajuste_dedo_empurra`) e depois o
    outro, que fecha menos (`pp_ajuste_dedo_apoio`). Em seguida abre em `gripper_open` e sobe.
    O lado de cada dedo vem do TF de `finger_left`/`finger_right` depois do giro do punho.
-6. Olha de novo para registrar o resultado (até `pp_ajuste_max` empurrões).
+6. Verificação final: olha de novo e, se o OUTRO eixo estiver fora, empurra nele. Cada eixo no máximo
+   uma vez; depois do último empurrão não volta a olhar.
 
 Cada volta empurra no eixo de maior erro. No eixo **de lado** (ao longo da fileira) o punho fica
 como no place e a garra abre só até `pp_ajuste_dedo_aberto_lado` (= `gripper_open`): toda aberta
@@ -139,8 +140,8 @@ Parâmetros (todos valem ao vivo com `ros2 param set /place_action_server ...`):
 |---|---|---|
 | `pp_ajuste_habilitado` | true | false desliga o ajuste |
 | `pp_ajuste_tag_ate_o_furo_m` | 0.055 | centro da tag → centro do furo (arena; no laboratório ~0.046) |
-| `pp_ajuste_tolerancia_m` | 0.001 | erro aceito sem empurrar (1 mm: na pratica empurra quase sempre) |
-| `pp_ajuste_max` | 2 | empurrões por place (um por eixo) |
+| `pp_ajuste_tolerancia_m` | 0.002 | erro aceito sem empurrar (2 mm) |
+| `pp_ajuste_max` | 2 | empurrões por place: o 1º no eixo de maior erro; verificação final; o 2º só no OUTRO eixo, se estiver fora. Cada eixo no máximo 1 vez |
 | `pp_ajuste_dedo_aberto` | -0.994838 | garra toda aberta para descer em volta do cubo (eixo tag↔furo) |
 | `pp_ajuste_dedo_aberto_lado` | -0.2265 | abertura no eixo de lado (não pode abrir toda: vizinhos) |
 | `pp_ajuste_dedo_empurra` | 0.170 | até onde fecha o dedo que empurra (= `gripper_close`) |

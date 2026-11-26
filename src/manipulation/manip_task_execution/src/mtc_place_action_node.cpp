@@ -233,11 +233,14 @@ public:
         // Erro (em cada eixo) ate' onde o cubo vale como "no furo" e NAO empurra.
         // 2026-11-26 (operador: "ele so' faz o ajuste caso a tag esteja 6 mm de
         // diferenca, mude para que quase sempre ele faca o ajuste"; "ele poe a tag
-        // torta e nao esta corrigindo"): 6 -> 1 mm. O ruido da tag (~2-3 mm) ja'
-        // passa disso, entao na pratica empurra quase sempre.
-        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.001);
-        // 2: um empurrao em cada eixo (tag<->furo e de lado), o de maior erro primeiro.
-        this->declare_parameter<int>("pp_ajuste_max", 2);              // empurroes por place
+        // torta e nao esta corrigindo"): 6 -> 1 mm; depois (operador: "1mm de
+        // tolerancia na pp e' muito pouco, coloque em 2mm"): 2 mm.
+        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.002);
+        // Empurroes por place (cada eixo no maximo 1 vez; o 2o so' depois da
+        // verificacao final, no OUTRO eixo). 2026-11-26: 2 -> 1 ("ajuste mais de uma
+        // vez") e de volta a 2 ("na verificacao final [...] ajustar, principalmente
+        // no outro eixo da tag"). Depois do ultimo empurrao nao volta a olhar.
+        this->declare_parameter<int>("pp_ajuste_max", 2);
         // Dedos (manip_joint6/7; fechada 0.170, aberta -0.2265, toda aberta -0.994838).
         this->declare_parameter<double>("pp_ajuste_dedo_aberto", -0.994838);  // descer em volta do cubo (eixo tag<->furo)
         // Eixo de lado (ao longo da fileira): toda aberta bate nos blocos vizinhos
@@ -4970,7 +4973,8 @@ private:
     //      QUAL dedo esta' de qual lado sai do TF dos dedos depois de girar o
     //      punho (nao do nome "esquerda/direita"), entao vale com o punho em
     //      qualquer um dos dois giros;
-    //   6) olha de novo (ate' pp_ajuste_max empurroes) e so' registra o resultado.
+    //   6) olha de novo (verificacao final) e empurra o OUTRO eixo se estiver fora;
+    //      cada eixo no maximo 1 vez; depois do ultimo empurrao nao olha de novo.
     // 2026-11-26: o erro de LADO (ao longo da fileira) tambem e' corrigido, com o
     // punho do place e a garra so' ate' pp_ajuste_dedo_aberto_lado (nao abre toda:
     // bate nos vizinhos). Cada volta empurra no eixo de maior erro.
@@ -4997,6 +5001,13 @@ private:
         const double z_extra = this->get_parameter("pp_ajuste_z_extra_m").as_double();
         const double pre_lift = std::max(0.0, this->get_parameter("pp_ajuste_pre_lift_m").as_double());
 
+        // 2026-11-26 (operador: "quando ele faz verificacao final, ele tem que ver se
+        // esta torto, e se tiver precisa ajustar. Principalmente no outro eixo da
+        // tag"): cada eixo e' empurrado no maximo UMA vez (antes repetia o mesmo
+        // eixo: "fazendo o ajuste mais de uma vez"). Depois do 1o empurrao ele
+        // olha de novo (verificacao final) e, se o OUTRO eixo estiver fora,
+        // empurra nele; depois do ultimo empurrao nao olha mais.
+        bool fez_tag = false, fez_lado = false;
         for (int empurroes = 0; ; ++empurroes) {
             // 1) Olhar.
             publishStage(goal_handle, "pp_ajuste_olhando");
@@ -5073,7 +5084,23 @@ private:
             //   tag<->furo: punho girado 90 graus, garra toda aberta (sem vizinhos nesse eixo);
             //   de lado (ao longo da fileira): punho do place, garra so' ate'
             //   pp_ajuste_dedo_aberto_lado (toda aberta bate nos blocos vizinhos).
-            const bool eixo_tag = forcar || std::abs(e_tag) >= std::abs(e_lado);
+            const bool pode_tag = !fez_tag && (forcar || std::abs(e_tag) > tol);
+            const bool pode_lado = !fez_lado && std::abs(e_lado) > tol;
+            if (!pode_tag && !pode_lado) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[PP-AJUSTE] verificacao final: ainda fora (%+.1f mm na direcao da tag, %+.1f mm de lado), "
+                    "mas esse eixo ja' foi empurrado - sigo.",
+                    e_tag * 1000.0, e_lado * 1000.0);
+                return;
+            }
+            const bool eixo_tag = pode_tag && (forcar || !pode_lado || std::abs(e_tag) >= std::abs(e_lado));
+            (eixo_tag ? fez_tag : fez_lado) = true;
+            if (empurroes > 0) {
+                RCLCPP_INFO(
+                    get_logger(), "[PP-AJUSTE] verificacao final: %s fora (%+.1f mm) - ajusto.",
+                    eixo_tag ? "direcao da tag" : "de lado", (eixo_tag ? e_tag : e_lado) * 1000.0);
+            }
             const Eigen::Vector3d eixo = eixo_tag ? fora : lado;
             const double e = eixo_tag ? e_tag : e_lado;
             const double aberto = eixo_tag ? dedo_aberto : dedo_aberto_lado;
@@ -5171,6 +5198,11 @@ private:
             }
             if (!moveToJointTarget(arm, q_pre, "pp ajuste sobe " + ctx.slot_frame)) {
                 RCLCPP_WARN(get_logger(), "[PP-AJUSTE] nao subi depois do ajuste - recolhendo direto.");
+                return;
+            }
+            if (empurroes + 1 >= max_empurroes) {
+                RCLCPP_INFO(get_logger(), "[PP-AJUSTE] ajuste feito (%d empurrao(oes)); sigo sem olhar de novo.",
+                    empurroes + 1);
                 return;
             }
         }
