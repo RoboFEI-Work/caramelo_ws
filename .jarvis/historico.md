@@ -549,3 +549,10 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - (3) Laco "pega, nao alcanca o slot, repete": amt_sort_node._operar, quando fora de alcance e o passo de lado nao resolve (sugestao 0 ou a base nao andou), agora (a) alinha a base com o slot pela geometria da fileira (|x| > 5 cm, dentro de max_nudges) e (b) uma vez por operacao refaz o docking ("vou chegar mais perto da mesa") antes da tentativa final. NudgeBase so' anda de lado; o "para frente" e' o re-docking.
 - (4) Pick sem tag repetia a mesma busca 3x: mtc_pick_action_node sai na 1a tentativa com tag_nao_encontrada (skipped) para quem chamou mover a base; a reserva fallback_frame continua. Sem o "vou para o proximo" nesse caso.
 - Verificado: test_pp_furo + test_amt_sort_core 35 ok; manip_task_execution build + ctest 7/7. NAO testado no robo. Sem commit.
+
+## 2026-11-26 — PP: ajuste do cubo depois de soltar (T57)
+- Pedido: depois de soltar, ver onde o cubo ficou e empurrar com os dedos (um fecha mais que o outro, reabre para nao pegar de novo), lado conforme o cubo esteja mais perto ou mais longe da tag de referencia.
+- Feito: `ppAjustarCubo` + `ppMoverDedos` + 9 params `pp_ajuste_*` em mtc_place_action_node.cpp; `placeOnPpSlot` guarda a 1a parada e o z da soltura (`pp_ajuste_`); chamado depois da subida pos-soltura. Doc em docs/pp_furo.md.
+- Fato usado: a garra tem dois dedos independentes (manip_joint6 = finger_left, manip_joint7 = finger_right, controlador gripper_controller com as duas juntas).
+- Verificado: colcon build manip_task_execution ok; no isolado (domain 88) sobe e lista os params. NAO testado no robo; sem commit.
+- Pendente: calibrar `pp_ajuste_dedo_empurra`/`apoio` e a altura (`pp_ajuste_z_extra_m`) no robo; conferir no log `[PP-AJUSTE]` o lado escolhido.

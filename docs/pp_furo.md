@@ -108,3 +108,37 @@ orientação ao acaso. `FuroCfg.metodo` (parâmetro `metodo` do `pp_furo_node`):
 Testes: `test/test_pp_furo.py` (foto da arena + não-regressão dos quadros do laboratório).
 **Falta validar com a D455 na arena.** Se o furo continuar sem medida, o palpite da 1ª parada
 é `pp_tag_ate_o_furo_m` do place (0,046; na arena ~0,055).
+
+## Ajuste do cubo depois de soltar (2026-11-26)
+
+Pedido do operador: depois de soltar, ver onde o cubo ficou e, se ficou fora do furo, empurrar com
+os dedos (um fecha mais que o outro e a garra reabre para não pegar o cubo de volta).
+Código: `ppAjustarCubo` em `mtc_place_action_node.cpp`, chamado depois da subida que segue a soltura.
+
+1. Volta à 1ª parada do place (de lá a câmera vê o furo inteiro) e lê a tag do cubo e a do slot.
+2. Furo = tag do slot + `pp_ajuste_tag_ate_o_furo_m` na direção do robô. Erro = cubo − furo nessa
+   direção (+ = mais perto da tag do slot). O erro de lado (ao longo da fileira) só vai para o log.
+3. Erro ≤ `pp_ajuste_tolerancia_m`: nada a fazer.
+4. Fora da tolerância: gira o punho 90° em relação ao place (dedos ao longo de tag↔furo), abre a
+   garra toda, desce com o TCP sobre o furo na altura da soltura.
+5. Fecha primeiro o dedo do lado para onde o cubo escapou (`pp_ajuste_dedo_empurra`) e depois o
+   outro, que fecha menos (`pp_ajuste_dedo_apoio`). Em seguida abre em `gripper_open` e sobe.
+   O lado de cada dedo vem do TF de `finger_left`/`finger_right` depois do giro do punho.
+6. Olha de novo para registrar o resultado (até `pp_ajuste_max` empurrões).
+
+Parâmetros (todos valem ao vivo com `ros2 param set /place_action_server ...`):
+
+| Parâmetro | Padrão | Para quê |
+|---|---|---|
+| `pp_ajuste_habilitado` | true | false desliga o ajuste |
+| `pp_ajuste_tag_ate_o_furo_m` | 0.055 | centro da tag → centro do furo (arena; no laboratório ~0.046) |
+| `pp_ajuste_tolerancia_m` | 0.006 | erro aceito sem empurrar |
+| `pp_ajuste_max` | 1 | empurrões por place |
+| `pp_ajuste_dedo_aberto` | -0.994838 | garra toda aberta para descer em volta do cubo |
+| `pp_ajuste_dedo_empurra` | 0.170 | até onde fecha o dedo que empurra (= `gripper_close`) |
+| `pp_ajuste_dedo_apoio` | 0.0 | até onde fecha o outro (menos, para não prender o cubo) |
+| `pp_ajuste_z_extra_m` | 0.0 | soma à altura da soltura na descida |
+| `pp_ajuste_pre_lift_m` | 0.04 | pré-pose acima do furo |
+
+No log: `[PP-AJUSTE] ... erro +12.3 mm na direcao da tag` e `fecho primeiro o dedo ESQUERDO (j6)`.
+NÃO testado no robô: os valores dos dedos e a altura da descida precisam ser conferidos devagar.
