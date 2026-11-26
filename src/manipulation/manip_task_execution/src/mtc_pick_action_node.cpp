@@ -319,7 +319,9 @@ public:
             std::make_shared<tf2_ros::TransformListener>(
                 *tf_buffer_);
 
-        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", true);
+        // 2026-11-26 (operador: "retire todas as falas do robo [...] deixar ele o mais rapido possivel"):
+        // sem voz por padrao (speech_enabled:=true volta).
+        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", false);
         speech_publisher_ =
             this->create_publisher<std_msgs::msg::String>("/manip/speech", 10);
         pick_active_publisher_ =
@@ -733,7 +735,7 @@ private:
     std::optional<std::array<double, 5>> shelf_lift_q_;
     rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr
         effort_subscription_;
-    bool speech_enabled_{true};
+    bool speech_enabled_{false};
     // 2026-11-23: falas ditas uma vez por goal (zeradas antes das tentativas).
     bool falou_procurando_{false};
     bool falou_identificou_{false};

@@ -765,7 +765,9 @@ class DockAlignNode(Node):
         self.declare_parameter("odom_topic", "/odom")
         # Fala "Vou me ajustar para a esquerda/direita" ANTES de mover (o
         # operador afasta objetos) e espera este tanto antes do 1o comando.
-        self.declare_parameter("speech_enabled", True)
+        # 2026-11-26 (operador: "retire todas as falas do robo [...] deixar ele o mais rapido possivel"):
+        # sem voz por padrao, e sem a espera do aviso antes do passo lateral.
+        self.declare_parameter("speech_enabled", False)
         self.declare_parameter("nudge_speech_lead_s", 1.0)
         # ---- revisao 2026-08-28 (achados da revisao adversarial) ----
         # Achado 1: num lateral ao longo de uma face NAO perpendicular o bico
@@ -3384,7 +3386,9 @@ class DockAlignNode(Node):
         drift_max = float(self.get_parameter("nudge_front_drift_max").value)
         timeout = float(g.timeout) if g.timeout > 0.0 \
             else float(self.get_parameter("nudge_default_timeout").value)
-        lead = float(self.get_parameter("nudge_speech_lead_s").value)
+        # Espera so' existe para a fala avisar antes de mover: sem voz, zero.
+        lead = float(self.get_parameter("nudge_speech_lead_s").value) \
+            if bool(self.get_parameter("speech_enabled").value) else 0.0
 
         def log(msg):
             self.get_logger().info(f"[nudge {dy:+.2f}] {msg}")

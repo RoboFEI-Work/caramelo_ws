@@ -76,6 +76,8 @@ class AmtSort(Node):
         # 2026-11-17 (travou no robo): o pedido seguinte chegava ao place 33 ms depois do
         # fim do anterior, com ele ainda desmontando a interface do MoveIt. Respiro entre ops.
         self.pausa_s = float(dp("pausa_entre_ops_s", 1.0).value)
+        # 2026-11-26 (operador: "retire todas as falas do robo [...] deixar ele o mais rapido possivel"): sem voz por padrao.
+        self.falar = bool(dp("speech_enabled", False).value)
         self.potes_yaml = os.path.expanduser(
             dp("container_state_file", "~/.config/caramelo/container_states.yaml").value)
         self._g = ReentrantCallbackGroup()
@@ -147,7 +149,8 @@ class AmtSort(Node):
 
     def _falar(self, texto):
         self.get_logger().info(f"[AMT] {texto}")
-        self._fala.publish(String(data=texto))
+        if self.falar:
+            self._fala.publish(String(data=texto))
 
     # ---- chamadas de action com batimento de feedback -------------------------
     def _chamar(self, cliente, goal, gh, etapa, feitos=0, total=0):

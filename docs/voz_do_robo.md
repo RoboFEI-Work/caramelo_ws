@@ -74,7 +74,7 @@ parâmetro `kokoro_site_packages`. Sem o venv, o robô fala com o Piper.
 
 | arg | default | nota |
 |---|---|---|
-| `use_audio` | `true` | sobe o `speech_node` |
+| `use_audio` | `false` (desde 2026-11-26: robo sem voz por padrao, mais leve) | sobe o `speech_node`; os nos tambem tem `speech_enabled` false |
 | `speech_backend` | `kokoro` | `kokoro` / `piper` / `espeak` |
 | `kokoro_voice` | `pm_alex` | `pm_alex` / `pm_santa` / `pf_dora` |
 | `voice_effect` | `none` | `dog`, `dog_deep`, `cartoon_dog` (filtro do ffplay) |

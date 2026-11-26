@@ -168,7 +168,7 @@ esquerda. A base andar `dy` para a esquerda ⇒ o `x_manip` de um alvo fixo na m
 | `nudge_settle_min_s` | 0,8 s | tempo parado exigido (≥ retenção do ESC ~0,5 s) |
 | `nudge_settle_max_s` | 3,0 s | teto do assentamento (mede assim mesmo, com aviso) |
 | `odom_topic` | `/odom` | odometria do EKF |
-| `speech_enabled` | true | fala antes de mover |
+| `speech_enabled` | false (2026-11-26) | fala antes de mover; com false tambem nao espera `nudge_speech_lead_s` |
 | `nudge_speech_lead_s` | 1,0 s | espera após a fala, antes do 1º comando |
 
 **Calibrar `nudge_odom_lateral_gain` com trena** (uma vez por piso/pneu): com o ganho em

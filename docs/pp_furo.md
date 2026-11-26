@@ -117,7 +117,7 @@ Código: `ppAjustarCubo` em `mtc_place_action_node.cpp`, chamado depois da subid
 
 1. Volta à 1ª parada do place (de lá a câmera vê o furo inteiro) e lê a tag do cubo e a do slot.
 2. Furo = tag do slot + `pp_ajuste_tag_ate_o_furo_m` na direção do robô. Erro = cubo − furo nessa
-   direção (+ = mais perto da tag do slot). O erro de lado (ao longo da fileira) só vai para o log.
+   direção (+ = mais perto da tag do slot). O erro de lado (ao longo da fileira) também é medido.
 3. Erro ≤ `pp_ajuste_tolerancia_m`: nada a fazer.
 4. Fora da tolerância: gira o punho 90° em relação ao place (dedos ao longo de tag↔furo), abre a
    garra toda, desce com o TCP sobre o furo na altura da soltura.
@@ -126,6 +126,11 @@ Código: `ppAjustarCubo` em `mtc_place_action_node.cpp`, chamado depois da subid
    O lado de cada dedo vem do TF de `finger_left`/`finger_right` depois do giro do punho.
 6. Olha de novo para registrar o resultado (até `pp_ajuste_max` empurrões).
 
+Cada volta empurra no eixo de maior erro. No eixo **de lado** (ao longo da fileira) o punho fica
+como no place e a garra abre só até `pp_ajuste_dedo_aberto_lado` (= `gripper_open`): toda aberta
+ela bate nos blocos vizinhos. Com abertura pequena, se o cubo escapou mais que a folga dos dedos,
+o dedo pode descer em cima dele.
+
 Parâmetros (todos valem ao vivo com `ros2 param set /place_action_server ...`):
 
 | Parâmetro | Padrão | Para quê |
@@ -133,8 +138,9 @@ Parâmetros (todos valem ao vivo com `ros2 param set /place_action_server ...`):
 | `pp_ajuste_habilitado` | true | false desliga o ajuste |
 | `pp_ajuste_tag_ate_o_furo_m` | 0.055 | centro da tag → centro do furo (arena; no laboratório ~0.046) |
 | `pp_ajuste_tolerancia_m` | 0.006 | erro aceito sem empurrar |
-| `pp_ajuste_max` | 1 | empurrões por place |
-| `pp_ajuste_dedo_aberto` | -0.994838 | garra toda aberta para descer em volta do cubo |
+| `pp_ajuste_max` | 2 | empurrões por place (um por eixo) |
+| `pp_ajuste_dedo_aberto` | -0.994838 | garra toda aberta para descer em volta do cubo (eixo tag↔furo) |
+| `pp_ajuste_dedo_aberto_lado` | -0.2265 | abertura no eixo de lado (não pode abrir toda: vizinhos) |
 | `pp_ajuste_dedo_empurra` | 0.170 | até onde fecha o dedo que empurra (= `gripper_close`) |
 | `pp_ajuste_dedo_apoio` | 0.0 | até onde fecha o outro (menos, para não prender o cubo) |
 | `pp_ajuste_z_extra_m` | 0.0 | soma à altura da soltura na descida |

@@ -228,11 +228,15 @@ public:
         // Arena 2026-11-26 (fotos): ~55 mm. Lab (mesa de 16/11): ~46 mm.
         this->declare_parameter<double>("pp_ajuste_tag_ate_o_furo_m", 0.055);
         // Erro na direcao tag<->furo ate' onde o cubo vale como "no furo".
-        // Folga do furo ~2 mm por lado + ruido da tag (~2-3 mm).
+        // Folga do furo ~2 mm por lado + ruido da tag (~2-3 mm).não era esse trashhold que eu falei. Ele poe a tag torta e nao esta corrigindo
         this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.002);
-        this->declare_parameter<int>("pp_ajuste_max", 1);              // empurroes por place
+        // 2: um empurrao em cada eixo (tag<->furo e de lado), o de maior erro primeiro.
+        this->declare_parameter<int>("pp_ajuste_max", 2);              // empurroes por place
         // Dedos (manip_joint6/7; fechada 0.170, aberta -0.2265, toda aberta -0.994838).
-        this->declare_parameter<double>("pp_ajuste_dedo_aberto", -0.994838);  // descer em volta do cubo
+        this->declare_parameter<double>("pp_ajuste_dedo_aberto", -0.994838);  // descer em volta do cubo (eixo tag<->furo)
+        // Eixo de lado (ao longo da fileira): toda aberta bate nos blocos vizinhos
+        // (operador 26/11: "nao consegue estar em full open"). = gripper_open.
+        this->declare_parameter<double>("pp_ajuste_dedo_aberto_lado", -0.2265);
         this->declare_parameter<double>("pp_ajuste_dedo_empurra", 0.170);     // o que empurra (fecha mais)
         this->declare_parameter<double>("pp_ajuste_dedo_apoio", 0.0);         // o outro (fecha menos: nao re-pega)
         // Altura do TCP no empurrao = a da soltura + isto (sem o cubo o braco cede menos).
@@ -428,7 +432,9 @@ public:
         tf_listener_ =
             std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", true);
+        // 2026-11-26 (operador: "retire todas as falas do robo [...] deixar ele o mais rapido possivel"):
+        // sem voz por padrao (speech_enabled:=true volta).
+        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", false);
         speech_publisher_ =
             this->create_publisher<std_msgs::msg::String>("/manip/speech", 10);
 
@@ -984,7 +990,7 @@ private:
     double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
-    bool speech_enabled_{true};
+    bool speech_enabled_{false};
     bool skip_missing_place_tag_{true};
     bool verify_grasp_effort_{true};
     bool verify_container_grasp_{false};
@@ -4930,7 +4936,9 @@ private:
     //      punho (nao do nome "esquerda/direita"), entao vale com o punho em
     //      qualquer um dos dois giros;
     //   6) olha de novo (ate' pp_ajuste_max empurroes) e so' registra o resultado.
-    // Erro de lado (ao longo da fileira) so' vai para o log.
+    // 2026-11-26: o erro de LADO (ao longo da fileira) tambem e' corrigido, com o
+    // punho do place e a garra so' ate' pp_ajuste_dedo_aberto_lado (nao abre toda:
+    // bate nos vizinhos). Cada volta empurra no eixo de maior erro.
     // =====================================================================
     void ppAjustarCubo(
         const std::shared_ptr<MoveGroupInterface> & arm,
@@ -4948,6 +4956,7 @@ private:
         const double tol = this->get_parameter("pp_ajuste_tolerancia_m").as_double();
         const int max_empurroes = static_cast<int>(this->get_parameter("pp_ajuste_max").as_int());
         const double dedo_aberto = this->get_parameter("pp_ajuste_dedo_aberto").as_double();
+        const double dedo_aberto_lado = this->get_parameter("pp_ajuste_dedo_aberto_lado").as_double();
         const double dedo_empurra = this->get_parameter("pp_ajuste_dedo_empurra").as_double();
         const double dedo_apoio = this->get_parameter("pp_ajuste_dedo_apoio").as_double();
         const double z_extra = this->get_parameter("pp_ajuste_z_extra_m").as_double();
@@ -4989,7 +4998,7 @@ private:
                 "erro %+.1f mm na direcao da tag (+ = mais perto dela), %+.1f mm de lado; tolerancia %.1f mm.",
                 cube_frame.c_str(), c.x(), c.y(), furo.x(), furo.y(), tag_ate_furo * 1000.0,
                 ctx.slot_frame.c_str(), e_tag * 1000.0, e_lado * 1000.0, tol * 1000.0);
-            if (std::abs(e_tag) <= tol) {
+            if (std::abs(e_tag) <= tol && std::abs(e_lado) <= tol) {
                 RCLCPP_INFO(
                     get_logger(), "[PP-AJUSTE] cubo no furo%s.", empurroes > 0 ? " depois do ajuste" : "");
                 if (empurroes > 0) {
@@ -4999,14 +5008,26 @@ private:
             }
             if (empurroes >= max_empurroes) {
                 RCLCPP_WARN(
-                    get_logger(), "[PP-AJUSTE] cubo ainda %.1f mm fora depois de %d empurrao(oes) - sigo.",
-                    e_tag * 1000.0, empurroes);
+                    get_logger(),
+                    "[PP-AJUSTE] cubo ainda fora (%+.1f mm na direcao da tag, %+.1f mm de lado) depois de "
+                    "%d empurrao(oes) - sigo.",
+                    e_tag * 1000.0, e_lado * 1000.0, empurroes);
                 return;
             }
+            // 2026-11-26 (operador: "faca o mesmo para a outra direcao, a unica coisa e'
+            // que ele nao consegue estar em full open"): empurra no eixo de MAIOR erro;
+            // a volta seguinte olha de novo e pega o outro eixo, se ainda precisar.
+            //   tag<->furo: punho girado 90 graus, garra toda aberta (sem vizinhos nesse eixo);
+            //   de lado (ao longo da fileira): punho do place, garra so' ate'
+            //   pp_ajuste_dedo_aberto_lado (toda aberta bate nos blocos vizinhos).
+            const bool eixo_tag = std::abs(e_tag) >= std::abs(e_lado);
+            const Eigen::Vector3d eixo = eixo_tag ? fora : lado;
+            const double e = eixo_tag ? e_tag : e_lado;
+            const double aberto = eixo_tag ? dedo_aberto : dedo_aberto_lado;
 
-            // 4) Punho com a linha dos dedos ao longo de tag<->furo; dos dois
+            // 4) Punho com a linha dos dedos ao longo do eixo escolhido; dos dois
             //    giros possiveis, o de menor |j5|.
-            const double yaw_dedos = std::atan2(fora.y(), fora.x());
+            const double yaw_dedos = std::atan2(eixo.y(), eixo.x());
             const auto pose_em = [&](double z, std::array<double, 5> & qo) {
                     if (!manip_task_execution::solveIk(Eigen::Vector3d(furo.x(), furo.y(), z), 0.0, 0.0, qo)) {
                         return false;
@@ -5027,8 +5048,8 @@ private:
             q_baixo[4] = q_pre[4];   // mesmo giro nas duas
             speak("~O bloco ficou fora do encaixe, vou ajustar");
             publishStage(goal_handle, "pp_ajuste_abrindo");
-            if (!ppMoverDedos(gripper, dedo_aberto, dedo_aberto, "pp ajuste abrir tudo")) {
-                RCLCPP_WARN(get_logger(), "[PP-AJUSTE] a garra nao abriu toda - sem ajuste.");
+            if (!ppMoverDedos(gripper, aberto, aberto, "pp ajuste abrir")) {
+                RCLCPP_WARN(get_logger(), "[PP-AJUSTE] a garra nao abriu - sem ajuste.");
                 return;
             }
             publishStage(goal_handle, "pp_ajuste_descendo");
@@ -5043,37 +5064,40 @@ private:
                 (void)planAndExecute(gripper, "pp ajuste reabrir normal");
                 return;
             }
-            // 5) Qual dedo esta' do lado da tag: pelo TF dos dedos (frame do IK).
-            bool esquerdo_lado_tag = false;
+            // 5) Qual dedo esta' do lado +eixo: pelo TF dos dedos (frame do IK).
+            bool esquerdo_lado_mais = false;
             try {
                 const auto pl = tf_buffer_->lookupTransform(
                     ik_reference_frame_, "finger_left", tf2::TimePointZero, tf2::durationFromSec(0.5));
                 const auto pr = tf_buffer_->lookupTransform(
                     ik_reference_frame_, "finger_right", tf2::TimePointZero, tf2::durationFromSec(0.5));
-                esquerdo_lado_tag = (framePosition(pl) - framePosition(pr)).dot(fora) > 0.0;
+                esquerdo_lado_mais = (framePosition(pl) - framePosition(pr)).dot(eixo) > 0.0;
             } catch (const tf2::TransformException & ex) {
                 // Sem TF: pela FK, dedo esquerdo no -X do TCP (URDF: junta 6 em x=-0.0252).
                 Eigen::Vector3d p;
                 Eigen::Matrix3d rot;
                 manip_task_execution::forwardKinematics(q_baixo, manip_task_execution::ArmModel{}, p, rot);
-                esquerdo_lado_tag = (-rot.col(0)).dot(fora) > 0.0;
+                esquerdo_lado_mais = (-rot.col(0)).dot(eixo) > 0.0;
                 RCLCPP_WARN(
                     get_logger(), "[PP-AJUSTE] sem TF dos dedos (%s) - lado pela FK.", ex.what());
             }
-            // Cubo mais perto da tag (e_tag > 0): empurra o dedo do lado da tag.
-            const bool empurra_esquerdo = (e_tag > 0.0) == esquerdo_lado_tag;
+            // O cubo escapou para +eixo (e > 0): empurra o dedo que esta' desse lado.
+            const bool empurra_esquerdo = (e > 0.0) == esquerdo_lado_mais;
             RCLCPP_INFO(
                 get_logger(),
-                "[PP-AJUSTE] cubo %.1f mm %s da tag: fecho primeiro o dedo %s (ate' %.3f), depois o %s (ate' %.3f).",
-                std::abs(e_tag) * 1000.0, e_tag > 0.0 ? "mais perto" : "mais longe",
+                "[PP-AJUSTE] cubo %.1f mm %s: fecho primeiro o dedo %s (ate' %.3f), depois o %s (ate' %.3f); "
+                "garra aberta em %.3f.",
+                std::abs(e) * 1000.0,
+                eixo_tag ? (e > 0.0 ? "mais perto da tag" : "mais longe da tag") :
+                (e > 0.0 ? "de lado (+)" : "de lado (-)"),
                 empurra_esquerdo ? "ESQUERDO (j6)" : "DIREITO (j7)", dedo_empurra,
-                empurra_esquerdo ? "direito" : "esquerdo", dedo_apoio);
+                empurra_esquerdo ? "direito" : "esquerdo", dedo_apoio, aberto);
             publishStage(goal_handle, "pp_ajuste_empurrando");
             // Falha aqui e' esperada se o dedo trava no cubo encostado na parede
             // do furo (tolerancia do controlador): segue para abrir.
             if (!ppMoverDedos(
-                    gripper, empurra_esquerdo ? dedo_empurra : dedo_aberto,
-                    empurra_esquerdo ? dedo_aberto : dedo_empurra, "pp ajuste empurra"))
+                    gripper, empurra_esquerdo ? dedo_empurra : aberto,
+                    empurra_esquerdo ? aberto : dedo_empurra, "pp ajuste empurra"))
             {
                 RCLCPP_WARN(get_logger(), "[PP-AJUSTE] o dedo que empurra nao chegou ao alvo (travou no cubo?).");
             }

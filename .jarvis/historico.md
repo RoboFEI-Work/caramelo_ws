@@ -561,3 +561,13 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: "quando ele da o undocking ele precisa voltar pra home".
 - Achado: o undock e' o 1o passo do GoToWS; o executor ja' punha `home` antes do goto, mas so' quando o destino tinha docking, e com ForceSuccess sem nova tentativa (uma falha do home = sai da mesa com o braco onde o place deixou).
 - Feito (bt_yaml_executor.cpp): home antes de todo goto com o braco fora de home, 2 tentativas. Build ok; arvore aceita no isolado. NAO testado no robo; sem commit.
+
+## 2026-11-26 — Ajuste da PP na outra direcao (T60)
+- Pedido: "faca o mesmo para a outra direcao, a unica coisa e' que ele nao consegue estar em full open".
+- Feito (ppAjustarCubo): erro de lado tambem corrigido; eixo de maior erro primeiro, olha de novo e faz o outro (`pp_ajuste_max` 2). De lado: punho do place, abertura `pp_ajuste_dedo_aberto_lado` -0.2265. Dedo que empurra = o do lado para onde o cubo escapou (TF dos dedos). Build ok; nao testado; sem commit.
+
+## 2026-11-26 — Robo sem voz (T61)
+- Pedido: "retire todas as falas do robo, tudo que for desnecessario para o funcionamento do robo. Precisamos deixar ele o mais rapido possivel".
+- Feito: speech_node nao sobe por padrao (use_audio false nos 2 launches; Kokoro e' TTS neural, pesa na CPU); speech_enabled false em pick/place/dock_align/amt_sort; removidas as esperas que so' existiam para a voz: 1,5 s depois do START (GoToWS) e 1 s antes de cada nudge lateral (nudge_speech_lead_s, agora 0 sem voz). Docs: voz_do_robo.md, docking_alinhamento_holonomico.md.
+- Mantido: task_viewer (tela com a tag), logs [SPEECH]/[AMT] nao saem mais no pick/place (speak retorna antes).
+- Verificado: build dos 5 pacotes; pytest dock/nudge 285 ok, amt_sort_core 14 ok. Nao testado no robo; sem commit.
