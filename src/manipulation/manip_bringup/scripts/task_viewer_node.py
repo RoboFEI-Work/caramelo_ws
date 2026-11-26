@@ -100,10 +100,11 @@ class Supervisor(Node):
 
 
 def titulo_e_tag(label: str):
-    """'PEGANDO TAG 25  |  Mesa15' -> ('PICK:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:'."""
+    """'PEGANDO TAG 25  |  Mesa15' -> ('IDENTIFIQUEI:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:'."""
     texto = label.strip().upper()
     # 'PICK ...' / 'PLACE ...' tambem valem (teste na mao: "pick tag 20").
-    titulo = 'PICK:' if texto.startswith(('PEGANDO', 'PICK')) else (
+    # 2026-11-26 (operador): no pick a tela diz IDENTIFIQUEI, nao PICK.
+    titulo = 'IDENTIFIQUEI:' if texto.startswith(('PEGANDO', 'PICK')) else (
         'PLACE:' if texto.startswith(('COLOCANDO', 'PLACE')) else '')
     m = re.search(r'TAG[ _]*([A-Z0-9_]+)', texto)
     tag = f'TAG {m.group(1)}' if m else texto
@@ -111,7 +112,7 @@ def titulo_e_tag(label: str):
 
 
 def janela() -> None:
-    """Processo filho: tela branca com 'PICK:' / 'PLACE:' e 'TAG x' enormes."""
+    """Processo filho: tela branca com 'IDENTIFIQUEI:' / 'PLACE:' e 'TAG x' enormes."""
     import cv2
     import numpy as np
 

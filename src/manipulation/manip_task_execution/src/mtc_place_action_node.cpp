@@ -307,6 +307,15 @@ public:
             "container_z_extra_mesas", std::vector<std::string>{"Mesa15"});
         this->declare_parameter<std::vector<double>>(
             "container_z_extra_m", std::vector<double>{0.02});
+        // 2026-11-26 (operador: "na mesa de 15 ele ta afundando na mesa" no
+        // place no tampo): mesma correcao para o alvo do place por superficie
+        // livre (tampo + cubo + surface_drop_clearance_m, folga 0). Mesmo
+        // motivo: tampo da FK da Mesa15 ~0,9 cm baixo + braco chegando ~2 cm
+        // abaixo. Listas paralelas; lidas a cada place.
+        this->declare_parameter<std::vector<std::string>>(
+            "surface_z_extra_mesas", std::vector<std::string>{"Mesa15"});
+        this->declare_parameter<std::vector<double>>(
+            "surface_z_extra_m", std::vector<double>{0.02});
         container_exit_gripper_position_ =
             this->declare_parameter<double>("container_exit_gripper_position", 0.170);
         cube_height_m_ = this->declare_parameter<double>("cube_height_m", 0.042);
@@ -2086,8 +2095,23 @@ private:
     /// (prefixo mais longo de container_z_extra_mesas); 0 se nenhuma casa.
     double containerZExtraForTable(const std::string & table_pose)
     {
-        const auto mesas = this->get_parameter("container_z_extra_mesas").as_string_array();
-        const auto extras = this->get_parameter("container_z_extra_m").as_double_array();
+        return zExtraForTable(
+            table_pose, "container_z_extra_mesas", "container_z_extra_m", "CONTAINER");
+    }
+
+    /// 2026-11-26: o mesmo para o place no TAMPO (superficie livre).
+    double surfaceZExtraForTable(const std::string & table_pose)
+    {
+        return zExtraForTable(
+            table_pose, "surface_z_extra_mesas", "surface_z_extra_m", "SUPERFICIE");
+    }
+
+    double zExtraForTable(
+        const std::string & table_pose, const std::string & mesas_param,
+        const std::string & extras_param, const char * log_tag)
+    {
+        const auto mesas = this->get_parameter(mesas_param).as_string_array();
+        const auto extras = this->get_parameter(extras_param).as_double_array();
         double extra = 0.0;
         std::size_t best_len = 0;
         for (std::size_t i = 0; i < mesas.size() && i < extras.size(); ++i) {
@@ -2104,8 +2128,8 @@ private:
         }
         if (best_len > 0) {
             RCLCPP_INFO(
-                get_logger(), "[CONTAINER] correcao de altura da mesa %s: %+.3f m.",
-                table_pose.c_str(), extra);
+                get_logger(), "[%s] correcao de altura da mesa %s: %+.3f m.",
+                log_tag, table_pose.c_str(), extra);
         }
         return extra;
     }
@@ -3303,7 +3327,8 @@ private:
             return SurfaceOutcome::kNotAvailable;
         }
         publishTablePlaneZ(tabletop);
-        const double target_z = tabletop + cube_height_m_ + surface_drop_clearance_m_;
+        const double target_z = tabletop + cube_height_m_ + surface_drop_clearance_m_ +
+            surfaceZExtraForTable(table_pose);
 
         // Ponto preferido = FK da pose ensinada da mesa (confortavel p/ o braco).
         Eigen::Vector3d p_named(0.0, 0.30, target_z);
