@@ -30,7 +30,7 @@ quem conecta no meio da missao recebe o historico recente).
 Gravacao por corrida (2026-11-11 bag; 2026-11-13 corrida completa): o mesmo
 iniciar_run/parar_run do run_mission (caramelo_run_common: runs/run_<stamp>/
 com bag, video do RViz, logs, config, metadata.json e analysis.md) em volta do
-executor; a action NAO mudou. Parametros do no': bag_enabled (default true;
+executor; a action NAO mudou. Parametros do no': bag_enabled (default false desde 2026-11-25;
 desliga a gravacao inteira), bag_extra, bag_camera e bag_nav_profile (metadado).
 
 Como roda: ros2 launch caramelo_navigation mission_server.launch.py
@@ -172,7 +172,8 @@ class MissionServer(Node):
     def __init__(self):
         super().__init__("caramelo_mission_server")
         self.declare_parameter("single_instance", True)
-        self.declare_parameter("bag_enabled", True)
+        # 2026-11-25 (pedido do operador): gravacao desligada por padrao (pesava no PC).
+        self.declare_parameter("bag_enabled", False)
         self.declare_parameter("bag_extra", False)
         self.declare_parameter("bag_camera", False)
         self.declare_parameter("bag_nav_profile", "")

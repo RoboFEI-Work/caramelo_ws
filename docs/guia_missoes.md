@@ -134,8 +134,9 @@ ros2 run caramelo_navigation run_mission --map-name arena2_520 --task missions/m
   tem `dock_distances.yaml` (linha `Tempo estimado guloso: … ; otimizado: …` no log do
   planner); sem o arquivo, o planejador guloso de sempre. Ver `docs/planejador_por_tempo.md`.
 - Ctrl-C no meio: cancela limpo os goals em voo (nav e braço).
-- Cada corrida grava **vídeo do RViz + rosbag + logs + config + relatório** em
-  `runs/run_<stamp>/` (§2.3): `--no-bag` desliga; `--bag-extra` e `--bag-camera` gravam mais.
+- **Desde 2026-11-25 a corrida NÃO é gravada por padrão** (pesava no PC). Com `--gravar`
+  ela grava **vídeo do RViz + rosbag + logs + config + relatório** em `runs/run_<stamp>/`
+  (§2.3); `--bag-extra` e `--bag-camera` gravam mais.
 
 ### 2.1 Conferir os docks antes da missão (`tour_docks`)
 
@@ -275,8 +276,9 @@ Corrida sem missão (goals pelo RViz, teste de docking): `ros2 run caramelo_navi
   (`TOPICOS_MIN`). Estimativa: ~60 MB/min brutos, bem menos comprimido. **Pendente**: medir
   na primeira corrida real se o laço do controller piora (`grep -c "missed its desired rate"`
   no log do `controller_server` com e sem bag) antes de confiar nele em competição.
-- **Como desligar**: `--no-bag` no `run_mission`; `bag_enabled:=false` no
-  `mission_server.launch.py`; ou `CARAMELO_BAG=0` no ambiente (vale para os dois caminhos).
+- **Como ligar** (desligado por padrão desde 2026-11-25): `--gravar` no `run_mission`;
+  `bag_enabled:=true` no `mission_server.launch.py`. `--no-bag` e `CARAMELO_BAG=0` continuam
+  desligando (vencem o `--gravar`).
   Com menos de 10 GB livres a missão roda sem bag (aviso `[bag] ... GB livres`) — nunca
   aborta por causa do bag. `CARAMELO_BAG_DIR=/outro/lugar` muda a pasta raiz.
 - **Mais dados, sob demanda**: `--bag-extra` (`bag_extra:=true`) acrescenta

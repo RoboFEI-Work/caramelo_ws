@@ -18,7 +18,7 @@ Gravacao por corrida (2026-11-11 bag; 2026-11-13 corrida completa): depois do
 pre-flight caramelo_run_common.iniciar_run abre runs/run_<stamp>/ com rosbag,
 video do RViz de diagnostico, logs, config e metadata.json, e parar_run fecha
 tudo no fim (aconteca o que acontecer com o executor) e gera o analysis.md em
-segundo plano. --no-bag desliga tudo; CARAMELO_BAG=0 so' o bag, CARAMELO_VIDEO=0
+segundo plano. So' com --gravar (desde 2026-11-25 o padrao e' NAO gravar); CARAMELO_BAG=0 so' o bag, CARAMELO_VIDEO=0
 so' RViz/video; --bag-extra e --bag-camera gravam mais (docs/guia_missoes.md).
 
 As tasks vivem em missions/ na raiz do workspace (fonte unica); --task e'
@@ -74,8 +74,14 @@ def _parse_args(argv):
     p.add_argument("--preflight-timeout", type=float, default=120.0,
                    help="Segundos maximos aguardando os servidores da missao "
                         "(move_group, pick/place, nav) antes de abortar.")
+    # 2026-11-25 (pedido do operador): gravar a corrida (bag, videos dos RViz
+    # escondidos no Xvfb, logs, relatorio) pesava no PC durante a missao.
+    # Agora e' DESLIGADO por padrao; --gravar liga. --no-bag segue aceito.
+    p.add_argument("--gravar", action="store_true",
+                   help="Grava a corrida em runs/run_<stamp>/ (bag, videos do RViz, logs, "
+                        "relatorio). Padrao: nao grava.")
     p.add_argument("--no-bag", action="store_true",
-                   help="Nao grava a corrida (bag, video do RViz, logs, relatorio).")
+                   help="Nao grava a corrida (ja e' o padrao; vence o --gravar).")
     p.add_argument("--bag-extra", action="store_true",
                    help="Bag com os topicos EXTRA (costmap global, particle_cloud, "
                         "scan_raw...). Dobra o tamanho.")
@@ -326,7 +332,7 @@ def main(argv=None) -> int:
     # Corrida gravada: nasce depois do pre-flight (stack no ar, topicos
     # descobertos) e morre no finally, com ou sem Ctrl-C no executor.
     run, codigo = None, None
-    if not args.no_bag:
+    if args.gravar and not args.no_bag:
         run = iniciar_run(actions_yaml.stem, task_yaml.stem, map_folder.name, actions_yaml,
                           task_yaml=task_yaml, map_folder=map_folder, extra=args.bag_extra,
                           camera=args.bag_camera, nav_profile=args.nav_profile)

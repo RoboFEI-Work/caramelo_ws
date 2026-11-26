@@ -6,7 +6,8 @@ e' o caramelo_bringup, que sobe os dois. Assim ele tambem pode ser subido
 sozinho, para testar a missao com os fakes de manip_bt/test/.
 
 bag_enabled / bag_extra / bag_camera: rosbag por corrida (caramelo_bag_common),
-mesmos efeitos de --no-bag / --bag-extra / --bag-camera do run_mission.
+mesmos efeitos de --gravar / --bag-extra / --bag-camera do run_mission.
+bag_enabled e' false por padrao desde 2026-11-25 (a gravacao pesava no PC).
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -24,7 +25,7 @@ def generate_launch_description():
             description="Usa o clock simulado (true em Gazebo)",
         ),
         DeclareLaunchArgument(
-            "bag_enabled", default_value="true",
+            "bag_enabled", default_value="false",  # 2026-11-25: desligado por padrao
             description="Grava o rosbag da corrida em ~/bags (CARAMELO_BAG=0 tambem desliga)",
         ),
         DeclareLaunchArgument(

@@ -143,6 +143,11 @@ Formato: data · decisão · motivo · consequências · origem · status.
 - **Custo/limite**: Xvfb renderiza por software (llvmpipe, 1 thread, nice 15, 10 fps); `metadata.json` grava `video.cpu_nucleos` para decidir quantas vistas cabem (`CARAMELO_VIDEO_VISTAS`). Requer `sudo apt install xvfb`; sem ele a corrida grava o resto e diz por quê.
 - **Status**: implementada e testada sem Xvfb (vistas renderizadas na tela real no domínio 99); falta a 1ª corrida com Xvfb instalado.
 
+## 2026-11-25 — Gravacao da corrida so' quando pedida
+- **Decisao**: `run_mission` grava `runs/run_<stamp>/` so' com `--gravar`; `mission_server` `bag_enabled` false por padrao.
+- **Motivo**: operador acha que a gravacao (bag + Xvfb com RViz + ffmpeg + logs) e' um dos motivos do PC lento. Substitui o "ligado por padrao" das decisoes de 2026-11-11/13 (o resto delas vale quando gravar).
+- **Status**: vigente.
+
 ## Regras de trabalho (vigentes, do operador)
 - Commits só quando pedidos; push manual.
 - Uma mudança por vez; "falhar em melhorar nunca pode piorar".
