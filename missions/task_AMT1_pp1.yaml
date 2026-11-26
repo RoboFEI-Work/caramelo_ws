@@ -27,14 +27,14 @@ objects:
   - {id: 06, type: ATTC}
 containers: []
 
+precision_tables:
+  PP:
+    slot_tags: [101, 102, 103, 104, 105, 106, 107]
 start_state:
-  PP_1:
-    obj_ids: [01, 02, 03, 04, 05, 06]
-    cont_ids: []
-
+  PP:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: null
 finish_state:
-  PP_1:
-    obj_ids: [01, 02, 03, 04, 05, 06]
-    cont_ids: []
-    constraints:
-      - objects in ascending id order from left to right
+  PP:
+    obj_ids: [1, 2, 3, 4, 5, 6]
+    slots: {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: null}
