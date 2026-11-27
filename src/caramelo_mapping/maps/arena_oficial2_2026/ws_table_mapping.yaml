@@ -1,8 +1,8 @@
 ws_to_table_pose:
-  WS_1: Mesa10
+  WS_1: Mesa5
   WS_2: Mesa10
-  WS_3: Mesa10
-  WS_4: Mesa10
+  WS_3: Mesa15
+  WS_4: Mesa15
   SH_1: MesaSh
   PP_1: Mesa10
   RT_1: Mesa10
