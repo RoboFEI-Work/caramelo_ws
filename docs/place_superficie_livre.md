@@ -437,3 +437,19 @@ run, 26 pytests de segmentação/projeção/fusão/profundidade, 25 do viewer).
     conferir no log `replanejando so' pela cor` → entrega pela superfície, e no `result.message`
     do `PlaceTag` o sufixo `[superficie: ...]` (também nas poses fixas: `sem_espaco: validas 0
     (rejeitadas: ...)`).
+
+## Altura do tampo medida no docking (2026-11-26)
+
+Pedido do operador: "em algumas mesas ele ta colocando muito alto e em outra ele ta afundando a garra".
+Antes, a cota do tampo vinha só da pose ensinada da mesa (FK de `MesaX` − cubo).
+
+- O `dock_align` publica em `/dock_align/table_height` (Float64, latched) a altura do tampo acima do
+  chão medida pela câmera no docking: mediana dos quadros em que o **chão** foi visto (plano do tampo −
+  plano do chão, sem depender da inclinação do TF). No início de cada docking publica NaN.
+- O place na superfície usa tampo = z do `base_footprint` no frame do IK + altura medida, e o alvo do TCP
+  = tampo + cubo + `surface_drop_clearance_m` + `surface_altura_medida_extra_m` (0,01: o braço cede
+  7–13 mm com o cubo; a pose ensinada já embutia isso).
+- Sem medida, ou medida a mais de `surface_altura_medida_max_diff_m` (0,06) da pose: usa a pose como antes,
+  com a correção por mesa `surface_z_extra_*`.
+- Desligar: `ros2 param set /place_action_server surface_usar_altura_medida false`.
+- Log: `[SUPERFICIE] altura do tampo MEDIDA no docking: 0.102 m do chao -> z=... (pose 'Mesa10' dizia ..., diferenca ...)`.

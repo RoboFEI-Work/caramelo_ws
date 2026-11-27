@@ -594,3 +594,8 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-26 — Undock mais rapido (T66)
 - Pedido: "o undocking pode ser mais rapido, a velocidade dele".
 - Feito: DEFAULT_CONTROLLER do docking_server.launch.py: v_linear_max 0.16->0.30, slowdown_radius 0.45->0.15. Sem commit; nao testado.
+
+## 2026-11-26 — Altura do tampo medida para o place na superficie (T67)
+- Pedido: "quando ele ve o lugar da mesa para largar o objeto, tem como ele definir a altura nisso? em algumas mesas ele ta colocando muito alto e em outra ele ta afundando a garra".
+- Achado: o alvo vinha so' da FK da pose ensinada (MesaX) - cubo; a camera do docking ja' media table_h (plano do tampo - plano do chao) mas so' ia para o log ("mesa h=").
+- Feito: caramelo_dock_camera TableMeasure.floor_seen; dock_align publica /dock_align/table_height (latched, mediana, NaN por docking); place surfaceTargetZ usa a medida (TF base_footprint no frame do IK) com sanidade 6 cm e extra 1 cm. Docs: place_superficie_livre.md. Sem commit; nao testado no robo.

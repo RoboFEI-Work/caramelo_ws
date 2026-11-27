@@ -669,6 +669,23 @@ public:
         publishSurfaceObserve(false);
         table_plane_z_pub_ = this->create_publisher<std_msgs::msg::Float64>(
             surface_table_plane_topic_, rclcpp::QoS(1).transient_local().reliable());
+        // 2026-11-26 (operador: "quando ele ve o lugar da mesa para largar o objeto,
+        // tem como ele definir a altura nisso? em algumas mesas ele ta colocando muito
+        // alto e em outra ele ta afundando a garra"): ALTURA DO TAMPO medida pela
+        // camera no docking (dock_align, plano do tampo - plano do chao, latched;
+        // NaN no inicio de cada docking). Ver surfaceTabletopZ.
+        this->declare_parameter<bool>("surface_usar_altura_medida", true);
+        // Somado ao alvo quando a altura e' a MEDIDA: o braco cede 7-13 mm com o
+        // cubo (16/11), e a pose ensinada ja' embutia isso; a medida nao.
+        this->declare_parameter<double>("surface_altura_medida_extra_m", 0.01);
+        // Medida mais longe que isto da pose ensinada = desconfia e usa a pose.
+        this->declare_parameter<double>("surface_altura_medida_max_diff_m", 0.06);
+        this->declare_parameter<std::string>("surface_floor_frame", "base_footprint");
+        table_height_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+            "/dock_align/table_height", rclcpp::QoS(1).transient_local().reliable(),
+            [this](std_msgs::msg::Float64::ConstSharedPtr m) {
+                measured_table_h_.store(m->data);
+            });
         scan_subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
             surface_scan_topic_, rclcpp::SensorDataQoS(),
             [this](sensor_msgs::msg::LaserScan::ConstSharedPtr msg) {
@@ -990,6 +1007,9 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr surface_observe_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr table_plane_z_pub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr table_height_sub_;
+    /// Tampo acima do chao medido no docking (NaN = sem medida deste docking).
+    std::atomic<double> measured_table_h_{std::numeric_limits<double>::quiet_NaN()};
     std::mutex surface_mutex_;
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_surface_grid_;
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr latest_surface_grid_color_;
@@ -2170,6 +2190,53 @@ private:
     }
 
     /// 2026-11-26: o mesmo para o place no TAMPO (superficie livre).
+    /// Cota do tampo (frame do IK) para o place na superficie: a MEDIDA no
+    /// docking quando existe e e' plausivel; senao a pose ensinada (+ a correcao
+    /// por mesa surface_z_extra_*, que so' existe para compensar a pose).
+    /// Devolve o alvo do TCP (tampo + cubo + folga + extra) e loga a origem.
+    double surfaceTargetZ(double tabletop_pose, const std::string & table_pose, double * tampo_out)
+    {
+        *tampo_out = tabletop_pose;
+        const double base = cube_height_m_ + surface_drop_clearance_m_;
+        const double h = measured_table_h_.load();
+        if (this->get_parameter("surface_usar_altura_medida").as_bool() && std::isfinite(h)) {
+            const std::string floor_frame = this->get_parameter("surface_floor_frame").as_string();
+            try {
+                // Chao = origem do base_footprint; z dele no frame do IK (URDF).
+                const auto tf = tf_buffer_->lookupTransform(
+                    ik_reference_frame_, floor_frame, tf2::TimePointZero, tf2::durationFromSec(0.5));
+                const double tampo = tf.transform.translation.z + h;
+                const double max_diff = this->get_parameter("surface_altura_medida_max_diff_m").as_double();
+                const double extra = this->get_parameter("surface_altura_medida_extra_m").as_double();
+                if (std::abs(tampo - tabletop_pose) <= max_diff) {
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "[SUPERFICIE] altura do tampo MEDIDA no docking: %.3f m do chao -> z=%.3f "
+                        "(pose '%s' dizia %.3f, diferenca %+.1f mm); alvo = tampo + cubo + folga + %.0f mm.",
+                        h, tampo, table_pose.c_str(), tabletop_pose, (tampo - tabletop_pose) * 1000.0,
+                        extra * 1000.0);
+                    *tampo_out = tampo;
+                    return tampo + base + extra;
+                }
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[SUPERFICIE] altura medida (z=%.3f, %.3f m do chao) a %.0f mm da pose '%s' (z=%.3f), "
+                    "acima de %.0f mm - uso a pose.",
+                    tampo, h, (tampo - tabletop_pose) * 1000.0, table_pose.c_str(), tabletop_pose,
+                    max_diff * 1000.0);
+            } catch (const tf2::TransformException & ex) {
+                RCLCPP_WARN(
+                    get_logger(), "[SUPERFICIE] sem TF %s<-%s (%s) - uso a pose.",
+                    ik_reference_frame_.c_str(), floor_frame.c_str(), ex.what());
+            }
+        } else {
+            RCLCPP_INFO(
+                get_logger(), "[SUPERFICIE] sem altura medida neste docking - tampo pela pose '%s' (z=%.3f).",
+                table_pose.c_str(), tabletop_pose);
+        }
+        return tabletop_pose + base + surfaceZExtraForTable(table_pose);
+    }
+
     double surfaceZExtraForTable(const std::string & table_pose)
     {
         return zExtraForTable(
@@ -3396,9 +3463,9 @@ private:
             RCLCPP_WARN(get_logger(), "[SUPERFICIE] sem juntas da pose '%s' — sem cota do tampo.", table_pose.c_str());
             return SurfaceOutcome::kNotAvailable;
         }
+        // O detector de superficie recebe a cota do TAMPO usada no alvo (medida ou pose).
+        const double target_z = surfaceTargetZ(tabletop, table_pose, &tabletop);
         publishTablePlaneZ(tabletop);
-        const double target_z = tabletop + cube_height_m_ + surface_drop_clearance_m_ +
-            surfaceZExtraForTable(table_pose);
 
         // Ponto preferido = FK da pose ensinada da mesa (confortavel p/ o braco).
         Eigen::Vector3d p_named(0.0, 0.30, target_z);
