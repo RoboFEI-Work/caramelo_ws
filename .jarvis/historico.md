@@ -624,3 +624,31 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: "a tela da ordem nao ta full screen e tem que ser so' a ordem".
 - Feito: task_viewer_node.py do aec9202 de volta (durante a AMT so' a ordem; tela cheia pedida depois do 1o imshow e reaplicada) + amt_sort_node publica "IDENTIFIQUEI A ORDEM: ..." (so' essa linha; o resto do aec9202 continua descartado). Novo: quadro desenhado no tamanho REAL da janela (a tela do robo e' HDMI 800x480; antes desenhava 1920x1080 e esticava).
 - Verificado neste PC: janela abriu 800x480+0+0 (tela inteira); a do codigo antigo estava 428x329. Sem commit.
+
+## 2026-11-27 — Velocidades (pedido do operador, apos voltar ao 28405c5)
+- RotationShim (DWBHolonomic) rotate_to_heading_angular_vel 0.35 -> 0.50.
+- Translacao 0.70 -> 1.00 m/s: DWB max_vel_x/max_speed_xy, MPPI vx_max, velocity_smoother x.
+  Risco: reta 1.0 + giro 0.5 satura uma roda (~115% do FS); giro do shim a 0.5 pode oscilar no yaw final.
+- Volta da prateleira lenta: go_to_named_pose_bt le /joint_states (wait_for_message) e, se o braco esta
+  no pirocao (tol 0.25 rad), faz o movimento (ex.: home) a 0.35/0.25 (shelf_return_*_scaling). Sem commit.
+
+## 2026-11-27 — Mudancas da AMT restritas a AMT (pedido do operador)
+- Campo novo `bool amt` em PickTag.action e PlaceTag.action (default false); amt_sort_node manda amt=True.
+- Pick: sair na 1a busca sem tag (322ae2f) so' com goal->amt; nas outras provas volta a repetir a busca.
+- Place: PP-AJUSTE (empurrao no furo da PP, c147c55/009e466/bf5b07c/0f0829d) so' com goal->amt.
+- Ficaram globais de proposito (pedidos gerais do operador): voz desligada, home antes de todo goto,
+  undock 0.30, arm_settle/velocidades, arm_with_gripper. a26894a (altura do tampo medida) nao e' da AMT.
+- my_robot_msgs precisou de rm -rf build/my_robot_msgs (symlink). Build ok. Sem commit.
+
+## 2026-11-27 20:32 — ATENCAO: a volta ao 28405c5 foi desfeita por um pull
+- reflog: 20:31 reset --hard 28405c5; 20:32 "pull --tags origin telinha: Fast-forward" (Sincronizar do VS Code)
+  levou o branch de volta a 50278d3 (o operador ja' tinha feito push do merge). As mudancas seguintes
+  (velocidades, volta lenta da prateleira, flag amt) foram feitas EM CIMA de 50278d3, nao do 28405c5.
+- Estado real: telinha "IDENTIFIQUEI A ORDEM" presente; "ajustando o place" (a26894a) REVERTIDO; arm_with_gripper presente.
+
+## 2026-11-27 — Tempos de espera de volta aos de antes de 26/11 (102d515), pedido do operador
+- pick/place: grasp_effort_sample_duration 0.4->0.8; place: stack_settle_ms 300->600, slot_observe_dwell_sec 0.5->1.0,
+  surface_observe_settle_ms 300->600; leitura do braco parado pelo metodo antigo (param novo usar_cache_joint_states=false).
+- dock_align: nudge_settle_min_s 0.5->0.8, still_min_s 0.3->0.5. Build ok, sem commit.
+- Contexto: operador relatou manipulador "muito estranho" desde a manha; logs deste PC: 18 GOAL_TOLERANCE_VIOLATED
+  do arm_controller hoje (15:45, 17:19, 17:33, 20:15-20:22). Suspeitos ainda: arm_with_gripper, Mesa15 em WS_3/WS_4.

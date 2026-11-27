@@ -23,7 +23,8 @@ velocity_smoother:
     # x 0.40 -> 0.60 (operador, 2026-11-07); y fica 0.40 (lateral e' a direcao
     # que o LiDAR frontal menos enxerga e e' o que satura o ESC na diagonal).
     # x 0.60 -> 0.70 (operador, 2026-11-26), junto com DWB e MPPI; y e wz mantidos.
-    max_velocity: [0.70, 0.40, 0.50]
+    # x 0.70 -> 1.00 (operador, 2026-11-27: "1 m/s"), junto com DWB e MPPI.
+    max_velocity: [1.00, 0.40, 0.50]
     # x fica em -0.16: re' so' existe para o BackUp dos BTs (0.13), nao para
     # navegar (scan cobre so' a frente). y acompanha o max_vel_y para a lateral
     # ser simetrica nos dois sentidos.

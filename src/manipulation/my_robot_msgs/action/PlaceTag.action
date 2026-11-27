@@ -29,6 +29,11 @@ bool final_attempt
 # parede declarada (o no ainda pode detectar pelo LiDAR, se habilitado).
 # Vem do ws_walls do ws_table_mapping.yaml do mapa ou do YAML de acoes.
 string wall_sides
+# 2026-11-27 (operador: mudancas da AMT nao podem mexer nas outras provas):
+# true = SO' a AMT. Liga o ajuste do cubo no furo da PP depois de soltar
+# (empurrao com os dedos, PP-AJUSTE). false (default) = place normal na PP,
+# como antes da AMT.
+bool amt
 
 ---
 bool success

@@ -794,8 +794,8 @@ class DockAlignNode(Node):
         # puro): lateral dentro de eps por min_s (>= retencao do ESC ~0,5 s),
         # teto max_s; so depois mede o curso e decide.
         self.declare_parameter("nudge_settle_eps", 0.003)
-        # 2026-11-26 (operador: mais velocidade): 0,8 -> 0,5 s (continua exigindo a odometria parada).
-        self.declare_parameter("nudge_settle_min_s", 0.5)
+        # 2026-11-26: 0,8 -> 0,5 s; 2026-11-27 (operador: "tempos de espera de antes"): de volta a 0,8 s.
+        self.declare_parameter("nudge_settle_min_s", 0.8)
         self.declare_parameter("nudge_settle_max_s", 3.0)
         # Watchdog de progresso (2026-10-19): comandando ha' nudge_no_progress_s
         # sem a odometria andar nudge_no_progress_min_m = aborta com
@@ -880,8 +880,8 @@ class DockAlignNode(Node):
         # 0,035 rad = 2 graus (= refine_yaw_agree_tol).
         self.declare_parameter("still_v_max", 0.02)
         self.declare_parameter("still_w_max", 0.05)
-        # 2026-11-26 (operador: mais velocidade): 0,5 -> 0,3 s parado (continua exigindo v e w abaixo do limite).
-        self.declare_parameter("still_min_s", 0.3)
+        # 2026-11-26: 0,5 -> 0,3 s; 2026-11-27 (operador: "tempos de espera de antes"): de volta a 0,5 s parado.
+        self.declare_parameter("still_min_s", 0.5)
         self.declare_parameter("still_max_s", 3.0)
         self.declare_parameter("still_yaw_eps", 0.035)
 

@@ -101,7 +101,12 @@ public:
         // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
-        joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        // 2026-11-27 (operador: "volte com os tempos de espera de antes"): leitura
+        // do braco parado pelo metodo antigo do MoveGroupInterface por padrao;
+        // true = pela hora de chegada do joint_states (JointStateCache, 26/11).
+        if (this->declare_parameter<bool>("usar_cache_joint_states", false)) {
+            joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        }
         // 2026-11-26: garra abrindo NO CAMINHO (grupo arm_with_gripper). false = abre e depois move.
         this->declare_parameter<bool>("usar_arm_with_gripper", true);
 
@@ -160,9 +165,9 @@ public:
         // Tempo entre o braco chegar e a primeira leitura valer: cobre o
         // assentamento mecanico e a latencia de exposicao da camera. Era 300 ms
         // fixos na re-deteccao do TCP2 — curto para 15 fps.
-        // 2026-11-26 (operador: mais velocidade): 600 -> 300 ms (paradas da PP/pilha); o arm_settle ja' espera o
+        // 2026-11-27 (operador: "volte com os tempos de espera de antes"): de volta a 600 ms (26/11 era 300) (paradas da PP/pilha); o arm_settle ja' espera o
         // braco parar e as leituras exigem quadro de depois da parada.
-        stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 300);
+        stack_settle_ms_ = this->declare_parameter<int>("stack_settle_ms", 600);
         // 2026-11-03 (pedido do operador): EMPILHAR olhando a base ANTES de
         // pegar o bloco no container de bordo (garra vazia, nada na frente da
         // camera) e, logo depois de pegar, empilhar direto por essa leitura.
@@ -423,7 +428,7 @@ public:
                 "grasp_min_effort_increase_nm", 0.05);
         grasp_effort_sample_duration_ =
             this->declare_parameter<double>(
-                "grasp_effort_sample_duration", 0.4);   // 2026-11-26: 0,8 -> 0,4 s (vazia ~0,01, cheia ~0,85 Nm)
+                "grasp_effort_sample_duration", 0.8);   // 2026-11-26: 0,8 -> 0,4 s; 2026-11-27 (operador): de volta a 0,8 s
         grasp_effort_max_age_ =
             this->declare_parameter<double>("grasp_effort_max_age", 0.4);
         dynamic_joint_state_subscription_ =
@@ -519,8 +524,8 @@ public:
                 "ct_10", "ct_11", "ct_12", "ct_13", "ct_14", "ct_15", "ct_16",
                 "tag_20", "tag_21", "tag_22", "tag_23", "tag_24", "tag_25",
                 "tag_26", "tag_27", "tag_28", "tag_42"});
-        // 2026-11-26 (operador: mais velocidade): 1,0 -> 0,5 s de leitura das tags na mesa.
-        this->declare_parameter<double>("slot_observe_dwell_sec", 0.5);
+        // 2026-11-26: 1,0 -> 0,5 s; 2026-11-27 (operador: "tempos de espera de antes"): de volta a 1,0 s.
+        this->declare_parameter<double>("slot_observe_dwell_sec", 1.0);
         this->declare_parameter<double>("slot_observe_max_dz_m", 0.15);
         this->declare_parameter<double>("slot_observe_min_radial_m", 0.10);
         // 0.07 centro a centro = 2,8 cm de vao entre cubos de 42 mm (o padrao
@@ -576,9 +581,9 @@ public:
             "surface_observe_poses",
             std::vector<std::string>{"pegar_obj", "tag_direita", "tag_esquerda"});
         this->declare_parameter<bool>("surface_observe_lazy", true);
-        // 2026-11-26 (operador: mais velocidade): 600 -> 300 ms; o braco ja' esperou PARAR (arm_settle) e as
+        // 2026-11-26: 600 -> 300 ms; 2026-11-27 (operador): de volta a 600 ms; o braco ja' esperou PARAR (arm_settle) e as
         // grades/tags so' valem se forem de depois da parada.
-        this->declare_parameter<int>("surface_observe_settle_ms", 300);
+        this->declare_parameter<int>("surface_observe_settle_ms", 600);
         this->declare_parameter<double>("surface_observe_timeout_sec", 5.0);
         this->declare_parameter<int>("surface_min_frames", 2);
         this->declare_parameter<std::string>(
@@ -753,7 +758,7 @@ private:
     std::vector<std::string> slot_selection_ws_prefixes_;
     std::vector<std::string> slot_excluded_poses_;
     std::vector<std::string> slot_obstacle_tag_frames_;
-    double slot_observe_dwell_sec_{0.5};
+    double slot_observe_dwell_sec_{1.0};
     double slot_observe_max_dz_m_{0.15};
     double slot_observe_min_radial_m_{0.10};
     double slot_min_clearance_m_{0.07};
@@ -821,7 +826,7 @@ private:
     int stack_tag_samples_{5};
     int stack_tag_dwell_ms_{700};
     double stack_tag_max_spread_m_{0.02};
-    int stack_settle_ms_{300};
+    int stack_settle_ms_{600};
     // Base da pilha lida de garra vazia antes do container (2026-11-03).
     bool stack_observe_before_pick_{true};
     bool stack_pre_observe_tcp2_{true};
@@ -941,7 +946,7 @@ private:
     bool surface_place_enabled_{true};
     std::vector<std::string> surface_observe_poses_;
     bool surface_observe_lazy_{true};
-    int surface_observe_settle_ms_{300};
+    int surface_observe_settle_ms_{600};
     double surface_observe_timeout_sec_{5.0};
     int surface_min_frames_{2};
     std::string surface_grid_topic_;
@@ -7693,8 +7698,14 @@ private:
 
         // 2026-11-26: PP - confere onde o cubo caiu e, fora do furo, empurra com
         // os dedos. Melhor esforco: o bloco ja' foi entregue.
+        // 2026-11-27 (operador: mudancas da AMT nao podem mexer nas outras
+        // provas): o ajuste so' roda quando quem pediu e' a AMT (goal->amt).
         if (pp_ajuste_) {
-            ppAjustarCubo(arm, gripper, goal->tag_frame, goal_handle);
+            if (goal->amt) {
+                ppAjustarCubo(arm, gripper, goal->tag_frame, goal_handle);
+            } else {
+                RCLCPP_INFO(get_logger(), "[PP-AJUSTE] place fora da AMT - sem ajuste (como antes).");
+            }
             pp_ajuste_.reset();
         }
 

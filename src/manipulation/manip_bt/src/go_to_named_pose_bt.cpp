@@ -2,9 +2,14 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
+#include <rclcpp/wait_for_message.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -257,7 +262,49 @@ GoToNamedPoseBT::GoToNamedPoseBT(
   arm_->setMaxAccelerationScalingFactor(1.0);
   gripper_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(node_, "gripper");
   gripper_->setPlanningTime(5.0);
+
+  // 2026-11-27 (operador: "a volta no place da shelf deixe em uma velocidade
+  // reduzida"): o place/pick da prateleira termina no waypoint pirocao (braco
+  // todo esticado) e a VOLTA dali para home era feita aqui a 1.0 - o braco
+  // esticado treme. Saindo de perto do pirocao, usa os mesmos fatores
+  // lentos do place na prateleira (shelf_velocity/acceleration_scaling).
+  node_->declare_parameter<double>("shelf_return_velocity_scaling", 0.35);
+  node_->declare_parameter<double>("shelf_return_acceleration_scaling", 0.25);
+  node_->declare_parameter<double>("shelf_return_tolerance_rad", 0.25);
 }
+
+namespace
+{
+// Braco perto da pose nomeada `pose` (todas as juntas do grupo arm dentro de
+// tol)? Le UMA mensagem de /joint_states com wait_for_message (nao precisa de
+// spin no node_; ver o aviso sobre getCurrentState no tick). Sem mensagem em
+// 0,5 s = "nao sei" = false (velocidade normal, comportamento antigo).
+bool bracoPertoDe(
+  const rclcpp::Node::SharedPtr & node,
+  const moveit::planning_interface::MoveGroupInterface & arm,
+  const std::string & pose, double tol)
+{
+  const std::map<std::string, double> alvo = arm.getNamedTargetValues(pose);
+  if (alvo.empty()) {
+    return false;
+  }
+  sensor_msgs::msg::JointState js;
+  if (!rclcpp::wait_for_message(js, node, "/joint_states", std::chrono::milliseconds(500))) {
+    return false;
+  }
+  for (const auto & [nome, valor] : alvo) {
+    const auto it = std::find(js.name.begin(), js.name.end(), nome);
+    if (it == js.name.end()) {
+      return false;
+    }
+    const auto i = static_cast<size_t>(std::distance(js.name.begin(), it));
+    if (i >= js.position.size() || std::fabs(js.position[i] - valor) > tol) {
+      return false;
+    }
+  }
+  return true;
+}
+}  // namespace
 
 BT::PortsList GoToNamedPoseBT::providedPorts()
 {
@@ -323,15 +370,47 @@ BT::NodeStatus GoToNamedPoseBT::tick()
       return false;
     };
 
+  // 2026-11-27: volta da prateleira (saindo do pirocao) em velocidade reduzida.
+  double vel = 1.0;
+  double acc = 1.0;
+  if (bracoPertoDe(
+      node_, *arm_, "pirocao", node_->get_parameter("shelf_return_tolerance_rad").as_double()))
+  {
+    vel = std::clamp(
+      node_->get_parameter("shelf_return_velocity_scaling").as_double(), 0.05, 1.0);
+    acc = std::clamp(
+      node_->get_parameter("shelf_return_acceleration_scaling").as_double(), 0.05, 1.0);
+    RCLCPP_INFO(
+      rclcpp::get_logger("go_to_named_pose_bt"),
+      "Saindo do pirocao (prateleira): '%s' com velocidade %.2f / aceleracao %.2f.",
+      pose_name.c_str(), vel, acc);
+  }
+  arm_->setMaxVelocityScalingFactor(vel);
+  arm_->setMaxAccelerationScalingFactor(acc);
+  // Devolve 1.0 em qualquer saida do tick (o resto da missao roda a 1.0).
+  struct VoltaVelocidadeNormal
+  {
+    std::shared_ptr<moveit::planning_interface::MoveGroupInterface> a;
+    ~VoltaVelocidadeNormal()
+    {
+      a->setMaxVelocityScalingFactor(1.0);
+      a->setMaxAccelerationScalingFactor(1.0);
+    }
+  } volta_normal{arm_};
+
   // 2026-11-26: home com a garra abrindo no caminho (ver comboInterface).
   if (pose_name == "home" && node_->get_parameter_or("usar_arm_with_gripper", true)) {
     if (auto combo = comboInterface(node_)) {
+      combo->setMaxVelocityScalingFactor(vel);
+      combo->setMaxAccelerationScalingFactor(acc);
       combo->setStartStateToCurrentState();
       moveit::planning_interface::MoveGroupInterface::Plan plan;
       if (combo->setNamedTarget("home") &&
         combo->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS &&
         combo->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS)
       {
+        combo->setMaxVelocityScalingFactor(1.0);
+        combo->setMaxAccelerationScalingFactor(1.0);
         RCLCPP_INFO(
           rclcpp::get_logger("go_to_named_pose_bt"),
           "Reached named pose: home (braco + garra juntos)");
@@ -340,6 +419,8 @@ BT::NodeStatus GoToNamedPoseBT::tick()
       RCLCPP_WARN(
         rclcpp::get_logger("go_to_named_pose_bt"),
         "home com braco+garra falhou - braco, depois garra (como antes).");
+      combo->setMaxVelocityScalingFactor(1.0);
+      combo->setMaxAccelerationScalingFactor(1.0);
     }
   }
 

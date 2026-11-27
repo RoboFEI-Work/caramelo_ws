@@ -124,7 +124,11 @@ controller_server:
       # piso fisico 0.315; 1o degrau do accel 7.0/20Hz = 0.35, parte no 1o
       # ciclo) o overshoot estimado cai p/ ~7-9 graus < janela. Calibrar em
       # campo +-0.02; NAO descer de 0.34.
-      rotate_to_heading_angular_vel: 0.35
+      # 0.35 -> 0.50 (operador, 2026-11-27: "aumente a velocidade do rotation
+      # shim para 0.5"). Pela conta acima o overshoot do giro final volta a
+      # ~14 graus (> janela 11.5 do checker): se ele ficar "indo e voltando"
+      # no yaw final, o reverso e' voltar a 0.35. Igual ao max_vel_theta 0.50.
+      rotate_to_heading_angular_vel: 0.50
       # NOVO (2026-08-18): default era ~0.3925 (22.5 graus) - o shim soltava o
       # giro AINDA FORA da janela de 11.5 e o DWB tinha que fechar 22.5->11.5
       # com min_speed_theta 0.34 (grosso demais) - a "terra de ninguem" onde a
@@ -269,7 +273,11 @@ controller_server:
       # roda 17.9 rad/s (89% do FS 20.06); pior caso legal (vx 0.57 + vy 0.40
       # + wz 0.50) = 23.3 rad/s (116%): satura UMA roda e desvia a direcao
       # nessa combinacao rara. Se aparecer, voltar a 0.60 ou max_vel_y 0.30.
-      max_vel_x: 0.70 # Velocidade maxima em x.
+      # 0.70 -> 1.00 (operador, 2026-11-27: "velocidade de movimento para 1 m/s").
+      # Conta do ESC (FS 20.06 rad/s, roda 0.0581 m): reta 1.0 = 17.2 rad/s (86%);
+      # reta 1.0 + giro 0.50 = ~23 rad/s (115%): satura uma roda e desvia a
+      # direcao nessa combinacao. Freada a 0.90 m/s2: ~0.56 m. Reverso: 0.70.
+      max_vel_x: 1.00 # Velocidade maxima em x.
       min_vel_y: -0.40 # Velocidade minima lateral (simetrico com max_vel_y).
       max_vel_y: 0.40 # Velocidade maxima lateral (pedido do operador; 0.30 e a opcao dele se a diagonal+giro desviar).
       max_vel_theta: 0.50 # 1.0->0.5 (operador): giro no eixo lento o bastante p/ o AMCL acompanhar durante a rotacao (mapa duplicado erra yaw se varre rapido) e nao passar do alvo no alinhamento final.
@@ -298,7 +306,7 @@ controller_server:
       min_speed_xy: 0.131 # 1.08 x piso fisico 0.1215 m/s (reto executa exato).
       # Casado com max_vel_x/y: este e' o limite do MODULO e, se ficasse no valor
       # antigo, os tetos por eixo acima nao teriam efeito nenhum.
-      max_speed_xy: 0.70 # Limite do modulo (0.40 -> 0.60 em 2026-11-07; 0.70 em 2026-11-26, junto com max_vel_x). Tem de ficar = max_vel_x.
+      max_speed_xy: 1.00 # Limite do modulo (0.40 -> 0.60 em 2026-11-07; 0.70 em 2026-11-26; 1.00 em 2026-11-27, junto com max_vel_x). Tem de ficar = max_vel_x.
       min_speed_theta: 0.35 # 1.11 x piso fisico 0.315 rad/s de corpo (0.34 -> 0.35, operador 2026-11-07; = giro do shim). Com vtheta_samples 21 existe amostra EXATA em 0.35.
       # 0.35 -> 0.70 e -0.45 -> -0.90 (operador, 2026-09-14). MANTIDOS quando o
       # teto caiu de 0.70 para 0.40 m/s: o que incomodava era a velocidade de
@@ -541,7 +549,7 @@ controller_server:
       # roda 17.9 rad/s (89% do FS 20.06); pior caso legal (vx 0.57 + vy 0.40
       # + wz 0.50) = 23.3 rad/s (116%): satura UMA roda e desvia a direcao
       # nessa combinacao rara. Se aparecer, voltar a 0.60 ou max_vel_y 0.30.
-      vx_max: 0.70
+      vx_max: 1.00 # 0.70 -> 1.00 (operador, 2026-11-27), junto com o DWB.
       # RE PERMITIDA (operador, 2026-11-07): "nao e' proibida, so' nao abusar"
       # — sem sensor traseiro. -0.25 = o piso do ESC: menos que isso nao anda.
       # Quem segura o abuso e' o PreferForwardCritic (abaixo): a re so' vence

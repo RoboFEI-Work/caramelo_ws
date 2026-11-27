@@ -410,7 +410,12 @@ public:
         // 2026-10-27: espera o braco ASSENTAR apos cada execucao do MoveIt
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
-        joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        // 2026-11-27 (operador: "volte com os tempos de espera de antes"): leitura
+        // do braco parado pelo metodo antigo do MoveGroupInterface por padrao;
+        // true = pela hora de chegada do joint_states (JointStateCache, 26/11).
+        if (this->declare_parameter<bool>("usar_cache_joint_states", false)) {
+            joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        }
         // 2026-11-26: garra abrindo NO CAMINHO (grupo arm_with_gripper). false = abre e depois move.
         this->declare_parameter<bool>("usar_arm_with_gripper", true);
         // 2026-08-31 (pedido do operador: apos os picks falharem no robo,
@@ -528,7 +533,7 @@ public:
         grasp_effort_sample_duration_ =
             this->declare_parameter<double>(
                 "grasp_effort_sample_duration",
-                0.4);   // 2026-11-26: 0,8 -> 0,4 s (vazia ~0,01, cheia ~0,85 Nm: separa com folga)
+                0.8);   // 2026-11-26: 0,8 -> 0,4 s; 2026-11-27 (operador): de volta a 0,8 s
         grasp_effort_max_age_ =
             this->declare_parameter<double>("grasp_effort_max_age", 0.4);
         grasp_retry_attempts_ =
@@ -3850,7 +3855,11 @@ private:
             // a escada de IK so' ajuda quem ja' viu a tag. Sai ja' (skipped,
             // tag_nao_encontrada) para quem chamou mover a base. A reserva
             // (fallback_frame) continua valendo: ela troca o alvo, nao repete.
-            if (last_pick_failure_reason_ == "tag_nao_encontrada" && !trocou_para_reserva) {
+            // 2026-11-27: SO' na AMT (goal->amt); nas outras provas o pick volta a
+            // repetir a busca como antes (ninguem move a base depois do skip).
+            if (goal->amt && last_pick_failure_reason_ == "tag_nao_encontrada" &&
+                !trocou_para_reserva)
+            {
                 RCLCPP_WARN(
                     this->get_logger(),
                     "PICK de %s: tag nao encontrada na tentativa %d — nao repito a mesma busca; "
@@ -4059,7 +4068,7 @@ private:
                 last_pick_failure_reason_ + ")";
             // 2026-11-26: sem tag o "!Nao encontrei a tag X" ja' foi dito; "vou
             // para o proximo" seria falso quando quem chamou mexe a base e repete.
-            if (last_pick_failure_reason_ != "tag_nao_encontrada") {
+            if (!goal->amt || last_pick_failure_reason_ != "tag_nao_encontrada") {
                 speak("!Nao peguei o bloco, vou para o proximo");
             }
             execution_guard.release();

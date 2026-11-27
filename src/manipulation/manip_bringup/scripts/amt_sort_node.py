@@ -299,11 +299,14 @@ class AmtSort(Node):
             if not self._esperar_braco(gh):
                 return False, "cancelado" if gh.is_cancel_requested else "braco_sem_resposta"
             if op == "pick":
-                g = PickTag.Goal(tag_frame=f"tag_{cubo}", table_pose=goal.table_pose, final_attempt=final)
+                # 2026-11-27: amt=True liga no pick/place o que e' so' da AMT (sair sem
+                # tag na 1a busca; ajuste do cubo no furo da PP). Outras provas: false.
+                g = PickTag.Goal(tag_frame=f"tag_{cubo}", table_pose=goal.table_pose, final_attempt=final,
+                                 amt=True)
                 r = self._chamar(self._pick, g, gh, f"pick_tag_{cubo}_slot_{slot}", feitos, total)
             else:
                 g = PlaceTag.Goal(tag_frame=f"tag_{cubo}", table_pose=goal.table_pose, ws=goal.ws,
-                                  stack_on=f"tag_{slot}", final_attempt=final)
+                                  stack_on=f"tag_{slot}", final_attempt=final, amt=True)
                 r = self._chamar(self._place, g, gh, f"place_tag_{cubo}_slot_{slot}", feitos, total)
             if r is None:
                 return False, "cancelado" if gh.is_cancel_requested else f"{op}_sem_resposta"

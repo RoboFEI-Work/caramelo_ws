@@ -16,6 +16,11 @@ bool final_attempt
 # Se a tag sumir da camera (deteccao + varredura falham), as tentativas
 # seguintes pegam por este frame. Vazio = comportamento de sempre.
 string fallback_frame
+# 2026-11-27 (operador: mudancas da AMT nao podem mexer nas outras provas):
+# true = SO' a AMT. Sem a tag, sai na 1a busca (skipped, tag_nao_encontrada)
+# para quem chamou mover a base, em vez de repetir a mesma busca 3 vezes.
+# false (default) = missoes normais, como antes da AMT (repete a busca).
+bool amt
 
 ---
 bool success
