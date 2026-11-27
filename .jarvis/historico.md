@@ -608,3 +608,7 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-27 — Revertido o commit "ajustando o place" (T67)
 - Pedido: "retire o commit 'Ajustando o place' mas mantenha todas as outras alteracoes depois dela".
 - Feito: git revert de a26894a (altura do tampo medida no docking: /dock_align/table_height, floor_seen, surfaceTargetZ, doc). Revert em vez de rebase porque o commit ja' estava no origin e o seguinte (28405c5 "altura das nesas") veio do PC do robo: sem push forcado. Mantidos c3c2db6 (arm_with_gripper) e 28405c5.
+
+## 2026-11-27 — AMT: ordem atual na telinha (T69)
+- Pedido: "assim que ele identificar a ordem atual da mesa, colocar na telinha ORDEM ATUAL: TAGS; e conforme ele der um place novo atualizar essa ordem".
+- Feito: amt_sort_node._mostrar_ordem/_limpar_ordem + /manip/amt_ordem; task_viewer: supervisor junta task_label e amt_ordem e publica /manip/task_viewer/texto para a janela (prioridade: pick/place em andamento). Atualiza so' no place (como pedido); depois de um pick a tela mostra a ordem anterior ate' o place seguinte.

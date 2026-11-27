@@ -17,6 +17,16 @@ Como funciona (dois processos):
     WND_PROP_TOPMOST. ESC ou 'q' fecha so' a janela desta vez (reabre no
     proximo pick/place).
 
+2026-11-27 (AMT, pedido do operador): "assim que ele identificar a ordem atual
+da mesa, colocar na telinha ORDEM ATUAL: TAGS, e conforme ele der um place novo
+atualizar essa ordem". O amt_sort_node publica /manip/amt_ordem (latched,
+"ORDEM ATUAL: 3 1 - 2 4 5 6"; vazio = fim). O SUPERVISOR decide o que a tela
+mostra: o rotulo do pick/place enquanto houver um; senao a ordem da AMT. A
+janela so' fecha com os dois vazios (entre um pick e um place da AMT ela fica
+aberta mostrando a ordem). A janela le' so' o que o supervisor publica em
+/manip/task_viewer/texto (um publicador so': sem a corrida de latched entre
+pick e place ao entrar).
+
 Custo fora do pick/place: so' o supervisor.
 So' LE: nao publica em topico de comando, nao chama servico nem action.
 
@@ -38,6 +48,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 LABEL_TOPIC = '/manip/task_label'
+ORDEM_TOPIC = '/manip/amt_ordem'
+TEXTO_TOPIC = '/manip/task_viewer/texto'   # o que a janela mostra (so' o supervisor publica)
 LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      reliability=ReliabilityPolicy.RELIABLE)
 WINDOW = 'Caramelo - pick/place'
@@ -50,17 +62,35 @@ class Supervisor(Node):
         self.declare_parameter('close_delay_s', 0.5)
         self._child = None
         self._close_at = None
+        self._task = ''     # rotulo do pick/place em andamento
+        self._ordem = ''    # ordem atual da AMT
+        self._texto = None  # ultimo texto publicado para a janela
+        self._texto_pub = self.create_publisher(String, TEXTO_TOPIC, LATCHED)
         self._sem_display = not os.environ.get('DISPLAY') and not os.environ.get('WAYLAND_DISPLAY')
         if self._sem_display:
             self.get_logger().warn('task_viewer: sem DISPLAY — a janela do pick/place nao vai abrir.')
         self.create_subscription(String, LABEL_TOPIC, self._on_label, LATCHED)
+        self.create_subscription(String, ORDEM_TOPIC, self._on_ordem, LATCHED)
         self.create_timer(0.1, self._tick)
         self.get_logger().info(f'task_viewer pronto: {LABEL_TOPIC} -> janela em tela cheia.')
 
     def _on_label(self, msg: String) -> None:
-        if msg.data.strip():
+        self._task = msg.data.strip()
+        self._atualizar()
+
+    def _on_ordem(self, msg: String) -> None:
+        self._ordem = msg.data.strip()
+        self._atualizar()
+
+    def _atualizar(self) -> None:
+        """Pick/place em andamento manda; sem ele, a ordem da AMT; sem os dois, fecha."""
+        texto = self._task or self._ordem
+        if texto != self._texto:
+            self._texto = texto
+            self._texto_pub.publish(String(data=texto))
+        if texto:
             self._close_at = None
-            self._open(msg.data.strip())
+            self._open(texto)
         elif self._child is not None and self._close_at is None:
             self._close_at = time.monotonic() + float(self.get_parameter('close_delay_s').value)
 
@@ -90,7 +120,7 @@ class Supervisor(Node):
         self.get_logger().info('janela do pick/place fechada.')
 
     def _tick(self) -> None:
-        if self._close_at is not None and time.monotonic() >= self._close_at:
+        if self._close_at is not None and time.monotonic() >= self._close_at and not self._texto:
             self._close_at = None
             self._close()
 
@@ -100,8 +130,12 @@ class Supervisor(Node):
 
 
 def titulo_e_tag(label: str):
-    """'PEGANDO TAG 25  |  Mesa15' -> ('IDENTIFIQUEI:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:'."""
+    """'PEGANDO TAG 25  |  Mesa15' -> ('IDENTIFIQUEI:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:';
+    'ORDEM ATUAL: 3 1 - 2' -> ('ORDEM ATUAL:', '3 1 - 2')."""
     texto = label.strip().upper()
+    if texto.startswith('ORDEM ATUAL'):
+        resto = texto[len('ORDEM ATUAL'):].lstrip(':').strip()
+        return 'ORDEM ATUAL:', resto or '-'
     # 'PICK ...' / 'PLACE ...' tambem valem (teste na mao: "pick tag 20").
     # 2026-11-26 (operador): no pick a tela diz IDENTIFIQUEI, nao PICK.
     titulo = 'IDENTIFIQUEI:' if texto.startswith(('PEGANDO', 'PICK')) else (
@@ -121,14 +155,12 @@ def janela() -> None:
     estado = {'label': os.environ.get('CARAMELO_TASK_LABEL', '').strip()}
 
     def on_label(msg):
-        # Vazio e' ignorado: pick e place publicam no mesmo topico latched, e ao
-        # entrar este no' recebe o ultimo de CADA um (o "" do pick que acabou
-        # pode chegar depois do rotulo do place em andamento). Quem fecha a
-        # janela e' o supervisor.
+        # So' o supervisor publica aqui (pick/place ou ordem da AMT). Vazio e'
+        # ignorado: quem fecha a janela e' o supervisor.
         if msg.data.strip():
             estado['label'] = msg.data.strip()
 
-    node.create_subscription(String, LABEL_TOPIC, on_label, LATCHED)
+    node.create_subscription(String, TEXTO_TOPIC, on_label, LATCHED)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)

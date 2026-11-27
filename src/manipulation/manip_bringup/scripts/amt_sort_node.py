@@ -91,6 +91,14 @@ class AmtSort(Node):
         self.create_subscription(AprilTagDetectionArray, dp("detections_topic", "/detections").value,
                                  self._on_det, 20, callback_group=self._g)
         self._fala = self.create_publisher(String, "/manip/speech", 10)
+        # 2026-11-27 (pedido do operador): "assim que ele identificar a ordem atual da
+        # mesa, colocar na telinha ORDEM ATUAL: TAGS, e conforme ele der um place novo
+        # atualizar essa ordem". Latched; vazio = some da tela. Quem mostra: task_viewer
+        # (entre os pick/place; durante eles a tela mostra a tag da operacao).
+        self._ordem_pub = self.create_publisher(String, "/manip/amt_ordem", QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._ordem_ate = None     # hora (monotonic) de tirar a ordem da tela
+        self.create_timer(1.0, self._ordem_timer, callback_group=self._g)
         self._olhando = self.create_publisher(Bool, "/manip/observe_active", QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._pick = ActionClient(self, PickTag, "/pick_tag", callback_group=self._g)
@@ -146,6 +154,24 @@ class AmtSort(Node):
         except (OSError, ValueError, AttributeError, yaml.YAMLError) as ex:
             self.get_logger().warn(f"[AMT] nao li {self.potes_yaml}: {ex}")
             return []
+
+    def _mostrar_ordem(self, estado):
+        """'ORDEM ATUAL: 3 1 - 2 4 5 6': os slots da esquerda para a direita, '-' = vazio."""
+        txt = " ".join("-" if estado.get(s) is None else str(estado[s]) for s in self.slot_ids)
+        self._ordem_ate = None
+        self._ordem_pub.publish(String(data=f"ORDEM ATUAL: {txt}"))
+
+    def _limpar_ordem(self, em_s=0.0):
+        """Tira a ordem da tela agora ou daqui a em_s (a rodada seguinte da AMT a repoe)."""
+        if em_s <= 0.0:
+            self._ordem_ate = None
+            self._ordem_pub.publish(String(data=""))
+        else:
+            self._ordem_ate = time.monotonic() + em_s
+
+    def _ordem_timer(self):
+        if self._ordem_ate is not None and time.monotonic() >= self._ordem_ate:
+            self._limpar_ordem()
 
     def _falar(self, texto):
         self.get_logger().info(f"[AMT] {texto}")
@@ -385,6 +411,7 @@ class AmtSort(Node):
             if a_bordo:
                 self.get_logger().info(f"[AMT] ja' a bordo (container_states.yaml): {a_bordo}")
             estado = A.completar(estado, [c for c in esperados if c not in a_bordo], self.slot_ids)
+            self._mostrar_ordem(estado)
             alvo = A.alvo_por_ordem(self.slot_ids, [int(v) for v in goal.target_order] or sorted(esperados),
                                     direcao)
             ops, sobra = A.planejar(estado, alvo, a_bordo=a_bordo, capacidade=capacidade)
@@ -424,6 +451,7 @@ class AmtSort(Node):
                     res.picks += 1
                 else:
                     estado[slot] = cubo
+                    self._mostrar_ordem(estado)
                     bordo.remove(cubo)
                     res.places += 1
             # O que sobrou a bordo: o slot dele (se nao foi o que falhou) ou o slot de onde saiu.
@@ -436,6 +464,7 @@ class AmtSort(Node):
                         ok, _m = self._operar(gh, "place", cubo, slot, goal, feitas, feitas, res)
                         if ok:
                             estado[slot] = cubo
+                            self._mostrar_ordem(estado)
                             bordo.remove(cubo)
                             res.places += 1
                             break
@@ -462,6 +491,9 @@ class AmtSort(Node):
                         "!O braco nao respondeu, parei a ordenacao" if res.fail_reason == "braco_sem_resposta" else
                         "!Nao consegui ordenar tudo na mesa de precisao")
             self.get_logger().info(f"[AMT] {res.message}")
+            # Mesa em ordem (ou cancelado): sai da tela; senao vem outra rodada (olhadas +
+            # esta chamada), que repoe a ordem. Sem rodada seguinte em 2 min: sai.
+            self._limpar_ordem(0.0 if res.success or gh.is_cancel_requested else 120.0)
             if gh.is_cancel_requested:
                 res.fail_reason = "cancelado"
                 gh.canceled()
