@@ -31,12 +31,17 @@ chamada responde success=false / fail_reason=falta_conferir, e o executor roda
 outra rodada (olhadas + esta chamada) que confere e arruma o que faltou.
 """
 
+import collections
 import math
 import os
+import statistics
 import threading
 import time
 
 import rclpy
+import rclpy.duration
+import rclpy.time
+import tf2_ros
 from apriltag_msgs.msg import AprilTagDetectionArray
 from caramelo_msgs.action import AlignToDock, NudgeBase
 from my_robot_msgs.action import Amt1Sort, PickTag, PlaceTag
@@ -72,6 +77,23 @@ class AmtSort(Node):
         self.braco_espera_s = float(dp("braco_espera_s", 600.0).value)
         self.passo_slot_m = float(dp("passo_slot_m", 0.107).value)       # distancia entre slots vizinhos
         self.max_nudges = int(dp("max_nudges", 2).value)                 # por operacao (alcance)
+        # 2026-11-27 (operador: "ele nao achou o lugar do place da tag 1, e ficou tentando
+        # colocar ela no slot da tag 7, eu tive que empurrar ele pra se alinhar com o slot
+        # [...] Ele ja tem a ordem dos slots, entao ele poderia ja se mover para o mais perto
+        # do lugar certo"): ANTES do pick/place a base anda de lado ate' o slot pela geometria
+        # da fileira quando ele esta' a mais disto da frente do robo. 0 = desliga.
+        self.alinhar_antes_m = float(dp("alinhar_antes_m", 0.12).value)
+        # 2026-11-27 (operador: "na PP ele nao anda para o lado para se alinhar com o
+        # encaixe certo, so' fica para tras e para frente e tenta por no mesmo lugar"):
+        # a posicao LATERAL dos slots sai das tags 101..107 MEDIDAS (TF no frame do braco),
+        # nao so' da geometria (que supunha o slot do meio na frente do robo depois do
+        # docking: com o docking deslocado, ele "achava" que ja' estava alinhado).
+        self.tag_ref_frame = dp("tag_ref_frame", "manip_base_link").value
+        self._tf = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf, self)
+        self._slot_x0 = {}         # slot -> deque de x lateral (+ = direita) com a base em desvio 0
+        self._andando = False      # base em movimento: nao grava posicao de slot
+        self._curso_barrou = False # ultimo passo recusado pelo limite de curso lateral
         self.op_prazo_s = float(dp("op_prazo_s", 420.0).value)
         # 2026-11-17 (travou no robo): o pedido seguinte chegava ao place 33 ms depois do
         # fim do anterior, com ele ainda desmontando a interface do MoveIt. Respiro entre ops.
@@ -118,6 +140,53 @@ class AmtSort(Node):
         if obs is not None and msg.detections:
             tags = {d.id: [[c.x, c.y] for c in d.corners] for d in msg.detections}
             obs.juntar(tags)
+        if msg.detections and not self._andando:
+            self._gravar_slots(msg)
+
+    def _gravar_slots(self, msg):
+        """Posicao lateral de cada tag de slot vista, no frame do braco, no instante do quadro
+        (a TF junta a camera com as juntas daquele instante: vale com o braco em qualquer pose).
+        Guardada 'em desvio 0': x0 = x medido - desvio da base naquele momento."""
+        desvio = self._desvio
+        stamp = rclpy.time.Time.from_msg(msg.header.stamp)
+        for d in msg.detections:
+            if d.id not in self.slot_ids:
+                continue
+            try:
+                tf = self._tf.lookup_transform(self.tag_ref_frame, f"tag_{d.id}", stamp,
+                                               timeout=rclpy.duration.Duration(seconds=0.05))
+            except Exception:  # noqa: BLE001 - TF ainda nao chegou / quadro velho: ignora
+                continue
+            x, y = tf.transform.translation.x, tf.transform.translation.y
+            if 0.10 < y < 0.80 and abs(x) < 0.80:
+                self._slot_x0.setdefault(d.id, collections.deque(maxlen=15)).append(x - desvio)
+
+    def _x_slot(self, slot):
+        """(x, origem): onde o slot esta' AGORA, lateral no frame do braco (+ = direita).
+        Medido > geometria corrigida pelos slots medidos > so' geometria."""
+        meio = (len(self.slot_ids) - 1) / 2.0
+        geo = lambda s: (self.slot_ids.index(s) - meio) * self.passo_slot_m  # noqa: E731
+        med = {s: statistics.median(v) for s, v in self._slot_x0.items() if v}
+        if not med:
+            return geo(slot) + self._desvio, "geometria"
+        # 2026-11-27 (log da AMT de 27/11): as posicoes LATERAIS da TF saem ~25% maiores
+        # (slot 107 a +0,40 m com a geometria em +0,32): o apriltag usa size 0.041 para
+        # compensar o fx errado da cor na DISTANCIA, nao nas laterais (tags_36h11.yaml).
+        # Como o passo entre slots e' conhecido, ajusta x0 = k*geo + c e usa so' o
+        # deslocamento c/k (onde o docking deixou a fileira). Com menos de 3 slots ou
+        # pouca abertura, k = 1.25 (o medido em 27/11).
+        k = 1.25
+        if len(med) >= 3:
+            gs = [geo(s) for s in med]
+            xs = [med[s] for s in med]
+            mg, mx = statistics.fmean(gs), statistics.fmean(xs)
+            sgg = sum((g - mg) ** 2 for g in gs)
+            if sgg > 0.02:
+                k_fit = sum((g - mg) * (x - mx) for g, x in zip(gs, xs)) / sgg
+                if 0.8 <= k_fit <= 1.6:
+                    k = k_fit
+        off = statistics.median(med[s] / k - geo(s) for s in med)
+        return geo(slot) + off + self._desvio, f"geometria + {len(med)} slot(s) medido(s), escala {k:.2f}"
 
     def _on_juntas(self, _cru):
         self._juntas_t = time.monotonic()
@@ -156,10 +225,10 @@ class AmtSort(Node):
             return []
 
     def _mostrar_ordem(self, estado):
-        """'ORDEM ATUAL: 3 1 - 2 4 5 6': os slots da esquerda para a direita, '-' = vazio."""
+        """'IDENTIFIQUEI A ORDEM: 3 1 - 2 4 5 6': slots da esquerda p/ a direita, '-' = vazio."""
         txt = " ".join("-" if estado.get(s) is None else str(estado[s]) for s in self.slot_ids)
         self._ordem_ate = None
-        self._ordem_pub.publish(String(data=f"ORDEM ATUAL: {txt}"))
+        self._ordem_pub.publish(String(data=f"IDENTIFIQUEI A ORDEM: {txt}"))
 
     def _limpar_ordem(self, em_s=0.0):
         """Tira a ordem da tela agora ou daqui a em_s (a rodada seguinte da AMT a repoe)."""
@@ -210,12 +279,33 @@ class AmtSort(Node):
         return None
 
     def _andar(self, gh, dy, res):
+        """Ver _andar_base. Enquanto a base anda, as tags de slot vistas nao sao gravadas
+        (o desvio so' e' somado no fim do passo)."""
+        self._andando = True
+        try:
+            return self._andar_base(gh, dy, res)
+        finally:
+            self._andando = False
+
+    def _andar_base(self, gh, dy, res):
         """Um passo lateral da base (+ = esquerda), dentro do curso total. True se andou.
         2026-11-17 17h57: o passo de 0,25 foi recusado inteiro (obstaculo_lateral: perna da mesa
         perto) e o place tentou de longe, sem alcance. Barrado por obstaculo => tenta 0,15 e 0,10."""
+        self._curso_barrou = False
         if abs(self._desvio + dy) > self.desvio_max_m + 1e-6:
-            self.get_logger().warn(f"[AMT] passo lateral de {dy:+.2f} m passaria do curso ({self.desvio_max_m:.2f} m).")
-            return False
+            # 2026-11-27 (nos cantos): antes recusava o passo inteiro e a AMT ia refazer o
+            # docking ("fica so' indo para tras e para frente"). Agora anda o que cabe.
+            destino = max(-self.desvio_max_m, min(self.desvio_max_m, self._desvio + dy))
+            resta = destino - self._desvio
+            if abs(resta) < 0.10:
+                self._curso_barrou = True
+                self.get_logger().warn(
+                    f"[AMT] passo lateral de {dy:+.2f} m passaria do curso ({self.desvio_max_m:.2f} m) "
+                    f"e sobra {abs(resta):.2f} m: nao ando.")
+                return False
+            self.get_logger().warn(
+                f"[AMT] passo lateral de {dy:+.2f} m passaria do curso ({self.desvio_max_m:.2f} m): ando {resta:+.2f}.")
+            dy = resta
         for passo in [dy] + [math.copysign(m, dy) for m in (0.15, 0.10) if m < abs(dy) - 0.01]:
             n = self._chamar(self._nudge, NudgeBase.Goal(dy=float(passo), timeout=0.0), gh, f"nudge_{passo:+.2f}")
             res.nudges += 1
@@ -233,6 +323,7 @@ class AmtSort(Node):
                 if a is None or not a.success:
                     return False          # nao atracou: a conta do desvio fica como esta'
                 self._desvio = 0.0
+                self._slot_x0.clear()     # base em outro lugar: as medidas antigas nao valem
                 return True
             if n is not None and n.success:
                 return True
@@ -295,6 +386,17 @@ class AmtSort(Node):
     def _operar(self, gh, op, cubo, slot, goal, feitos, total, res):
         """Um pick ou place. (ok, motivo)"""
         nudges, final, repetiu, reatracou = 0, False, False, False
+        x, origem = self._x_slot(slot)
+        if self.alinhar_antes_m > 0.0 and abs(x) > self.alinhar_antes_m:
+            # Nao conta em max_nudges (que e' para quando o pick/place pede).
+            self.get_logger().info(
+                f"[AMT] {op} do bloco {cubo}: slot {slot} a {x:+.2f} m da frente ({origem}); ando antes ate' ele.")
+            for _passo in range(3):    # no maximo 3 passos (0,25 m cada)
+                if abs(x) <= self.alinhar_antes_m or gh.is_cancel_requested:
+                    break
+                if not self._andar(gh, -math.copysign(min(0.25, abs(x)), x), res):
+                    break
+                x, origem = self._x_slot(slot)
         while True:
             if not self._esperar_braco(gh):
                 return False, "cancelado" if gh.is_cancel_requested else "braco_sem_resposta"
@@ -330,27 +432,37 @@ class AmtSort(Node):
             #   1) alinhar com o slot pela geometria da fileira (slot fora da frente do robo);
             #   2) ir PARA FRENTE: refazer o docking (dock_id vazio = o ultimo), que leva a
             #      base 'a distancia de trabalho da mesa sem raspar; uma vez por operacao.
-            x = (self.slot_ids.index(slot) - (len(self.slot_ids) - 1) / 2.0) * self.passo_slot_m + self._desvio
+            x, origem = self._x_slot(slot)
             if not final and r.unreachable and abs(x) > 0.05 and nudges < self.max_nudges:
                 self.get_logger().info(
-                    f"[AMT] {op} do bloco {cubo} fora de alcance; alinho a base com o slot {slot} ({x:+.2f} m).")
+                    f"[AMT] {op} do bloco {cubo} ({r.fail_reason or 'fora de alcance'}); alinho a base com o "
+                    f"slot {slot} ({x:+.2f} m, {origem}).")
                 nudges += 1
                 if self._andar(gh, -math.copysign(min(0.25, abs(x)), x), res):
                     andou_de_lado = True
                     continue
-            if not final and r.unreachable and not reatracou and not andou_de_lado:
+            # Slot NAO VISTO nao se resolve chegando mais perto (o re-docking voltava a base
+            # para o mesmo lugar e zerava o desvio: o "para tras e para frente" de 27/11).
+            # Nem quando o que barrou foi o curso lateral (re-docking volta ao centro: pior).
+            if (not final and r.unreachable and not reatracou and not andou_de_lado
+                    and r.fail_reason != "slot_nao_visto" and not self._curso_barrou):
                 reatracou = True
                 self.get_logger().info(f"[AMT] {op} do bloco {cubo} fora de alcance; chego mais perto da mesa (re-docking).")
                 self._falar("Nao alcanco, vou chegar mais perto da mesa")
-                a = self._chamar(self._atracar, AlignToDock.Goal(), gh, "refazendo_docking_alcance")
+                self._andando = True
+                try:
+                    a = self._chamar(self._atracar, AlignToDock.Goal(), gh, "refazendo_docking_alcance")
+                finally:
+                    self._andando = False
                 if a is not None and a.success:
                     self._desvio = 0.0
+                    self._slot_x0.clear()      # base em outro lugar: as medidas antigas nao valem
                     continue
                 self.get_logger().warn(
                     f"[AMT] re-docking para alcance: {'sem resposta' if a is None else a.message or 'falhou'}.")
             # Nao viu o alvo e a base esta' longe dele (ficou alinhada com outro slot num place):
             # anda ate' o slot pela geometria da fileira (slot do meio em frente ao robo no docking).
-            x = (self.slot_ids.index(slot) - (len(self.slot_ids) - 1) / 2.0) * self.passo_slot_m + self._desvio
+            x, origem = self._x_slot(slot)
             if not final and r.skipped and not r.unreachable and abs(x) > 0.10 and nudges < self.max_nudges:
                 self.get_logger().info(f"[AMT] {op} do bloco {cubo}: slot {slot} a {x:+.2f} m de lado; ando ate' ele.")
                 nudges += 1
@@ -373,6 +485,7 @@ class AmtSort(Node):
         direcao = goal.direction or "left_to_right"
         if self._fila is None or time.monotonic() - self._fila_t > 120.0:
             self._fila, self._desvio = A.Fileira(self.slot_ids), 0.0
+            self._slot_x0.clear()          # missao nova / docking novo
         obs = self._fila
         self._olhando.publish(Bool(data=True))      # perception_gate liga a camera
         try:

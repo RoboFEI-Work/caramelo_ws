@@ -7,7 +7,7 @@
 schema: 1
 map: arena_oficial2_2026
 generated_by: compute_dock_distances
-generated_at: '2026-11-25T08:49:18'
+generated_at: '2026-11-27T09:09:03'
 pose: staging
 inflation_m: 0.25
 docks: [START, FINISH, WS1, WS2, WS3, WS4, SH1, PP1, SH2, WS9, SH4, SH3, WS8, WS7, WS10, PP2, WS5, WS6]

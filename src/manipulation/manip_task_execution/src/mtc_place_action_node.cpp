@@ -229,6 +229,14 @@ public:
         // ("nao tem problema o robo mexer na tag uma vez que ela foi posta").
         // Ver ppAjustarCubo. Lidos na hora do uso (ros2 param set vale ao vivo).
         this->declare_parameter<bool>("pp_ajuste_habilitado", true);
+        // 2026-11-27 (operador: "as vezes ele so' joga a tag na mesa, em vez de tentar
+        // colocar no encaixe"): nos 4 places da PP de 27/11 o ajuste mediu o cubo 17-28 mm
+        // "fora" mesmo com o pp_furo (pela imagem) dizendo centrado, e empurrava o cubo
+        // PARA FORA do encaixe. A medida do ajuste e' pela TF das tags, que tem erro
+        // lateral (size 0.041 compensa o fx errado da cor so' na distancia;
+        // tags_36h11.yaml). true = so' empurra quando a tag do slot NAO aparece (cubo
+        // em cima dela: erro ~55 mm, inequivoco); nos outros casos so' registra.
+        this->declare_parameter<bool>("pp_ajuste_so_tag_coberta", true);
         // Centro do furo a partir do centro da tag do slot, na direcao do robo.
         // Arena 2026-11-26 (fotos): ~55 mm. Lab (mesa de 16/11): ~46 mm.
         this->declare_parameter<double>("pp_ajuste_tag_ate_o_furo_m", 0.055);
@@ -237,7 +245,7 @@ public:
         // diferenca, mude para que quase sempre ele faca o ajuste"; "ele poe a tag
         // torta e nao esta corrigindo"): 6 -> 1 mm; depois (operador: "1mm de
         // tolerancia na pp e' muito pouco, coloque em 2mm"): 2 mm.
-        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.002);
+        this->declare_parameter<double>("pp_ajuste_tolerancia_m", 0.0015);
         // Empurroes por place (cada eixo no maximo 1 vez; o 2o so' depois da
         // verificacao final, no OUTRO eixo). 2026-11-26: 2 -> 1 ("ajuste mais de uma
         // vez") e de volta a 2 ("na verificacao final [...] ajustar, principalmente
@@ -5105,6 +5113,14 @@ private:
             const double e_tag = d.dot(fora);   // + = mais perto da tag do slot
             const double e_lado = d.dot(lado);
             const bool forcar = !viu_slot;      // cubo cobrindo a tag do slot: ajusta sempre
+            if (viu_slot && this->get_parameter("pp_ajuste_so_tag_coberta").as_bool()) {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[PP-AJUSTE] tag do slot visivel: so' registro (erro pela TF %+.1f mm na direcao da tag, "
+                    "%+.1f mm de lado; a TF tem ~20 mm de erro aqui) - sem empurrao.",
+                    e_tag * 1000.0, e_lado * 1000.0);
+                return;
+            }
             if (!viu_slot) {
                 RCLCPP_WARN(
                     get_logger(),

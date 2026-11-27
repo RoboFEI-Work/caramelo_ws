@@ -22,36 +22,30 @@
 task_id: BTT2
 name: Basic Transportation Test II
 duration_min: 10
-active_service_areas: [WS_7, WS_3, WS_6, WS_10]
+active_service_areas: [WS_1, WS_3, WS_2]
 objects:
-- {id: 17, color: BLUE}
-- {id: 19, color: RED}
-- {id: 27, color: BLUE}
-- {id: 29, color: BLUE}
-- {id: 30, color: RED}
+- {id: 1, color: BLUE}
+- {id: 2, color: BLUE}
+- {id: 3, color: BLUE}
 start_state:
-  WS_7:
-    obj_ids: [17]
-    table: [17]
+  WS_1:
+    obj_ids: [1]
+    table: [1]
+  WS_2:
+    obj_ids: [2]
+    table: [2]
   WS_3:
-    obj_ids: [27]
-    table: [27]
-  WS_6:
-    obj_ids: [29, 30]
-    table: [30, 29]
-  WS_10:
-    obj_ids: [19]
-    table: [19]
+    obj_ids: [3]
+    table: [3]
+
 finish_state:
-  WS_7:
-    obj_ids: [19]
-    table: [19]
+  WS_1:
+    obj_ids: [3]
+    table: [3]
+  WS_2:
+    obj_ids: [1]
+    table: [1]
   WS_3:
-    obj_ids: [29]
-    table: [29]
-  WS_6:
-    obj_ids: [17]
-    table: [17]
-  WS_10:
-    obj_ids: [27, 30]
-    table: [27, 30]
+    obj_ids: [2]
+    table: [2]
+

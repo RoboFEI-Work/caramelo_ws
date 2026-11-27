@@ -612,3 +612,23 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-27 — AMT: ordem atual na telinha (T69)
 - Pedido: "assim que ele identificar a ordem atual da mesa, colocar na telinha ORDEM ATUAL: TAGS; e conforme ele der um place novo atualizar essa ordem".
 - Feito: amt_sort_node._mostrar_ordem/_limpar_ordem + /manip/amt_ordem; task_viewer: supervisor junta task_label e amt_ordem e publica /manip/task_viewer/texto para a janela (prioridade: pick/place em andamento). Atualiza so' no place (como pedido); depois de um pick a tela mostra a ordem anterior ate' o place seguinte.
+
+## 2026-11-27 — AMT na arena: slot errado, pick na lateral, telinha (T70)
+- Relato: "nao achou o lugar do place da tag 1, ficou tentando colocar no slot da tag 7, tive que empurrar"; "pick muitas vezes na lateral da tag"; telinha da AMT so' com "INDENTIFIQUEI A ORDEM: TAGS", sem pick/place; "nao esta abrindo em tela cheia".
+- Feito: amt_sort_node alinhamento previo pela geometria (alinhar_antes_m 0,12); texto "IDENTIFIQUEI A ORDEM:"; task_viewer prioriza a ordem e reaplica tela cheia. Cenario de bancada da AMT ok.
+- Nao feito: pick na lateral (falta dado). Mudanca do operador nao commitada no place (pp_ajuste_tolerancia_m 0.0015) preservada.
+
+## 2026-11-27 — Pick na lateral da tag (T71)
+- Operador: "sao em outras mesas mas nao tem um padrao exatamente".
+- Hipotese: erro ao longo da j1 = leitura da tag de quadro tirado com o braco ainda girando (waitForTagTransform aceitava ate' 1 s) + relogio Pi fora (juntas e imagem de instantes diferentes) ate' 27/11. Feito: not_before nas 2 releituras de perto. Sem commit; nao testado.
+
+## 2026-11-27 — PP: nao alinhava de lado com o slot certo (T72)
+- Relato: "quando faz a PP ele nao anda para o lado para se alinhar com o encaixe certo da tag, so' fica para tras e para frente e tenta por no mesmo lugar (o errado)".
+- Causa: (a) x do slot so' pela geometria (docking deslocado -> "ja' alinhado"); (b) place da PP marca toda falha como unreachable com passo 0 -> AMT caia no re-docking (para tras/para frente) que voltava ao mesmo lugar.
+- Feito: posicao medida dos slots no amt_sort_node (_gravar_slots/_x_slot), slot_nao_visto sem re-docking. Bancada ok; sem commit.
+
+## 2026-11-27 — PP: cubo jogado na mesa e cantos sem alinhar (T73)
+- Relato: "as vezes ele so' joga a tag na mesa, em vez de tentar colocar no encaixe, e nos cantos nao se alinha para os lados, fica indo para tras e para frente".
+- Evidencia (logs deste PC): PP-AJUSTE erro -22/-17/-28/-23 mm com pp_furo rad ~0 na ultima parada; tag_102 lida em y 0,400 de uma pose e ~0,418 de outra; slot 107 medido +0,40 vs geometria +0,32 (k ~1,25); "passaria do curso (0.45 m)" -> re-docking; "Fiquei longe da mesa" frequente.
+- Causa raiz comum: TF das tags com erro lateral (camera_info da cor com fx do depth; size 0.041 so' corrige a distancia).
+- Feito: ajuste so' com a tag coberta; escala nas posicoes medidas dos slots; passo limitado ao curso; sem re-docking por curso. Sem commit.

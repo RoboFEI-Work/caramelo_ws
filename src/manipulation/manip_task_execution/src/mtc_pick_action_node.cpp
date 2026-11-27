@@ -397,6 +397,9 @@ public:
         // o resto das juntas.
         recompute_ik_after_j1_ = this->declare_parameter<bool>("pick_recompute_ik_after_j1", true);
         recompute_ik_settle_ms_ = this->declare_parameter<int>("pick_recompute_ik_settle_ms", 300);
+        // 2026-11-27: releituras de perto so' com quadro de DEPOIS de o braco parar
+        // (pick na lateral da tag, sem padrao). false = como antes (ate' max_tag_age_sec).
+        pick_tag_depois_de_parar_ = this->declare_parameter<bool>("pick_tag_depois_de_parar", true);
         // 2026-08-29 (pedido do operador): ao CHEGAR em pegar_obj na sequencia
         // de pick a garra vai para a pose larga do SRDF (gripper_full_open).
         // Vazio = desliga (fica so' o gripper_open de antes do movimento).
@@ -1492,7 +1495,8 @@ private:
         geometry_msgs::msg::TransformStamped & out_tf,
         const std::chrono::milliseconds timeout,
         const std::chrono::milliseconds retry_period,
-        const std::string & cycle_name)
+        const std::string & cycle_name,
+        const std::optional<rclcpp::Time> & not_before = std::nullopt)
     {
         const auto start = std::chrono::steady_clock::now();
         tf2::TransformException last_ex("unknown TF error");
@@ -1514,7 +1518,15 @@ private:
                     (this->get_clock()->now() - rclcpp::Time(out_tf.header.stamp)).seconds();
                 // 2026-11-16: carimbo da camera adiantado = idade negativa; ver
                 // o mesmo teste no mtc_place_action_node (run_20261116_180232).
-                if (age_sec <= max_tag_age_sec_ && age_sec >= -0.15) {
+                // 2026-11-27 (operador: "ele ta dando o pick muitas vezes na lateral da
+                // tag ao inves de no centro dela", em varias mesas, sem padrao): com
+                // not_before, so' vale deteccao de quadro tirado DEPOIS de o braco
+                // parar. Antes valia qualquer uma de ate' 1 s: na releitura de perto
+                // (logo apos girar a j1) entrava quadro do braco ainda girando -> erro
+                // LATERAL (ao longo da j1) e de tamanho variavel.
+                const bool depois_de_parar =
+                    !not_before || rclcpp::Time(out_tf.header.stamp) >= *not_before;
+                if (age_sec <= max_tag_age_sec_ && age_sec >= -0.15 && depois_de_parar) {
                     return true;
                 }
                 stale_age_sec = age_sec;
@@ -2183,6 +2195,7 @@ private:
     int recompute_ik_settle_ms_{300};
     manip_task_execution::ArmSettleParams settle_params_;
     std::unique_ptr<manip_task_execution::JointStateCache> joint_cache_;
+    bool pick_tag_depois_de_parar_{true};
     std::shared_ptr<MoveGroupInterface> combo_iface_;   ///< arm_with_gripper (criada 1x)
     std::shared_ptr<MoveGroupInterface> active_combo_;  ///< para o stop no cancelamento
     bool combo_tried_{false};
@@ -2556,14 +2569,16 @@ private:
                         cycle_name.c_str());
                 } else {
                     publishStage(goal_handle, "re_detecting_at_tcp2");
+                    const rclcpp::Time parou_tcp2 = this->get_clock()->now();   // braco ja' assentou
                     if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
                         return TableApproachResult::kMoveFailed;
                     }
                     geometry_msgs::msg::TransformStamped fresh;
                     if (!waitForTagTransform(
                             shelf_ik_reference_frame_, tag_frame, fresh,
-                            std::chrono::milliseconds(1500), std::chrono::milliseconds(100),
-                            cycle_name + " re_detect_tcp2"))
+                            std::chrono::milliseconds(2500), std::chrono::milliseconds(50),
+                            cycle_name + " re_detect_tcp2",
+                            pick_tag_depois_de_parar_ ? std::optional<rclcpp::Time>(parou_tcp2) : std::nullopt))
                     {
                         RCLCPP_WARN(
                             this->get_logger(),
@@ -2663,14 +2678,16 @@ private:
         // alvo esta mesmo fora de alcance.
         if (recompute_ik_after_j1_ && cur.size() >= 5) {
             publishStage(goal_handle, "re_detecting_after_j1");
+            const rclcpp::Time parou_j1 = this->get_clock()->now();   // braco ja' assentou
             if (!sleepInterruptibly(std::chrono::milliseconds(std::max(0, recompute_ik_settle_ms_)))) {
                 return TableApproachResult::kMoveFailed;
             }
             geometry_msgs::msg::TransformStamped fresh;
             if (!waitForTagTransform(
                     shelf_ik_reference_frame_, tag_frame, fresh,
-                    std::chrono::milliseconds(1500), std::chrono::milliseconds(100),
-                    cycle_name + " re_detect_after_j1"))
+                    std::chrono::milliseconds(2500), std::chrono::milliseconds(50),
+                    cycle_name + " re_detect_after_j1",
+                    pick_tag_depois_de_parar_ ? std::optional<rclcpp::Time>(parou_j1) : std::nullopt))
             {
                 RCLCPP_WARN(
                     this->get_logger(),
