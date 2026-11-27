@@ -612,3 +612,15 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 ## 2026-11-27 — AMT: ordem atual na telinha (T69)
 - Pedido: "assim que ele identificar a ordem atual da mesa, colocar na telinha ORDEM ATUAL: TAGS; e conforme ele der um place novo atualizar essa ordem".
 - Feito: amt_sort_node._mostrar_ordem/_limpar_ordem + /manip/amt_ordem; task_viewer: supervisor junta task_label e amt_ordem e publica /manip/task_viewer/texto para a janela (prioridade: pick/place em andamento). Atualiza so' no place (como pedido); depois de um pick a tela mostra a ordem anterior ate' o place seguinte.
+
+## 2026-11-27 ~15h — Operador mandou voltar ao commit 692d3e7 ("ja nem sei mais")
+- Pedido: "cancele e volte para o commit ja nem sei mais; tudo feito em commit antes do thithi fazer o plan deve ser descartado".
+- Feito: git reset --hard 692d3e7. DESCARTADOS: o commit aec9202 ("commit antes do thithi fazer o plan": alinhamento previo da AMT por geometria/medida dos slots, escala 1,25, curso lateral, telinha "IDENTIFIQUEI A ORDEM", tela cheia, pick so' com quadro depois de parar, ajuste da PP so' com tag coberta) e as mudancas NAO commitadas do plano (T74/T75: volta do nudge, NudgeBase.dx, longe_da_mesa, conferencia de encaixe, nudge so' lateral na PP). Mantidos como mudanca nao commitada (escolha do operador): missions/task_AMT1_pp1.yaml, ATT1_seed209920/ATT2_seed738423/BTT2_seed108306_equipe.yaml, arena_oficial2_2026/dock_distances.yaml.
+- Recuperar se precisar: o aec9202 esta' no origin/telinha (ate' o push forcado) e no reflog; o nao commitado esta' em `git stash list` ("backup: mudancas do plano T74/T75 ...").
+- Pacotes recompilados com o codigo de 692d3e7 (caramelo_msgs sem NudgeBase.dx, caramelo_navigation, manip_bt, manip_task_execution, manip_bringup, manip_moveit_config). As entradas T70-T75 do estado.md sumiram com o reset (eram do aec9202 / nao commitadas).
+- Pendente para o operador: `git push --force-with-lease origin telinha` (o origin ainda tem aec9202); relancar tudo no PC.
+
+## 2026-11-27 — Telinha da AMT reaplicada depois do retorno a 692d3e7
+- Pedido: "a tela da ordem nao ta full screen e tem que ser so' a ordem".
+- Feito: task_viewer_node.py do aec9202 de volta (durante a AMT so' a ordem; tela cheia pedida depois do 1o imshow e reaplicada) + amt_sort_node publica "IDENTIFIQUEI A ORDEM: ..." (so' essa linha; o resto do aec9202 continua descartado). Novo: quadro desenhado no tamanho REAL da janela (a tela do robo e' HDMI 800x480; antes desenhava 1920x1080 e esticava).
+- Verificado neste PC: janela abriu 800x480+0+0 (tela inteira); a do codigo antigo estava 428x329. Sem commit.

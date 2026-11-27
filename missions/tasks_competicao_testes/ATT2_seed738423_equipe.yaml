@@ -1,0 +1,100 @@
+# @Work Commander — task da RoboCup@Work Brasil (Entry-Level), edicao 2026
+# Prova: ATT2 — Advanced Transportation Test II | Duracao: 20 min
+#
+# Arquivo ENTREGUE AS EQUIPES. Contrato campo a campo: config/schema_task_equipe.yaml
+#
+# Como ler start_state / finish_state, area por area:
+#   obj_ids    = TODOS os objetos de tarefa na area (ordem crescente, SEM
+#                significado de posicao).
+#   table      = soltos sobre a mesa, da esquerda para a direita (WS).
+#   containers = dentro do container daquela cor (WS que hospeda container).
+#   levels     = prateleira: BOTTOM e TOP, cada nivel da esquerda para a direita.
+#   slots      = mesa de precisao: tag de referencia do slot -> ID do objeto
+#                (null = slot vazio). As tags estao em precision_tables.
+#   stack      = zona de empilhamento (uma WS, listada em stacking_areas):
+#                pilha sobre a tag de referencia, da BASE ao TOPO. Nesta prova
+#                essa mesa so recebe a pilha.
+#   A uniao de table/containers/levels/slots/stack e' SEMPRE igual a obj_ids.
+# Cada objeto e' um ATTC: `id` = ID da AprilTag, `color` = cor do cubo (BLUE |
+# RED). Os IDs nao se repetem nesta task, entao nos estados o ID basta.
+# Containers nao tem AprilTag: o arquivo diz a cor e a workstation de cada um;
+# localizar o container sobre a mesa, pela cor, e' tarefa do robo.
+task_id: ATT2
+name: Advanced Transportation Test II
+duration_min: 20
+active_service_areas: [WS_7, WS_1, WS_2, SH_1, PP_2, WS_9, SH_4]
+objects:
+- {id: 1, color: RED}
+- {id: 2, color: BLUE}
+- {id: 6, color: BLUE}
+- {id: 7, color: BLUE}
+- {id: 18, color: RED}
+- {id: 20, color: BLUE}
+- {id: 25, color: BLUE}
+- {id: 27, color: BLUE}
+containers:
+- {color: BLUE, at: WS_7}
+- {color: RED, at: WS_2}
+precision_tables:
+  PP_2:
+    slot_tags: [111, 122, 133, 144, 155, 166, 177]
+start_state:
+  WS_7:
+    obj_ids: [18]
+    table: [18]
+    containers:
+      BLUE: []
+  WS_1:
+    obj_ids: [2, 6, 25]
+    table: [2, 6, 25]
+  WS_2:
+    obj_ids: [7]
+    table: [7]
+    containers:
+      RED: []
+  SH_1:
+    obj_ids: []
+    levels:
+      BOTTOM: []
+      TOP: []
+  PP_2:
+    obj_ids: []
+    slots: {111: null, 122: null, 133: null, 144: null, 155: null, 166: null, 177: null}
+  WS_9:
+    obj_ids: [1, 20, 27]
+    table: [1, 20, 27]
+  SH_4:
+    obj_ids: []
+    levels:
+      BOTTOM: []
+      TOP: []
+finish_state:
+  WS_7:
+    obj_ids: [2, 6]
+    table: []
+    containers:
+      BLUE: [2, 6]
+  WS_1:
+    obj_ids: []
+    table: []
+  WS_2:
+    obj_ids: [1, 18]
+    table: []
+    containers:
+      RED: [1, 18]
+  SH_1:
+    obj_ids: [25, 27]
+    levels:
+      BOTTOM: []
+      TOP: [25, 27]
+  PP_2:
+    obj_ids: [7, 20]
+    slots: {111: null, 122: null, 133: 7, 144: null, 155: null, 166: null, 177: 20}
+  WS_9:
+    obj_ids: []
+    table: []
+  SH_4:
+    obj_ids: []
+    levels:
+      BOTTOM: []
+      TOP: []

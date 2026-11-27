@@ -27,12 +27,12 @@ name: Advanced Manipulation Test
 duration_min: 15
 active_service_areas: [PP_2]
 objects:
-- {id: 1, color: RED}
-- {id: 2, color: RED}
+- {id: 1, color: BLUE}
+- {id: 2, color: BLUE}
 - {id: 3, color: RED}
 - {id: 4, color: RED}
-- {id: 5, color: RED}
-- {id: 6, color: BLUE}
+- {id: 5, color: BLUE}
+- {id: 6, color: RED}
 precision_tables:
   PP_2:
     slot_tags: [101, 102, 103, 104, 105, 106, 107]

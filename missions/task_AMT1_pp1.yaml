@@ -16,7 +16,7 @@ schema_version: 1
 task_id: AMT1
 name: Advanced Manipulation Task 1
 duration_min: 10
-active_service_areas: [PP]   # 2026-11-26: formato 2026 usa a area "PP" (com PP_1 o planner recusava)
+active_service_areas: [PP_1]   # 2026-11-26: formato 2026 usa a area "PP" (com PP_1 o planner recusava)
 
 objects:
   - {id: 01, type: ATTC}
@@ -28,13 +28,13 @@ objects:
 containers: []
 
 precision_tables:
-  PP:
+  PP_1:
     slot_tags: [101, 102, 103, 104, 105, 106, 107]
 start_state:
-  PP:
+  PP_1:
     obj_ids: [1, 2, 3, 4, 5, 6]
     slots: null
 finish_state:
-  PP:
+  PP_1:
     obj_ids: [1, 2, 3, 4, 5, 6]
     slots: {101: 1, 102: 2, 103: 3, 104: 4, 105: 5, 106: 6, 107: null}

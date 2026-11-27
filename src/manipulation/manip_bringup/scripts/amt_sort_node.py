@@ -159,7 +159,7 @@ class AmtSort(Node):
         """'ORDEM ATUAL: 3 1 - 2 4 5 6': os slots da esquerda para a direita, '-' = vazio."""
         txt = " ".join("-" if estado.get(s) is None else str(estado[s]) for s in self.slot_ids)
         self._ordem_ate = None
-        self._ordem_pub.publish(String(data=f"ORDEM ATUAL: {txt}"))
+        self._ordem_pub.publish(String(data=f"IDENTIFIQUEI A ORDEM: {txt}"))
 
     def _limpar_ordem(self, em_s=0.0):
         """Tira a ordem da tela agora ou daqui a em_s (a rodada seguinte da AMT a repoe)."""

@@ -83,8 +83,10 @@ class Supervisor(Node):
         self._atualizar()
 
     def _atualizar(self) -> None:
-        """Pick/place em andamento manda; sem ele, a ordem da AMT; sem os dois, fecha."""
-        texto = self._task or self._ordem
+        """Durante a AMT so' a ordem (2026-11-27, operador: "para a AMT deixe ele so'
+        com IDENTIFIQUEI A ORDEM: TAGS, nao precisa mostrar o pick/place"); fora
+        dela, o pick/place em andamento; sem os dois, fecha."""
+        texto = self._ordem or self._task
         if texto != self._texto:
             self._texto = texto
             self._texto_pub.publish(String(data=texto))
@@ -133,9 +135,10 @@ def titulo_e_tag(label: str):
     """'PEGANDO TAG 25  |  Mesa15' -> ('IDENTIFIQUEI:', 'TAG 25'); 'COLOCANDO ...' -> 'PLACE:';
     'ORDEM ATUAL: 3 1 - 2' -> ('ORDEM ATUAL:', '3 1 - 2')."""
     texto = label.strip().upper()
-    if texto.startswith('ORDEM ATUAL'):
-        resto = texto[len('ORDEM ATUAL'):].lstrip(':').strip()
-        return 'ORDEM ATUAL:', resto or '-'
+    for prefixo in ('IDENTIFIQUEI A ORDEM', 'ORDEM ATUAL'):
+        if texto.startswith(prefixo):
+            resto = texto[len(prefixo):].lstrip(':').strip()
+            return 'IDENTIFIQUEI A ORDEM:', resto or '-'
     # 'PICK ...' / 'PLACE ...' tambem valem (teste na mao: "pick tag 20").
     # 2026-11-26 (operador): no pick a tela diz IDENTIFIQUEI, nao PICK.
     titulo = 'IDENTIFIQUEI:' if texto.startswith(('PEGANDO', 'PICK')) else (
@@ -162,33 +165,44 @@ def janela() -> None:
 
     node.create_subscription(String, TEXTO_TOPIC, on_label, LATCHED)
 
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    try:
-        cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
-    except cv2.error:
-        pass  # backend sem "sempre por cima": segue so' em tela cheia
+    # 2026-11-27 (operador: "ela nao esta abrindo em tela cheia"): com o highgui
+    # em Qt5 o pedido de tela cheia feito ANTES de a janela aparecer pode ser
+    # ignorado. Agora: janela sem barra de ferramentas do Qt (GUI_NORMAL), tela
+    # cheia pedida depois do 1o imshow e reaplicada se o gerenciador desfizer.
+    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 
-    W, H = 1920, 1080
+    def tela_cheia():
+        cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        try:
+            cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
+        except cv2.error:
+            pass  # backend sem "sempre por cima": segue so' em tela cheia
+
+    # Tamanho do quadro = tamanho REAL da janela (2026-11-27: a tela do robo e' 800x480;
+    # desenhar em 1920x1080 e esticar achatava as letras). Comeca em 800x480.
+    tam = {'W': 800, 'H': 480}
     fonte = cv2.FONT_HERSHEY_DUPLEX
     desenhado = None
     quadro = None
 
     def linha(img, texto, y_centro, alt_max):
         """Texto preto, grosso, centralizado, o maior que couber (90% da largura)."""
+        W = tam['W']
         (tw, th), _ = cv2.getTextSize(texto, fonte, 1.0, 2)
         escala = min(0.9 * W / tw, alt_max / th)
-        esp = max(6, int(escala * 2.8))
+        esp = max(3, int(escala * 2.8))
         (tw, th), _ = cv2.getTextSize(texto, fonte, escala, esp)
         cv2.putText(img, texto, ((W - tw) // 2, y_centro + th // 2), fonte, escala,
                     (0, 0, 0), esp, cv2.LINE_AA)
 
+    proxima_checagem = 0.0
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.0)
             if estado['label'] != desenhado:
                 desenhado = estado['label']
                 titulo, tag = titulo_e_tag(desenhado) if desenhado else ('', '...')
+                W, H = tam['W'], tam['H']
                 quadro = np.full((H, W, 3), 255, np.uint8)
                 if titulo:
                     linha(quadro, titulo, int(H * 0.30), int(H * 0.28))
@@ -197,6 +211,17 @@ def janela() -> None:
                     linha(quadro, tag, H // 2, int(H * 0.34))
             cv2.imshow(WINDOW, quadro)
             tecla = cv2.waitKey(50) & 0xFF
+            if time.monotonic() >= proxima_checagem:
+                proxima_checagem = time.monotonic() + 0.5
+                try:
+                    if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN) != cv2.WINDOW_FULLSCREEN:
+                        tela_cheia()
+                    _x, _y, w, h = cv2.getWindowImageRect(WINDOW)
+                    if w >= 200 and h >= 120 and (w, h) != (tam['W'], tam['H']):
+                        tam['W'], tam['H'] = w, h
+                        desenhado = None          # redesenha no tamanho novo
+                except cv2.error:
+                    pass
             if tecla in (27, ord('q')):
                 break
     except KeyboardInterrupt:
