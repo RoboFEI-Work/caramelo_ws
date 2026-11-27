@@ -173,6 +173,44 @@ bool ensureRobotDescription(
 
 }  // namespace
 
+namespace
+{
+// 2026-11-26 (operador: "fazer a abertura da garra conforme o resto do
+// manipulador se mexe"): home = braco + garra toda aberta numa trajetoria so'
+// (grupo arm_with_gripper do caramelo.srdf). UMA interface para todos os
+// GoToNamedPose da arvore, criada so' na 1a ida ao home (cada no' ja' cria 2
+// no construtor; uma 3a em cada um pesaria e, com a SRDF antiga no
+// move_group, derrubaria o executor). Falhou ao criar => nunca mais tenta.
+std::mutex g_combo_mutex;
+std::shared_ptr<moveit::planning_interface::MoveGroupInterface> g_combo;
+bool g_combo_tried = false;
+
+std::shared_ptr<moveit::planning_interface::MoveGroupInterface> comboInterface(
+  const rclcpp::Node::SharedPtr & node)
+{
+  std::lock_guard<std::mutex> lock(g_combo_mutex);
+  if (!g_combo && !g_combo_tried) {
+    g_combo_tried = true;
+    try {
+      g_combo = std::make_shared<moveit::planning_interface::MoveGroupInterface>(
+        node, "arm_with_gripper", std::shared_ptr<tf2_ros::Buffer>(),
+        rclcpp::Duration::from_seconds(10.0));
+      g_combo->setPlanningTime(15.0);
+      g_combo->setNumPlanningAttempts(20);
+      g_combo->setMaxVelocityScalingFactor(1.0);
+      g_combo->setMaxAccelerationScalingFactor(1.0);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("go_to_named_pose_bt"),
+        "Grupo 'arm_with_gripper' indisponivel (%s) - home como antes (braco, depois garra).",
+        e.what());
+      g_combo.reset();
+    }
+  }
+  return g_combo;
+}
+}  // namespace
+
 namespace manip_bt
 {
 
@@ -284,6 +322,26 @@ BT::NodeStatus GoToNamedPoseBT::tick()
       }
       return false;
     };
+
+  // 2026-11-26: home com a garra abrindo no caminho (ver comboInterface).
+  if (pose_name == "home" && node_->get_parameter_or("usar_arm_with_gripper", true)) {
+    if (auto combo = comboInterface(node_)) {
+      combo->setStartStateToCurrentState();
+      moveit::planning_interface::MoveGroupInterface::Plan plan;
+      if (combo->setNamedTarget("home") &&
+        combo->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS &&
+        combo->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS)
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("go_to_named_pose_bt"),
+          "Reached named pose: home (braco + garra juntos)");
+        return BT::NodeStatus::SUCCESS;
+      }
+      RCLCPP_WARN(
+        rclcpp::get_logger("go_to_named_pose_bt"),
+        "home com braco+garra falhou - braco, depois garra (como antes).");
+    }
+  }
 
   if (try_named_pose(pose_name, 3)) {
     RCLCPP_INFO(

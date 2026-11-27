@@ -599,3 +599,8 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: "quando ele ve o lugar da mesa para largar o objeto, tem como ele definir a altura nisso? em algumas mesas ele ta colocando muito alto e em outra ele ta afundando a garra".
 - Achado: o alvo vinha so' da FK da pose ensinada (MesaX) - cubo; a camera do docking ja' media table_h (plano do tampo - plano do chao) mas so' ia para o log ("mesa h=").
 - Feito: caramelo_dock_camera TableMeasure.floor_seen; dock_align publica /dock_align/table_height (latched, mediana, NaN por docking); place surfaceTargetZ usa a medida (TF base_footprint no frame do IK) com sanidade 6 cm e extra 1 cm. Docs: place_superficie_livre.md. Sem commit; nao testado no robo.
+
+## 2026-11-26 — Garra abrindo junto com o braco (T68)
+- Pedido: "fazer a abertura da garra conforme o resto do manipulador se mexe. no srdf crie um grupo do arm_with_gripper que contenha todas as poses do manipulador + garra aberta e troque no codigo".
+- Feito: grupo + 28 estados no caramelo.srdf; moveArmWithGripper (pick/place, interface criada 1x, stop no cancelamento) e comboInterface estatica no GoToNamedPose (criada na 1a ida ao home). Trocados: inicio do pick, pre_container do place, home do executor. NAO trocadas as solturas (container/mesa/pote) nem a abertura antes de olhar a mesa (pode ser full_open).
+- Verificado: build; mock isolado executou os 3 estados nos 2 controladores. Sem commit.

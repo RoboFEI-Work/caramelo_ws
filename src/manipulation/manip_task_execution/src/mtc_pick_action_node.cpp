@@ -411,6 +411,8 @@ public:
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
         joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        // 2026-11-26: garra abrindo NO CAMINHO (grupo arm_with_gripper). false = abre e depois move.
+        this->declare_parameter<bool>("usar_arm_with_gripper", true);
         // 2026-08-31 (pedido do operador: apos os picks falharem no robo,
         // "volte as mudancas da IK"): apontar a j1 pela TF velha e o
         // alinhamento so-j1 voltam DESLIGADOS por default — o fluxo de pega
@@ -1063,6 +1065,51 @@ private:
         }
     }
 
+    // 2026-11-26 (operador: "fazer a abertura da garra conforme o resto do
+    // manipulador se mexe"): braco + garra numa trajetoria so' (grupo
+    // arm_with_gripper do caramelo.srdf, estados = poses do braco + garra
+    // aberta). A interface e' criada UMA vez (criar MGI por goal ja' travou,
+    // 17/11). false = nao deu (sem o grupo/estado no move_group, plano ou
+    // execucao falhou): quem chama faz o caminho antigo (abre, depois move).
+    bool moveArmWithGripper(const std::string & pose, const std::string & label)
+    {
+        if (!this->get_parameter("usar_arm_with_gripper").as_bool()) {
+            return false;
+        }
+        if (!combo_iface_ && !combo_tried_) {
+            combo_tried_ = true;
+            combo_iface_ = makeInterfaceWithTimeout("arm_with_gripper");
+            if (!combo_iface_) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[BRACO+GARRA] grupo 'arm_with_gripper' indisponivel (move_group com a SRDF antiga?) "
+                    "- abro a garra e depois movo, como antes.");
+            }
+        }
+        if (!combo_iface_ || cancellationRequested()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
+            active_combo_ = combo_iface_;
+        }
+        combo_iface_->clearPoseTargets();
+        combo_iface_->setStartStateToCurrentState();
+        combo_iface_->setMaxVelocityScalingFactor(1.0);
+        combo_iface_->setMaxAccelerationScalingFactor(1.0);
+        if (!combo_iface_->setNamedTarget(pose)) {
+            RCLCPP_WARN(
+                get_logger(), "[BRACO+GARRA] sem o estado '%s' em arm_with_gripper - caminho antigo.",
+                pose.c_str());
+            return false;
+        }
+        if (!planAndExecute(combo_iface_, label + " [braco+garra]")) {
+            RCLCPP_WARN(get_logger(), "[BRACO+GARRA] '%s' falhou - caminho antigo.", pose.c_str());
+            return false;
+        }
+        return true;
+    }
+
     // 2026-11-17: pick e place criavam DUAS MoveGroupInterface novas a cada goal
     // (as do goal anterior ficavam vivas ate' a troca) e essa criacao travou
     // para sempre 2 vezes no robo, sempre na do gripper logo depois do "Ready
@@ -1286,16 +1333,21 @@ private:
     {
         std::shared_ptr<MoveGroupInterface> arm;
         std::shared_ptr<MoveGroupInterface> gripper;
+        std::shared_ptr<MoveGroupInterface> combo;
         {
             std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
             arm = active_arm_;
             gripper = active_gripper_;
+            combo = active_combo_;
         }
         if (arm) {
             arm->stop();
         }
         if (gripper) {
             gripper->stop();
+        }
+        if (combo) {
+            combo->stop();   // 2026-11-26: trajetoria braco+garra (arm_with_gripper)
         }
     }
 
@@ -2131,6 +2183,9 @@ private:
     int recompute_ik_settle_ms_{300};
     manip_task_execution::ArmSettleParams settle_params_;
     std::unique_ptr<manip_task_execution::JointStateCache> joint_cache_;
+    std::shared_ptr<MoveGroupInterface> combo_iface_;   ///< arm_with_gripper (criada 1x)
+    std::shared_ptr<MoveGroupInterface> active_combo_;  ///< para o stop no cancelamento
+    bool combo_tried_{false};
     std::string start_gripper_pose_;
     bool gripper_wide_open_{false};  // full_open ativa (so para enxergar as tags)
     double lift_after_grasp_m_{0.05};
@@ -3626,15 +3681,6 @@ private:
         gripper->setMaxVelocityScalingFactor(1.0);
         gripper->setMaxAccelerationScalingFactor(1.0);
 
-        publishStage(goal_handle, "opening_gripper");
-        gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
-        if (!planAndExecute(gripper, "open gripper")) {
-            finish_failure("Pick failed while opening gripper");
-            return;
-        }
-        gripper_wide_open_ = false;
-
         // 2026-08-12: a prateleira parte de uma pose propria e roda a
         // sequencia de duas fases com a IK custom. Mesa comum = caminho
         // validado de sempre, sem nenhum desvio.
@@ -3650,11 +3696,26 @@ private:
             is_shelf ? "PRATELEIRA" : "mesa comum",
             start_pose.c_str());
 
+        // 2026-11-26 (operador): a garra abre NO CAMINHO para a pose de partida
+        // (arm_with_gripper: pose + gripper_open). Sem o grupo, ou se falhar,
+        // o caminho antigo: abre a garra e depois move.
         publishStage(goal_handle, "going_pegar_obj");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget(start_pose);
-        if (!planAndExecute(arm, start_pose + " initial")) {
+        const bool junto = moveArmWithGripper(start_pose, start_pose + " initial");
+        if (!junto) {
+            publishStage(goal_handle, "opening_gripper");
+            gripper->setStartStateToCurrentState();
+            gripper->setNamedTarget("gripper_open");
+            if (!planAndExecute(gripper, "open gripper")) {
+                finish_failure("Pick failed while opening gripper");
+                return;
+            }
+            publishStage(goal_handle, "going_pegar_obj");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget(start_pose);
+        }
+        gripper_wide_open_ = false;
+        if (!junto && !planAndExecute(arm, start_pose + " initial")) {
             RCLCPP_WARN(
                 this->get_logger(),
                 "Initial %s move failed. Retrying from home to avoid residual state between sequential picks.",

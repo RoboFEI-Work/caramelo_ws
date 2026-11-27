@@ -102,6 +102,8 @@ public:
         // (post_move_settle_window_s = 0 desliga). Ver arm_settle.hpp.
         settle_params_ = manip_task_execution::declareArmSettleParams(*this);
         joint_cache_ = std::make_unique<manip_task_execution::JointStateCache>(*this);
+        // 2026-11-26: garra abrindo NO CAMINHO (grupo arm_with_gripper). false = abre e depois move.
+        this->declare_parameter<bool>("usar_arm_with_gripper", true);
 
         const auto default_container_state_file = getDefaultContainerStatePath();
         container_state_file_ = this->declare_parameter<std::string>(
@@ -1211,16 +1213,21 @@ private:
     {
         std::shared_ptr<MoveGroupInterface> arm;
         std::shared_ptr<MoveGroupInterface> gripper;
+        std::shared_ptr<MoveGroupInterface> combo;
         {
             std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
             arm = active_arm_;
             gripper = active_gripper_;
+            combo = active_combo_;
         }
         if (arm) {
             arm->stop();
         }
         if (gripper) {
             gripper->stop();
+        }
+        if (combo) {
+            combo->stop();   // 2026-11-26: trajetoria braco+garra (arm_with_gripper)
         }
     }
 
@@ -1424,6 +1431,51 @@ private:
                     << e.what());
             return nullptr;
         }
+    }
+
+    // 2026-11-26 (operador: "fazer a abertura da garra conforme o resto do
+    // manipulador se mexe"): braco + garra numa trajetoria so' (grupo
+    // arm_with_gripper do caramelo.srdf, estados = poses do braco + garra
+    // aberta). A interface e' criada UMA vez (criar MGI por goal ja' travou,
+    // 17/11). false = nao deu (sem o grupo/estado no move_group, plano ou
+    // execucao falhou): quem chama faz o caminho antigo (abre, depois move).
+    bool moveArmWithGripper(const std::string & pose, const std::string & label)
+    {
+        if (!this->get_parameter("usar_arm_with_gripper").as_bool()) {
+            return false;
+        }
+        if (!combo_iface_ && !combo_tried_) {
+            combo_tried_ = true;
+            combo_iface_ = makeInterfaceWithTimeout("arm_with_gripper");
+            if (!combo_iface_) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "[BRACO+GARRA] grupo 'arm_with_gripper' indisponivel (move_group com a SRDF antiga?) "
+                    "- abro a garra e depois movo, como antes.");
+            }
+        }
+        if (!combo_iface_ || cancellationRequested()) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(active_interfaces_mutex_);
+            active_combo_ = combo_iface_;
+        }
+        combo_iface_->clearPoseTargets();
+        combo_iface_->setStartStateToCurrentState();
+        combo_iface_->setMaxVelocityScalingFactor(1.0);
+        combo_iface_->setMaxAccelerationScalingFactor(1.0);
+        if (!combo_iface_->setNamedTarget(pose)) {
+            RCLCPP_WARN(
+                get_logger(), "[BRACO+GARRA] sem o estado '%s' em arm_with_gripper - caminho antigo.",
+                pose.c_str());
+            return false;
+        }
+        if (!planAndExecute(combo_iface_, label + " [braco+garra]")) {
+            RCLCPP_WARN(get_logger(), "[BRACO+GARRA] '%s' falhou - caminho antigo.", pose.c_str());
+            return false;
+        }
+        return true;
     }
 
     // 2026-11-17: pick e place criavam DUAS MoveGroupInterface novas a cada goal
@@ -1790,6 +1842,9 @@ private:
     static constexpr double kMinTagAgeSec = -0.15;
     manip_task_execution::ArmSettleParams settle_params_;
     std::unique_ptr<manip_task_execution::JointStateCache> joint_cache_;
+    std::shared_ptr<MoveGroupInterface> combo_iface_;   ///< arm_with_gripper (criada 1x)
+    std::shared_ptr<MoveGroupInterface> active_combo_;  ///< para o stop no cancelamento
+    bool combo_tried_{false};
 
     /// Leitura da tag por MEDIANA de varias deteccoes (2026-09-14).
     ///
@@ -7471,19 +7526,24 @@ private:
         // 2026-11-12 (pedido do operador): a garra larga (full_open) e' so'
         // para enxergar; de garra vazia indo ao pre_container volta a
         // gripper_open (dedos largos esbarram no container de bordo).
-        publishStage(goal_handle, "gripper_open_before_pre_container");
-        gripper->setStartStateToCurrentState();
-        gripper->setNamedTarget("gripper_open");
-        if (!planAndExecute(gripper, "gripper_open antes do pre_container")) {
-            RCLCPP_WARN(get_logger(), "[PLACE] garra nao voltou a gripper_open antes do pre_container — sigo.");
-        }
-
+        // 2026-11-26 (operador): a garra volta a gripper_open NO CAMINHO para o
+        // pre_container (arm_with_gripper). Sem o grupo, ou se falhar: como antes.
         publishStage(goal_handle, "going_pre_container");
-        arm->setStartStateToCurrentState();
-        arm->setEndEffectorLink("tcp");
-        arm->setNamedTarget("pre_container");
-        if (!planAndExecute(arm, "go pre_container")) {
-            return false;
+        if (!moveArmWithGripper("pre_container", "go pre_container")) {
+            publishStage(goal_handle, "gripper_open_before_pre_container");
+            gripper->setStartStateToCurrentState();
+            gripper->setNamedTarget("gripper_open");
+            if (!planAndExecute(gripper, "gripper_open antes do pre_container")) {
+                RCLCPP_WARN(get_logger(), "[PLACE] garra nao voltou a gripper_open antes do pre_container — sigo.");
+            }
+
+            publishStage(goal_handle, "going_pre_container");
+            arm->setStartStateToCurrentState();
+            arm->setEndEffectorLink("tcp");
+            arm->setNamedTarget("pre_container");
+            if (!planAndExecute(arm, "go pre_container")) {
+                return false;
+            }
         }
 
         publishStage(goal_handle, "going_container");

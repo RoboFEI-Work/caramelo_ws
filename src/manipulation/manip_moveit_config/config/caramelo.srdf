@@ -31,6 +31,14 @@
         <joint name="manip_joint6"/>
         <joint name="manip_joint7"/>
     </group>
+    <!-- 2026-11-26 (pedido do operador): "fazer a abertura da garra conforme o resto
+         do manipulador se mexe": braco + garra num grupo so', para abrir a garra NO
+         CAMINHO (uma trajetoria, os dois controladores juntos) em vez de abrir e
+         depois mover. Estados abaixo: cada pose do braco + garra aberta. -->
+    <group name="arm_with_gripper">
+        <group name="arm"/>
+        <group name="gripper"/>
+    </group>
     <!--GROUP STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is useful to define states like 'folded arms'-->
     <!-- home: joint3 = 2.10 porque o servo nao aciona alem de ~2.17 rad (Max
          Position Limit na EEPROM; medido 2026-08-10: travava em 2.1717 e toda
@@ -263,6 +271,262 @@
     <group_state name="open_ct" group="gripper">
         <joint name="manip_joint6" value="0"/>
         <joint name="manip_joint7" value="0"/>
+    </group_state>
+    <!-- arm_with_gripper (2026-11-26): GERADO das poses do grupo "arm" acima, com
+         a garra em gripper_open (-0.2265); "home" com gripper_full_open (-0.994838),
+         como o GoToNamedPose sempre deixou (dedos fora da imagem da camera).
+         Mudou uma pose do "arm"? Mude aqui tambem. -->
+    <group_state name="home" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="-1.5359"/>
+        <joint name="manip_joint3" value="2.10"/>
+        <joint name="manip_joint4" value="1.39626"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.994838"/>
+        <joint name="manip_joint7" value="-0.994838"/>
+    </group_state>
+    <group_state name="pirocao" group="arm_with_gripper">
+        <joint name="manip_joint1" value="0.0"/>
+        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint3" value="0.0"/>
+        <joint name="manip_joint4" value="0.0"/>
+        <joint name="manip_joint5" value="0.0"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="pose_1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.0099"/>
+        <joint name="manip_joint3" value="1.4796"/>
+        <joint name="manip_joint4" value="1.4707"/>
+        <joint name="manip_joint5" value="0.0173"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="pose_2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.6984"/>
+        <joint name="manip_joint2" value="0.6265"/>
+        <joint name="manip_joint3" value="-0.7613"/>
+        <joint name="manip_joint4" value="0.8873"/>
+        <joint name="manip_joint5" value="-1.6481"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="pegar_obj" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="-0.3839"/>
+        <joint name="manip_joint3" value="1.229"/>
+        <joint name="manip_joint4" value="2.19911"/>
+        <joint name="manip_joint5" value="-1.567"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="pegar_obj_sh" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.570796"/>
+        <joint name="manip_joint2" value="-0.977384"/>
+        <joint name="manip_joint3" value="2.1642"/>
+        <joint name="manip_joint4" value="1.4137"/>
+        <joint name="manip_joint5" value="-1.570796"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="tag_cima" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.628319"/>
+        <joint name="manip_joint3" value="0.837758"/>
+        <joint name="manip_joint4" value="1.62316"/>
+        <joint name="manip_joint5" value="-1.44862"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="tag_direita" group="arm_with_gripper">
+        <joint name="manip_joint1" value="0.9599"/>
+        <joint name="manip_joint2" value="0"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.9373"/>
+        <joint name="manip_joint5" value="-2.1468"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="tag_direita_cima" group="arm_with_gripper">
+        <joint name="manip_joint1" value="0.9599"/>
+        <joint name="manip_joint2" value="0.698132"/>
+        <joint name="manip_joint3" value="0.488692"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.22173"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="tag_esquerda" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.1642"/>
+        <joint name="manip_joint2" value="0"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.9373"/>
+        <joint name="manip_joint5" value="-1.2217"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="tag_esquerda_cima" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.1642"/>
+        <joint name="manip_joint2" value="0.698132"/>
+        <joint name="manip_joint3" value="0.488692"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.22173"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="pre_container" group="arm_with_gripper">
+        <joint name="manip_joint1" value="-1.5708"/>
+        <joint name="manip_joint2" value="0.0"/>
+        <joint name="manip_joint3" value="1.0821"/>
+        <joint name="manip_joint4" value="1.8151"/>
+        <joint name="manip_joint5" value="1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="container1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="-1.18682"/>
+        <joint name="manip_joint2" value="0.20944"/>
+        <joint name="manip_joint3" value="1.32645"/>
+        <joint name="manip_joint4" value="1.44862"/>
+        <joint name="manip_joint5" value="-1.23918"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="container2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="-1.58825"/>
+        <joint name="manip_joint2" value="-0.06981"/>
+        <joint name="manip_joint3" value="1.67552"/>
+        <joint name="manip_joint4" value="1.22173"/>
+        <joint name="manip_joint5" value="-1.64061"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="container3" group="arm_with_gripper">
+        <joint name="manip_joint1" value="-1.93732"/>
+        <joint name="manip_joint2" value="0.03491"/>
+        <joint name="manip_joint3" value="1.55334"/>
+        <joint name="manip_joint4" value="1.25664"/>
+        <joint name="manip_joint5" value="-1.8675"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa0" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa0.1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="0.8029"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa0.2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.0944"/>
+        <joint name="manip_joint2" value="0.9599"/>
+        <joint name="manip_joint3" value="1.0297"/>
+        <joint name="manip_joint4" value="0.9948"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa5" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.4835"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa5.1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.9373"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa5.2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="0.9425"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.5934"/>
+        <joint name="manip_joint4" value="1.3788"/>
+        <joint name="manip_joint5" value="-1.6581"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa10" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.5760"/>
+        <joint name="manip_joint3" value="1.1519"/>
+        <joint name="manip_joint4" value="1.1694"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa10.1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.0123"/>
+        <joint name="manip_joint2" value="0.9774"/>
+        <joint name="manip_joint3" value="0.5585"/>
+        <joint name="manip_joint4" value="1.4835"/>
+        <joint name="manip_joint5" value="-1.5882"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa10.2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.1991"/>
+        <joint name="manip_joint2" value="1.0123"/>
+        <joint name="manip_joint3" value="0.4712"/>
+        <joint name="manip_joint4" value="1.4137"/>
+        <joint name="manip_joint5" value="-1.6057"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa15" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.5708"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa15.1" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.0821"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="Mesa15.2" group="arm_with_gripper">
+        <joint name="manip_joint1" value="2.0595"/>
+        <joint name="manip_joint2" value="0.6458"/>
+        <joint name="manip_joint3" value="0.7854"/>
+        <joint name="manip_joint4" value="1.6406"/>
+        <joint name="manip_joint5" value="-1.5708"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
+    </group_state>
+    <group_state name="MesaSh" group="arm_with_gripper">
+        <joint name="manip_joint1" value="1.44862"/>
+        <joint name="manip_joint2" value="0.890118"/>
+        <joint name="manip_joint3" value="-0.436332"/>
+        <joint name="manip_joint4" value="1.93732"/>
+        <joint name="manip_joint5" value="-1.44862"/>
+        <joint name="manip_joint6" value="-0.2265"/>
+        <joint name="manip_joint7" value="-0.2265"/>
     </group_state>
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="gripper" parent_link="link5" group="gripper" parent_group="arm"/>
