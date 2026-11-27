@@ -168,8 +168,6 @@ def test_qualquer_mesa_sem_dimensao_configurada(width, depth, h):
     assert m.ok, m.reason
     assert math.degrees(m.face_yaw) == pytest.approx(-6.0, abs=1.2)
     assert m.table_h == pytest.approx(h, abs=0.02)
-    # 2026-11-26: a altura so' vale para o place com o chao visto.
-    assert m.floor_seen
     assert m.c_foot is not None, m.center_reason
     assert m.width == pytest.approx(width, abs=0.03)
     ya = math.radians(-6.0)

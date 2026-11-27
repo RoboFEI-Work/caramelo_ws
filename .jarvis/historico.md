@@ -604,3 +604,7 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Pedido: "fazer a abertura da garra conforme o resto do manipulador se mexe. no srdf crie um grupo do arm_with_gripper que contenha todas as poses do manipulador + garra aberta e troque no codigo".
 - Feito: grupo + 28 estados no caramelo.srdf; moveArmWithGripper (pick/place, interface criada 1x, stop no cancelamento) e comboInterface estatica no GoToNamedPose (criada na 1a ida ao home). Trocados: inicio do pick, pre_container do place, home do executor. NAO trocadas as solturas (container/mesa/pote) nem a abertura antes de olhar a mesa (pode ser full_open).
 - Verificado: build; mock isolado executou os 3 estados nos 2 controladores. Sem commit.
+
+## 2026-11-27 — Revertido o commit "ajustando o place" (T67)
+- Pedido: "retire o commit 'Ajustando o place' mas mantenha todas as outras alteracoes depois dela".
+- Feito: git revert de a26894a (altura do tampo medida no docking: /dock_align/table_height, floor_seen, surfaceTargetZ, doc). Revert em vez de rebase porque o commit ja' estava no origin e o seguinte (28405c5 "altura das nesas") veio do PC do robo: sem push forcado. Mantidos c3c2db6 (arm_with_gripper) e 28405c5.

@@ -1068,16 +1068,6 @@ class DockAlignNode(Node):
                        reliability=ReliabilityPolicy.RELIABLE))
         self._base_shift_total = 0.0
         self._publish_shift_total()
-        # 2026-11-26 (operador: "em algumas mesas ele ta colocando muito alto e em
-        # outra ele ta afundando a garra"): ALTURA DO TAMPO acima do chao medida
-        # pela camera neste docking (mediana dos frames com o chao visto).
-        # LATCHED; NaN no inicio de cada align (nao vale a altura da mesa
-        # anterior). Quem usa: place na superficie (mtc_place_action_node).
-        self._table_h_pub = self.create_publisher(
-            Float64, "/dock_align/table_height",
-            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                       reliability=ReliabilityPolicy.RELIABLE))
-        self._table_h_vals = []
         # Lock de MOVIMENTO: align_to_dock e nudge_base publicam na mesma
         # referencia e o executor e multi-thread — nunca os dois juntos.
         # Aquisicao NAO bloqueante: ocupado = rejeita/aborta, nunca enfileira.
@@ -1202,8 +1192,6 @@ class DockAlignNode(Node):
         area). Zera a largura medida (nada de dimensao do yaml)."""
         self._cam_goal_width = None
         self._cam_dock_id = dock_id
-        self._table_h_vals = []
-        self._table_h_pub.publish(Float64(data=float("nan")))
         self._cam_goal_enabled = bool(self.get_parameter("camera_enabled").value)
         if not self._cam_goal_enabled:
             return
@@ -1334,11 +1322,7 @@ class DockAlignNode(Node):
                     reject[m.reason] += 1
                 else:
                     got.append(m)
-                    if m.floor_seen and m.table_h is not None:
-                        self._table_h_vals.append(float(m.table_h))
             rate.sleep()
-        if self._table_h_vals:
-            self._table_h_pub.publish(Float64(data=float(np.median(self._table_h_vals))))
         rej_txt = ", ".join(f"{k} x{v}" for k, v in reject.most_common(3)) or "nenhuma"
         if frames == 0:
             self._cam_reject = (f"nenhum frame de '{self.get_parameter('camera_depth_topic').value}' "

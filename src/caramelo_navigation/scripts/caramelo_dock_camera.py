@@ -108,9 +108,6 @@ class TableMeasure:
     sides: str = ""                 # "ambos" | "esquerda" | "direita" | ""
     center_reason: str = ""
     table_h: float = None
-    # 2026-11-26: o chao foi VISTO (plano do chao no depth). Sem ele, table_h
-    # sai relativo ao z=0 do TF, que tem o erro de inclinacao: nao serve de altura.
-    floor_seen: bool = False
     tilt_deg: float = None
     n_front: int = 0
     info: dict = field(default_factory=dict)
@@ -397,7 +394,6 @@ def measure_table(pts, pix, shape, cfg, cam_pos=(0.0, 0.0, 0.0), rng=None, nrm=N
     floor = [i for i, z in enumerate(z0) if abs(z) <= cfg.floor_max_abs_z0]
     fi = max(floor, key=lambda i: planes[i][2]) if floor else None
     zf = z0[fi] if fi is not None else 0.0
-    out.floor_seen = fi is not None
     tables = [i for i, z in enumerate(z0)
               if i != fi and cfg.table_h_range[0] <= z - zf <= cfg.table_h_range[1]]
     out.info["planos"] = [(round(z, 3), planes[i][2]) for i, z in enumerate(z0)]
