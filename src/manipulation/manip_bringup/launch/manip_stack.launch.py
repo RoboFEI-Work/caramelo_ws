@@ -50,6 +50,7 @@ def generate_launch_description():
     surface_detector_always_on = LaunchConfiguration("surface_detector_always_on")
     use_vision_debug = LaunchConfiguration("use_vision_debug")
     use_vision_viewer = LaunchConfiguration("use_vision_viewer")
+    use_tags_tela = LaunchConfiguration("use_tags_tela")
 
     manip_bringup_share = get_package_share_directory("manip_bringup")
     moveit_config_share = get_package_share_directory("manip_moveit_config")
@@ -126,6 +127,12 @@ def generate_launch_description():
             default_value="false",
             description="Abre o rqt_image_view ja em /manip/vision_debug/image",
         ),
+        # 2026-11-28 (operador): tags identificadas em tela cheia.
+        DeclareLaunchArgument(
+            "use_tags_tela",
+            default_value="true",
+            description="Tela cheia com as tags AprilTag identificadas (/detections). Precisa de DISPLAY.",
+        ),
         DeclareLaunchArgument(
             "place_surface_planner",
             default_value="true",
@@ -184,8 +191,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_audio",
-            default_value="true",
-            description="Inicia o speech_node (voz em /manip/speech)",
+            default_value="false",  # 2026-11-28 (operador: "remova o audio por completo"): o speech_node nao sobe mais.
+            description="(ignorado) a voz foi removida do robo em 2026-11-28",
         ),
         DeclareLaunchArgument(
             "use_pick_place",
@@ -632,6 +639,18 @@ def generate_launch_description():
         arguments=["/manip/vision_debug/image"],
     )
 
+    # 2026-11-28 (pedido do operador: "aparecer na tela, em tela cheia, as tags
+    # indentificadas"). So' le /detections; ver o docstring do script.
+    tags_tela = Node(
+        package="manip_bringup",
+        executable="tags_tela_node.py",
+        name="tags_tela",
+        output="screen",
+        respawn=True,
+        respawn_delay=5.0,
+        condition=IfCondition(use_tags_tela),
+    )
+
     # --- Gate da percepcao ---
     # A camera so streama durante pick/place. Desacoplado: sem este no, tudo
     # se comporta como antes (camera sempre ligada). Ver o docstring do script.
@@ -796,7 +815,8 @@ def generate_launch_description():
         workstation_surface,
         vision_debug,
         vision_viewer,
-        speech,
+        tags_tela,
+        # speech,  # 2026-11-28 (operador: "remova o audio por completo")
         pick_telemetry,
         rviz,
         mock_rsp,

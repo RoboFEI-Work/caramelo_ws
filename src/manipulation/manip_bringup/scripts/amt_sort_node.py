@@ -147,7 +147,7 @@ class AmtSort(Node):
 
     def _falar(self, texto):
         self.get_logger().info(f"[AMT] {texto}")
-        self._fala.publish(String(data=texto))
+        # 2026-11-28 (operador: "remova o audio por completo"): so' log, sem voz.
 
     # ---- chamadas de action com batimento de feedback -------------------------
     def _chamar(self, cliente, goal, gh, etapa, feitos=0, total=0):

@@ -507,3 +507,13 @@ Fontes: transcrições em `~/.claude/projects/-home-robofei-work-caramelo-ws/` (
 - Relato: na mesa de 15 o bloco afunda no container; na de 10 esta bom.
 - Analise: alvo z = FK(table_pose).z + 0,08 (+0,03/bloco). FK (custom_ik): Mesa5 z=-0,052, Mesa10 -0,013, Mesa15 +0,029 em manip_base_link -> Mesa15 so' 4,1 cm acima da Mesa10 (esperado 5). Logs antigos de container em Mesa15 (tampo -0,013): chegada dz -2,4 / -2,0 cm.
 - Feito (sem commit): params `container_z_extra_mesas` ["Mesa15"] + `container_z_extra_m` [0.02] (prefixo da table_pose, lidos a cada place; log "[CONTAINER] correcao de altura da mesa ..." e "+ mesa" no log do alvo). docs/containers_por_cor.md. Build ok. NAO testado no robo; valor 0,02 e' chute a partir da conta, ajustar com ros2 param set.
+
+## 2026-11-28 — branch mudanca_pp: sem audio, tela das tags, volta lenta da prateleira (pedido do operador)
+- Operador trocou para a branch mudanca_pp e pediu para NAO trazer nada da branch telinha (tudo feito do zero aqui).
+- Audio removido: speech_node fora do manip_stack; use_audio default false; speech_enabled false (pick/place/dock_align);
+  sem a espera da fala antes do passo lateral (dock_align) e sem a pausa de 1,5 s do START (go_to_ws_bt); AMT so' loga.
+- Tela: novo scripts/tags_tela_node.py (use_tags_tela, default true): le /detections e mostra "TAGS IDENTIFICADAS:" + ids
+  em tela cheia (testado no dominio 88: janela 1920x1080+0+0 neste PC).
+- Prateleira: depois do place no MesaSh o braco vai pirocao -> pegar_obj na velocidade da prateleira (0.35/0.25);
+  param shelf_place_volta_pose ("" = parar no pirocao, como antes). Build ok, sem commit.
+- 2026-11-28: so' a altura das mesas do 28405c5 trazida para mudanca_pp (ws_table_mapping: WS_1 Mesa5, WS_3/WS_4 Mesa15), pedido do operador.

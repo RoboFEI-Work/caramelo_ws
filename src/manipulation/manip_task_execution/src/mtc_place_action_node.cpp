@@ -401,7 +401,7 @@ public:
         tf_listener_ =
             std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", true);
+        speech_enabled_ = this->declare_parameter<bool>("speech_enabled", false);  // 2026-11-28 (operador): sem voz
         speech_publisher_ =
             this->create_publisher<std_msgs::msg::String>("/manip/speech", 10);
 
@@ -442,6 +442,12 @@ public:
         // a cada movimento (da para ajustar com ros2 param set no teste).
         this->declare_parameter<double>("shelf_velocity_scaling", 0.35);
         this->declare_parameter<double>("shelf_acceleration_scaling", 0.25);
+        // 2026-11-28 (operador: "na volta da pose pirocao pra home/pegar_obj esta
+        // indo muito rapido e ta com risco de quebrar alguma peca"): depois de
+        // entregar na prateleira o braco nao para mais no pirocao (esticado):
+        // segue DEVAGAR (fatores acima) ate esta pose recolhida. O home/pick
+        // seguinte parte dela, ja' recolhido. Vazio = para no pirocao (antes).
+        this->declare_parameter<std::string>("shelf_place_volta_pose", "pegar_obj");
 
         // Frame da base do braco — a IK custom trabalha nele (2026-08-17,
         // entrega em alvo TF pela IK propria). Espelho do
@@ -945,7 +951,7 @@ private:
     double perception_warmup_timeout_{6.0};
     double container_place_z_offset_;
     std::unique_ptr<manip_task_execution::ManipulatorExecutionLock> execution_lock_;
-    bool speech_enabled_{true};
+    bool speech_enabled_{false};
     bool skip_missing_place_tag_{true};
     bool verify_grasp_effort_{true};
     bool verify_container_grasp_{false};
@@ -7252,6 +7258,25 @@ private:
                     "braco pode estar estendido sobre a prateleira.",
                     kShelfWaypointPose);
                 speak("!Entreguei, mas nao consegui recolher o braco");
+                return true;
+            }
+            // 2026-11-28: pirocao -> pose recolhida tambem na velocidade da
+            // prateleira (antes o home/pick seguinte fazia isso a 1.0).
+            const std::string volta =
+                this->get_parameter("shelf_place_volta_pose").as_string();
+            if (!volta.empty()) {
+                publishStage(goal_handle, "returning_shelf_" + volta);
+                arm->setStartStateToCurrentState();
+                arm->setEndEffectorLink("tcp");
+                if (!arm->setNamedTarget(volta) ||
+                    !planAndExecuteShelfSlow(arm, "place shelf volta " + volta))
+                {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Entrega concluida mas a volta lenta %s -> %s falhou — "
+                        "braco ficou no waypoint.",
+                        kShelfWaypointPose, volta.c_str());
+                }
             }
             return true;
         }

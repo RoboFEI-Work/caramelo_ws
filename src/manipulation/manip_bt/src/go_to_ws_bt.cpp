@@ -304,7 +304,8 @@ BT::NodeStatus GoToWSBT::onStart()
     std::string task_name;
     config().blackboard->get("task_name", task_name);
     speak("!START" + (task_name.empty() ? std::string() : " " + task_name));
-    rclcpp::sleep_for(std::chrono::milliseconds(1500));
+    // 2026-11-28 (operador: "remova o audio por completo"): sem a pausa de 1,5 s
+    // que esperava a voz dizer START.
   }
   if (use_docking_) {
     RCLCPP_INFO(logger(),

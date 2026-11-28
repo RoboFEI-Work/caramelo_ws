@@ -105,7 +105,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_audio",
-            default_value="true",
+            default_value="false",  # 2026-11-28 (operador: "remova o audio por completo")
             description="Inicia o speech_node (voz) no stack de manipulacao",
         ),
         DeclareLaunchArgument(
